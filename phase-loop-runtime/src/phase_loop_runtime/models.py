@@ -278,12 +278,13 @@ CLOSEOUT_SCHEMA: dict[str, Any] = {
             "description": "Non-secret human inputs required to unblock execution.",
         },
     },
-    "allOf": (
-        {
-            "if": {"properties": {"terminal_status": {"const": "complete"}}, "required": ("terminal_status",)},
-            "then": {"properties": {"produced_if_gates": {"minItems": 1}}},
-        },
-    ),
+    # NOTE: the conditional rule "when terminal_status=complete, produced_if_gates
+    # must be non-empty" was previously expressed via `allOf` + if/then. OpenAI's
+    # response_format JSON Schema dialect (consumed by Codex --output-schema)
+    # rejects `allOf` (and `anyOf`/`oneOf`/`not`/`if`/`then`) — only a strict
+    # subset is permitted. Moving the conditional enforcement to runner-side
+    # IF-gate Tier 1 validation (closeout_validation.validate_produced_gates),
+    # which already covers the same case.
 }
 
 INJECTION_MODES = ("prompt_only", "inline", "stdin", "context_file", "manual")
