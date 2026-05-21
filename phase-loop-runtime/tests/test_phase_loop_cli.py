@@ -204,16 +204,23 @@ class PhaseLoopCliTest(unittest.TestCase):
     def test_sync_skills_text_labels_bridge_workflow_and_vestigial_records(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
+            # Canonical sources (post-EXTRACT layout): claude-config/claude-skills/<prefixed-skill>/
+            # Creating at least one canonical source lets parity discovery progress past
+            # "missing_source" into the "missing_root" branch (HOME has no installed root).
+            (repo / "claude-config" / "claude-skills" / "claude-plan-phase").mkdir(parents=True)
+            (repo / "claude-config" / "claude-skills" / "claude-plan-phase" / "SKILL.md").write_text("canonical\n", encoding="utf-8")
+            # Vestigial sources at the pre-EXTRACT layout exercise the vestigial / classification paths.
             (repo / "claude-config" / "skills" / "plan-phase").mkdir(parents=True)
             (repo / "claude-config" / "skills" / "execute-phase").mkdir(parents=True)
             (repo / "claude-config" / "skills" / "execute-phase" / "SKILL.md").write_text("legacy\n", encoding="utf-8")
 
+            from phase_loop_smoke_utils import isolated_home_env
             result = subprocess.run(
                 [str(BIN), "sync-skills", "--repo", str(repo), "--harness", "claude"],
                 text=True,
                 capture_output=True,
                 check=True,
-                env={**os.environ, "HOME": str(Path(td) / "empty-home")},
+                env=isolated_home_env(Path(td) / "empty-home"),
             )
 
             self.assertIn("Bridge parity:", result.stdout)

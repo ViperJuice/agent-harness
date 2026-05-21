@@ -104,11 +104,43 @@ def write_phase_state(repo: Path, roadmap: Path, phases: dict[str, str]) -> None
     write_state(repo, StateSnapshot(timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phases=phases, **snapshot_provenance(roadmap)))
 
 
+def isolated_home_env(home_dir: Path, base_env: dict | None = None) -> dict:
+    """Build a subprocess env with HOME overridden but PYTHONPATH preserving user-site.
+
+    Required for tests that shell out to `phase-loop` after swapping HOME — without
+    this, the pip-installed phase_loop_runtime package (in user-site, HOME-derived)
+    becomes invisible to the subprocess.
+    """
+    import site
+    env = dict(base_env if base_env is not None else os.environ)
+    env["HOME"] = str(home_dir)
+    user_site = site.getusersitepackages()
+    if user_site:
+        existing = env.get("PYTHONPATH", "").split(os.pathsep) if env.get("PYTHONPATH") else []
+        if user_site not in existing:
+            existing.insert(0, user_site)
+        env["PYTHONPATH"] = os.pathsep.join(existing)
+    return env
+
+
 @contextmanager
 def isolated_codex_home(tmp_path: Path):
+    import site
     old_home = os.environ.get("HOME")
+    old_pythonpath = os.environ.get("PYTHONPATH")
     home = tmp_path / "codex-home"
     home.mkdir()
+
+    # Preserve user-site package discovery (e.g., pip-installed phase_loop_runtime).
+    # Subprocesses invoked under the swapped HOME would otherwise lose access to
+    # packages installed in the real user-site (~/.local/lib/pythonX.Y/site-packages).
+    user_site = site.getusersitepackages() if old_home else None
+    if user_site:
+        existing = old_pythonpath.split(os.pathsep) if old_pythonpath else []
+        if user_site not in existing:
+            existing.insert(0, user_site)
+        os.environ["PYTHONPATH"] = os.pathsep.join(existing)
+
     os.environ["HOME"] = str(home)
     try:
         yield home
@@ -117,6 +149,10 @@ def isolated_codex_home(tmp_path: Path):
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = old_home
+        if old_pythonpath is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = old_pythonpath
 
 
 def write_skill_handoff(codex_home: Path, repo: Path, skill: str, phase: str, status: str, artifact: Path) -> Path:

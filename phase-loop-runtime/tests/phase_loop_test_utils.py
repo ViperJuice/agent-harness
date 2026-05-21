@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# Ensure phase_loop_runtime resolves skill sources from the dotfiles tree even
+# when the package is pip-installed elsewhere (parents[4] of the installed
+# location is not helpful). Must run before any phase_loop_runtime import below
+# so the skill_inventory module-level constant captures the right root.
+os.environ.setdefault("PHASE_LOOP_RUNNER_REPO_ROOT", str(ROOT))
 
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.models import DelegationBudget, DelegationRequest

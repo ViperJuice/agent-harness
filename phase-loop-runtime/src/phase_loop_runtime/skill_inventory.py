@@ -23,7 +23,23 @@ HARNESS_SOURCE_ROOTS = {
     "manual": (),
 }
 
-RUNNER_REPO_ROOT = Path(__file__).resolve().parents[4]
+def _runner_repo_root() -> Path:
+    """Resolve the runner's source-of-truth repo (where HARNESS_SOURCE_ROOTS live).
+
+    When the package is editable-installed inside the source tree, parents[4]
+    points at the dotfiles root. When it's pip-installed in user-site,
+    parents[4] is unhelpful (~/.local/ etc.). Operators and tests can override
+    via PHASE_LOOP_RUNNER_REPO_ROOT.
+    """
+    import os
+    env = os.environ.get("PHASE_LOOP_RUNNER_REPO_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return Path(__file__).resolve().parents[4]
+
+
+# Back-compat: module-level constant for callers that imported it directly.
+RUNNER_REPO_ROOT = _runner_repo_root()
 BRIDGE_SKILL_NAMES = {
     "codex": "codex-phase-loop",
     "claude": "claude-phase-loop",
@@ -191,8 +207,9 @@ def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -
         candidate = repo / root / skill_name
         if candidate.is_dir():
             return candidate.resolve()
+    runner_root = _runner_repo_root()
     for root in HARNESS_SOURCE_ROOTS.get(harness_target, ()):
-        candidate = RUNNER_REPO_ROOT / root / skill_name
+        candidate = runner_root / root / skill_name
         if candidate.is_dir():
             return candidate.resolve()
     return None

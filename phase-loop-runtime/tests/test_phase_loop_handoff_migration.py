@@ -188,9 +188,9 @@ class PhaseLoopHandoffMigrationTest(unittest.TestCase):
 
     def test_cli_accepts_migrate_handoffs_help_and_json_dry_run(self):
         with tempfile.TemporaryDirectory() as td:
+            from phase_loop_smoke_utils import isolated_home_env
             repo = make_repo(Path(td) / "repo")
-            env = dict(os.environ)
-            env["HOME"] = str(Path(td) / "home")
+            env = isolated_home_env(Path(td) / "home")
             help_result = subprocess.run([str(BIN), "migrate-handoffs", "--help"], text=True, capture_output=True, check=True)
             dry_run = subprocess.run(
                 [str(BIN), "migrate-handoffs", "--repo", str(repo), "--dry-run", "--json"],
