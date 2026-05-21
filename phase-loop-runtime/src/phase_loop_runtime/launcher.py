@@ -333,7 +333,13 @@ def _schema_cleanup_paths(command: list[str]) -> tuple[str, ...]:
 def _closeout_schema_for_request(request: LaunchRequest) -> dict[str, Any] | None:
     if request.executor not in {"codex", "claude"}:
         return None
-    if request.action not in {"roadmap", "plan", "execute", "repair", "review", "maintain-skills"}:
+    # Only the actions whose FINAL model response is the closeout JSON itself.
+    # Plan/roadmap/maintain-skills produce markdown artifacts as the primary
+    # output; constraining their response to CLOSEOUT_SCHEMA prevents them
+    # from emitting the file contents at all (the provider's structured-output
+    # mode forces the whole final response into the schema shape). Limit to
+    # actions where the provider's response *is* the closeout.
+    if request.action not in {"execute", "repair", "review"}:
         return None
     from .models import CLOSEOUT_SCHEMA
 

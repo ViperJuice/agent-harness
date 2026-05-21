@@ -252,7 +252,10 @@ CLOSEOUT_SCHEMA: dict[str, Any] = {
         "produced_if_gates": {
             "type": "array",
             "items": {"type": "string"},
-            "uniqueItems": True,
+            # NOTE: `uniqueItems` removed for OpenAI Responses API compatibility
+            # (Codex --output-schema dialect — same constraint as the `allOf`
+            # removal above). Duplicate-gate detection moves to runner-side
+            # closeout_validation.validate_produced_gates if needed.
             "description": "Interface-freeze gates actually produced by this closeout.",
         },
         "next_action": {
