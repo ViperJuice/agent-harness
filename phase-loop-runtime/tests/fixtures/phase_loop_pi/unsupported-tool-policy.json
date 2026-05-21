@@ -1,0 +1,3 @@
+{
+  "result": "automation:\n  status: blocked\n  next_skill: none\n  next_command: none\n  next_model_hint: none\n  next_effort_hint: none\n  human_required: false\n  blocker_class: product_decision_missing\n  blocker_summary: Pi Agent tool policy requested unsupported unrestricted shell access.\n  required_human_inputs: []\n  verification_status: blocked\n  artifact: none\n  artifact_state: tracked\n"
+}

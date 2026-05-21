@@ -1,0 +1,72 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "plan_path": "plans/phase-plan-v13-DFPARSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v13-DFPARSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Operator approval is required for explicit live adapter proof.",
+    "human_required": true,
+    "next_command": "none - admin_approval",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [
+      "Approve live adapter proof"
+    ],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Operator approval is required for explicit live adapter proof.",
+    "human_required": true,
+    "required_human_inputs": [
+      "Approve live adapter proof"
+    ]
+  },
+  "lane": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changed_paths": [],
+    "effort": "high",
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak/human-terminal-summary.json",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "fallback_reason": "codex_cli_fallback",
+    "harness_route": "codex",
+    "lane_id": "SL-2",
+    "model": "gpt-5.5",
+    "policy_source": "phase-plan",
+    "verification_status": "blocked",
+    "wave_id": "wave-dfparsoak-001",
+    "work_unit_kind": "lane_execute",
+    "worktree_isolation_mode": "git_worktree",
+    "worktree_path": "<WORKTREE-PATH-REDACTED>"
+  },
+  "phase": "DFPARSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfparsoak",
+    "pipeline_mode": "pipeline_optional",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "human_required",
+  "verification": {
+    "status": "blocked"
+  }
+}

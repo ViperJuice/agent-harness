@@ -1,0 +1,48 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "evidence_refs": [],
+    "plan_path": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "artifact": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+  "automation": {
+    "artifact": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v15.md DFADOPTSOAK",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFADOPTBRIDGE",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "status": "complete",
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_bridge"
+    ],
+    "status": "passed"
+  }
+}

@@ -1,0 +1,3 @@
+[console_scripts]
+codex-phase-loop = phase_loop_runtime.cli:main
+phase-loop = phase_loop_runtime.cli:main

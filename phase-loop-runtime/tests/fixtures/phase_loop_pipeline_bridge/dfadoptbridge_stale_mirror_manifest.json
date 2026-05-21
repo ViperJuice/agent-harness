@@ -1,0 +1,76 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dfadoptbridge/stale-mirror-manifest-terminal-summary.json"
+    },
+    "changed_paths": [
+      "specs/.pipeline-mirror.json"
+    ],
+    "evidence_refs": [
+      {
+        "label": "stale mirror manifest evidence",
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfadoptbridge_stale_mirror_manifest.json",
+        "sha256": "7171717171717171717171717171717171717171717171717171717171717171"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "artifact_state": "tracked",
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Managed mirror manifest freshness failed: stale_mirror_manifest",
+    "human_required": false,
+    "next_command": "none - stale_mirror_manifest",
+    "next_effort_hint": "medium",
+    "next_model_hint": "repair",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Managed mirror manifest freshness failed: stale_mirror_manifest",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFADOPTBRIDGE",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfadoptbridge",
+    "pipeline_mode": "pipeline_required",
+    "protected_sources": [
+      {
+        "category": "definition_files",
+        "path": "specs/.pipeline-mirror.json",
+        "role": "mirror_manifest",
+        "sha256": "7272727272727272727272727272727272727272727272727272727272727272"
+      }
+    ],
+    "sha256": "7373737373737373737373737373737373737373737373737373737373737373"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "mirror_manifests_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "mirror_manifest",
+        "path": "specs/.pipeline-mirror.json"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "stale_input",
+  "verification": {
+    "commands": [
+      "phase-loop execute DFADOPTBRIDGE --pipeline-mode pipeline_required"
+    ],
+    "status": "blocked"
+  }
+}

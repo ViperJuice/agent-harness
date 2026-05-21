@@ -1,0 +1,65 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dfdriftsignal/dfdriftsignal_blocked-terminal-summary.json"
+    },
+    "changed_paths": [
+      "vendor/phase-loop-runtime/src/phase_loop_runtime/redaction.py"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfdriftsignal_blocked.json",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "artifact_state": "tracked",
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Fixture non-human blocker.",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v14.md DFBRIDGEPARITY",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Fixture non-human blocker.",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFDRIFTSIGNAL",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfdriftsignal",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "code",
+        "path": "vendor/phase-loop-runtime/src/phase_loop_runtime/redaction.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "blocked",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_closeout"
+    ],
+    "status": "blocked"
+  }
+}

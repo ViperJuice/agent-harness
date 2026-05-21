@@ -1,0 +1,32 @@
+[
+  {
+    "phase_alias": "GFPARSOAK",
+    "path": "artifacts/gfparsoak/parallel-contract-soak-receipt.json",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "produced_interfaces": [
+      "parallel_contract_soak.v0.1",
+      "metadata_only_receipt.v1"
+    ],
+    "verification_status": "passed",
+    "evidence_refs": [
+      "receipt:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "metadata_only": true,
+    "sibling_repo_mutation": false
+  },
+  {
+    "phase_alias": "GPPARSOAK",
+    "path": "artifacts/gpparsoak/parallel-execution-soak-receipt.json",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "produced_interfaces": [
+      "parallel_execution_soak.v0.1",
+      "phase_loop_closeout_ingest.v1"
+    ],
+    "verification_status": "passed",
+    "evidence_refs": [
+      "receipt:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "metadata_only": true,
+    "sibling_repo_mutation": false
+  }
+]

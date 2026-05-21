@@ -1,0 +1,38 @@
+{
+  "artifact_target_root": ".pipeline/artifacts/phases/pipeline.phase.unknown",
+  "delegated_write_policy": {
+    "owned_files": [
+      "plans/phase-plan-v1-UNKNOWN.md"
+    ],
+    "protected_write_mode": "explicit_phase_ownership_required",
+    "read_only_files": [],
+    "typed_delegation_required": true
+  },
+  "freshness": {
+    "generated_at": "2026-05-11T00:00:00Z",
+    "source_bundle_hash": "pipeline-owned-freshness-token",
+    "status": "fresh"
+  },
+  "phase": {
+    "phase_alias": "UNKNOWN",
+    "phase_id": "pipeline.phase.unknown",
+    "phase_plan_path": "plans/phase-plan-v1-UNKNOWN.md"
+  },
+  "protected_sources": {
+    "entries": [
+      {
+        "category": "specs",
+        "path": "specs/protected-source.md",
+        "role": "active_canonical_spec",
+        "sha256": "protected-source-sha256"
+      }
+    ],
+    "hash_algorithm": "sha256"
+  },
+  "roadmap": {
+    "path": "specs/phase-plans-v1.md",
+    "sha256": "roadmap-sha256"
+  },
+  "schema": "phase-source-bundle.v1",
+  "source_files": []
+}

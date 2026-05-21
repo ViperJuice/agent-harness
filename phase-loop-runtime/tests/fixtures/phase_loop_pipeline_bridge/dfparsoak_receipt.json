@@ -1,0 +1,128 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "receipt_doc": "docs/phase-loop/dfparsoak-substrate-soak.md"
+    },
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfparsoak_receipt.json",
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfparsoak_upstream_receipts.json",
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_soak/dfparsoak_wave_plan.md",
+      "docs/phase-loop/dfparsoak-substrate-soak.md"
+    ],
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak-wave-001/terminal-summary.json",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      {
+        "path": ".phase-loop/runs/dfparsoak-wave-001/metrics.json",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v13-DFPARSOAK.md",
+    "plan_sha256": "94974b84b699b4c00af8117efcf6ae351fa1d11639b9ec59ce4c05b2c489b946",
+    "upstream_receipts": {
+      "GFPARSOAK": {
+        "metadata_only": true,
+        "path": "artifacts/gfparsoak/parallel-contract-soak-receipt.json",
+        "produced_interfaces": [
+          "parallel_contract_soak.v0.1",
+          "metadata_only_receipt.v1"
+        ],
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "verification_status": "passed"
+      },
+      "GPPARSOAK": {
+        "metadata_only": true,
+        "path": "artifacts/gpparsoak/parallel-execution-soak-receipt.json",
+        "produced_interfaces": [
+          "parallel_execution_soak.v0.1",
+          "phase_loop_closeout_ingest.v1"
+        ],
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "verification_status": "passed"
+      }
+    }
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v13-DFPARSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "none - roadmap complete",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "lane": {
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfparsoak_receipt.json",
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfparsoak_upstream_receipts.json",
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_soak/dfparsoak_wave_plan.md",
+      "docs/phase-loop/dfparsoak-substrate-soak.md"
+    ],
+    "effort": "medium",
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak-wave-001/terminal-summary.json",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "fallback_reason": "registry-default-inheritance",
+    "harness_route": "codex",
+    "lane_id": "SL-5",
+    "model": "gpt-5.5",
+    "policy_source": "phase-plan",
+    "verification_status": "passed",
+    "wave_id": "wave-001",
+    "work_unit_kind": "lane_execute",
+    "worktree_isolation_mode": "git_worktree",
+    "worktree_path": "<WORKTREE-PATH-REDACTED>"
+  },
+  "phase": "DFPARSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/dfparsoak-source-bundle.json",
+    "phase_id": "dotfiles-v13-DFPARSOAK",
+    "pipeline_mode": "pipeline_optional",
+    "sha256": "fed02695cc9c85b7259246bd2836dc17bdede4463bd7a70cca14cddd021ef9ec"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "docs_source_truth_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfparsoak_receipt.json"
+      },
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/dfparsoak-substrate-soak.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "status": "passed"
+  },
+  "work_unit": {
+    "kind": "lane_execute",
+    "lane_id": "SL-5",
+    "phase": "DFPARSOAK",
+    "status": "complete",
+    "work_unit_id": "DFPARSOAK.lane_execute.SL-5.1"
+  }
+}

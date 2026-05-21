@@ -1,0 +1,53 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [
+      "src/main.py"
+    ],
+    "plan_path": "plans/phase-plan-v11-TEST_PHASE.md",
+    "plan_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v11-NEXT.md",
+    "artifact_state": "staged",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "gemini-plan-phase plans/roadmap.md NEXT_PHASE",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "gemini-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "TEST_PHASE",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": "specs/pipeline-bundle.v1.json",
+    "phase_id": "P-123",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "f2ca1bb6c7e907d06dafe4687e579fce76b3776e66b16013a17f6a70a8d6729a"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "code",
+        "path": "src/main.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "evidence": "All verification steps passed successfully.",
+    "status": "passed"
+  }
+}

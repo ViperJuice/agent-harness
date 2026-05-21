@@ -1,0 +1,10 @@
+{
+  "schema": "phase_loop_closeout.v1",
+  "phase": "DFBUNDLECLOSEOUT",
+  "terminal_status": "blocked",
+  "automation": {"status": "blocked"},
+  "artifacts": {"plan_path": "plans/phase-plan-v14-DFBUNDLECLOSEOUT.md", "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+  "verification": {"status": "blocked"},
+  "blocker": {"human_required": false},
+  "source_bundle": "not-an-object"
+}

@@ -1,0 +1,65 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dftruthsoak/failed-verification-terminal-summary.json"
+    },
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_failed_verification.json",
+        "sha256": "7070707070707070707070707070707070707070707070707070707070707070"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "DFTRUTHSOAK fixture diagnostics failed after one local repair attempt",
+    "human_required": false,
+    "next_command": "none - repeated_verification_failure",
+    "next_effort_hint": "medium",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "failed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "DFTRUTHSOAK fixture diagnostics failed after one local repair attempt",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dftruthsoak",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "failed_verification",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_bridge"
+    ],
+    "status": "failed"
+  }
+}

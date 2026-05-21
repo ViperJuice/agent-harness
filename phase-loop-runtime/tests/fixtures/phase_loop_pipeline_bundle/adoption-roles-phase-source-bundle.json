@@ -1,0 +1,116 @@
+{
+  "artifact_target_root": ".pipeline/artifacts/phases/pipeline.phase.runner",
+  "delegated_write_policy": {
+    "owned_files": [
+      "plans/phase-plan-v1-RUNNER.md"
+    ],
+    "protected_write_mode": "explicit_phase_ownership_required",
+    "read_only_files": [
+      ".pipeline/specs/active.md",
+      "specs/active.md",
+      ".pipeline/specs/archive-manifest.json",
+      ".pipeline/specs/mirror-manifest.json"
+    ],
+    "typed_delegation_required": true
+  },
+  "freshness": {
+    "generated_at": "2026-05-17T00:00:00Z",
+    "source_bundle_hash": "pipeline-owned-freshness-token",
+    "status": "fresh"
+  },
+  "phase": {
+    "phase_alias": "RUNNER",
+    "phase_id": "pipeline.phase.runner",
+    "phase_plan_path": "plans/phase-plan-v1-RUNNER.md"
+  },
+  "protected_sources": {
+    "entries": [
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/seed.md",
+        "role": "seed_spec",
+        "sha256": "seed-spec-sha256"
+      },
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/predecessor.md",
+        "role": "predecessor_spec",
+        "sha256": "predecessor-spec-sha256"
+      },
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/active.md",
+        "role": "active_canonical_spec",
+        "sha256": "active-canonical-spec-sha256"
+      },
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/archive/old.md",
+        "role": "archived_spec",
+        "sha256": "archived-spec-sha256"
+      },
+      {
+        "category": "specs",
+        "path": "specs/active.md",
+        "role": "managed_mirror_file",
+        "sha256": "managed-mirror-file-sha256"
+      },
+      {
+        "category": "specs",
+        "path": "specs/new-input.md",
+        "role": "unmanaged_spec_input",
+        "sha256": "unmanaged-spec-input-sha256"
+      },
+      {
+        "category": "specs",
+        "path": "Specs/legacy-bundle.md",
+        "role": "legacy_specs_bundle",
+        "sha256": "legacy-specs-bundle-sha256"
+      },
+      {
+        "category": "specs",
+        "path": "specs/",
+        "role": "root_specs_intake"
+      },
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/",
+        "role": "pipeline_specs_canonical"
+      },
+      {
+        "category": "adapter_config",
+        "path": ".pipeline/adapters/spec-intake.json",
+        "role": "adapter_configured_intake_root",
+        "sha256": "adapter-configured-intake-root-sha256"
+      },
+      {
+        "category": "definition_files",
+        "path": ".pipeline/specs/mirror-manifest.json",
+        "role": "mirror_manifest",
+        "sha256": "mirror-manifest-sha256"
+      },
+      {
+        "category": "definition_files",
+        "path": ".pipeline/specs/archive-manifest.json",
+        "role": "archive_manifest",
+        "sha256": "archive-manifest-sha256"
+      }
+    ],
+    "hash_algorithm": "sha256",
+    "requires_roles": true
+  },
+  "roadmap": {
+    "path": "specs/phase-plans-v1.md",
+    "sha256": "roadmap-sha256"
+  },
+  "schema": "phase-source-bundle.v1",
+  "source_files": [
+    {
+      "path": "specs/phase-plans-v1.md",
+      "protected": true,
+      "purpose": "roadmap",
+      "read_only": true,
+      "sha256": "roadmap-sha256"
+    }
+  ]
+}

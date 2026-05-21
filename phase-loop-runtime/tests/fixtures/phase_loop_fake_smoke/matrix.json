@@ -1,0 +1,81 @@
+{
+  "schema": "phase_loop_fake_smoke_matrix.v1",
+  "phase": "DFFAKESMOKE",
+  "scenarios": [
+    {
+      "name": "two_lane_success",
+      "proof": "test_phase_loop_wave_runner.PhaseLoopWaveRunnerTest.test_concurrent_lane_scheduler_launches_ready_wave_work_units",
+      "expected": "two lane_execute work units with scheduler-owned git_worktree assignments"
+    },
+    {
+      "name": "three_lane_success",
+      "proof": "test_phase_loop_wave_runner.PhaseLoopWaveRunnerTest.test_concurrent_lane_scheduler_launches_three_ready_wave_work_units",
+      "expected": "three lane_execute work units with scheduler-owned git_worktree assignments"
+    },
+    {
+      "name": "overlap_rejection",
+      "proof": "test_phase_loop_lane_scheduler.PhaseLoopLaneSchedulerTest.test_overlap_validation_fails_closed",
+      "expected": "overlapping_write_ownership diagnostic"
+    },
+    {
+      "name": "missing_worktree_assignment",
+      "proof": "test_phase_loop_lane_scheduler.PhaseLoopLaneSchedulerTest.test_concurrent_mode_requires_isolated_worktrees_for_multiple_writers",
+      "expected": "unsafe_concurrent_lane diagnostic before launch"
+    },
+    {
+      "name": "stale_base_assignment",
+      "proof": "test_phase_loop_lane_scheduler.PhaseLoopLaneSchedulerTest.test_concurrent_mode_blocks_stale_worktree_assignment_base",
+      "expected": "stale_worktree_assignment diagnostic"
+    },
+    {
+      "name": "human_required_blocker",
+      "proof": "test_phase_loop_lane_scheduler.PhaseLoopLaneSchedulerTest.test_active_and_human_blocked_units_emit_typed_diagnostics",
+      "expected": "human_required_blocked_work_unit diagnostic"
+    },
+    {
+      "name": "malformed_closeout",
+      "proof": "test_phase_loop_runner.PhaseLoopRunnerTest.test_fake_output_failure_matrix_blocks_equivalently_across_executors",
+      "expected": "repeated_verification_failure blocker"
+    },
+    {
+      "name": "missing_closeout",
+      "proof": "test_phase_loop_runner.PhaseLoopRunnerTest.test_fake_missing_closeout_matrix_blocks_equivalently_across_executors",
+      "expected": "repeated_verification_failure blocker"
+    },
+    {
+      "name": "timeout",
+      "proof": "test_phase_loop_runner.PhaseLoopRunnerTest.test_fake_output_failure_matrix_blocks_equivalently_across_executors",
+      "expected": "timeout-shaped launch result blocks"
+    },
+    {
+      "name": "redaction_rejection",
+      "proof": "test_phase_loop_pi_executor.PhaseLoopPiExecutorTest.test_pi_fake_redaction_rejection_and_unsupported_policy_block",
+      "expected": "secret-shaped output is rejected before preservation"
+    },
+    {
+      "name": "pi_lane_default",
+      "proof": "test_phase_loop_wave_runner.PhaseLoopWaveRunnerTest.test_concurrent_lane_scheduler_launches_ready_wave_work_units",
+      "expected": "scheduler-assigned lane_execute policy executor is pi"
+    },
+    {
+      "name": "legacy_codex_default",
+      "proof": "test_phase_loop_policy.PhaseLoopPolicyTest.test_simple_bounded_lane_execution_defaults_to_pi",
+      "expected": "coarse execute remains codex-compatible"
+    },
+    {
+      "name": "substrate_receipt",
+      "proof": "docs/phase-loop/dffakesmoke-substrate-receipt.md",
+      "expected": {
+        "phase": "DFFAKESMOKE",
+        "roadmap_sha256": "ebd41622e40347ffebccd53a450f5c0d9b9b7b98735b84e545716d4559710876",
+        "plan_path": "plans/phase-plan-v13-DFFAKESMOKE.md",
+        "fake_fixture_matrix": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_fake_smoke/matrix.json",
+        "smoke_commands": "scripts/smoke-codex-phase-loop; scripts/smoke-phase-loop-live-adapters",
+        "work_unit_evidence_refs": ".phase-loop/runs/<run-id>/ and .phase-loop/metrics.jsonl",
+        "verification_status": "local fake proof",
+        "changed_path_boundaries": "dotfiles runner substrate only",
+        "redaction_posture": "metadata and artifact refs only"
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+{
+  "result": "automation:\n  status: blocked\n  next_skill: none\n  next_command: none\n  next_model_hint: repair\n  next_effort_hint: medium\n  human_required: false\n  blocker_class: repeated_verification_failure\n  blocker_summary: Fake Pi blocked closeout for local adapter proof.\n  required_human_inputs: []\n  verification_status: blocked\n  artifact: none\n  artifact_state: tracked\n"
+}

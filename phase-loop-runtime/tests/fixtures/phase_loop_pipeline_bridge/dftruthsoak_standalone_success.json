@@ -1,0 +1,60 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dftruthsoak/standalone-terminal-summary.json"
+    },
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/test_phase_loop_runner.py"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_standalone_success.json",
+        "sha256": "1010101010101010101010101010101010101010101010101010101010101010"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase ../governed-pipeline/specs/phase-plans-v10.md GPTRUTHSOAK",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/test_phase_loop_runner.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "scripts/smoke-codex-phase-loop"
+    ],
+    "status": "passed"
+  }
+}

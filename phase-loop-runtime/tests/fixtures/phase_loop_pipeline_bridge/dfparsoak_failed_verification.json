@@ -1,0 +1,77 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+    ],
+    "plan_path": "plans/phase-plan-v13-DFPARSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v13-DFPARSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "DFPARSOAK bridge regression failed.",
+    "human_required": false,
+    "next_command": "none - repeated_verification_failure",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "failed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "DFPARSOAK bridge regression failed.",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "lane": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+    ],
+    "effort": "medium",
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak/failed-terminal-summary.json",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ],
+    "fallback_reason": "gemini_cli_fallback",
+    "harness_route": "gemini",
+    "lane_id": "SL-3",
+    "model": "auto",
+    "policy_source": "phase-plan",
+    "verification_status": "failed",
+    "wave_id": "wave-dfparsoak-001",
+    "work_unit_kind": "phase_reducer",
+    "worktree_isolation_mode": "git_worktree",
+    "worktree_path": "<WORKTREE-PATH-REDACTED>"
+  },
+  "phase": "DFPARSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfparsoak",
+    "pipeline_mode": "pipeline_optional",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "failed_verification",
+  "verification": {
+    "status": "failed"
+  }
+}

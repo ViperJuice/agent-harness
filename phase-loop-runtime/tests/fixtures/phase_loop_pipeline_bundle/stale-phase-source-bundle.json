@@ -1,0 +1,38 @@
+{
+  "artifact_target_root": ".pipeline/artifacts/phases/pipeline.phase.runner",
+  "delegated_write_policy": {
+    "owned_files": [
+      "plans/phase-plan-v1-RUNNER.md"
+    ],
+    "protected_write_mode": "explicit_phase_ownership_required",
+    "read_only_files": [],
+    "typed_delegation_required": true
+  },
+  "freshness": {
+    "generated_at": "2026-05-11T00:00:00Z",
+    "source_bundle_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "status": "stale"
+  },
+  "phase": {
+    "phase_alias": "RUNNER",
+    "phase_id": "pipeline.phase.runner",
+    "phase_plan_path": "plans/phase-plan-v1-RUNNER.md"
+  },
+  "protected_sources": {
+    "entries": [
+      {
+        "category": "specs",
+        "path": "specs/protected-source.md",
+        "role": "active_canonical_spec",
+        "sha256": "protected-source-sha256"
+      }
+    ],
+    "hash_algorithm": "sha256"
+  },
+  "roadmap": {
+    "path": "specs/phase-plans-v1.md",
+    "sha256": "roadmap-sha256"
+  },
+  "schema": "phase-source-bundle.v1",
+  "source_files": []
+}

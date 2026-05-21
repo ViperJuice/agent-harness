@@ -1,0 +1,48 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "plan_path": "plans/phase-plan-v11-TEST_PHASE.md",
+    "plan_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "automation": {
+    "artifact": "none",
+    "artifact_state": "none",
+    "blocker_class": "sandbox_command_restriction",
+    "blocker_summary": "Execution blocked by restricted shell command 'rm -rf /'.",
+    "human_required": false,
+    "next_command": "none - sandbox_command_restriction",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "sandbox_command_restriction",
+    "blocker_summary": "Execution blocked by restricted shell command 'rm -rf /'.",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "TEST_PHASE",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": "specs/pipeline-bundle.v1.json",
+    "phase_id": "P-123",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "f2ca1bb6c7e907d06dafe4687e579fce76b3776e66b16013a17f6a70a8d6729a"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "blocked",
+  "verification": {
+    "evidence": "Verification could not be run due to terminal block.",
+    "status": "blocked"
+  }
+}

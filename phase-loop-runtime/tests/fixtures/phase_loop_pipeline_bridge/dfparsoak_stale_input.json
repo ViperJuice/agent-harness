@@ -1,0 +1,68 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "plan_path": "plans/phase-plan-v13-DFPARSOAK.md",
+    "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v13-DFPARSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Pipeline execution freshness validation failed: mismatched_source_bundle_sha256",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v13.md DFPARSOAK",
+    "next_effort_hint": "high",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "not_run"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Pipeline execution freshness validation failed: mismatched_source_bundle_sha256",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "lane": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changed_paths": [],
+    "effort": "medium",
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak/stale-terminal-summary.json",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ],
+    "fallback_reason": "none",
+    "harness_route": "pi",
+    "lane_id": "SL-0",
+    "model": "auto",
+    "policy_source": "phase-plan",
+    "verification_status": "not_run",
+    "wave_id": "wave-dfparsoak-001",
+    "work_unit_kind": "lane_execute",
+    "worktree_isolation_mode": "git_worktree",
+    "worktree_path": "<WORKTREE-PATH-REDACTED>"
+  },
+  "phase": "DFPARSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfparsoak",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "stale_input",
+  "verification": {
+    "status": "not_run"
+  }
+}

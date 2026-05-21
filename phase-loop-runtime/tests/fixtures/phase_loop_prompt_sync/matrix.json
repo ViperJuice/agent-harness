@@ -1,0 +1,38 @@
+{
+  "schema_version": "phase_loop_prompt_sync_fixture_matrix.v1",
+  "valid_schema_citations": [
+    "Greenfield parallel_work_unit.v0.1",
+    "Greenfield Pi Agent launch/result/evidence examples",
+    "Greenfield lane-result evidence refs",
+    "Governed Pipeline worktree_assignment.v1",
+    "Governed Pipeline scheduler route metadata",
+    "Dotfiles phase_loop_closeout.v1"
+  ],
+  "required_assignment_fields": [
+    "lane_id",
+    "wave_id",
+    "worktree_path",
+    "base_sha",
+    "isolation_mode",
+    "owned_files",
+    "read_only_refs",
+    "harness_route",
+    "model",
+    "effort",
+    "fallback_reason"
+  ],
+  "forbidden_prompt_inputs": [
+    "raw secrets",
+    "raw transcripts",
+    "raw diffs",
+    "raw provider payloads",
+    "credential file contents",
+    "local env values",
+    "prompt-only containment claims"
+  ],
+  "authority_boundaries": {
+    "dotfiles": "local runner substrate, Pi Agent prompts, CLI fallback policy, phase_loop_closeout.v1 emission",
+    "governed_pipeline": "scheduling, runtime ledger, worktree assignment, closeout ingest, merge reduction",
+    "greenfield": "authority schemas, reducers, digests, prompt-facing examples"
+  }
+}

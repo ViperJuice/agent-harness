@@ -1,0 +1,66 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfbundlecloseout_human_required.json",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFBUNDLECLOSEOUT.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFBUNDLECLOSEOUT.md",
+    "artifact_state": "tracked",
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Operator approval required.",
+    "human_required": true,
+    "next_command": "none",
+    "next_effort_hint": "medium",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [
+      "approval confirmation"
+    ],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [
+      {
+        "details": "approval presence only",
+        "probe": "operator approval",
+        "result": "missing",
+        "source": "metadata_only",
+        "timestamp": "2026-05-16T00:00:00Z"
+      }
+    ],
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Operator approval required.",
+    "human_required": true,
+    "required_human_inputs": [
+      "approval confirmation"
+    ]
+  },
+  "phase": "DFBUNDLECLOSEOUT",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfbundlecloseout",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "human_required",
+  "verification": {
+    "commands": [],
+    "status": "blocked"
+  }
+}

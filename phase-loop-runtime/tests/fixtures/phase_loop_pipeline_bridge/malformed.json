@@ -1,0 +1,5 @@
+{
+  "schema": "phase_loop_closeout.v1",
+  "phase": "TEST_PHASE",
+  "terminal_status": "complete"
+}

@@ -1,0 +1,54 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfbundlecloseout_blocked.json",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFBUNDLECLOSEOUT.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFBUNDLECLOSEOUT.md",
+    "artifact_state": "tracked",
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Pipeline closeout contract blocked before child launch.",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v14.md DFBUNDLECLOSEOUT",
+    "next_effort_hint": "high",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Pipeline closeout contract blocked before child launch.",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFBUNDLECLOSEOUT",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfbundlecloseout",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "blocked",
+  "verification": {
+    "commands": [],
+    "status": "blocked"
+  }
+}

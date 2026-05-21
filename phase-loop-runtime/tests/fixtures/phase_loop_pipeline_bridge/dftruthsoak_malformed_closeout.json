@@ -1,0 +1,30 @@
+{
+  "automation": {
+    "human_required": false,
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_bridge"
+    ],
+    "status": "passed"
+  }
+}

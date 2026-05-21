@@ -1,0 +1,62 @@
+{
+  "schema": "phase-loop-harness-policy-fixture.v1",
+  "routes": [
+    {
+      "executor": "pi",
+      "case": "simple_bounded_lane_default",
+      "fallback_reason": null,
+      "requires_explicit_selection": false
+    },
+    {
+      "executor": "claude",
+      "case": "claude_model_exception",
+      "fallback_reason": null,
+      "requires_explicit_selection": false
+    },
+    {
+      "executor": "codex",
+      "case": "codex_cli_fallback",
+      "fallback_reason": "operator_selected_codex_cli_fallback",
+      "requires_explicit_selection": true
+    },
+    {
+      "executor": "gemini",
+      "case": "gemini_cli_fallback",
+      "fallback_reason": "operator_selected_gemini_cli_fallback",
+      "requires_explicit_selection": true
+    },
+    {
+      "executor": "opencode",
+      "case": "opencode_explicit_selection",
+      "fallback_reason": null,
+      "requires_explicit_selection": true
+    },
+    {
+      "executor": "manual",
+      "case": "manual_explicit_selection",
+      "fallback_reason": null,
+      "requires_explicit_selection": true
+    },
+    {
+      "executor": "command",
+      "case": "command_explicit_selection",
+      "fallback_reason": null,
+      "requires_explicit_selection": true
+    }
+  ],
+  "preflight_fields": [
+    "command_available",
+    "auth_surface_present",
+    "help_surface_present",
+    "promotion_status",
+    "blocker_class"
+  ],
+  "forbidden_fields": [
+    "stdout_excerpt",
+    "stderr_excerpt",
+    "api_key",
+    "raw_transcript",
+    "provider_payload",
+    "env"
+  ]
+}

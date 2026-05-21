@@ -1,0 +1,4 @@
+automation:
+  status: complete
+  verification_status: passed
+api_key=should-not-survive

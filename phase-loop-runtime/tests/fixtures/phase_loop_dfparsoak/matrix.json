@@ -1,0 +1,87 @@
+{
+  "schema": "dfparsoak_soak_matrix.v1",
+  "phase": "DFPARSOAK",
+  "wave_id": "wave-dfparsoak-001",
+  "prompt_inputs": [
+    "docs/phase-loop/dfpromptsync-contract-map.md",
+    "docs/phase-loop/dfpromptsync-readiness.md"
+  ],
+  "lanes": [
+    {
+      "lane_id": "SL-0",
+      "harness_route": "pi",
+      "model": "auto",
+      "effort": "medium",
+      "policy_source": "phase-plan",
+      "fallback_reason": "none",
+      "work_unit_kind": "lane_execute",
+      "worktree_assignment": {
+        "lane_id": "SL-0",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "isolation_mode": "git_worktree",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "changed_paths": ["docs/phase-loop/dfparsoak-source-map.md"]
+    },
+    {
+      "lane_id": "SL-1",
+      "harness_route": "claude",
+      "model": "claude-opus-4-7",
+      "effort": "high",
+      "policy_source": "phase-plan",
+      "fallback_reason": "claude_code_cli_exception",
+      "work_unit_kind": "lane_execute",
+      "worktree_assignment": {
+        "lane_id": "SL-1",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "isolation_mode": "git_worktree",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "changed_paths": ["vendor/phase-loop-runtime/tests/test_phase_loop_lane_harnesses.py"]
+    },
+    {
+      "lane_id": "SL-2",
+      "harness_route": "codex",
+      "model": "gpt-5.5",
+      "effort": "high",
+      "policy_source": "phase-plan",
+      "fallback_reason": "codex_cli_fallback",
+      "work_unit_kind": "lane_execute",
+      "worktree_assignment": {
+        "lane_id": "SL-2",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "isolation_mode": "git_worktree",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "changed_paths": ["vendor/phase-loop-runtime/src/phase_loop_runtime/injection.py"]
+    },
+    {
+      "lane_id": "SL-3",
+      "harness_route": "gemini",
+      "model": "auto",
+      "effort": "medium",
+      "policy_source": "phase-plan",
+      "fallback_reason": "gemini_cli_fallback",
+      "work_unit_kind": "phase_reducer",
+      "worktree_assignment": {
+        "lane_id": "SL-3",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "isolation_mode": "git_worktree",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "changed_paths": ["docs/phase-loop/dfparsoak-receipt.md"]
+    }
+  ],
+  "expectations": {
+    "overlap_rejection": "overlapping writable ownership blocks concurrent launch",
+    "stale_base_rejection": "base SHA mismatch blocks before child launch",
+    "redacted_evidence_refs": "evidence is represented by artifact refs and sha256 digests only",
+    "prompt_sync_freshness": "prompt inputs are the DFPROMPTSYNC contract map and readiness receipt"
+  },
+  "evidence_refs": [
+    {
+      "path": ".phase-loop/runs/dfparsoak/terminal-summary.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

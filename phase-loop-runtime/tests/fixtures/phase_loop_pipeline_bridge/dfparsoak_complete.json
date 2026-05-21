@@ -1,0 +1,84 @@
+{
+  "artifacts": {
+    "artifact_paths": {},
+    "changed_paths": [
+      "docs/phase-loop/dfparsoak-receipt.md"
+    ],
+    "plan_path": "plans/phase-plan-v13-DFPARSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v13-DFPARSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "none - roadmap complete",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "lane": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changed_paths": [
+      "docs/phase-loop/dfparsoak-receipt.md"
+    ],
+    "effort": "high",
+    "evidence_refs": [
+      {
+        "path": ".phase-loop/runs/dfparsoak/terminal-summary.json",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ],
+    "fallback_reason": "codex_cli_fallback",
+    "harness_route": "codex",
+    "lane_id": "SL-2",
+    "model": "gpt-5.5",
+    "policy_source": "phase-plan",
+    "verification_status": "passed",
+    "wave_id": "wave-dfparsoak-001",
+    "work_unit_kind": "lane_execute",
+    "worktree_isolation_mode": "git_worktree",
+    "worktree_path": "<WORKTREE-PATH-REDACTED>"
+  },
+  "phase": "DFPARSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfparsoak",
+    "pipeline_mode": "pipeline_optional",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "docs_source_truth_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/dfparsoak-receipt.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "status": "passed"
+  },
+  "work_unit": {
+    "kind": "lane_execute",
+    "lane_id": "SL-2",
+    "phase": "DFPARSOAK",
+    "status": "complete",
+    "work_unit_id": "DFPARSOAK.lane_execute.SL-2.1"
+  }
+}

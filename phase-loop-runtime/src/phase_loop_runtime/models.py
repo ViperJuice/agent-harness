@@ -1,0 +1,1866 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+import hashlib
+from pathlib import Path
+from typing import Any
+
+
+PHASE_STATUSES = (
+    "unplanned",
+    "planned",
+    "executing",
+    "executed",
+    "awaiting_phase_closeout",
+    "complete",
+    "blocked",
+    "unknown",
+)
+
+COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor")
+MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maintenance")
+EXECUTORS = ("codex", "claude", "gemini", "opencode", "pi", "command", "manual")
+WORK_UNIT_KINDS = (
+    "roadmap_build",
+    "phase_plan",
+    "lane_execute",
+    "lane_review",
+    "phase_reducer",
+    "phase_verify",
+    "repair",
+    "closeout",
+)
+HARNESS_WORK_UNIT_PROMPT_KINDS = (
+    "implementation",
+    "review",
+    "reducer",
+    "verify",
+    "closeout",
+)
+WORK_UNIT_STATUSES = (
+    "pending",
+    "running",
+    "complete",
+    "blocked",
+    "skipped",
+    "superseded",
+    "awaiting-closeout",
+)
+WORK_UNIT_METRIC_SCHEMA_VERSION = "work_unit_metric.v1"
+NORMALIZED_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+UNSUPPORTED_POLICY_BEHAVIORS = ("block", "fallback", "inherit_default")
+CLOSEOUT_MODES = ("manual", "commit", "push")
+PERMISSION_POSTURES = ("explicit", "permissive", "manual", "unknown")
+SUBAGENT_POSTURES = ("native", "limited", "none", "unknown")
+CLAUDE_EXECUTION_MODES = ("solo", "subagent", "agent_team")
+CLAUDE_WORKTREE_POSTURES = ("phase_loop_managed", "manual_only")
+DISPATCH_HINT_FIELDS = (
+    "preferred_executors",
+    "allowed_executors",
+    "fallback_executors",
+    "disabled_executors",
+    "required_capabilities",
+)
+DISPATCH_CAPABILITIES = (
+    "live_launch",
+    "dry_run",
+    "skill_bundle_injection",
+    "inline_instructions",
+    "context_file_instructions",
+    "manual_handoff",
+    "subagents",
+    "explicit_approval_controls",
+    "structured_output",
+)
+DISPATCH_SELECTION_PATHS = ("fixed_action_policy", "preferred", "fallback")
+DELEGATION_PRIORITIES = ("low", "normal", "high", "urgent")
+DELEGATION_STATUSES = ("approved", "denied")
+LIVE_PROOF_GATES = ("none", "disposable_proof_required", "disposable_proof_recorded")
+AUTH_PREFLIGHT_MODES = ("none", "metadata_only")
+TIMEOUT_POSTURES = ("runner_managed", "executor_managed", "unknown")
+OUTPUT_CAPTURE_FORMATS = ("combined_output", "json_stream", "terminal_summary")
+PROMOTION_STATUSES = ("live", "proof_gated", "manual_only")
+FAILURE_KINDS = ("adapter_failure", "phase_failure")
+BLOCKER_POSTURES = ("human_required", "repairable_non_human")
+OPERATOR_MATURITY_LABELS = ("live_supported", "proof_blocked", "experimental", "manual_only")
+
+BLOCKER_CLASSES = (
+    "missing_secret",
+    "account_or_billing_setup",
+    "admin_approval",
+    "destructive_operation",
+    "ambiguous_roadmap_selection",
+    "product_decision_missing",
+    "dirty_worktree_conflict",
+    "branch_sync_conflict",
+    "stalled_child_observation",
+    "repeated_verification_failure",
+    "sandbox_command_restriction",
+    "upstream_phase_unmet",
+    "contract_bug",
+    "gold_record_amendment",
+    "unretryable_external_outage",
+)
+
+LANE_IR_DIAGNOSTIC_KINDS = (
+    "cycle",
+    "overlapping_write_ownership",
+    "unsafe_concurrent_lane",
+    "stale_worktree_assignment",
+    "active_work_unit",
+    "human_required_blocked_work_unit",
+    "missing_producer_dependency",
+    "missing_owned_files",
+    "malformed_owned_files",
+    "malformed_dependencies",
+    "unsupported_lane_policy",
+    "missing_lane_sections",
+)
+
+LANE_REDUCER_KINDS = (
+    "none",
+    "acceptance_reducer",
+    "compatibility_reducer",
+    "verification_reducer",
+    "summary_reducer",
+)
+
+LANE_SCHEDULER_MODES = ("off", "serialized", "concurrent")
+LANE_WAVE_STATUSES = ("ready", "blocked", "empty")
+WORKTREE_ISOLATION_MODES = ("main_worktree", "git_worktree")
+DIRTY_PATH_CLASSIFICATIONS = (
+    "pre_existing",
+    "lane_owned",
+    "peer_owned",
+    "reducer_owned",
+    "unowned",
+)
+PIPELINE_MODE_LITERALS = ("standalone", "pipeline_optional", "pipeline_required")
+PIPELINE_PROTECTED_SOURCE_CATEGORIES = (
+    "specs",
+    "diagrams",
+    "adapter_config",
+    "definition_files",
+    "portal_contracts",
+    "phase_artifacts",
+)
+PIPELINE_PROTECTED_SOURCE_ROLES = (
+    "seed_spec",
+    "predecessor_spec",
+    "active_canonical_spec",
+    "archived_spec",
+    "managed_mirror_file",
+    "unmanaged_spec_input",
+    "legacy_specs_bundle",
+    "root_specs_intake",
+    "pipeline_specs_canonical",
+    "adapter_configured_intake_root",
+    "mirror_manifest",
+    "archive_manifest",
+)
+PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES = ("protected",)
+PIPELINE_METADATA_DIAGNOSTIC_KINDS = (
+    "invalid_pipeline_mode",
+    "missing_source_bundle",
+    "missing_source_bundle_sha256",
+    "missing_source_bundle_file",
+    "mismatched_source_bundle_sha256",
+    "malformed_source_bundle",
+    "unknown_phase_id",
+    "missing_protected_source_entries",
+    "missing_protected_source_file",
+    "mismatched_protected_source_sha256",
+)
+PHASE_SOURCE_BUNDLE_SCHEMA = "phase-source-bundle.v1"
+PIPELINE_CLOSEOUT_SCHEMA = "phase_loop_closeout.v1"
+PIPELINE_CLOSEOUT_OUTCOMES = (
+    "complete",
+    "blocked",
+    "stale_input",
+    "failed_verification",
+    "human_required",
+)
+CHANGED_PATH_CATEGORIES = (
+    "code",
+    "tests",
+    "docs",
+    "specs",
+    "active_canonical_spec",
+    "managed_root_mirror_spec",
+    "mirror_manifest",
+    "archive_manifest",
+    "archived_spec",
+    "unmanaged_spec",
+    "pipeline_sources",
+    "portal_contract_refs",
+    "greenfield_authority_refs",
+    "unknown",
+)
+CANONICAL_REFRESH_REASON_CODES = (
+    "docs_source_truth_touched",
+    "specs_source_truth_touched",
+    "active_specs_touched",
+    "managed_mirror_specs_touched",
+    "mirror_manifests_touched",
+    "archive_manifests_touched",
+    "archived_specs_touched",
+    "unmanaged_specs_touched",
+    "adoption_contracts_touched",
+    "contract_refs_touched",
+    "pipeline_sources_touched",
+    "portal_contract_refs_touched",
+    "greenfield_authority_refs_touched",
+)
+REDACTION_POSTURES = ("metadata_only", "rejected_forbidden_metadata")
+
+TERMINAL_SUMMARY_FIELDS = (
+    "terminal_status",
+    "terminal_blocker",
+    "verification_status",
+    "next_action",
+    "dirty_paths",
+    "phase_owned_dirty",
+    "phase_owned_dirty_paths",
+    "unowned_dirty_paths",
+    "pre_existing_dirty_paths",
+    "artifact_paths",
+)
+
+INJECTION_MODES = ("prompt_only", "inline", "stdin", "context_file", "manual")
+PRODUCT_LOOP_ACTIONS = ("roadmap", "plan", "execute", "repair", "review", "maintain-skills")
+COMMAND_ADAPTER_SUPPORTED_ACTIONS = ("roadmap", "plan", "execute", "repair", "review")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def require_literal(value: str, allowed: tuple[str, ...], label: str) -> str:
+    if value not in allowed:
+        raise ValueError(f"invalid {label}: {value}")
+    return value
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    profile: str
+    model: str
+    effort: str
+    source: str = "default"
+    override_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.profile, MODEL_PROFILES, "model profile")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PromptBundle:
+    workflow_command: str
+    body: str
+    injection_mode: str
+    context_body: str | None = None
+    expected_skill_pack: tuple[str, ...] = ()
+    product_action: str | None = None
+    skill_bundle_id: str | None = None
+    skill_bundle_sha256: str | None = None
+    fallback_mode: str | None = None
+    context_path: str | None = None
+    recommended_installed_roots: tuple[str, ...] = ()
+    installed_skill_roots: tuple[str, ...] = ()
+    installed_skill_warnings: tuple[str, ...] = ()
+    bridge_skill_inventory: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.injection_mode, INJECTION_MODES, "injection mode")
+        if self.product_action is not None:
+            require_literal(self.product_action, PRODUCT_LOOP_ACTIONS, "product action")
+
+    def render_prompt(self) -> str:
+        body = self.body.strip()
+        if not body:
+            return self.workflow_command
+        return f"{self.workflow_command}\n\n{body}"
+
+    def render_context(self) -> str:
+        body = (self.context_body if self.context_body is not None else self.body).strip()
+        if not body:
+            return self.workflow_command
+        return f"{self.workflow_command}\n\n{body}"
+
+    def body_sha256(self) -> str:
+        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
+
+    def context_sha256(self) -> str:
+        return hashlib.sha256(self.render_context().encode("utf-8")).hexdigest()
+
+    def body_line_count(self) -> int:
+        return len(self.body.splitlines())
+
+    def body_char_count(self) -> int:
+        return len(self.body)
+
+    def context_line_count(self) -> int:
+        return len(self.render_context().splitlines())
+
+    def context_char_count(self) -> int:
+        return len(self.render_context())
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "workflow_command": self.workflow_command,
+                "injection_mode": self.injection_mode,
+                "context_sha256": self.context_sha256(),
+                "expected_skill_pack": self.expected_skill_pack,
+                "product_action": self.product_action,
+                "skill_bundle_id": self.skill_bundle_id,
+                "skill_bundle_sha256": self.skill_bundle_sha256,
+                "fallback_mode": self.fallback_mode,
+                "context_path": self.context_path,
+                "recommended_installed_roots": self.recommended_installed_roots,
+                "installed_skill_roots": self.installed_skill_roots,
+                "installed_skill_warnings": self.installed_skill_warnings,
+                "bridge_skill_inventory": self.bridge_skill_inventory,
+                "body_sha256": self.body_sha256(),
+                "body_line_count": self.body_line_count(),
+                "body_char_count": self.body_char_count(),
+                "context_line_count": self.context_line_count(),
+                "context_char_count": self.context_char_count(),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class InjectionMetadata:
+    harness_target: str
+    injection_mode: str
+    context_sha256: str | None = None
+    context_line_count: int | None = None
+    context_char_count: int | None = None
+    expected_skill_pack: tuple[str, ...] = ()
+    skill_bundle_id: str | None = None
+    skill_bundle_sha256: str | None = None
+    context_path: str | None = None
+    fallback_mode: str | None = None
+    recommended_installed_roots: tuple[str, ...] = ()
+    installed_skill_roots: tuple[str, ...] = ()
+    installed_skill_warnings: tuple[str, ...] = ()
+    bridge_skill_inventory: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.harness_target, EXECUTORS, "harness target")
+        require_literal(self.injection_mode, INJECTION_MODES, "injection mode")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class DispatchHints:
+    preferred_executors: tuple[str, ...] = ()
+    allowed_executors: tuple[str, ...] = ()
+    fallback_executors: tuple[str, ...] = ()
+    disabled_executors: tuple[str, ...] = ()
+    required_capabilities: tuple[str, ...] = ()
+    source: str = "default"
+    action: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "preferred_executors",
+            "allowed_executors",
+            "fallback_executors",
+            "disabled_executors",
+        ):
+            values = getattr(self, field_name)
+            for value in values:
+                require_literal(value, EXECUTORS, field_name)
+        for capability in self.required_capabilities:
+            require_literal(capability, DISPATCH_CAPABILITIES, "required capability")
+        if self.action is not None:
+            require_literal(self.action, PRODUCT_LOOP_ACTIONS, "product action")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+    def is_empty(self) -> bool:
+        return not any(getattr(self, field_name) for field_name in DISPATCH_HINT_FIELDS)
+
+
+@dataclass(frozen=True)
+class ProviderPolicyCapability:
+    provider: str
+    executor: str
+    supported_work_units: tuple[str, ...]
+    supported_efforts: tuple[str, ...]
+    unsupported_policy_behavior: str = "block"
+    named_fallback: str | None = None
+    default_effort: str | None = None
+    effort_map: dict[str, str] = field(default_factory=dict)
+    model_aliases: dict[str, str] = field(default_factory=dict)
+    requires_run_local_user_scope: bool = False
+    notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.executor, EXECUTORS, "executor")
+        for work_unit in self.supported_work_units:
+            require_literal(work_unit, WORK_UNIT_KINDS, "work-unit kind")
+        for effort in self.supported_efforts:
+            require_literal(effort, NORMALIZED_EFFORT_LEVELS, "normalized effort")
+        require_literal(self.unsupported_policy_behavior, UNSUPPORTED_POLICY_BEHAVIORS, "unsupported policy behavior")
+        if self.default_effort is not None:
+            require_literal(self.default_effort, NORMALIZED_EFFORT_LEVELS, "default effort")
+        for effort in self.effort_map:
+            require_literal(effort, NORMALIZED_EFFORT_LEVELS, "effort map key")
+            require_literal(self.effort_map[effort], NORMALIZED_EFFORT_LEVELS, "effort map value")
+        for work_unit in self.model_aliases:
+            require_literal(work_unit, WORK_UNIT_KINDS, "model alias work-unit kind")
+        if self.unsupported_policy_behavior == "fallback" and not self.named_fallback:
+            raise ValueError("unsupported fallback policy requires named_fallback")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class WorkUnitPolicy:
+    work_unit_kind: str
+    effort: str | None = None
+    unsupported_policy_behavior: str = "block"
+    fallback: str | None = None
+    inherit_default: bool = False
+
+    def __post_init__(self) -> None:
+        require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "work-unit kind")
+        if self.effort is not None:
+            require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "normalized effort")
+        require_literal(self.unsupported_policy_behavior, UNSUPPORTED_POLICY_BEHAVIORS, "unsupported policy behavior")
+        if self.unsupported_policy_behavior == "fallback" and not self.fallback:
+            raise ValueError("unsupported fallback policy requires fallback")
+        if self.unsupported_policy_behavior == "inherit_default" and not self.inherit_default:
+            raise ValueError("inherit_default policy must set inherit_default")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ExecutionPolicyRule:
+    selector: str = "default"
+    action: str | None = None
+    lane: str | None = None
+    executor: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    work_unit_kind: str | None = None
+    unsupported_policy_behavior: str = "block"
+    fallback: str | None = None
+    inherit_default: bool = False
+    source: str = "default"
+    override_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.action is not None:
+            require_literal(self.action, PRODUCT_LOOP_ACTIONS, "execution policy action")
+        if self.executor is not None:
+            require_literal(self.executor, EXECUTORS, "execution policy executor")
+        if self.effort is not None:
+            require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "execution policy effort")
+        if self.work_unit_kind is not None:
+            require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "execution policy work-unit kind")
+        require_literal(self.unsupported_policy_behavior, UNSUPPORTED_POLICY_BEHAVIORS, "unsupported policy behavior")
+        if self.model is not None and not self.model.strip():
+            raise ValueError("execution policy model must not be empty")
+        if self.unsupported_policy_behavior == "fallback" and not self.fallback:
+            raise ValueError("execution policy fallback requires fallback")
+        if self.unsupported_policy_behavior == "inherit_default" and not self.inherit_default:
+            raise ValueError("execution policy inherit_default requires inherit_default")
+
+    def work_unit_policy(self) -> WorkUnitPolicy | None:
+        if self.work_unit_kind is None:
+            return None
+        return WorkUnitPolicy(
+            work_unit_kind=self.work_unit_kind,
+            effort=self.effort,
+            unsupported_policy_behavior=self.unsupported_policy_behavior,
+            fallback=self.fallback,
+            inherit_default=self.inherit_default,
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ExecutionPolicyParseError:
+    path: str
+    line_number: int
+    raw_line: str
+    detail: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"path": self.path, "line_number": self.line_number, "raw_line": self.raw_line, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class ExecutionPolicyDocument:
+    rules: tuple[ExecutionPolicyRule, ...] = ()
+    source: str = "default"
+    parse_error: ExecutionPolicyParseError | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"source": self.source, "rules": tuple(rule.to_json() for rule in self.rules)}
+        if self.parse_error is not None:
+            payload["parse_error"] = self.parse_error.to_json()
+        return clean_dict(payload)
+
+    def is_empty(self) -> bool:
+        return not self.rules
+
+
+@dataclass(frozen=True)
+class PipelinePlanMetadata:
+    source_bundle: str | None = None
+    source_bundle_sha256: str | None = None
+    pipeline_phase_id: str | None = None
+    pipeline_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.pipeline_mode is not None:
+            require_literal(self.pipeline_mode, PIPELINE_MODE_LITERALS, "pipeline mode")
+
+    @property
+    def required(self) -> bool:
+        return self.pipeline_mode == "pipeline_required"
+
+    @property
+    def empty(self) -> bool:
+        return not any((self.source_bundle, self.source_bundle_sha256, self.pipeline_phase_id, self.pipeline_mode))
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PipelineProtectedSource:
+    path: str
+    category: str
+    sha256: str | None = None
+    role: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ValueError("protected source path must not be empty")
+        require_literal(self.category, PIPELINE_PROTECTED_SOURCE_CATEGORIES, "protected source category")
+        if self.role is not None and self.role not in PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES:
+            require_literal(self.role, PIPELINE_PROTECTED_SOURCE_ROLES, "protected source role")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PipelineMetadataDiagnostic:
+    kind: str
+    message: str
+    metadata: PipelinePlanMetadata | None = None
+    expected_sha256: str | None = None
+    actual_sha256: str | None = None
+    blocker_class: str = "contract_bug"
+    human_required: bool = False
+
+    def __post_init__(self) -> None:
+        require_literal(self.kind, PIPELINE_METADATA_DIAGNOSTIC_KINDS, "pipeline metadata diagnostic")
+        require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "kind": self.kind,
+                "message": self.message,
+                "metadata": self.metadata.to_json() if self.metadata else None,
+                "expected_sha256": self.expected_sha256,
+                "actual_sha256": self.actual_sha256,
+                "blocker_class": self.blocker_class,
+                "human_required": self.human_required,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class PhaseSourceBundle:
+    path: str
+    sha256: str
+    phase_id: str
+    phase_alias: str
+    phase_plan_path: str
+    roadmap_path: str
+    roadmap_sha256: str
+    protected_sources: tuple[PipelineProtectedSource, ...]
+    delegated_write_policy: dict[str, Any] = field(default_factory=dict)
+    source_files: tuple[dict[str, Any], ...] = ()
+    artifact_target_root: str | None = None
+    freshness: dict[str, Any] = field(default_factory=dict)
+    pipeline_mode: str = "pipeline_optional"
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ValueError("source bundle path must not be empty")
+        if not self.sha256.strip():
+            raise ValueError("source bundle sha256 must not be empty")
+        if not self.phase_id.strip():
+            raise ValueError("source bundle phase_id must not be empty")
+        if not self.phase_alias.strip():
+            raise ValueError("source bundle phase_alias must not be empty")
+        require_literal(self.pipeline_mode, PIPELINE_MODE_LITERALS, "pipeline mode")
+
+    def plan_metadata(self) -> PipelinePlanMetadata:
+        return PipelinePlanMetadata(
+            source_bundle=self.path,
+            source_bundle_sha256=self.sha256,
+            pipeline_phase_id=self.phase_id,
+            pipeline_mode=self.pipeline_mode,
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "path": self.path,
+                "sha256": self.sha256,
+                "phase_id": self.phase_id,
+                "phase_alias": self.phase_alias,
+                "phase_plan_path": self.phase_plan_path,
+                "roadmap_path": self.roadmap_path,
+                "roadmap_sha256": self.roadmap_sha256,
+                "protected_sources": tuple(source.to_json() for source in self.protected_sources),
+                "delegated_write_policy": self.delegated_write_policy,
+                "source_files": self.source_files,
+                "artifact_target_root": self.artifact_target_root,
+                "freshness": self.freshness,
+                "pipeline_mode": self.pipeline_mode,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class PhaseLoopAutomation:
+    status: str
+    next_skill: str | None = None
+    next_command: str | None = None
+    next_model_hint: str | None = None
+    next_effort_hint: str | None = None
+    human_required: bool = False
+    blocker_class: str | None = None
+    blocker_summary: str | None = None
+    required_human_inputs: tuple[str, ...] = ()
+    verification_status: str = "not_run"
+    artifact: str | None = None
+    artifact_state: str | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, PHASE_STATUSES, "automation status")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "automation blocker class")
+        if self.next_effort_hint is not None:
+            require_literal(self.next_effort_hint, NORMALIZED_EFFORT_LEVELS, "automation effort hint")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseLoopArtifacts:
+    plan_path: str
+    plan_sha256: str
+    artifact_paths: dict[str, str] = field(default_factory=dict)
+    changed_paths: tuple[str, ...] = ()
+    evidence_refs: tuple[dict[str, Any], ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseLoopVerification:
+    status: str
+    commands: tuple[str, ...] = ()
+    results: tuple[dict[str, Any], ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseLoopBlocker:
+    human_required: bool = False
+    blocker_class: str | None = None
+    blocker_summary: str | None = None
+    required_human_inputs: tuple[str, ...] = ()
+    access_attempts: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseLoopSourceBundle:
+    path: str | None = None
+    sha256: str | None = None
+    phase_id: str | None = None
+    pipeline_mode: str = "standalone"
+    protected_sources: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.pipeline_mode, PIPELINE_MODE_LITERALS, "pipeline mode")
+
+    def to_json(self) -> dict[str, Any]:
+        data = {
+            "path": self.path,
+            "sha256": self.sha256,
+            "phase_id": self.phase_id,
+            "pipeline_mode": self.pipeline_mode,
+            "protected_sources": self.protected_sources or None,
+        }
+        return clean_dict(data)
+
+
+@dataclass(frozen=True)
+class SourceTruthImpact:
+    changed_path_boundaries: tuple[dict[str, str], ...] = ()
+    canonical_refresh_recommended: bool = False
+    canonical_refresh_reason_codes: tuple[str, ...] = ()
+    redaction_posture: str = "metadata_only"
+
+    def __post_init__(self) -> None:
+        require_literal(self.redaction_posture, REDACTION_POSTURES, "redaction posture")
+        for boundary in self.changed_path_boundaries:
+            require_literal(str(boundary.get("category")), CHANGED_PATH_CATEGORIES, "changed path category")
+        for reason in self.canonical_refresh_reason_codes:
+            require_literal(reason, CANONICAL_REFRESH_REASON_CODES, "canonical refresh reason code")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseLoopCloseout:
+    phase: str
+    terminal_status: str
+    automation: PhaseLoopAutomation
+    artifacts: PhaseLoopArtifacts
+    verification: PhaseLoopVerification
+    blocker: PhaseLoopBlocker
+    source_bundle: PhaseLoopSourceBundle
+    source_truth_impact: SourceTruthImpact | None = None
+    schema: str = PIPELINE_CLOSEOUT_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != PIPELINE_CLOSEOUT_SCHEMA:
+            raise ValueError(f"invalid closeout schema: {self.schema}")
+        require_literal(self.terminal_status, PIPELINE_CLOSEOUT_OUTCOMES, "terminal status")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "schema": self.schema,
+                "phase": self.phase,
+                "terminal_status": self.terminal_status,
+                "automation": self.automation.to_json(),
+                "artifacts": self.artifacts.to_json(),
+                "verification": self.verification.to_json(),
+                "blocker": self.blocker.to_json(),
+                "source_bundle": self.source_bundle.to_json(),
+                "source_truth_impact": self.source_truth_impact.to_json() if self.source_truth_impact else None,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class WorkUnitIdentity:
+    phase: str
+    kind: str
+    lane_id: str
+    attempt: int
+
+    def __post_init__(self) -> None:
+        require_literal(self.kind, WORK_UNIT_KINDS, "work-unit kind")
+        if not self.phase.strip():
+            raise ValueError("work-unit phase must not be empty")
+        if not self.lane_id.strip():
+            raise ValueError("work-unit lane id must not be empty")
+        if self.attempt < 1:
+            raise ValueError("work-unit attempt must be positive")
+
+    @property
+    def work_unit_id(self) -> str:
+        return f"{self.phase}.{self.kind}.{self.lane_id}.{self.attempt}"
+
+    @classmethod
+    def from_id(cls, work_unit_id: str) -> "WorkUnitIdentity":
+        parts = work_unit_id.split(".")
+        if len(parts) < 4:
+            raise ValueError(f"invalid work-unit id: {work_unit_id}")
+        phase = parts[0]
+        kind = parts[1]
+        lane_id = ".".join(parts[2:-1])
+        try:
+            attempt = int(parts[-1])
+        except ValueError as exc:
+            raise ValueError(f"invalid work-unit attempt: {parts[-1]}") from exc
+        return cls(phase=phase, kind=kind, lane_id=lane_id, attempt=attempt)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "WorkUnitIdentity":
+        if data.get("work_unit_id") and not all(key in data for key in ("phase", "kind", "lane_id", "attempt")):
+            return cls.from_id(str(data["work_unit_id"]))
+        return cls(
+            phase=str(data["phase"]),
+            kind=str(data["kind"]),
+            lane_id=str(data["lane_id"]),
+            attempt=int(data["attempt"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict({**asdict(self), "work_unit_id": self.work_unit_id})
+
+
+@dataclass(frozen=True)
+class WorkUnitAttempt:
+    identity: WorkUnitIdentity
+    status: str = "pending"
+    parent_phase_event_id: str | None = None
+    policy: dict[str, Any] = field(default_factory=dict)
+    artifacts: dict[str, str] = field(default_factory=dict)
+    started_at: str | None = None
+    finished_at: str | None = None
+    heartbeat_path: str | None = None
+    terminal_summary_path: str | None = None
+    retry_of: str | None = None
+    superseded_by: str | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, WORK_UNIT_STATUSES, "work-unit status")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "identity": self.identity.to_json(),
+                "status": self.status,
+                "parent_phase_event_id": self.parent_phase_event_id,
+                "policy": self.policy,
+                "artifacts": self.artifacts,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+                "heartbeat_path": self.heartbeat_path,
+                "terminal_summary_path": self.terminal_summary_path,
+                "retry_of": self.retry_of,
+                "superseded_by": self.superseded_by,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class WorkUnitCloseout:
+    identity: WorkUnitIdentity
+    status: str
+    automation: dict[str, Any] = field(default_factory=dict)
+    terminal_summary: dict[str, Any] = field(default_factory=dict)
+    closeout_summary: dict[str, Any] = field(default_factory=dict)
+    wave_id: str | None = None
+    worktree_path: str | None = None
+    changed_paths: tuple[str, ...] = ()
+    verification_status: str | None = None
+    evidence_refs: tuple[dict[str, Any], ...] = ()
+    human_required: bool = False
+    blocker_class: str | None = None
+    blocker_summary: str | None = None
+    required_human_inputs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, WORK_UNIT_STATUSES, "work-unit status")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "identity": self.identity.to_json(),
+                "status": self.status,
+                "automation": self.automation,
+                "terminal_summary": self.terminal_summary,
+                "closeout_summary": self.closeout_summary,
+                "wave_id": self.wave_id,
+                "worktree_path": self.worktree_path,
+                "changed_paths": self.changed_paths,
+                "verification_status": self.verification_status,
+                "evidence_refs": self.evidence_refs,
+                "human_required": self.human_required,
+                "blocker_class": self.blocker_class,
+                "blocker_summary": self.blocker_summary,
+                "required_human_inputs": self.required_human_inputs,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class WorkUnitEventMetadata:
+    identity: WorkUnitIdentity
+    status: str
+    event_type: str = "status"
+    timestamp: str = field(default_factory=utc_now)
+    launch_metadata: dict[str, Any] = field(default_factory=dict)
+    heartbeat_path: str | None = None
+    terminal_summary_path: str | None = None
+    closeout_summary: dict[str, Any] = field(default_factory=dict)
+    retry_of: str | None = None
+    superseded_by: str | None = None
+    blocker: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, WORK_UNIT_STATUSES, "work-unit status")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "event_kind": "work_unit",
+                "event_type": self.event_type,
+                "timestamp": self.timestamp,
+                "work_unit": {
+                    **self.identity.to_json(),
+                    "status": self.status,
+                    "launch_metadata": self.launch_metadata,
+                    "heartbeat_path": self.heartbeat_path,
+                    "terminal_summary_path": self.terminal_summary_path,
+                    "closeout_summary": self.closeout_summary,
+                    "retry_of": self.retry_of,
+                    "superseded_by": self.superseded_by,
+                    "blocker": self.blocker,
+                },
+            }
+        )
+
+
+@dataclass(frozen=True)
+class WorkUnitState:
+    identity: WorkUnitIdentity
+    status: str = "pending"
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    parent_phase_event_id: str | None = None
+    policy: dict[str, Any] = field(default_factory=dict)
+    artifacts: dict[str, str] = field(default_factory=dict)
+    heartbeat_path: str | None = None
+    terminal_summary_path: str | None = None
+    closeout_summary: dict[str, Any] = field(default_factory=dict)
+    retry_of: str | None = None
+    superseded_by: str | None = None
+    blocker: dict[str, Any] | None = None
+    human_required: bool = False
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, WORK_UNIT_STATUSES, "work-unit status")
+
+    @property
+    def work_unit_id(self) -> str:
+        return self.identity.work_unit_id
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "WorkUnitState":
+        identity_data = data.get("identity") if isinstance(data.get("identity"), dict) else data
+        identity = WorkUnitIdentity.from_json(identity_data)
+        return cls(
+            identity=identity,
+            status=str(data.get("status", "pending")),
+            created_at=str(data.get("created_at") or utc_now()),
+            updated_at=str(data.get("updated_at") or data.get("created_at") or utc_now()),
+            parent_phase_event_id=data.get("parent_phase_event_id"),
+            policy=dict(data.get("policy", {})) if isinstance(data.get("policy"), dict) else {},
+            artifacts={str(k): str(v) for k, v in dict(data.get("artifacts", {})).items()} if isinstance(data.get("artifacts"), dict) else {},
+            heartbeat_path=data.get("heartbeat_path"),
+            terminal_summary_path=data.get("terminal_summary_path"),
+            closeout_summary=dict(data.get("closeout_summary", {})) if isinstance(data.get("closeout_summary"), dict) else {},
+            retry_of=data.get("retry_of"),
+            superseded_by=data.get("superseded_by"),
+            blocker=dict(data.get("blocker")) if isinstance(data.get("blocker"), dict) else None,
+            human_required=bool(data.get("human_required", False)),
+        )
+
+    def with_status(self, status: str, **updates: Any) -> "WorkUnitState":
+        require_literal(status, WORK_UNIT_STATUSES, "work-unit status")
+        data = {**asdict(self), **updates, "status": status, "updated_at": updates.get("updated_at", utc_now())}
+        data["identity"] = self.identity
+        return WorkUnitState(**data)
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "identity": self.identity.to_json(),
+                "work_unit_id": self.work_unit_id,
+                "status": self.status,
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
+                "parent_phase_event_id": self.parent_phase_event_id,
+                "policy": self.policy,
+                "artifacts": self.artifacts,
+                "heartbeat_path": self.heartbeat_path,
+                "terminal_summary_path": self.terminal_summary_path,
+                "closeout_summary": self.closeout_summary,
+                "retry_of": self.retry_of,
+                "superseded_by": self.superseded_by,
+                "blocker": self.blocker,
+                "human_required": self.human_required,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class LaneDependency:
+    source_lane_id: str
+    target_lane_id: str
+    relation: str = "depends_on"
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class LaneTaskSet:
+    test: tuple[str, ...] = ()
+    impl: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+    other: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class LaneIRDiagnostic:
+    kind: str
+    message: str
+    lane_id: str | None = None
+    blocker_class: str = "contract_bug"
+    human_required: bool = False
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        require_literal(self.kind, LANE_IR_DIAGNOSTIC_KINDS, "lane IR diagnostic kind")
+        require_literal(self.blocker_class, BLOCKER_CLASSES, "lane IR blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhasePlanLane:
+    lane_id: str
+    name: str
+    heading: str
+    owned_files: tuple[str, ...] = ()
+    read_only: bool = False
+    depends_on: tuple[str, ...] = ()
+    blocks: tuple[str, ...] = ()
+    interfaces_provided: tuple[str, ...] = ()
+    interfaces_consumed: tuple[str, ...] = ()
+    tasks: LaneTaskSet = field(default_factory=LaneTaskSet)
+    verification_commands: tuple[str, ...] = ()
+    parallel_safe: bool = False
+    reducer_kind: str = "none"
+    execution_policy: ExecutionPolicyRule | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.reducer_kind, LANE_REDUCER_KINDS, "lane reducer kind")
+
+    def to_json(self) -> dict[str, Any]:
+        data = asdict(self)
+        if self.execution_policy is not None:
+            data["execution_policy"] = self.execution_policy.to_json()
+        return clean_dict(data)
+
+
+@dataclass(frozen=True)
+class PhasePlanIR:
+    plan_path: str
+    metadata: dict[str, str]
+    lanes: tuple[PhasePlanLane, ...] = ()
+    dependencies: tuple[LaneDependency, ...] = ()
+    diagnostics: tuple[LaneIRDiagnostic, ...] = ()
+    execution_policy: ExecutionPolicyDocument | None = None
+    dispatch_hints: dict[str, DispatchHints] = field(default_factory=dict)
+
+    @property
+    def valid(self) -> bool:
+        return not self.diagnostics
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "plan_path": self.plan_path,
+                "metadata": self.metadata,
+                "lanes": tuple(lane.to_json() for lane in self.lanes),
+                "dependencies": tuple(dependency.to_json() for dependency in self.dependencies),
+                "diagnostics": tuple(diagnostic.to_json() for diagnostic in self.diagnostics),
+                "execution_policy": self.execution_policy.to_json() if self.execution_policy else None,
+                "dispatch_hints": {
+                    key: value.to_json() for key, value in self.dispatch_hints.items()
+                },
+            }
+        )
+
+
+@dataclass(frozen=True)
+class LaneWorktreeAssignment:
+    lane_id: str
+    worktree_path: str
+    isolation_mode: str = "main_worktree"
+    branch: str | None = None
+    base_sha: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.lane_id.strip():
+            raise ValueError("lane worktree assignment lane_id must not be empty")
+        if not self.worktree_path.strip():
+            raise ValueError("lane worktree assignment worktree_path must not be empty")
+        require_literal(self.isolation_mode, WORKTREE_ISOLATION_MODES, "worktree isolation mode")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class LaneWave:
+    wave_id: str
+    lane_ids: tuple[str, ...]
+    mode: str = "serialized"
+    assignments: tuple[LaneWorktreeAssignment, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.wave_id.strip():
+            raise ValueError("lane wave id must not be empty")
+        require_literal(self.mode, LANE_SCHEDULER_MODES, "lane scheduler mode")
+        if self.mode == "off":
+            raise ValueError("lane wave mode cannot be off")
+        if not self.lane_ids:
+            raise ValueError("lane wave must include at least one lane")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "wave_id": self.wave_id,
+                "lane_ids": self.lane_ids,
+                "mode": self.mode,
+                "assignments": tuple(assignment.to_json() for assignment in self.assignments),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class LaneWaveDecision:
+    status: str
+    mode: str
+    ready_wave: LaneWave | None = None
+    pending_lane_ids: tuple[str, ...] = ()
+    completed_lane_ids: tuple[str, ...] = ()
+    blocked_lane_ids: tuple[str, ...] = ()
+    diagnostics: tuple[LaneIRDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, LANE_WAVE_STATUSES, "lane wave status")
+        require_literal(self.mode, LANE_SCHEDULER_MODES, "lane scheduler mode")
+        if self.status == "ready" and self.ready_wave is None:
+            raise ValueError("ready lane wave decision requires ready_wave")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "status": self.status,
+                "mode": self.mode,
+                "ready_wave": self.ready_wave.to_json() if self.ready_wave else None,
+                "pending_lane_ids": self.pending_lane_ids,
+                "completed_lane_ids": self.completed_lane_ids,
+                "blocked_lane_ids": self.blocked_lane_ids,
+                "diagnostics": tuple(diagnostic.to_json() for diagnostic in self.diagnostics),
+            }
+        )
+
+
+HARNESS_CLOSEOUT_REQUIRED_FIELDS = (
+    "automation.status",
+    "automation.next_skill",
+    "automation.next_command",
+    "automation.human_required",
+    "automation.blocker_class",
+    "automation.verification_status",
+)
+
+
+@dataclass(frozen=True)
+class HarnessLaneAssignment:
+    phase: str
+    lane_id: str
+    work_unit_kind: str
+    prompt_kind: str = "implementation"
+    wave_id: str | None = None
+    owned_files: tuple[str, ...] = ()
+    read_only_refs: tuple[str, ...] = ()
+    consumed_interfaces: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+    execution_policy: dict[str, Any] = field(default_factory=dict)
+    worktree_assignment: LaneWorktreeAssignment | None = None
+    harness_route: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    fallback_reason: str | None = None
+    closeout_schema_required: tuple[str, ...] = HARNESS_CLOSEOUT_REQUIRED_FIELDS
+    reducer_kind: str = "none"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.phase.strip():
+            raise ValueError("harness lane assignment phase must not be empty")
+        if not self.lane_id.strip():
+            raise ValueError("harness lane assignment lane_id must not be empty")
+        require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "harness work-unit kind")
+        require_literal(self.prompt_kind, HARNESS_WORK_UNIT_PROMPT_KINDS, "harness prompt kind")
+        require_literal(self.reducer_kind, LANE_REDUCER_KINDS, "lane reducer kind")
+        if self.work_unit_kind in {"lane_execute", "lane_review"} and not self.owned_files:
+            raise ValueError("harness lane assignment requires owned_files for lane work")
+
+    @classmethod
+    def from_lane(
+        cls,
+        *,
+        phase: str,
+        lane: PhasePlanLane,
+        work_unit_kind: str = "lane_execute",
+        prompt_kind: str = "implementation",
+        worktree_assignment: LaneWorktreeAssignment | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "HarnessLaneAssignment":
+        return cls(
+            phase=phase,
+            lane_id=lane.lane_id,
+            work_unit_kind=work_unit_kind,
+            prompt_kind=prompt_kind,
+            owned_files=lane.owned_files,
+            read_only_refs=lane.interfaces_consumed,
+            consumed_interfaces=lane.interfaces_consumed,
+            depends_on=lane.depends_on,
+            execution_policy=lane.execution_policy.to_json() if lane.execution_policy else {},
+            worktree_assignment=worktree_assignment,
+            reducer_kind=lane.reducer_kind,
+            metadata=dict(metadata or {}),
+        )
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "HarnessLaneAssignment":
+        assignment_data = data.get("worktree_assignment")
+        return cls(
+            phase=str(data.get("phase") or ""),
+            lane_id=str(data.get("lane_id") or ""),
+            work_unit_kind=str(data.get("work_unit_kind") or ""),
+            prompt_kind=str(data.get("prompt_kind") or "implementation"),
+            wave_id=data.get("wave_id"),
+            owned_files=tuple(str(item) for item in data.get("owned_files") or ()),
+            read_only_refs=tuple(str(item) for item in data.get("read_only_refs") or ()),
+            consumed_interfaces=tuple(str(item) for item in data.get("consumed_interfaces") or ()),
+            depends_on=tuple(str(item) for item in data.get("depends_on") or ()),
+            execution_policy=dict(data.get("execution_policy") or {}),
+            worktree_assignment=(
+                LaneWorktreeAssignment(
+                    lane_id=str(assignment_data.get("lane_id") or ""),
+                    worktree_path=str(assignment_data.get("worktree_path") or ""),
+                    isolation_mode=str(assignment_data.get("isolation_mode") or "main_worktree"),
+                    branch=assignment_data.get("branch"),
+                    base_sha=assignment_data.get("base_sha"),
+                )
+                if isinstance(assignment_data, dict)
+                else None
+            ),
+            harness_route=data.get("harness_route"),
+            model=data.get("model"),
+            effort=data.get("effort"),
+            fallback_reason=data.get("fallback_reason"),
+            closeout_schema_required=tuple(str(item) for item in data.get("closeout_schema_required") or HARNESS_CLOSEOUT_REQUIRED_FIELDS),
+            reducer_kind=str(data.get("reducer_kind") or "none"),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "phase": self.phase,
+                "lane_id": self.lane_id,
+                "work_unit_kind": self.work_unit_kind,
+                "prompt_kind": self.prompt_kind,
+                "wave_id": self.wave_id,
+                "owned_files": self.owned_files,
+                "read_only_refs": self.read_only_refs,
+                "consumed_interfaces": self.consumed_interfaces,
+                "depends_on": self.depends_on,
+                "execution_policy": self.execution_policy,
+                "worktree_assignment": self.worktree_assignment.to_json() if self.worktree_assignment else None,
+                "harness_route": self.harness_route,
+                "model": self.model,
+                "effort": self.effort,
+                "fallback_reason": self.fallback_reason,
+                "closeout_schema_required": self.closeout_schema_required,
+                "reducer_kind": self.reducer_kind,
+                "metadata": self.metadata,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class DirtyPathClassification:
+    path: str
+    classification: str
+    lane_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ValueError("dirty path classification path must not be empty")
+        require_literal(self.classification, DIRTY_PATH_CLASSIFICATIONS, "dirty path classification")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ResolvedExecutionPolicy:
+    action: str
+    lane: str | None
+    executor: str
+    model: str
+    effort: str
+    work_unit_kind: str
+    fallback: str | None = None
+    unsupported_policy_behavior: str = "block"
+    execution_policy_source: str = "registry defaults"
+    execution_policy_override_reason: str | None = None
+    executor_source: str = "registry defaults"
+    model_source: str = "registry defaults"
+    effort_source: str = "registry defaults"
+    fallback_source: str = "registry defaults"
+    fallback_applied: bool = False
+
+    def __post_init__(self) -> None:
+        require_literal(self.action, PRODUCT_LOOP_ACTIONS, "execution policy action")
+        require_literal(self.executor, EXECUTORS, "execution policy executor")
+        require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "execution policy effort")
+        require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "execution policy work-unit kind")
+        require_literal(self.unsupported_policy_behavior, UNSUPPORTED_POLICY_BEHAVIORS, "unsupported policy behavior")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class WorkUnitMetric:
+    metric_id: str
+    schema_version: str
+    timestamp: str
+    work_unit_id: str | None
+    work_unit_kind: str
+    phase: str
+    action: str
+    executor: str
+    provider: str
+    model: str
+    effort: str | None = None
+    thinking_level: str | None = None
+    lane_id: str | None = None
+    wave_id: str | None = None
+    policy_source: str | None = None
+    policy_override_reason: str | None = None
+    profile_source: str | None = None
+    fallback_applied: bool = False
+    fallback: str | None = None
+    fallback_reason: str | None = None
+    duration_seconds: float | None = None
+    returncode: int | None = None
+    terminal_status: str | None = None
+    verification_status: str | None = None
+    blocker_class: str | None = None
+    artifact_paths: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != WORK_UNIT_METRIC_SCHEMA_VERSION:
+            raise ValueError(f"invalid work-unit metric schema_version: {self.schema_version}")
+        require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "work-unit kind")
+        require_literal(self.action, PRODUCT_LOOP_ACTIONS, "metric action")
+        require_literal(self.executor, EXECUTORS, "metric executor")
+        if self.effort is not None:
+            require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "metric effort")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "metric blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ExecutorCapabilityRecord:
+    executor: str
+    supported_actions: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    strengths: tuple[str, ...] = ()
+    limits: tuple[str, ...] = ()
+    injection_mode: str = "manual"
+    permission_posture: str = "unknown"
+    subagent_posture: str = "unknown"
+    live_available: bool = False
+    dry_run_available: bool = True
+    live_proof_gate: str = "disposable_proof_required"
+    promotion_status: str = "proof_gated"
+    promotion_requirements: tuple[str, ...] = ()
+    auth_preflight_mode: str = "none"
+    auth_preflight_probes: tuple[str, ...] = ()
+    timeout_posture: str = "runner_managed"
+    output_capture_format: str = "combined_output"
+    terminal_summary_artifact: str = "terminal-summary.json"
+    default_model_profiles: dict[str, str] = field(default_factory=dict)
+    known_failure_cases: tuple[str, ...] = ()
+    default_claude_execution_mode: str | None = None
+    claude_execution_policies: tuple["ClaudeTeamPolicy", ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.executor, EXECUTORS, "executor")
+        require_literal(self.injection_mode, INJECTION_MODES, "injection mode")
+        require_literal(self.permission_posture, PERMISSION_POSTURES, "permission posture")
+        require_literal(self.subagent_posture, SUBAGENT_POSTURES, "subagent posture")
+        require_literal(self.live_proof_gate, LIVE_PROOF_GATES, "live proof gate")
+        require_literal(self.promotion_status, PROMOTION_STATUSES, "promotion status")
+        require_literal(self.auth_preflight_mode, AUTH_PREFLIGHT_MODES, "auth preflight mode")
+        require_literal(self.timeout_posture, TIMEOUT_POSTURES, "timeout posture")
+        require_literal(self.output_capture_format, OUTPUT_CAPTURE_FORMATS, "output capture format")
+        if self.default_claude_execution_mode is not None:
+            require_literal(self.default_claude_execution_mode, CLAUDE_EXECUTION_MODES, "Claude execution mode")
+        for action in self.supported_actions:
+            require_literal(action, PRODUCT_LOOP_ACTIONS, "supported action")
+        for capability in self.capabilities:
+            require_literal(capability, DISPATCH_CAPABILITIES, "capability")
+        for action, profile in self.default_model_profiles.items():
+            require_literal(action, PRODUCT_LOOP_ACTIONS, "default model profile action")
+            require_literal(profile, MODEL_PROFILES, "default model profile")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ClaudeTeamPolicy:
+    execution_mode: str
+    maturity_label: str
+    live_proof_gate: str
+    promotion_status: str
+    launch_default: bool = False
+    max_teammates: int = 0
+    max_native_tasks: int = 0
+    max_delegation_depth: int = 0
+    max_fanout: int = 0
+    default_model: str | None = None
+    default_effort: str | None = None
+    budget_guidance: dict[str, Any] = field(default_factory=dict)
+    allowed_actions: tuple[str, ...] = ()
+    disallowed_actions: tuple[str, ...] = ()
+    allowed_tools: tuple[str, ...] = ()
+    disallowed_tools: tuple[str, ...] = ()
+    worktree_posture: str = "phase_loop_managed"
+    requires_disjoint_owned_files: bool = False
+    allows_read_only_lanes: bool = True
+    direct_teammate_messaging_allowed: bool = False
+    task_lifecycle_supported: bool = False
+
+    def __post_init__(self) -> None:
+        require_literal(self.execution_mode, CLAUDE_EXECUTION_MODES, "Claude execution mode")
+        require_literal(self.maturity_label, OPERATOR_MATURITY_LABELS, "operator maturity label")
+        require_literal(self.live_proof_gate, LIVE_PROOF_GATES, "live proof gate")
+        require_literal(self.promotion_status, PROMOTION_STATUSES, "promotion status")
+        require_literal(self.worktree_posture, CLAUDE_WORKTREE_POSTURES, "Claude worktree posture")
+        for action in self.allowed_actions:
+            require_literal(action, PRODUCT_LOOP_ACTIONS, "allowed action")
+        for action in self.disallowed_actions:
+            require_literal(action, PRODUCT_LOOP_ACTIONS, "disallowed action")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PhaseTeamEligibility:
+    allowed_execution_modes: tuple[str, ...]
+    default_execution_mode: str
+    eligible_for_native_team: bool
+    has_disjoint_write_lanes: bool
+    has_only_read_only_lanes: bool
+    unmanaged_write_risk: bool
+    reason: str
+    invalid_reasons: tuple[str, ...] = ()
+    lane_summaries: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        require_literal(self.default_execution_mode, CLAUDE_EXECUTION_MODES, "default Claude execution mode")
+        for mode in self.allowed_execution_modes:
+            require_literal(mode, CLAUDE_EXECUTION_MODES, "allowed Claude execution mode")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class DispatchDecision:
+    action: str
+    selected_executor: str | None
+    source: str
+    preferred_executors: tuple[str, ...] = ()
+    allowed_executors: tuple[str, ...] = ()
+    fallback_executors: tuple[str, ...] = ()
+    disabled_executors: tuple[str, ...] = ()
+    required_capabilities: tuple[str, ...] = ()
+    considered_executors: tuple[str, ...] = ()
+    blocked_reason: str | None = None
+    blocked_summary: str | None = None
+    fallback_applied: bool = False
+    selected_via: str | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.action, PRODUCT_LOOP_ACTIONS, "product action")
+        if self.selected_executor is not None:
+            require_literal(self.selected_executor, EXECUTORS, "selected executor")
+        if self.selected_via is not None:
+            require_literal(self.selected_via, DISPATCH_SELECTION_PATHS, "dispatch selection path")
+        for field_name in (
+            "preferred_executors",
+            "allowed_executors",
+            "fallback_executors",
+            "disabled_executors",
+            "considered_executors",
+        ):
+            values = getattr(self, field_name)
+            for value in values:
+                require_literal(value, EXECUTORS, field_name)
+        for capability in self.required_capabilities:
+            require_literal(capability, DISPATCH_CAPABILITIES, "required capability")
+
+    @property
+    def blocked(self) -> bool:
+        return self.selected_executor is None
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class PermissionPolicy:
+    sandbox_mode: str
+    bypass_approvals: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class CommandAdapterConfig:
+    name: str
+    template: str
+    delivery_mode: str = "context_file"
+    supported_actions: tuple[str, ...] = COMMAND_ADAPTER_SUPPORTED_ACTIONS
+
+    def __post_init__(self) -> None:
+        require_literal(self.delivery_mode, INJECTION_MODES, "command adapter delivery mode")
+        for action in self.supported_actions:
+            require_literal(action, PRODUCT_LOOP_ACTIONS, "command adapter supported action")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class LaunchRequest:
+    executor: str
+    action: str
+    repo: Path
+    roadmap: Path
+    phase: str | None
+    plan: Path | None
+    model_selection: ModelSelection
+    prompt_bundle: PromptBundle
+    injection_metadata: InjectionMetadata
+    permission_policy: PermissionPolicy
+    command_adapter: CommandAdapterConfig | None = None
+    dispatch_decision: DispatchDecision | None = None
+    harness_lane_assignment: HarnessLaneAssignment | None = None
+    delegation_request: "DelegationRequest | None" = None
+    parent_child_metadata: "ParentChildRunMetadata | None" = None
+    claude_execution_mode: str | None = None
+    claude_team_policy: ClaudeTeamPolicy | None = None
+    phase_team_eligibility: PhaseTeamEligibility | None = None
+    json_output: bool = False
+    bypass_approvals: bool = False
+    launch_timeout_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.executor, EXECUTORS, "executor")
+        if self.claude_execution_mode is not None:
+            require_literal(self.claude_execution_mode, CLAUDE_EXECUTION_MODES, "Claude execution mode")
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "executor": self.executor,
+            "action": self.action,
+            "repo": str(self.repo),
+            "roadmap": str(self.roadmap),
+            "phase": self.phase,
+            "plan": str(self.plan) if self.plan is not None else None,
+            "model_selection": self.model_selection.to_json(),
+            "prompt_bundle": self.prompt_bundle.to_json(),
+            "injection_metadata": self.injection_metadata.to_json(),
+            "permission_policy": self.permission_policy.to_json(),
+            "command_adapter": self.command_adapter.to_json() if self.command_adapter else None,
+            "dispatch_decision": self.dispatch_decision.to_json() if self.dispatch_decision else None,
+            "harness_lane_assignment": self.harness_lane_assignment.to_json() if self.harness_lane_assignment else None,
+            "delegation_request": self.delegation_request.to_json() if self.delegation_request else None,
+            "parent_child_metadata": self.parent_child_metadata.to_json() if self.parent_child_metadata else None,
+            "claude_execution_mode": self.claude_execution_mode,
+            "claude_team_policy": self.claude_team_policy.to_json() if self.claude_team_policy else None,
+            "phase_team_eligibility": self.phase_team_eligibility.to_json() if self.phase_team_eligibility else None,
+            "json_output": self.json_output,
+            "bypass_approvals": self.bypass_approvals,
+            "launch_timeout_seconds": self.launch_timeout_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class DelegationBudget:
+    max_tokens: int | None = None
+    max_seconds: int | None = None
+    max_cost_usd: float | None = None
+    notes: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+    def is_defined(self) -> bool:
+        return any(value is not None for value in (self.max_tokens, self.max_seconds, self.max_cost_usd)) or bool(self.notes)
+
+
+@dataclass(frozen=True)
+class DelegationRequest:
+    request_id: str
+    product_action: str
+    target_executor: str
+    reason: str
+    owned_files: tuple[str, ...]
+    expected_output: str
+    priority: str = "normal"
+    review_context: str | None = None
+    repair_context: str | None = None
+    budget: DelegationBudget | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        require_literal(self.product_action, PRODUCT_LOOP_ACTIONS, "product action")
+        require_literal(self.target_executor, EXECUTORS, "target executor")
+        require_literal(self.priority, DELEGATION_PRIORITIES, "delegation priority")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "request_id": self.request_id,
+                "product_action": self.product_action,
+                "target_executor": self.target_executor,
+                "reason": self.reason,
+                "owned_files": self.owned_files,
+                "expected_output": self.expected_output,
+                "priority": self.priority,
+                "review_context": self.review_context,
+                "repair_context": self.repair_context,
+                "budget": self.budget.to_json() if self.budget else None,
+                "metadata": self.metadata,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class DelegationDecision:
+    request_id: str
+    status: str
+    reason_code: str
+    summary: str
+    selected_executor: str | None = None
+    dispatch_decision: dict[str, Any] | None = None
+    human_required: bool = False
+    blocker_class: str | None = None
+    observed_depth: int | None = None
+    observed_fanout: int | None = None
+    validation_order: tuple[str, ...] = (
+        "active_loop_mode",
+        "ownership_boundaries",
+        "depth_limit",
+        "fanout_limit",
+        "budget_metadata",
+        "dispatch_policy",
+    )
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, DELEGATION_STATUSES, "delegation status")
+        if self.selected_executor is not None:
+            require_literal(self.selected_executor, EXECUTORS, "selected executor")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    @property
+    def approved(self) -> bool:
+        return self.status == "approved"
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class ParentChildRunMetadata:
+    parent_phase: str
+    parent_action: str
+    parent_executor: str | None = None
+    parent_run_id: str | None = None
+    child_phase: str | None = None
+    child_action: str | None = None
+    child_run_id: str | None = None
+    request_id: str | None = None
+    child_executor: str | None = None
+    observed_launch_path: str | None = None
+    child_artifact_root: str | None = None
+    child_worktree_root: str | None = None
+    child_closeout_result: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.parent_action, PRODUCT_LOOP_ACTIONS, "parent action")
+        if self.parent_executor is not None:
+            require_literal(self.parent_executor, EXECUTORS, "parent executor")
+        if self.child_action is not None:
+            require_literal(self.child_action, PRODUCT_LOOP_ACTIONS, "child action")
+        if self.child_executor is not None:
+            require_literal(self.child_executor, EXECUTORS, "child executor")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class Blocker:
+    human_required: bool = False
+    blocker_class: str | None = None
+    blocker_summary: str | None = None
+    required_human_inputs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class LoopEvent:
+    timestamp: str
+    repo: str
+    roadmap: str
+    phase: str
+    action: str
+    status: str
+    model: str
+    reasoning_effort: str
+    source: str
+    override_reason: str | None = None
+    command: list[str] | None = None
+    blocker: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    git_topology: dict[str, Any] | None = None
+    selected_executor: str | None = None
+    schema_version: int = 2
+    roadmap_sha256: str | None = None
+    phase_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        require_literal(self.status, PHASE_STATUSES, "phase status")
+        if self.selected_executor is not None:
+            require_literal(self.selected_executor, EXECUTORS, "selected executor")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class StateSnapshot:
+    timestamp: str
+    repo: str
+    roadmap: str
+    phases: dict[str, str] = field(default_factory=dict)
+    current_phase: str | None = None
+    last_action: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    source: str | None = None
+    override_reason: str | None = None
+    human_required: bool = False
+    blocker_class: str | None = None
+    blocker_summary: str | None = None
+    required_human_inputs: tuple[str, ...] = ()
+    access_attempts: tuple[dict[str, Any], ...] = ()
+    dirty_paths: tuple[str, ...] = ()
+    phase_owned_dirty_paths: tuple[str, ...] = ()
+    unowned_dirty_paths: tuple[str, ...] = ()
+    pre_existing_dirty_paths: tuple[str, ...] = ()
+    phase_owned_dirty: bool = False
+    terminal_summary: dict[str, Any] | None = None
+    latest_metric: dict[str, Any] | None = None
+    metrics_summary: dict[str, Any] | None = None
+    closeout_terminal_status: str | None = None
+    closeout_summary: dict[str, Any] | None = None
+    work_units: dict[str, dict[str, Any]] = field(default_factory=dict)
+    latest_work_unit: dict[str, Any] | None = None
+    schema_version: int = 2
+    roadmap_sha256: str | None = None
+    phase_sha256: dict[str, str] = field(default_factory=dict)
+    ledger_warnings: tuple[dict[str, Any], ...] = ()
+    git_topology: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        for status in self.phases.values():
+            require_literal(status, PHASE_STATUSES, "phase status")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+        for key, value in self.work_units.items():
+            if not isinstance(value, dict):
+                raise ValueError(f"invalid work-unit state record: {key}")
+            WorkUnitState.from_json(value)
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+def clean_dict(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: clean_dict(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [clean_dict(v) for v in value]
+    if isinstance(value, tuple):
+        return [clean_dict(v) for v in value]
+    return value
+
+
+def metadata_command(command: list[str], prompt: str | None = None) -> list[str]:
+    redacted = list(command)
+    if prompt is not None and redacted and redacted[-1] == prompt:
+        redacted[-1] = f"<prompt redacted sha256={hashlib.sha256(prompt.encode('utf-8')).hexdigest()}>"
+    return redacted

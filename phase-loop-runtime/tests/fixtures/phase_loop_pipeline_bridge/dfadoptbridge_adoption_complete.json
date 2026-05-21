@@ -1,0 +1,110 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dfadoptbridge/adoption-complete-terminal-summary.json"
+    },
+    "changed_paths": [
+      ".pipeline/specs/active/phase-plans-v15.md",
+      ".pipeline/specs/archive-manifest.json",
+      "specs/.pipeline-mirror.json",
+      "specs/phase-plans-v15.md"
+    ],
+    "evidence_refs": [
+      {
+        "label": "adoption complete metadata",
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfadoptbridge_adoption_complete.json",
+        "sha256": "4141414141414141414141414141414141414141414141414141414141414141"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v15-DFADOPTBRIDGE.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v15.md DFADOPTSOAK",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFADOPTBRIDGE",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dfadoptbridge",
+    "pipeline_mode": "pipeline_required",
+    "protected_sources": [
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/active/phase-plans-v15.md",
+        "role": "active_canonical_spec",
+        "sha256": "4242424242424242424242424242424242424242424242424242424242424242"
+      },
+      {
+        "category": "specs",
+        "path": "specs/phase-plans-v15.md",
+        "role": "managed_mirror_file",
+        "sha256": "4343434343434343434343434343434343434343434343434343434343434343"
+      },
+      {
+        "category": "definition_files",
+        "path": "specs/.pipeline-mirror.json",
+        "role": "mirror_manifest",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      {
+        "category": "definition_files",
+        "path": ".pipeline/specs/archive-manifest.json",
+        "role": "archive_manifest",
+        "sha256": "4545454545454545454545454545454545454545454545454545454545454545"
+      }
+    ],
+    "sha256": "4646464646464646464646464646464646464646464646464646464646464646"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "active_specs_touched",
+      "archive_manifests_touched",
+      "managed_mirror_specs_touched",
+      "mirror_manifests_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "active_canonical_spec",
+        "path": ".pipeline/specs/active/phase-plans-v15.md"
+      },
+      {
+        "category": "archive_manifest",
+        "path": ".pipeline/specs/archive-manifest.json"
+      },
+      {
+        "category": "mirror_manifest",
+        "path": "specs/.pipeline-mirror.json"
+      },
+      {
+        "category": "managed_root_mirror_spec",
+        "path": "specs/phase-plans-v15.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_bridge test_phase_loop_pipeline_closeout"
+    ],
+    "status": "passed"
+  }
+}

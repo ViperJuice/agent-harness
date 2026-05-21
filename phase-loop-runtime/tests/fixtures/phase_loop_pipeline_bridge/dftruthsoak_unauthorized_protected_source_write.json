@@ -1,0 +1,67 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dftruthsoak/unauthorized-protected-source-write-terminal-summary.json"
+    },
+    "changed_paths": [
+      ".pipeline/artifacts/protected-source.json"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_unauthorized_protected_source_write.json",
+        "sha256": "5050505050505050505050505050505050505050505050505050505050505050"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Protected Pipeline source write is outside the combined phase-plan and source-bundle boundary",
+    "human_required": false,
+    "next_command": "none - protected_pipeline_source_write",
+    "next_effort_hint": "medium",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "contract_bug",
+    "blocker_summary": "Protected Pipeline source write is outside the combined phase-plan and source-bundle boundary",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dftruthsoak",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "pipeline_sources_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "pipeline_sources",
+        "path": ".pipeline/artifacts/protected-source.json"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "blocked",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_boundaries"
+    ],
+    "status": "blocked"
+  }
+}

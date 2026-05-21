@@ -1,0 +1,63 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dfdriftsignal/dfdriftsignal_standalone_advisory-terminal-summary.json"
+    },
+    "changed_paths": [
+      "docs/phase-loop/contract-map.md"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfdriftsignal_standalone_advisory.json",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v14.md DFBRIDGEPARITY",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFDRIFTSIGNAL",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "contract_refs_touched",
+      "docs_source_truth_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/contract-map.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_closeout"
+    ],
+    "status": "passed"
+  }
+}

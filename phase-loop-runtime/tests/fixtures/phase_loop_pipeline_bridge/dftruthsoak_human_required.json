@@ -1,0 +1,59 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dftruthsoak/human-required-terminal-summary.json"
+    },
+    "changed_paths": [],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_human_required.json",
+        "sha256": "8080808080808080808080808080808080808080808080808080808080808080"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Governed-pipeline operator approval is required before downstream ingestion",
+    "human_required": true,
+    "next_command": "none - admin_approval",
+    "next_effort_hint": "medium",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [
+      "governed-pipeline operator approval"
+    ],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "admin_approval",
+    "blocker_summary": "Governed-pipeline operator approval is required before downstream ingestion",
+    "human_required": true,
+    "required_human_inputs": [
+      "governed-pipeline operator approval"
+    ]
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "human_required",
+  "verification": {
+    "commands": [
+      "git -C ../governed-pipeline status --short -- specs/phase-plans-v10.md"
+    ],
+    "status": "blocked"
+  }
+}

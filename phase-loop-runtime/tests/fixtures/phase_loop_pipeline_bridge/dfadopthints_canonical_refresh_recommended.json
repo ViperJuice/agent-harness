@@ -1,0 +1,76 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dfadopthints/canonical-refresh-recommended-terminal-summary.json"
+    },
+    "changed_paths": [
+      "docs/phase-loop/adoption-contract.md",
+      "greenfield/authority/reduction-contract.md",
+      "portal/contracts/phase-loop-closeout.json"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfadopthints_canonical_refresh_recommended.json",
+        "sha256": "3535353535353535353535353535353535353535353535353535353535353535"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v15-DFADOPTHINTS.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v15-DFADOPTHINTS.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v15.md DFADOPTBRIDGE",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFADOPTHINTS",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "adoption_contracts_touched",
+      "contract_refs_touched",
+      "docs_source_truth_touched",
+      "greenfield_authority_refs_touched",
+      "portal_contract_refs_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/adoption-contract.md"
+      },
+      {
+        "category": "greenfield_authority_refs",
+        "path": "greenfield/authority/reduction-contract.md"
+      },
+      {
+        "category": "portal_contract_refs",
+        "path": "portal/contracts/phase-loop-closeout.json"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_closeout test_phase_loop_pipeline_bridge"
+    ],
+    "status": "passed"
+  }
+}

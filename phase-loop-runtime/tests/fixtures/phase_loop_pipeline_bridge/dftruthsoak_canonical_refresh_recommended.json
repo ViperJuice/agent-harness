@@ -1,0 +1,78 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/dftruthsoak/canonical-refresh-terminal-summary.json"
+    },
+    "changed_paths": [
+      "docs/phase-loop/runtime-boundary.md",
+      "portal/contracts/phase-loop-closeout.json",
+      "greenfield/authority/source-truth.md"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_canonical_refresh_recommended.json",
+        "sha256": "6060606060606060606060606060606060606060606060606060606060606060"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase ../governed-pipeline/specs/phase-plans-v10.md GPTRUTHSOAK",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "DFTRUTHSOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/phase-source-bundle.json",
+    "phase_id": "pipeline.phase.dftruthsoak",
+    "pipeline_mode": "pipeline_required",
+    "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "docs_source_truth_touched",
+      "contract_refs_touched",
+      "portal_contract_refs_touched",
+      "greenfield_authority_refs_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/runtime-boundary.md"
+      },
+      {
+        "category": "portal_contract_refs",
+        "path": "portal/contracts/phase-loop-closeout.json"
+      },
+      {
+        "category": "greenfield_authority_refs",
+        "path": "greenfield/authority/source-truth.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "python3 -m unittest test_phase_loop_pipeline_bridge"
+    ],
+    "status": "passed"
+  }
+}
