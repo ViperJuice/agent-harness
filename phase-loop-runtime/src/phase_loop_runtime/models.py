@@ -101,6 +101,7 @@ BLOCKER_CLASSES = (
     "contract_bug",
     "gold_record_amendment",
     "unretryable_external_outage",
+    "stuck_loop",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (

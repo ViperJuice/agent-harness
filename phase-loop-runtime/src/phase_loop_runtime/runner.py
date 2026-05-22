@@ -318,6 +318,8 @@ def run_loop(
     source_bundle_path: str | Path | None = None,
     pipeline_mode: str | None = None,
     output_path: str | Path | None = None,
+    stuck_loop_iterations: int = 5,
+    stuck_loop_minutes: int = 30,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
@@ -508,6 +510,54 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
+                break
+            # Stuck-loop detection: refuse to dispatch another iteration if
+            # this phase has been ping-ponging in `(action=run, status=executing)`
+            # past the iteration cap or time ceiling.
+            stuck = detect_stuck_loop(
+                repo,
+                roadmap,
+                alias,
+                max_iterations=stuck_loop_iterations,
+                max_minutes=stuck_loop_minutes,
+            )
+            if stuck is not None:
+                classifications[alias] = "blocked"
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action="run",
+                        status="blocked",
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        blocker={
+                            "human_required": True,
+                            "blocker_class": "stuck_loop",
+                            "blocker_summary": (
+                                f"Phase {alias} has been in run/executing for "
+                                f"{stuck.get('iteration_count')} iterations over "
+                                f"{stuck.get('elapsed_minutes')} minutes without "
+                                f"converging to complete or blocked "
+                                f"(trigger: {stuck.get('trigger')}). Investigate "
+                                f"the executor's terminal_status emission; consider "
+                                f"`phase-loop reopen --phase {alias}` to reset and "
+                                f"re-plan, or `phase-loop reconcile` if the work is "
+                                f"actually complete."
+                            ),
+                            "required_human_inputs": (),
+                            "access_attempts": (),
+                        },
+                        metadata={"stuck_loop": stuck},
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                current = alias
                 break
             if dry_run and results and alias == current:
                 break
@@ -3151,6 +3201,82 @@ def _work_unit_heartbeat_is_stale(state: WorkUnitState, stale_heartbeat_seconds:
     import time
 
     return (time.time() - mtime) >= stale_heartbeat_seconds
+
+
+def detect_stuck_loop(
+    repo: Path,
+    roadmap: Path,
+    alias: str,
+    max_iterations: int = 5,
+    max_minutes: int = 30,
+) -> dict[str, object] | None:
+    """Detect a stuck plan↔execute ping-pong loop for the named phase.
+
+    Reads the events.jsonl ledger for the named alias and looks for the
+    pattern: repeated `(action=run, status=executing)` events without any
+    intervening `complete` or `blocked` terminal status, AND either:
+
+    - iteration count exceeds `max_iterations`, OR
+    - elapsed time between the first such event and now exceeds
+      `max_minutes`.
+
+    Returns a metadata dict (suitable for embedding in a blocker payload)
+    when stuck-loop detected, or None when the phase is progressing normally.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    # Read recent events for this alias
+    executing_events: list[dict[str, object]] = []
+    for event in read_events(repo):
+        if event.get("phase") != alias:
+            continue
+        if Path(str(event.get("roadmap", ""))).resolve() != roadmap.resolve():
+            continue
+        action = event.get("action")
+        status = event.get("status")
+        # Any complete/blocked terminal resets the streak
+        if status in {"complete", "blocked"}:
+            executing_events.clear()
+            continue
+        # Only count run/executing events as part of the stuck streak
+        if action == "run" and status == "executing":
+            executing_events.append(event)
+
+    if len(executing_events) < max_iterations:
+        # Also check time-based ceiling
+        if not executing_events:
+            return None
+        try:
+            first_ts = datetime.fromisoformat(str(executing_events[0].get("timestamp", "")).rstrip("Z").replace("Z", "+00:00"))
+            if first_ts.tzinfo is None:
+                first_ts = first_ts.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - first_ts
+            if elapsed < timedelta(minutes=max_minutes):
+                return None
+            trigger = "time_ceiling"
+            elapsed_minutes = int(elapsed.total_seconds() // 60)
+        except (ValueError, TypeError):
+            return None
+    else:
+        trigger = "iteration_cap"
+        try:
+            first_ts = datetime.fromisoformat(str(executing_events[0].get("timestamp", "")).rstrip("Z").replace("Z", "+00:00"))
+            if first_ts.tzinfo is None:
+                first_ts = first_ts.replace(tzinfo=timezone.utc)
+            elapsed_minutes = int((datetime.now(timezone.utc) - first_ts).total_seconds() // 60)
+        except (ValueError, TypeError):
+            elapsed_minutes = -1
+
+    return {
+        "trigger": trigger,
+        "iteration_count": len(executing_events),
+        "iteration_cap": max_iterations,
+        "elapsed_minutes": elapsed_minutes,
+        "minutes_ceiling": max_minutes,
+        "first_executing_timestamp": str(executing_events[0].get("timestamp", "")),
+        "latest_executing_timestamp": str(executing_events[-1].get("timestamp", "")),
+        "phase": alias,
+    }
 
 
 def _select_ready_phase(repo: Path, roadmap: Path, classifications: dict[str, str], phase: str | None = None) -> str | None:

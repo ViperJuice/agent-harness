@@ -102,6 +102,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "contract_bug",
                 "gold_record_amendment",
                 "unretryable_external_outage",
+                "stuck_loop",
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))

@@ -1125,6 +1125,19 @@ The blocker taxonomy is frozen to these literals:
 - `stalled_child_observation`
 - `repeated_verification_failure`
 - `unretryable_external_outage`
+- `stuck_loop`
+
+`stuck_loop` fires when a phase has been ping-ponging in
+`(action=run, status=executing)` past the runner's iteration cap
+(default 5, via `--stuck-loop-iterations`) or time ceiling (default
+30 minutes, via `--stuck-loop-minutes`) without converging to
+`complete` or `blocked`. The blocker's `metadata.stuck_loop` payload
+includes the `trigger` (iteration_cap or time_ceiling), iteration
+count, elapsed minutes, and first/latest executing-event timestamps.
+Resolve by either `phase-loop reopen --phase <ALIAS> --reason "..."`
+(if work isn't actually done and a re-plan is needed) or
+`phase-loop reconcile --phase <ALIAS> ...` (if the work is complete
+but the executor failed to report it).
 
 Before setting `human_required=true`, the runner or skill must record safe,
 redacted access or environment probes when access is part of the blocker.
