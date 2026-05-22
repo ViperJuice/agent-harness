@@ -190,6 +190,12 @@ planned source, destination, harness, skill name, install mode, and action
 without mutating destinations. Apply mode is idempotent and installs
 harness-prefixed workflow skills from `vendor/phase-loop-skills/`.
 
+`phase-loop install --status --json` is a read-only runtime visibility surface.
+It never installs, replaces, copies, symlinks, deletes, or rewrites skill files.
+The JSON reports per-harness skill parity, console-script availability, BAML
+closeout schema availability, and `.dev-skills/` ignore readiness using
+symbolic metadata only.
+
 ## Operating Modes
 
 The phase-loop runner supports three operating modes:
@@ -368,14 +374,22 @@ stays alive and exits with code `5` (blocked), distinct from `1` (child launch
 failure) and `0` (success), so operator rotation wrappers can branch on the
 exit code instead of grepping stdout for `Terminal status: blocked`.
 
-`phase-loop status --json` exposes the resolved per-phase execution policy
-under an `execution_policy` block keyed by phase alias, with sub-keys for
-`plan`, `execute`, `repair`, and `review`. Each sub-key reports the resolved
-`executor`, `model`, `effort`, and `source` (`phase-plan policy` or
-`roadmap policy`). Rotation wrappers consult this block to pre-resolve
-executor pins before dispatching, avoiding the per-phase
+`phase-loop status --json` exposes `pipeline_mode` at the top level and the
+resolved per-phase execution policy under an `execution_policy` block keyed by
+phase alias, with sub-keys for `plan`, `execute`, `repair`, and `review`. Each
+sub-key reports the resolved `executor`, `model`, `effort`, and `source`
+(`phase-plan policy` or `roadmap policy`). Rotation wrappers consult this block
+to pre-resolve executor pins before dispatching, avoiding the per-phase
 `sandbox_command_restriction` failures that arise when an external rotation
 pushes an executor that the plan policy pins to a different harness.
+
+`phase-loop status --runtime-projection --json` emits the
+`DotfilesRuntimeProjection` shape. The projection maps the selected
+`pipeline_mode` to `operating_mode`, validates the emitted JSON through the BAML
+schema parser, and must not include absolute host paths, secret references,
+environment values, provider tokens, or local account identifiers. The surface
+is standalone-first: it works without governed-pipeline, a source bundle,
+Portal, Greenfield, or any acknowledged Pipeline contract.
 
 ## Reconcile Command
 

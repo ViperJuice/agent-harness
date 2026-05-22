@@ -249,7 +249,8 @@ def _stale_pipeline_plan_candidate(repo: Path, roadmap: Path, phase: str):
     return None
 
 
-def status_snapshot(repo: Path, roadmap: Path) -> StateSnapshot:
+def status_snapshot(repo: Path, roadmap: Path, pipeline_mode: str = "standalone") -> StateSnapshot:
+    require_literal(pipeline_mode, ("standalone", "pipeline_optional", "pipeline_required"), "pipeline mode")
     snapshot = reconcile(repo, roadmap)
     recent_metrics = read_work_unit_metrics(repo, limit=50)
     return StateSnapshot(
@@ -274,6 +275,7 @@ def status_snapshot(repo: Path, roadmap: Path) -> StateSnapshot:
         metrics_summary=summarize_work_unit_metrics(recent_metrics),
         closeout_terminal_status=snapshot.closeout_terminal_status,
         closeout_summary=snapshot.closeout_summary,
+        pipeline_mode=pipeline_mode,
         ledger_warnings=snapshot.ledger_warnings,
         **snapshot_provenance(roadmap),
     )
@@ -403,7 +405,7 @@ def run_loop(
         else None
     )
     effective_source_bundle_path = source_bundle_path or os.environ.get("PHASE_LOOP_SOURCE_BUNDLE")
-    effective_pipeline_mode = pipeline_mode or os.environ.get("PHASE_LOOP_PIPELINE_MODE")
+    effective_pipeline_mode = pipeline_mode or os.environ.get("PHASE_LOOP_PIPELINE_MODE") or "standalone"
     if action == "maintain-skills":
         return run_maintenance(
             repo=repo,
@@ -1702,6 +1704,7 @@ def run_loop(
                             "artifacts": {key: str(value) for key, value in artifacts.items()} if artifacts else {},
                             "terminal_summary": terminal_summary,
                             "dry_run_only": True,
+                            "pipeline_mode": effective_pipeline_mode,
                             **(
                                 {
                                     "rotation": {

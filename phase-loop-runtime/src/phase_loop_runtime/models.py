@@ -1834,6 +1834,7 @@ class StateSnapshot:
     closeout_summary: dict[str, Any] | None = None
     work_units: dict[str, dict[str, Any]] = field(default_factory=dict)
     latest_work_unit: dict[str, Any] | None = None
+    pipeline_mode: str = "standalone"
     schema_version: int = 2
     roadmap_sha256: str | None = None
     phase_sha256: dict[str, str] = field(default_factory=dict)
@@ -1845,6 +1846,7 @@ class StateSnapshot:
             require_literal(status, PHASE_STATUSES, "phase status")
         if self.blocker_class is not None:
             require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+        require_literal(self.pipeline_mode, PIPELINE_MODE_LITERALS, "pipeline mode")
         for key, value in self.work_units.items():
             if not isinstance(value, dict):
                 raise ValueError(f"invalid work-unit state record: {key}")

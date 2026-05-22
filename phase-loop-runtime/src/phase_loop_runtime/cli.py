@@ -11,6 +11,7 @@ from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resol
 from .events import append_event
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
+from .install_status import build_install_status
 from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_SCHEDULER_MODES, LoopEvent, PipelinePlanMetadata, StateSnapshot, utc_now
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -20,6 +21,7 @@ from .provenance import event_provenance, snapshot_provenance
 from .reconcile import reconcile
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
+from .runtime_projection import build_runtime_projection
 from .skill_install import actions_to_json, install_skills
 from .state import write_state
 from .state_degradation import clear as clear_degradation
@@ -67,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"), default="skip")
     parser.add_argument("--lane-scheduler", choices=LANE_SCHEDULER_MODES, dest="lane_scheduler_mode")
     parser.add_argument("--source-bundle")
-    parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"))
+    parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
     subparsers = parser.add_subparsers(dest="command")
     for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init"):
         sub = subparsers.add_parser(name)
@@ -103,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--no-heartbeat", action="store_true")
         sub.add_argument("--work-unit-mode", action="store_true")
         sub.add_argument("--source-bundle")
-        sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"))
+        sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=argparse.SUPPRESS)
         sub.add_argument(
             "--lane-scheduler",
             choices=LANE_SCHEDULER_MODES,
@@ -129,13 +131,16 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--apply", action="store_true")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
-            sub.add_argument("--harness", required=True, choices=("codex", "claude", "gemini", "opencode"))
+            sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
             sub.add_argument("--source", default="vendor/phase-loop-skills")
             sub.add_argument("--destination")
+            sub.add_argument("--status", action="store_true")
             mode = sub.add_mutually_exclusive_group()
             mode.add_argument("--symlink", action="store_true")
             mode.add_argument("--copy", action="store_true")
             sub.add_argument("--apply", action="store_true")
+        if name == "status":
+            sub.add_argument("--runtime-projection", action="store_true")
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
             sub.add_argument("--apply", action="store_true")
@@ -247,6 +252,16 @@ def main(argv: list[str] | None = None) -> int:
         blocker = summary.get("blocker")
         return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
     if command == "install":
+        if bool(getattr(args, "status", False)):
+            payload = build_install_status(repo, harnesses=(args.harness,) if args.harness else None)
+            if as_json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"install_status: {payload.get('summary', 'unknown')}")
+            return 0
+        if not args.harness:
+            print("phase-loop install: --harness is required unless --status is used", file=sys.stderr)
+            return 2
         source = Path(args.source)
         if not source.is_absolute():
             source = repo / source
@@ -321,9 +336,18 @@ def main(argv: list[str] | None = None) -> int:
         print(result["rendered"])
         return int(result["returncode"])
     if command == "status":
-        snapshot = status_snapshot(repo, roadmap)
+        snapshot = status_snapshot(repo, roadmap, pipeline_mode=args.pipeline_mode or "standalone")
         write_state(repo, snapshot)
         write_tui_handoff(repo, roadmap, snapshot, action="status")
+        if bool(getattr(args, "runtime_projection", False)):
+            projection = build_runtime_projection(
+                repo,
+                roadmap,
+                snapshot=snapshot,
+                pipeline_mode=args.pipeline_mode or "standalone",
+            )
+            print(json.dumps(projection, indent=2, sort_keys=True) if as_json else json.dumps(projection, sort_keys=True))
+            return 0
         print(render_status(snapshot, as_json=as_json))
         return 0
     if command == "handoff":
