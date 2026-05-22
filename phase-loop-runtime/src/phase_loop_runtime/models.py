@@ -72,6 +72,7 @@ DISPATCH_CAPABILITIES = (
     "subagents",
     "explicit_approval_controls",
     "structured_output",
+    "browser_automation",
 )
 DISPATCH_SELECTION_PATHS = ("fixed_action_policy", "preferred", "fallback")
 DELEGATION_PRIORITIES = ("low", "normal", "high", "urgent")
