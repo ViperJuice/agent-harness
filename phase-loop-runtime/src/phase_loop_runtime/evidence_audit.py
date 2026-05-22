@@ -38,6 +38,31 @@ _PATH_HINT_RE = re.compile(r"^[A-Za-z0-9_.\-/]+\.[A-Za-z0-9]{1,8}$")
 # Skip when the "string" is actually a URL or known non-path
 _NON_PATH_PREFIXES = ("http://", "https://", "git@", "ssh://", "file://")
 UNCERTAIN_OPERATOR_REVIEW = "UNCERTAIN-OPERATOR-REVIEW"
+_STRICT_REFERENCE_EXTENSIONS = {
+    ".baml",
+    ".csv",
+    ".gif",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".pdf",
+    ".png",
+    ".ppm",
+    ".svg",
+    ".txt",
+    ".webp",
+    ".yaml",
+    ".yml",
+}
+_STRICT_REFERENCE_CONTEXT_RE = re.compile(
+    r"(?:^|[._-])(?:artifact|artifacts|evidence|fixture|image|images|manifest|"
+    r"output|outputs|path|paths|ref|refs|reference|references|screenshot|screenshots|"
+    r"source|sources|trace|traces)(?:$|[._-])"
+)
 
 
 @dataclass(frozen=True)
@@ -418,8 +443,21 @@ def detect_uniform_numeric(
     return findings
 
 
+def _json_pointer_context(pointer: str) -> str:
+    return re.sub(r"\[\d+\]", "", pointer).lower()
+
+
+def _is_strict_reference_candidate(pointer: str, value: str) -> bool:
+    if Path(value).suffix.lower() not in _STRICT_REFERENCE_EXTENSIONS:
+        return False
+    context = _json_pointer_context(pointer)
+    if "changed_files" in context:
+        return False
+    return bool(_STRICT_REFERENCE_CONTEXT_RE.search(context))
+
+
 def detect_missing_references(
-    json_path: Path, repo: Path
+    json_path: Path, repo: Path, strict: bool = True
 ) -> list[MissingReferenceFinding]:
     """Flag JSON string values that look like paths but don't resolve on disk.
 
@@ -439,6 +477,8 @@ def detect_missing_references(
         if not _PATH_HINT_RE.match(value):
             continue
         if "/" not in value:
+            continue
+        if strict and not _is_strict_reference_candidate(pointer, value):
             continue
         # Resolve relative to repo
         candidate = (repo / value).resolve() if not Path(value).is_absolute() else Path(value)
@@ -552,6 +592,29 @@ def _token_overlap(left: set[str], right: set[str]) -> float:
     return len(left & right) / min(len(left), len(right))
 
 
+def _text_segment_tokens(path: Path) -> list[tuple[str, set[str]]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    segments = [segment.strip() for segment in re.split(r"\n\s*\n+", text) if segment.strip()]
+    if len(segments) < 2:
+        return []
+    entries: list[tuple[str, set[str]]] = []
+    for index, segment in enumerate(segments):
+        tokens: set[str] = set()
+        for raw in _TEXT_TOKEN_RE.findall(segment.lower()):
+            token = raw.strip("._-:/\\")
+            if not token:
+                continue
+            if "/" in raw or "\\" in raw or _PATH_HINT_RE.match(raw):
+                continue
+            tokens.add(token)
+        if len(tokens) >= 5:
+            entries.append((f"{path}#segment-{index + 1}", tokens))
+    return entries
+
+
 def detect_boilerplate_text(
     file_group: Iterable[Path], token_overlap_threshold: float = 0.80, min_group_size: int = 3
 ) -> list[BoilerplateFinding]:
@@ -563,6 +626,8 @@ def detect_boilerplate_text(
         tokens = _text_tokens(path)
         if tokens:
             entries.append((path, tokens))
+        for segment_name, segment_tokens in _text_segment_tokens(path):
+            entries.append((Path(segment_name), segment_tokens))
 
     neighbors: dict[int, set[int]] = {i: set() for i in range(len(entries))}
     for i, (_, left) in enumerate(entries):
@@ -883,6 +948,7 @@ def run_evidence_audit(
     size_distribution_variance_threshold: float = 0.05,
     size_distribution_min_group_size: int = 3,
     enable_tier_3: bool = False,
+    missing_references_strict: bool = True,
     expected_artifact_characteristics: str = "Real evidence should contain provenance-specific, naturally varied values and references.",
 ) -> EvidenceAuditResult:
     """Run all three detectors against the repo's dirty (or full) tree.
@@ -913,7 +979,9 @@ def run_evidence_audit(
         result.uniform_numeric.extend(
             detect_uniform_numeric(jp, min_array_length=uniform_min_length, epsilon=uniform_epsilon)
         )
-        result.missing_references.extend(detect_missing_references(jp, repo))
+        result.missing_references.extend(
+            detect_missing_references(jp, repo, strict=missing_references_strict)
+        )
         if effective_tier2_enabled:
             result.loose_uniform.extend(
                 detect_loose_uniform(

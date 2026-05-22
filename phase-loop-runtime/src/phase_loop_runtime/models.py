@@ -17,6 +17,7 @@ PHASE_STATUSES = (
     "blocked",
     "unknown",
 )
+EVENT_STATUSES = PHASE_STATUSES + ("plan_skipped",)
 
 COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor")
 MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maintenance")
@@ -1799,7 +1800,7 @@ class LoopEvent:
     phase_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        require_literal(self.status, PHASE_STATUSES, "phase status")
+        require_literal(self.status, EVENT_STATUSES, "event status")
         if self.selected_executor is not None:
             require_literal(self.selected_executor, EXECUTORS, "selected executor")
 

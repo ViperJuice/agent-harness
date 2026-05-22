@@ -72,6 +72,29 @@ Plans without this metadata, or with metadata that no longer matches the
 selected roadmap, are stale for autonomous execution and must route back
 through planning instead of execution.
 
+## Plan-Doc-Current Heuristic
+
+When a phase has been reopened to `planned`, the runner checks the current plan
+document before dispatching another planning turn. The helper
+`is_plan_doc_current(repo, phase, plan, roadmap, recent_commit_window=50)` is
+true only after `find_plan_artifact(repo, phase, roadmap=roadmap)` returns the
+same roadmap-matching plan path and the plan either appears in
+`git log --name-only -n 50 -- <plan>` or its frontmatter includes a non-empty
+`last_generated` field.
+
+For `phase-loop run`, `phase-loop resume`, and `phase-loop dry-run`, a reopened
+`planned` phase with a current plan document dispatches execution directly by
+default. Operators can pass `--force-replan` to bypass this heuristic and launch
+the planning turn even when the plan document is current.
+
+The skip is auditable but non-terminal. Before launching execution, the runner
+appends an event with `status: plan_skipped` and
+`metadata.plan_doc_skip` containing `reason: plan_doc_current`, the
+repo-relative `plan_artifact`, and `forced_replan: false`.
+`plan_skipped` is valid only through `EVENT_STATUSES`; it must never be added
+to `PHASE_STATUSES`, `automation.status`, closeout `terminal_status`, or
+reducer phase-state outputs.
+
 `PIPELINE_PROTECTED_SOURCE_CATEGORIES` freezes the protected source vocabulary
 for Pipeline bridge work:
 
@@ -445,11 +468,11 @@ emission time; `reopen` is the recovery path until that ships.
 
 ## Evidence Audit Command
 
-`phase-loop evidence-audit --repo . [--dirty-only|--full-tree] [--tier-2]` is an
-operator-callable spot-check for fake-evidence patterns in dirty-tree
-artifacts. Run it before `phase-loop reconcile` on phases producing
-comparison/verdict evidence (visual-fidelity diffs, audit reports,
-schema validation traces).
+`phase-loop evidence-audit --repo . [--dirty-only|--full-tree|--full-tree-loose]
+[--tier-2]` is an operator-callable spot-check for fake-evidence patterns in
+dirty-tree artifacts. Run it before `phase-loop reconcile` on phases producing
+comparison/verdict evidence (visual-fidelity diffs, audit reports, schema
+validation traces).
 
 Surfaced after the regen 2026-05-22 VISUALMATCH incident, where the
 executor committed 21 artifact files that satisfied the v20 closeout
@@ -472,8 +495,15 @@ Tier 1 detectors run by default:
   values are within `--uniform-epsilon` (default 1e-6). Catches the
   template-fill pattern (e.g., 19/19 entries at similarity=0.999999).
 - **`missing-references`** — JSON artifacts cite path-shaped string
-  values that don't exist on disk. Catches the cited-but-never-created
-  pattern.
+  values that don't exist on disk. Default `--dirty-only` and `--full-tree`
+  scans use strict missing-reference mode: the string must have a known
+  data/artifact extension and appear under object key/value context that
+  names evidence, source, screenshot, fixture, path, reference, or artifact
+  material. `--full-tree-loose` is the loose forensic compatibility path; it
+  scans the full tree with the older liberal path-shaped string behavior.
+  The strict missing-reference default is calibrated to avoid code-string and
+  command false positives while still catching cited-but-never-created
+  evidence paths.
 
 Tier 2 detectors are operator-invoked with `--tier-2`; default invocation
 remains Tier 1 only. Runner closeout integration may also run Tier 2 as the
@@ -489,7 +519,11 @@ is explicitly enabled:
   The detector normalizes whitespace and punctuation, lower-cases tokens,
   strips path-shaped tokens, skips binary files, and reports groups with
   overlap above `--boilerplate-token-overlap-threshold` (default 0.80)
-  and size at least `--boilerplate-min-group-size` (default 3).
+  and size at least `--boilerplate-min-group-size` (default 3). The default
+  threshold is calibrated against `tests/fixtures/evidence-audit-calibration/`:
+  known-fake boilerplate and templated prose fixtures must flag, known-real
+  fixtures must not flag, and borderline fixtures remain low-confidence Tier 2
+  uncertainty rather than Tier 1-style hard failures.
 - **`size-distribution`** — sibling-directory file groups whose byte-size
   coefficient of variation is below
   `--size-distribution-variance-threshold` (default 0.05), with at least
@@ -603,6 +637,54 @@ Use the exit code as a pre-reconcile gate:
 phase-loop evidence-audit --repo . && \
   phase-loop reconcile --repo . --roadmap specs/phase-plans-vN.md \
                        --phase <ALIAS> ...
+```
+
+## Drift Audit Subcommand
+
+`phase-loop closeout-drift-audit --repo . [--repo ../other] [--days 7]
+[--scope closeout|all-events] [--json]` is an operator-callable pre-flight
+for closeout literal drift. It scans `.phase-loop/runs/**/terminal-summary.json`
+and closeout-class entries in `.phase-loop/events.jsonl`, compares
+`terminal_status`, `verification_status`, `blocker_class`, executor literals,
+and dispatch capabilities against the live allowlists imported from
+`phase_loop_runtime.models`, and reports any literal not currently allowed.
+
+Default scope is `closeout`. This is the normal closeout reconciliation gate
+and restricts event-ledger scanning to closeout-class surfaces such as
+terminal summaries, closeout metadata, automation metadata, manual repairs,
+and reopen/reconcile events. `--scope all-events` is an explicit forensic mode
+for wider event-ledger scans; it is not a replacement for the closeout-class
+pre-flight gate.
+
+Text output is stable for operator review: it includes the scope, days window,
+cutoff timestamp, per-repo files/events scanned, malformed event counts, setup
+diagnostics, and per-field literal drift sections. JSON output includes
+`allowlists`, `repos`, `counts`, `drift`, and `setup_diagnostics`, so
+`phase-loop closeout-drift-audit --repo . --json | python3 -m json.tool` is a
+valid machine-readable smoke check.
+
+Exit codes are:
+
+- `0` when no drift or setup errors are found.
+- `1` when drift is found, for example the recurring reproduction payload
+  `terminal_status: "dry_run"` without adding `dry_run` to `PHASE_STATUSES`.
+- `2` when setup or input errors prevent a trustworthy scan, such as a missing
+  repo path, missing `.phase-loop` directory, invalid `--days`, or invalid
+  scope.
+
+Example closeout gate:
+
+```bash
+phase-loop closeout-drift-audit --repo . --days 7 --scope closeout && \
+  phase-loop reconcile --repo . --roadmap specs/phase-plans-vN.md \
+                       --phase <ALIAS> ...
+```
+
+Example cross-repo forensic scan:
+
+```bash
+phase-loop closeout-drift-audit --repo . --repo ../governed-pipeline \
+  --days 14 --scope all-events --json
 ```
 
 ### Verified Dirty Closeout Auto-Recovery
@@ -875,6 +957,26 @@ normalizes the typed value back into the runner's shared automation fields.
 BAML validation errors are reported as repairable non-human `contract_bug`
 blockers with non-secret summaries.
 
+### Closeout Hardening
+
+`EmitPhaseCloseout` uses field-anchored enum lists for `terminal_status` and
+`verification_status`, an explicit `dry_run` negative example, a
+terminal-status decision tree, and field-pair invariants for
+`terminal_status` plus `verification_status`. `dry_run` remains an event-level
+execution mode and must not appear in a phase closeout payload.
+
+Native closeout parsing first runs
+`phase_loop_runtime.discovery.parse_closeout_payload_doc(text, kind)` over the
+extracted JSON payload. Unknown `terminal_status`, `verification_status`, or
+`blocker_class` literals soft-fail into `CloseoutParseError` diagnostics before
+BAML schema parsing. The runner converts those diagnostics into non-human
+`contract_bug` blockers whose summary names the invalid literal and field.
+
+Operator remediation is deliberate: patch the executor prompt when the literal
+is prompt drift, or amend the runner allowlist and reinstall the runtime when a
+new literal is intentionally added. The runtime must not coerce unknown
+closeout literals into nearby statuses.
+
 ## Schema-Flow Architecture
 
 `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` is the canonical
@@ -897,8 +999,9 @@ native flags, so their closeout prompts embed deterministic schema-description
 text from `inject_schema_description(prompt, schema)` with the canonical schema
 hash and ordered fields.
 
-All executor closeouts still pass through `parse_baml_response(
-"EmitPhaseCloseout", raw_text)` and then through IF-Gate Tier 1 validation.
+All executor closeouts still pass through `parse_closeout_payload_doc(...)`,
+`parse_baml_response("EmitPhaseCloseout", raw_text)`, and then through IF-Gate
+Tier 1 validation.
 The runner compares `produced_if_gates` with the active plan's declared
 `Produces` / `Interfaces provided` gates, so native flags, prompt embedding,
 BAML parse, and IF-gate cross-check all consume the same BAML-authored schema
@@ -1059,8 +1162,8 @@ When human-readable top-level handoff fields such as `artifact`,
 `artifact_state`, `next_skill`, or `next_command` are also present, they must
 agree with `automation.*` or the handoff is malformed.
 
-The phase status vocabulary used by `automation.status`, ledger events, and
-reconciled state is frozen to:
+The phase status vocabulary used by `automation.status` and reconciled state is
+frozen to `PHASE_STATUSES`:
 
 - `unplanned`
 - `planned`
@@ -1071,6 +1174,11 @@ reconciled state is frozen to:
 - `blocked`
 - `unknown`
 
+`EVENT_STATUSES` is the event-ledger validation vocabulary. It includes all
+`PHASE_STATUSES` plus the event-only status:
+
+- `plan_skipped`
+
 ## Event Ledger Records
 
 Durable loop events are append-only records stored in the active runtime ledger.
@@ -1079,7 +1187,7 @@ Shared event semantics include:
 - `schema_version: 2`
 - `roadmap_sha256`
 - `phase_sha256`
-- phase status literals from the frozen vocabulary in this document
+- event status literals from `EVENT_STATUSES`
 - blocker metadata when a blocker exists
 - optional top-level `selected_executor` when dispatch or work-unit launch
   selected an executor

@@ -15,6 +15,7 @@ from phase_loop_runtime.models import (
     DISPATCH_SELECTION_PATHS,
     DELEGATION_PRIORITIES,
     DELEGATION_STATUSES,
+    EVENT_STATUSES,
     FAILURE_KINDS,
     LIVE_PROOF_GATES,
     MODEL_PROFILES,
@@ -83,6 +84,7 @@ from phase_loop_runtime.observability import NOTIFICATION_PAYLOAD_FIELDS
 class PhaseLoopModelsTest(unittest.TestCase):
     def test_allowed_literals_are_frozen(self):
         self.assertEqual(PHASE_STATUSES, ("unplanned", "planned", "executing", "executed", "awaiting_phase_closeout", "complete", "blocked", "unknown"))
+        self.assertEqual(EVENT_STATUSES, PHASE_STATUSES + ("plan_skipped",))
         self.assertEqual(CLOSEOUT_MODES, ("manual", "commit", "push"))
         self.assertEqual(
             BLOCKER_CLASSES,
@@ -278,6 +280,22 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 source="default",
                 selected_executor="bogus",
             )
+
+    def test_plan_skipped_is_event_only_status(self):
+        event = LoopEvent(
+            timestamp=utc_now(),
+            repo="/repo",
+            roadmap="/repo/specs/phase-plans-v1.md",
+            phase="RUNNER",
+            action="run",
+            status="plan_skipped",
+            model="gpt-5.4",
+            reasoning_effort="medium",
+            source="fixture",
+        )
+        self.assertEqual(event.to_json()["status"], "plan_skipped")
+        with self.assertRaises(ValueError):
+            StateSnapshot(timestamp=utc_now(), repo="/repo", roadmap="/repo/specs/phase-plans-v1.md", phases={"RUNNER": "plan_skipped"})
 
     def test_state_serializes_provenance(self):
         snapshot = StateSnapshot(

@@ -22,10 +22,12 @@ from .discovery import (
     load_execution_phase_source_bundle,
     load_phase_source_bundle,
     parse_automation_status,
+    parse_closeout_payload_doc,
     parse_dispatch_hints,
     parse_dispatch_hints_doc,
     parse_execution_policy,
     parse_pipeline_plan_metadata,
+    plan_metadata,
     parse_plan_ownership,
     parse_roadmap_phases,
     pipeline_execution_blocker,
@@ -214,6 +216,39 @@ def _current_head(repo: Path) -> str | None:
         return None
 
 
+def _repo_relative(repo: Path, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(repo.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def is_plan_doc_current(repo: Path, phase: str, plan: Path, roadmap: Path, *, recent_commit_window: int = 50) -> bool:
+    current_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    if current_plan is None or current_plan.resolve() != plan.resolve():
+        return False
+    if plan_metadata(plan).get("last_generated", "").strip():
+        return True
+    rel_plan = _repo_relative(repo, plan)
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(repo), "log", "--name-only", "-n", str(recent_commit_window), "--", rel_plan],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    return rel_plan in {line.strip() for line in output.splitlines()}
+
+
+def _latest_phase_event_status(repo: Path, phase: str) -> str | None:
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() == phase.upper():
+            status = event.get("status")
+            return str(status) if status is not None else None
+    return None
+
+
 def _pipeline_boundary_blocker(
     repo: Path,
     roadmap: Path,
@@ -325,6 +360,7 @@ def run_loop(
     output_path: str | Path | None = None,
     stuck_loop_iterations: int = 5,
     stuck_loop_minutes: int = 30,
+    force_replan: bool = False,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
@@ -856,6 +892,37 @@ def run_loop(
                 repair_context = None
                 if explicit_product_action in {"roadmap", "plan", "execute", "review"}:
                     launch_action = explicit_product_action
+                elif status == "planned" and plan is not None:
+                    latest_phase_status = _latest_phase_event_status(repo, alias)
+                    if latest_phase_status != "planned":
+                        launch_action = "execute"
+                    elif not force_replan and is_plan_doc_current(repo, alias, plan, roadmap):
+                        append_event(
+                            repo,
+                            LoopEvent(
+                                timestamp=utc_now(),
+                                repo=str(repo),
+                                roadmap=str(roadmap),
+                                phase=alias,
+                                action=action,
+                                status="plan_skipped",
+                                model=selection.model,
+                                reasoning_effort=selection.effort,
+                                source=selection.source,
+                                override_reason=selection.override_reason,
+                                metadata={
+                                    "plan_doc_skip": {
+                                        "reason": "plan_doc_current",
+                                        "plan_artifact": _repo_relative(repo, plan),
+                                        "forced_replan": False,
+                                    }
+                                },
+                                **event_provenance(roadmap, alias),
+                            ),
+                        )
+                        launch_action = "execute"
+                    else:
+                        launch_action = "plan"
                 else:
                     launch_action = "execute" if status in {"planned", "executed"} and plan is not None else "plan"
             planner_source_bundle_context = None
@@ -4112,7 +4179,7 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
     if not extracted:
         return {}
     try:
-        payload = parse_baml_response("EmitPhaseCloseout", json.dumps(extracted)).payload
+        payload, parse_errors = parse_closeout_payload_doc(json.dumps(extracted), kind="native_closeout")
     except BamlValidationError as exc:
         return {
             "automation_status": "blocked",
@@ -4126,6 +4193,37 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
             "automation_parse_error": f"BAML closeout validation failed: {exc}",
             "automation_parse_error_blocker_class": "contract_bug",
         }
+    if parse_errors:
+        first_error = parse_errors[0]
+        invalid_literal = first_error.invalid_literal or "unknown"
+        summary = (
+            f"Closeout payload contains invalid literal {invalid_literal} "
+            f"for field {first_error.field}; either patch the executor prompt "
+            f"or add {invalid_literal} to the runner allowlist."
+        )
+        return {
+            "automation_status": "blocked",
+            "automation_next_skill": "codex-plan-phase",
+            "automation_next_command": "none",
+            "automation_human_required": "false",
+            "automation_blocker_class": "contract_bug",
+            "automation_blocker_summary": summary,
+            "automation_required_human_inputs": [],
+            "automation_verification_status": "blocked",
+            "automation_parse_error": first_error.raw_message,
+            "automation_parse_error_blocker_class": "contract_bug",
+            "automation_parse_errors": [
+                {
+                    "source": error.source,
+                    "field": error.field,
+                    "raw_message": error.raw_message,
+                    "invalid_literal": error.invalid_literal,
+                }
+                for error in parse_errors
+            ],
+        }
+    if payload is None:
+        return {}
     terminal_status = str(payload.get("terminal_status") or "")
     verification_status = str(payload.get("verification_status") or "not_run")
     blocker_class = str(payload.get("blocker_class") or "none")

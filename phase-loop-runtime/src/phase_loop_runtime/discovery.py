@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .models import (
+    BLOCKER_CLASSES,
     DispatchHints,
     ExecutionPolicyDocument,
     ExecutionPolicyParseError,
     ExecutionPolicyRule,
     PHASE_SOURCE_BUNDLE_SCHEMA,
+    PHASE_STATUSES,
     PhaseSourceBundle,
     PhaseTeamEligibility,
     PipelineMetadataDiagnostic,
@@ -23,6 +25,7 @@ from .models import (
     PipelineProtectedSource,
     PIPELINE_PROTECTED_SOURCE_ROLES,
     PRODUCT_LOOP_ACTIONS,
+    require_literal,
 )
 from .provenance import roadmap_sha256
 from .runtime_paths import phase_loop_state_read_file
@@ -123,6 +126,20 @@ class DispatchHintsParseError:
     invalid_literal: str | None = None  # extracted from raw_message when possible
 
 
+@dataclass(frozen=True)
+class CloseoutParseError:
+    """Native closeout literal drift surfaced before BAML schema parsing.
+
+    The runner converts these diagnostics to repairable non-human
+    ``contract_bug`` blockers, preserving the original invalid literal.
+    """
+
+    source: str
+    field: str
+    raw_message: str
+    invalid_literal: str | None = None
+
+
 def _extract_invalid_literal(message: str) -> str | None:
     """Best-effort extraction of the offending literal from a require_literal
     ValueError message. Format is typically: 'invalid {label}: {value}'."""
@@ -131,6 +148,137 @@ def _extract_invalid_literal(message: str) -> str | None:
         if candidate:
             return candidate
     return None
+
+
+CLOSEOUT_VERIFICATION_STATUSES = ("not_run", "passed", "failed", "blocked")
+
+
+def parse_closeout_payload(text: str, *, kind: str = "closeout") -> dict[str, Any] | None:
+    """Backward-compatible payload-only closeout parser.
+
+    Literal drift returns ``None`` so existing callers can keep using a simple
+    truthy payload check. Schema/type errors still follow the BAML validation
+    path and raise ``BamlValidationError``.
+    """
+    payload, errors = parse_closeout_payload_doc(text, kind=kind)
+    return None if errors else payload
+
+
+def parse_closeout_payload_doc(
+    text: str, *, kind: str
+) -> tuple[dict[str, Any] | None, tuple[CloseoutParseError, ...]]:
+    """Parse native closeout JSON with graceful soft-fail for enum drift.
+
+    Unknown ``terminal_status``, ``verification_status``, and
+    ``blocker_class`` literals become structured diagnostics instead of raw
+    ``ValueError`` crashes. Valid payloads still pass through the canonical
+    ``EmitPhaseCloseout`` BAML validation path for schema and type checks.
+    """
+    from .baml_modular import parse_baml_response
+
+    extracted = _find_closeout_payload_doc(text)
+    parse_text = json.dumps(extracted) if extracted is not None else str(text or "")
+    literal_source = extracted if extracted is not None else {}
+    errors = _closeout_literal_errors(literal_source, kind=kind) if isinstance(literal_source, dict) else []
+    if errors:
+        return None, tuple(errors)
+    return parse_baml_response("EmitPhaseCloseout", parse_text).payload, ()
+
+
+def _find_closeout_payload_doc(text: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    raw = str(text or "")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, str):
+        return _find_closeout_payload_doc(data)
+    if isinstance(data, dict) and {"terminal_status", "verification_status", "dirty_paths"}.issubset(data):
+        return data
+    for index, char in enumerate(raw):
+        if char != "{":
+            continue
+        try:
+            data, _end = decoder.raw_decode(raw[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and {"terminal_status", "verification_status", "dirty_paths"}.issubset(data):
+            return data
+    return None
+
+
+def _closeout_literal_errors(payload: dict[str, Any], *, kind: str) -> list[CloseoutParseError]:
+    errors: list[CloseoutParseError] = []
+    terminal_status = payload.get("terminal_status")
+    verification_status = payload.get("verification_status")
+    blocker_class = payload.get("blocker_class")
+
+    _append_literal_error(errors, kind=kind, field="terminal_status", value=terminal_status, allowed=PHASE_STATUSES)
+    _append_literal_error(
+        errors,
+        kind=kind,
+        field="verification_status",
+        value=verification_status,
+        allowed=CLOSEOUT_VERIFICATION_STATUSES,
+    )
+    if blocker_class is not None:
+        _append_literal_error(
+            errors,
+            kind=kind,
+            field="blocker_class",
+            value=blocker_class,
+            allowed=(*BLOCKER_CLASSES, "none"),
+        )
+    if errors:
+        return errors
+
+    terminal_text = str(terminal_status)
+    verification_text = str(verification_status)
+    if terminal_text == "complete" and verification_text != "passed":
+        errors.append(
+            CloseoutParseError(
+                source=kind,
+                field="terminal_status+verification_status",
+                raw_message="invalid closeout field-pair: terminal_status complete requires verification_status passed",
+                invalid_literal=f"{terminal_text}/{verification_text}",
+            )
+        )
+    elif terminal_text in {"planned", "unplanned"} and verification_text != "not_run":
+        errors.append(
+            CloseoutParseError(
+                source=kind,
+                field="terminal_status+verification_status",
+                raw_message=f"invalid closeout field-pair: terminal_status {terminal_text} requires verification_status not_run",
+                invalid_literal=f"{terminal_text}/{verification_text}",
+            )
+        )
+    elif terminal_text == "blocked" and verification_text not in {"failed", "blocked"}:
+        errors.append(
+            CloseoutParseError(
+                source=kind,
+                field="terminal_status+verification_status",
+                raw_message="invalid closeout field-pair: terminal_status blocked requires verification_status failed or blocked",
+                invalid_literal=f"{terminal_text}/{verification_text}",
+            )
+        )
+    return errors
+
+
+def _append_literal_error(
+    errors: list[CloseoutParseError], *, kind: str, field: str, value: Any, allowed: tuple[str, ...]
+) -> None:
+    try:
+        require_literal(str(value), allowed, field)
+    except ValueError as exc:
+        errors.append(
+            CloseoutParseError(
+                source=kind,
+                field=field,
+                raw_message=str(exc),
+                invalid_literal=_extract_invalid_literal(str(exc)),
+            )
+        )
 
 
 def resolve_repo(repo: str | Path | None = None) -> Path:

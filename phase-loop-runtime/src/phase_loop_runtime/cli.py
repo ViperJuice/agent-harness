@@ -70,15 +70,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lane-scheduler", choices=LANE_SCHEDULER_MODES, dest="lane_scheduler_mode")
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
+    parser.add_argument("--force-replan", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "evidence-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
             sub.add_argument("--bundle", help="Path to a phase-source-bundle.v1 artifact.")
             sub.add_argument("--output", help="Path where exactly one closeout JSON file must be written.")
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
-        sub.add_argument("--repo")
+        if name == "closeout-drift-audit":
+            sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
+        else:
+            sub.add_argument("--repo")
         sub.add_argument("--roadmap")
         sub.add_argument("--phase")
         sub.add_argument("--max-phases", type=int)
@@ -114,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if name in {"run", "resume", "dry-run"}:
             sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
+            sub.add_argument("--force-replan", action="store_true")
             sub.add_argument("--reset-capability", action="store_true")
             sub.add_argument("--rotate-executors")
             sub.add_argument("--rotation-mode", choices=("phase", "work_unit"))
@@ -190,7 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
                 "Exits 0 if clean, 5 if suspect findings."
             )
             sub.add_argument("--dirty-only", action="store_true", default=True, help="Audit only currently-modified/untracked paths (default).")
-            sub.add_argument("--full-tree", dest="dirty_only", action="store_false", help="Audit every tracked file in the repo (slow; forensic).")
+            sub.add_argument("--full-tree", dest="dirty_only", action="store_false", help="Audit every tracked file in the repo with strict missing-reference scanning (slow).")
+            sub.add_argument("--full-tree-loose", action="store_true", help="Audit every tracked file and use loose forensic missing-reference scanning.")
             sub.add_argument("--min-duplicates", type=int, default=3, help="Min number of files sharing a sha256 before flagging. Default 3.")
             sub.add_argument("--uniform-epsilon", type=float, default=1e-6, help="Numeric uniformity tolerance. Default 1e-6.")
             sub.add_argument("--uniform-min-length", type=int, default=4, help="Min array length to check for uniformity. Default 4.")
@@ -201,6 +207,10 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--size-distribution-variance-threshold", type=float, default=0.05, help="Tier 2 coefficient-of-variation threshold for sibling file sizes. Default 0.05.")
             sub.add_argument("--size-distribution-min-group-size", type=int, default=3, help="Tier 2 minimum sibling file group size for size-distribution detection. Default 3.")
             sub.add_argument("--enable-tier-3", action="store_true", help="Enable default-off Tier 3 LLM judgment for Tier 2 uncertain findings only.")
+        if name == "closeout-drift-audit":
+            sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
+            sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
+            sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
     return parser
 
 
@@ -211,8 +221,10 @@ def main(argv: list[str] | None = None) -> int:
     if command == "version":
         print(f"phase-loop {__version__}")
         return 0
-    repo = resolve_repo(args.repo or ".")
     as_json = bool(args.json)
+    if command == "closeout-drift-audit":
+        return _closeout_drift_audit_command(args=args, as_json=as_json)
+    repo = resolve_repo(args.repo or ".")
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json)
     if command == "evidence-audit":
@@ -448,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path=effective_output_path,
         stuck_loop_iterations=getattr(args, "stuck_loop_iterations", 5),
         stuck_loop_minutes=getattr(args, "stuck_loop_minutes", 30),
+        force_replan=bool(getattr(args, "force_replan", False)),
         product_action_override=command if command in {"execute", "repair", "review"} else None,
         maintenance_options=MaintenanceOptions(
             min_reflections=getattr(args, "min_reflections", 2) or 2,
@@ -729,7 +742,7 @@ def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bo
 
     result = run_evidence_audit(
         repo,
-        dirty_only=getattr(args, "dirty_only", True),
+        dirty_only=False if getattr(args, "full_tree_loose", False) else getattr(args, "dirty_only", True),
         min_duplicates=getattr(args, "min_duplicates", 3),
         uniform_epsilon=getattr(args, "uniform_epsilon", 1e-6),
         uniform_min_length=getattr(args, "uniform_min_length", 4),
@@ -740,12 +753,31 @@ def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bo
         size_distribution_variance_threshold=getattr(args, "size_distribution_variance_threshold", 0.05),
         size_distribution_min_group_size=getattr(args, "size_distribution_min_group_size", 3),
         enable_tier_3=getattr(args, "enable_tier_3", False),
+        missing_references_strict=not getattr(args, "full_tree_loose", False),
     )
     if as_json:
         print(json.dumps(result.to_json(), indent=2))
     else:
         print(render_text(result))
     return 0 if result.is_clean() else 5
+
+
+def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) -> int:
+    from .phase_loop_drift_audit import run_drift_audit
+
+    repo_args = args.repo or ["."]
+    if isinstance(repo_args, str):
+        repos = [repo_args]
+    else:
+        repos = repo_args
+    result = run_drift_audit(repos, days=getattr(args, "days", 7), scope=getattr(args, "scope", "closeout"))
+    if as_json:
+        print(json.dumps(result.to_json(), indent=2))
+    else:
+        print(result.render_text())
+    if result.has_setup_errors():
+        return 2
+    return 1 if result.has_drift() else 0
 
 
 def _direct_invocation_blocker(

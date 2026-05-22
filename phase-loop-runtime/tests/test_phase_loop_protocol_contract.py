@@ -12,6 +12,7 @@ from phase_loop_runtime.models import (
     FAILURE_KINDS,
     OPERATOR_MATURITY_LABELS,
     PHASE_STATUSES,
+    EVENT_STATUSES,
     PIPELINE_MODE_LITERALS,
     PIPELINE_PROTECTED_SOURCE_CATEGORIES,
     PIPELINE_PROTECTED_SOURCE_ROLES,
@@ -158,6 +159,8 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
     def test_protocol_includes_frozen_literals(self):
         for literal in PHASE_STATUSES:
             self.assertIn(f"`{literal}`", self.protocol_text)
+        for literal in EVENT_STATUSES:
+            self.assertIn(f"`{literal}`", self.protocol_text)
         for literal in BLOCKER_CLASSES:
             self.assertIn(f"`{literal}`", self.protocol_text)
         for literal in WORK_UNIT_STATUSES:
@@ -172,6 +175,18 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             self.assertIn(f"`{literal}`", self.protocol_text)
         for literal in ("live-supported", "proof-blocked", "experimental", "manual-only"):
             self.assertIn(f"`{literal}`", self.protocol_text)
+
+    def test_protocol_documents_plan_doc_current_heuristic(self):
+        for token in (
+            "Plan-Doc-Current Heuristic",
+            "plan_skipped",
+            "--force-replan",
+            "EVENT_STATUSES",
+            "PHASE_STATUSES",
+            "is_plan_doc_current",
+            "metadata.plan_doc_skip",
+        ):
+            self.assertIn(token, self.protocol_text)
 
     def test_protocol_mentions_plan_frontmatter_and_manual_repair_rules(self):
         for token in (
