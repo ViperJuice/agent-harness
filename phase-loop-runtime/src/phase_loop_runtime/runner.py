@@ -3796,10 +3796,16 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
 
 
 def _parse_native_closeout_status(text: str) -> dict[str, object]:
-    if not _find_json_closeout_payload(text):
+    # Extract the closeout dict from the raw executor output (which may be
+    # JSONL with many event lines before the final closeout JSON), then
+    # serialize it back to JSON before handing to BAML. Passing raw multi-
+    # line text to BAML causes it to fail "Failed to find any
+    # PhaseLoopCloseoutV1 @stream.not_null" on intermediate event lines.
+    extracted = _find_json_closeout_payload(text)
+    if not extracted:
         return {}
     try:
-        payload = parse_baml_response("EmitPhaseCloseout", text).payload
+        payload = parse_baml_response("EmitPhaseCloseout", json.dumps(extracted)).payload
     except BamlValidationError as exc:
         return {
             "automation_status": "blocked",

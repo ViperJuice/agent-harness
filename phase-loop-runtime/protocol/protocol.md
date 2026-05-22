@@ -224,6 +224,23 @@ preflight block decisions. Dotfiles may echo validated adoption role metadata
 and advisory hints in closeout, but it must not make archive, mirror,
 canonical refresh, replan, or block decisions.
 
+## Dotfiles Source And Visibility Contracts
+
+Dotfiles source authority for governed-pipeline adoption is frozen in
+`docs/dotfiles-source-authority-contract.md`. That document classifies every
+top-level path with `path_glob`, `classification`, `owner`,
+`ingestion_policy`, and rationale. Governed-pipeline may pull paths classified
+as `authority`; it must reject `derived`, `runtime_state`, `private`, and
+`out_of_scope` paths as adoption source material.
+
+Dotfiles cross-repo visibility is frozen in
+`docs/dotfiles-visibility-contract.md`. That contract exposes only adoption
+inputs, redacted runtime metadata, and the operating-mode declaration. The
+surface is pull-only: dotfiles does not push into governed-pipeline or Portal,
+governed-pipeline must not write into dotfiles, consumers must not depend on
+runtime state paths, and BAML schema contracts must be imported rather than
+paraphrased.
+
 In standalone mode, root `specs/**` is the default human-visible future-spec
 discovery root when no phase plan, source bundle, or repo-local config
 overrides it. Legacy or project-specific seed roots such as `Specs/**` are
