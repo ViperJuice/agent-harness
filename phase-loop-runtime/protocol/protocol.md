@@ -443,6 +443,58 @@ runner has no way to independently verify the IF gates were satisfied. A
 future "closeout-payload IF-gate cross-check" would prevent the bug at
 emission time; `reopen` is the recovery path until that ships.
 
+## Evidence Audit Command
+
+`phase-loop evidence-audit --repo . [--dirty-only|--full-tree]` is an
+operator-callable spot-check for fake-evidence patterns in dirty-tree
+artifacts. Run it before `phase-loop reconcile` on phases producing
+comparison/verdict evidence (visual-fidelity diffs, audit reports,
+schema validation traces).
+
+Surfaced after the regen 2026-05-22 VISUALMATCH incident, where the
+executor committed 21 artifact files that satisfied the v20 closeout
+schema (terminal_status: complete, produced_if_gates populated, real
+dirty_paths) but contained faked evidence: 19 "distinct" prototype
+PNGs all shared one md5 hash; 19/19 similarity scores at exactly
+0.999999; boilerplate verdict markdown. v20's IF-gate Tier 1
+validator (`closeout_validation.validate_produced_gates`) only checks
+that produced gate names match plan `## Produces` names — it cannot
+see evidence content. Operators must spot-check; `phase-loop
+evidence-audit` codifies the spot-check.
+
+Three detectors:
+
+- **`duplicate-content`** — N or more files share the same sha256.
+  Default threshold N=3 (`--min-duplicates`). Catches the placeholder-
+  duplicated pattern (e.g., the 19 identical PNGs).
+- **`uniform-numeric`** — numeric arrays >= 4 elements (or object
+  arrays where every object has an identical numeric field) where all
+  values are within `--uniform-epsilon` (default 1e-6). Catches the
+  template-fill pattern (e.g., 19/19 entries at similarity=0.999999).
+- **`missing-references`** — JSON artifacts cite path-shaped string
+  values that don't exist on disk. Catches the cited-but-never-created
+  pattern.
+
+Exit codes: 0 if clean (no findings), 5 if suspect findings present.
+Use the exit code as a pre-reconcile gate:
+
+```bash
+phase-loop evidence-audit --repo . && \
+  phase-loop reconcile --repo . --roadmap specs/phase-plans-vN.md \
+                       --phase <ALIAS> ...
+```
+
+Detectors deliberately omitted from this hotfix:
+
+- **Boilerplate-text detection** — fuzzy heuristic, harder to get right.
+  Add later if needed.
+- **Statistical anomaly detection** beyond exact-uniformity — could
+  catch cases where values vary slightly but suspiciously. Defer.
+
+Full Tier 2 evidence verification with runner-enforced spot-checks at
+closeout time is a deferred follow-up roadmap. `evidence-audit` is the
+operator-driven Tier 1.5 until then.
+
 ### Verified Dirty Closeout Auto-Recovery
 
 When the runner has already performed a verified dirty closeout recovery, a

@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "evidence-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -175,6 +175,22 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=("blocked", "stale", "complete", "awaiting_phase_closeout", "operator_halt", "terminal_exit"),
             )
             sub.add_argument("--once", action="store_true")
+        if name == "evidence-audit":
+            sub.description = (
+                "Operator-callable spot-check for fake-evidence patterns in dirty-tree artifacts. "
+                "Detects: (1) duplicate-content — N or more files share the same sha256 "
+                "(e.g., 19 \"distinct\" PNGs all the same placeholder); (2) uniform-numeric — "
+                "numeric arrays >= 4 elements where all values are within epsilon "
+                "(e.g., 19/19 similarity scores at 0.999999); (3) missing-references — JSON "
+                "artifacts cite path-shaped strings that don't exist on disk. "
+                "Run before `phase-loop reconcile` on phases producing comparison/verdict evidence. "
+                "Exits 0 if clean, 5 if suspect findings."
+            )
+            sub.add_argument("--dirty-only", action="store_true", default=True, help="Audit only currently-modified/untracked paths (default).")
+            sub.add_argument("--full-tree", dest="dirty_only", action="store_false", help="Audit every tracked file in the repo (slow; forensic).")
+            sub.add_argument("--min-duplicates", type=int, default=3, help="Min number of files sharing a sha256 before flagging. Default 3.")
+            sub.add_argument("--uniform-epsilon", type=float, default=1e-6, help="Numeric uniformity tolerance. Default 1e-6.")
+            sub.add_argument("--uniform-min-length", type=int, default=4, help="Min array length to check for uniformity. Default 4.")
     return parser
 
 
@@ -189,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     as_json = bool(args.json)
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json)
+    if command == "evidence-audit":
+        return _evidence_audit_command(repo=repo, args=args, as_json=as_json)
     if command in {"run", "resume", "dry-run"} and bool(getattr(args, "reset_capability", False)):
         clear_degradation(repo)
 
@@ -645,6 +663,30 @@ def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_j
     write_tui_handoff(repo, roadmap, snapshot, action="reopen")
     print(render_status(snapshot, as_json=as_json))
     return 0
+
+
+def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    """Spot-check dirty-tree artifacts for fake-evidence patterns.
+
+    Operator-callable helper that codifies the v20 spot-check protocol:
+    detects duplicate-content (sha256 dup across "distinct" files),
+    uniform-numeric (epsilon-tight value arrays), and missing-references
+    (cited paths that don't exist on disk).
+    """
+    from .evidence_audit import run_evidence_audit, render_text
+
+    result = run_evidence_audit(
+        repo,
+        dirty_only=getattr(args, "dirty_only", True),
+        min_duplicates=getattr(args, "min_duplicates", 3),
+        uniform_epsilon=getattr(args, "uniform_epsilon", 1e-6),
+        uniform_min_length=getattr(args, "uniform_min_length", 4),
+    )
+    if as_json:
+        print(json.dumps(result.to_json(), indent=2))
+    else:
+        print(render_text(result))
+    return 0 if result.is_clean() else 5
 
 
 def _direct_invocation_blocker(
