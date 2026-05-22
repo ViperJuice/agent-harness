@@ -70,7 +70,7 @@ class BamlRequest:
 class ParsedResponse:
     function_name: str
     payload: dict[str, Any]
-    value: PhaseLoopCloseoutV1
+    value: Any
 
 
 def build_baml_request(function_name: str, payload: dict[str, Any] | None = None) -> BamlRequest:
@@ -99,6 +99,12 @@ def build_baml_request(function_name: str, payload: dict[str, Any] | None = None
 
 
 def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
+    if _is_class_name(function_name):
+        schema = export_function_schema(function_name)
+        payload = _find_json_payload(str(raw_text or ""))
+        _validate_payload_against_schema(payload, schema)
+        return ParsedResponse(function_name=function_name, payload=payload, value=payload)
+
     runtime, ctx_manager = _runtime()
     enum_module, class_module = _type_modules()
     try:
@@ -130,17 +136,17 @@ def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
 def export_function_schema(function_name: str) -> dict[str, Any]:
     baml_files = _read_baml_files()
     baml_text = "\n".join(baml_files.values())
-    return_type = _function_return_type(baml_text, function_name)
+    return_type = _export_target_type(baml_text, function_name)
     fields = _class_fields(baml_text, return_type)
     enum_literals = _enum_literal_map()
     required = [field_name for field_name, _field_type, _optional in fields]
     properties = {
-        field_name: _schema_for_baml_field(field_name, field_type, optional, enum_literals)
+        field_name: _schema_for_baml_field(baml_text, field_name, field_type, optional, enum_literals, seen=(return_type,))
         for field_name, field_type, optional in fields
     }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "PhaseLoopNativeCloseout",
+        "title": "PhaseLoopNativeCloseout" if return_type == "PhaseLoopCloseoutV1" else return_type,
         "type": "object",
         "additionalProperties": False,
         "required": required,
@@ -190,6 +196,23 @@ def _function_return_type(baml_text: str, function_name: str) -> str:
     if not match:
         raise BamlValidationError(f"BAML function not found: {function_name}")
     return match.group(1)
+
+
+def _export_target_type(baml_text: str, name: str) -> str:
+    try:
+        return _function_return_type(baml_text, name)
+    except BamlValidationError:
+        if _class_exists(baml_text, name):
+            return name
+        raise
+
+
+def _is_class_name(name: str) -> bool:
+    return _class_exists("\n".join(_read_baml_files().values()), name)
+
+
+def _class_exists(baml_text: str, class_name: str) -> bool:
+    return bool(re.search(rf"\bclass\s+{re.escape(class_name)}\s*\{{", baml_text))
 
 
 def _class_fields(baml_text: str, class_name: str) -> list[tuple[str, str, bool]]:
@@ -249,16 +272,37 @@ def _enum_literals(field_name: str) -> tuple[str, ...]:
     return values
 
 
-def _schema_for_baml_field(field_name: str, field_type: str, optional: bool, enum_literals: dict[str, tuple[str, ...]]) -> dict[str, Any]:
+def _schema_for_baml_field(
+    baml_text: str,
+    field_name: str,
+    field_type: str,
+    optional: bool,
+    enum_literals: dict[str, tuple[str, ...]],
+    *,
+    seen: tuple[str, ...],
+) -> dict[str, Any]:
+    array_item_type = field_type[:-2] if field_type.endswith("[]") else None
     if field_type == "string":
         schema: dict[str, Any] = {"type": ["string", "null"] if optional else "string"}
     elif field_type == "bool":
         schema = {"type": ["boolean", "null"] if optional else "boolean"}
-    elif field_type == "string[]":
+    elif array_item_type == "string":
         if optional:
             schema = {"type": ["array", "null"], "items": {"type": "string"}}
         else:
             schema = {"type": "array", "items": {"type": "string"}}
+    elif array_item_type and _class_exists(baml_text, array_item_type):
+        item_schema = _schema_for_baml_class(baml_text, array_item_type, enum_literals, seen=seen)
+        if optional:
+            schema = {"type": ["array", "null"], "items": item_schema}
+        else:
+            schema = {"type": "array", "items": item_schema}
+    elif _class_exists(baml_text, field_type):
+        object_schema = _schema_for_baml_class(baml_text, field_type, enum_literals, seen=seen)
+        if optional:
+            schema = {**object_schema, "type": ["object", "null"]}
+        else:
+            schema = object_schema
     else:
         raise BamlValidationError(f"unsupported BAML field type for schema export: {field_type}")
     if field_name in enum_literals:
@@ -270,6 +314,70 @@ def _schema_for_baml_field(field_name: str, field_type: str, optional: bool, enu
     if description:
         schema["description"] = description
     return schema
+
+
+def _schema_for_baml_class(
+    baml_text: str,
+    class_name: str,
+    enum_literals: dict[str, tuple[str, ...]],
+    *,
+    seen: tuple[str, ...],
+) -> dict[str, Any]:
+    if class_name in seen:
+        raise BamlValidationError(f"recursive BAML class export is unsupported: {class_name}")
+    fields = _class_fields(baml_text, class_name)
+    required = [field_name for field_name, _field_type, _optional in fields]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": {
+            field_name: _schema_for_baml_field(
+                baml_text,
+                field_name,
+                field_type,
+                optional,
+                enum_literals,
+                seen=(*seen, class_name),
+            )
+            for field_name, field_type, optional in fields
+        },
+    }
+
+
+def _validate_payload_against_schema(payload: Any, schema: dict[str, Any], path: str = "$") -> None:
+    allowed_type = schema.get("type")
+    if isinstance(allowed_type, list) and payload is None and "null" in allowed_type:
+        return
+    effective_type = next((item for item in allowed_type if item != "null"), None) if isinstance(allowed_type, list) else allowed_type
+    if effective_type == "object":
+        if not isinstance(payload, dict):
+            raise BamlValidationError(f"{path} must be an object")
+        required = set(schema.get("required", ()))
+        missing = required.difference(payload)
+        extra = set(payload).difference(schema.get("properties", {}))
+        if missing:
+            raise BamlValidationError(f"{path} missing required fields: {', '.join(sorted(missing))}")
+        if schema.get("additionalProperties") is False and extra:
+            raise BamlValidationError(f"{path} has unsupported fields: {', '.join(sorted(extra))}")
+        for field_name, field_schema in schema.get("properties", {}).items():
+            if field_name in payload:
+                _validate_payload_against_schema(payload[field_name], field_schema, f"{path}.{field_name}")
+    elif effective_type == "array":
+        if not isinstance(payload, list):
+            raise BamlValidationError(f"{path} must be an array")
+        for index, item in enumerate(payload):
+            _validate_payload_against_schema(item, schema.get("items", {}), f"{path}[{index}]")
+    elif effective_type == "string":
+        if not isinstance(payload, str):
+            raise BamlValidationError(f"{path} must be a string")
+    elif effective_type == "boolean":
+        if not isinstance(payload, bool):
+            raise BamlValidationError(f"{path} must be a boolean")
+    else:
+        raise BamlValidationError(f"{path} has unsupported schema type: {allowed_type}")
+    if "enum" in schema and payload not in schema["enum"]:
+        raise BamlValidationError(f"{path} has unsupported literal")
 
 
 _FIELD_DESCRIPTIONS = {

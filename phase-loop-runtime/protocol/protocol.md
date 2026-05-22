@@ -241,6 +241,24 @@ governed-pipeline must not write into dotfiles, consumers must not depend on
 runtime state paths, and BAML schema contracts must be imported rather than
 paraphrased.
 
+## Dotfiles Schema Pack
+
+The dotfiles BAML schema pack lives under
+`vendor/phase-loop-runtime/baml_src/` and freezes the direct import contracts
+for downstream consumers. The authority class names are
+`DotfilesAdoptionManifest`, `DotfilesRuntimeProjection`,
+`DotfilesC4Document`, and `DotfilesTaskCatalog`.
+
+Consumers import the `.baml` contracts directly or use
+`phase_loop_runtime.baml_modular.export_function_schema(<class name>)` for a
+dialect-clean JSON Schema projection. Protocol prose may describe the pack and
+its consumers, but it must not paraphrase full field definitions as an
+alternate schema source. `DotfilesAdoptionManifest` is the governed-pipeline
+pull manifest shape, `DotfilesRuntimeProjection` is the redacted runtime
+visibility shape, `DotfilesC4Document` carries Markdown/Mermaid source for
+deterministic rendering, and `DotfilesTaskCatalog` carries audience-tagged task
+entries.
+
 In standalone mode, root `specs/**` is the default human-visible future-spec
 discovery root when no phase plan, source bundle, or repo-local config
 overrides it. Legacy or project-specific seed roots such as `Specs/**` are

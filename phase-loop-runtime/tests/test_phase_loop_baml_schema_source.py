@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 BAML_SOURCE = ROOT / "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml"
+BAML_SRC_DIR = ROOT / "vendor/phase-loop-runtime/baml_src"
 
 
 class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):
@@ -32,6 +33,62 @@ class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):
             self.assertIn(literal, text)
         self.assertIn("Completed closeouts must include every IF gate", text)
         self.assertIn("must not leave produced_if_gates empty", text)
+
+    def test_dotfiles_schema_sources_are_declared(self):
+        expected = {
+            "dotfiles_adoption_manifest.baml": (
+                "class DotfilesAdoptionManifest",
+                "source_roots",
+                "schema_refs",
+                "c4_document_refs",
+                "task_catalog_refs",
+                "operating_mode",
+                "redacted_metadata_ref",
+                "visibility_contract_ref",
+                "version",
+                "generated_at",
+            ),
+            "dotfiles_runtime_projection.baml": (
+                "class DotfilesRuntimeProjection",
+                "runtime_version",
+                "protocol_version",
+                "harness",
+                "source_bundle_digest",
+                "closeout_status",
+                "handoff_status",
+                "current_phase_boundary",
+                "last_event_iso",
+                "install_status",
+                "gitignore_init_status",
+                "operating_mode",
+            ),
+            "dotfiles_c4_document.baml": (
+                "class DotfilesC4Document",
+                "title",
+                "mermaid_context_source",
+                "mermaid_container_source",
+                "mermaid_component_source",
+                "anchors",
+                "description",
+            ),
+            "dotfiles_task_catalog.baml": (
+                "class DotfilesTaskCatalog",
+                "class DotfilesTask",
+                "tasks",
+                "audiences",
+                "references",
+                "id",
+                "title",
+                "audience",
+                "owner",
+                "dependencies",
+                "status",
+            ),
+        }
+        for file_name, fragments in expected.items():
+            text = (BAML_SRC_DIR / file_name).read_text(encoding="utf-8")
+            for fragment in fragments:
+                self.assertIn(fragment, text)
 
 
 if __name__ == "__main__":

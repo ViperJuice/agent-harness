@@ -10,7 +10,14 @@ class PhaseLoopBamlDependencyTest(unittest.TestCase):
         self.assertIn('"baml-py>=0.222,<0.223"', text)
         self.assertIn('"pydantic>=2,<3"', text)
         self.assertIn('"share/phase-loop-runtime/baml_src"', text)
-        self.assertIn('"baml_src/emit_phase_closeout.baml"', text)
+        for name in (
+            "emit_phase_closeout",
+            "dotfiles_adoption_manifest",
+            "dotfiles_runtime_projection",
+            "dotfiles_c4_document",
+            "dotfiles_task_catalog",
+        ):
+            self.assertIn(f'"baml_src/{name}.baml"', text)
 
     def test_baml_py_imports_after_install(self):
         import baml_py

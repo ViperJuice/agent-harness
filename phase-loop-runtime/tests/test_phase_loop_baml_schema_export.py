@@ -49,6 +49,30 @@ class PhaseLoopBamlSchemaExportTest(unittest.TestCase):
         right = json.dumps(export_function_schema("EmitPhaseCloseout"), sort_keys=True)
         self.assertEqual(left, right)
 
+    def test_dotfiles_class_name_schema_exports_nested_object_arrays(self):
+        schema = export_function_schema("DotfilesTaskCatalog")
+
+        self.assertEqual(schema["title"], "DotfilesTaskCatalog")
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(set(schema["required"]), {"tasks", "audiences", "references"})
+        task_items = schema["properties"]["tasks"]["items"]
+        self.assertEqual(task_items["type"], "object")
+        self.assertFalse(task_items["additionalProperties"])
+        self.assertEqual(
+            set(task_items["required"]),
+            {"id", "title", "audience", "owner", "dependencies", "status"},
+        )
+        self.assertEqual(task_items["properties"]["dependencies"]["items"]["type"], "string")
+        for node in _walk_schema(schema):
+            self.assertTrue(UNSUPPORTED_SCHEMA_KEYS.isdisjoint(node))
+
+    def test_emit_phase_closeout_schema_remains_unchanged_after_class_exports(self):
+        before = export_function_schema("EmitPhaseCloseout")
+        export_function_schema("DotfilesAdoptionManifest")
+        after = export_function_schema("EmitPhaseCloseout")
+
+        self.assertEqual(before, after)
+
     def test_unknown_or_unavailable_baml_export_raises_validation_error(self):
         with self.assertRaises(BamlValidationError):
             export_function_schema("UnknownFunction")
