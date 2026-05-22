@@ -23,6 +23,7 @@ from .discovery import (
     load_phase_source_bundle,
     parse_automation_status,
     parse_dispatch_hints,
+    parse_dispatch_hints_doc,
     parse_execution_policy,
     parse_pipeline_plan_metadata,
     parse_plan_ownership,
@@ -1024,16 +1025,70 @@ def run_loop(
                 prompt_profile = "repair"
             else:
                 prompt_profile = "plan"
+            plan_hints_doc = parse_dispatch_hints_doc(plan, kind="plan") if plan is not None else ({}, ())
+            roadmap_hints_doc = parse_dispatch_hints_doc(roadmap, kind="roadmap")
             plan_dispatch_hints = (
-                dispatch_hints_for_action(parse_dispatch_hints(plan, kind="plan"), launch_action) if plan is not None else None
+                dispatch_hints_for_action(plan_hints_doc[0], launch_action) if plan is not None else None
             )
-            roadmap_dispatch_hints = dispatch_hints_for_action(parse_dispatch_hints(roadmap, kind="roadmap"), launch_action)
+            roadmap_dispatch_hints = dispatch_hints_for_action(roadmap_hints_doc[0], launch_action)
+            # Dispatch-hints parse errors (e.g. planner emitted a literal not in
+            # DISPATCH_CAPABILITIES allowlist) surface as contract_bug blockers
+            # rather than crashing the runner. Same pattern as F3 Execution Policy.
+            dispatch_hints_parse_error = (plan_hints_doc[1] + roadmap_hints_doc[1])
             plan_execution_policy_doc = parse_execution_policy(plan, kind="plan") if plan is not None else None
             roadmap_execution_policy_doc = parse_execution_policy(roadmap, kind="roadmap")
             policy_parse_error = (
                 (plan_execution_policy_doc.parse_error if plan_execution_policy_doc else None)
                 or roadmap_execution_policy_doc.parse_error
             )
+            if dispatch_hints_parse_error:
+                first = dispatch_hints_parse_error[0]
+                allowed_msg = (
+                    "DispatchHints literal allowlist — see DISPATCH_CAPABILITIES / "
+                    "EXECUTORS in phase_loop_runtime/models.py. "
+                    "Either patch the plan to remove the invalid literal "
+                    "OR add the literal to the runner allowlist and pip install."
+                )
+                classifications[alias] = "blocked"
+                dispatch_blocker = {
+                    "human_required": True,
+                    "blocker_class": "contract_bug",
+                    "blocker_summary": (
+                        f"{first.path}: ## Dispatch Hints bucket {first.bucket!r} "
+                        f"contains an invalid literal "
+                        f"({first.invalid_literal or 'unknown'}). "
+                        f"Runner error: {first.raw_message}. {allowed_msg}"
+                    ),
+                    "required_human_inputs": (),
+                }
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action=action,
+                        status="blocked",
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        blocker=dispatch_blocker,
+                        metadata={
+                            "dispatch_hints_parse_error": {
+                                "path": first.path,
+                                "bucket": first.bucket,
+                                "invalid_literal": first.invalid_literal,
+                                "raw_message": first.raw_message,
+                                "error_count": len(dispatch_hints_parse_error),
+                            },
+                        },
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                current = alias
+                break
             if policy_parse_error is not None:
                 classifications[alias] = "blocked"
                 policy_blocker = {

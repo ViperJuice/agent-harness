@@ -110,6 +110,29 @@ class PlanLane:
     text: str
 
 
+@dataclass(frozen=True)
+class DispatchHintsParseError:
+    """Surfaced when ``## Dispatch Hints`` emits a literal not in the runner's
+    DISPATCH_CAPABILITIES / EXECUTORS allowlist. Mirrors F3's
+    ExecutionPolicyParseError pattern: callers convert this to a
+    contract_bug blocker instead of crashing on raw ValueError."""
+
+    path: str
+    bucket: str  # e.g., "default", "execute", "plan"
+    raw_message: str  # the original ValueError from require_literal
+    invalid_literal: str | None = None  # extracted from raw_message when possible
+
+
+def _extract_invalid_literal(message: str) -> str | None:
+    """Best-effort extraction of the offending literal from a require_literal
+    ValueError message. Format is typically: 'invalid {label}: {value}'."""
+    if ":" in message:
+        candidate = message.rsplit(":", 1)[-1].strip()
+        if candidate:
+            return candidate
+    return None
+
+
 def resolve_repo(repo: str | Path | None = None) -> Path:
     base = Path(repo or os.getcwd()).expanduser().resolve()
     try:
@@ -234,13 +257,32 @@ def parse_roadmap_phases(roadmap: Path) -> list[str]:
 
 
 def parse_dispatch_hints(path: Path, *, kind: str) -> dict[str, DispatchHints]:
+    """Backward-compat entry: returns just the hints dict, silently dropping
+    buckets that contain unknown literals (which used to crash). For the
+    diagnostic-aware version that surfaces a parse_error for the runner to
+    convert to a contract_bug blocker, use ``parse_dispatch_hints_doc``."""
+    hints, _ = parse_dispatch_hints_doc(path, kind=kind)
+    return hints
+
+
+def parse_dispatch_hints_doc(
+    path: Path, *, kind: str
+) -> tuple[dict[str, DispatchHints], tuple[DispatchHintsParseError, ...]]:
+    """Parse ## Dispatch Hints with graceful soft-fail.
+
+    Per-bucket DispatchHints construction wrapped in try/except so a planner
+    that invented an unknown literal (e.g. ``browser_automation`` before it
+    was allowlisted) surfaces a structured DispatchHintsParseError rather
+    than crashing the whole runner. Mirrors F3's parse_execution_policy
+    pattern (parse_error field → runner converts to contract_bug blocker).
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return {}
+        return {}, ()
     section_match = DISPATCH_SECTION_RE.search(text)
     if not section_match:
-        return {}
+        return {}, ()
     section_body = section_match.group("body")
     buckets: dict[str, dict[str, list[str]]] = {}
     subsection_matches = list(DISPATCH_SUBSECTION_RE.finditer(section_body))
@@ -252,18 +294,31 @@ def parse_dispatch_hints(path: Path, *, kind: str) -> dict[str, DispatchHints]:
     else:
         _collect_dispatch_lines(section_body, buckets, default_key="default")
     result: dict[str, DispatchHints] = {}
+    errors: list[DispatchHintsParseError] = []
     for action_key, values in buckets.items():
         action = None if action_key == "default" else action_key
-        result[action_key] = DispatchHints(
-            preferred_executors=tuple(values.get("preferred_executors", ())),
-            allowed_executors=tuple(values.get("allowed_executors", ())),
-            fallback_executors=tuple(values.get("fallback_executors", ())),
-            disabled_executors=tuple(values.get("disabled_executors", ())),
-            required_capabilities=tuple(values.get("required_capabilities", ())),
-            source=kind if action is None else f"{kind}:{action}",
-            action=action,
-        )
-    return result
+        try:
+            result[action_key] = DispatchHints(
+                preferred_executors=tuple(values.get("preferred_executors", ())),
+                allowed_executors=tuple(values.get("allowed_executors", ())),
+                fallback_executors=tuple(values.get("fallback_executors", ())),
+                disabled_executors=tuple(values.get("disabled_executors", ())),
+                required_capabilities=tuple(values.get("required_capabilities", ())),
+                source=kind if action is None else f"{kind}:{action}",
+                action=action,
+            )
+        except ValueError as exc:
+            errors.append(
+                DispatchHintsParseError(
+                    path=str(path),
+                    bucket=action_key,
+                    raw_message=str(exc),
+                    invalid_literal=_extract_invalid_literal(str(exc)),
+                )
+            )
+            # Skip the bucket — downstream callers see no hints for this
+            # action_key, which is preferable to crashing the whole loop.
+    return result, tuple(errors)
 
 
 def dispatch_hints_for_action(hints: dict[str, DispatchHints], action: str) -> DispatchHints | None:
