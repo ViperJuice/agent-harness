@@ -568,6 +568,34 @@ Runner invocation example:
 phase-loop run --repo . --enable-tier-3 --tier-3-budget 3
 ```
 
+### Enabling Tier 3
+
+Operators must treat Tier 3 as an opt-in rollout path, not a default runner
+mode. Before enabling it for a phase, run the non-secret calibration corpus:
+
+```bash
+python3 tests/calibrate_tier3.py --dry-run
+python3 tests/calibrate_tier3.py --confidence-threshold 0.85 --fail-on-accuracy-threshold 0.80
+```
+
+The dry run validates fixture shape and expected outcomes without live LLM
+calls. A live calibration run reports verdict, confidence, estimated token and
+cost metadata, accuracy, borderline confidence distribution, recommended
+confidence threshold, and total estimated cost. Use the same provider, model,
+and temperature for reproducibility; confidence should normally remain within
++/-0.05 on the same fixtures.
+
+Roll out one phase at a time through `.phase-loop/evidence-audit.yaml`, monitor
+recent invocation summaries with `phase-loop status --tier-3-history`, and
+rollback by disabling the phase entry if false positives, latency, or cost
+exceed operator tolerance. The status-history surface only reports timestamp,
+phase, verdict, confidence, cost, and latency; it must not expose raw prompts,
+raw responses, artifact contents, or provider payloads.
+
+The v23 `phase_aliases_exclude_tier3` entries for `T2DETECTORS`, `T3SCHEMA`,
+`T3RUNNER`, and `T3VALIDATE` remain in place until v23 completes. Removing
+those exclusions is a separate explicit operator opt-in.
+
 Exit codes: 0 if clean (no findings), 5 if suspect findings present.
 Use the exit code as a pre-reconcile gate:
 

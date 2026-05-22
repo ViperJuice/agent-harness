@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .closeout import build_phase_loop_closeout
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, select_roadmap
-from .events import append_event
+from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--apply", action="store_true")
         if name == "status":
             sub.add_argument("--runtime-projection", action="store_true")
+            sub.add_argument("--tier-3-history", action="store_true", help="Print recent Tier 3 evidence-audit summaries without raw prompts or responses.")
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
             sub.add_argument("--apply", action="store_true")
@@ -366,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = status_snapshot(repo, roadmap, pipeline_mode=args.pipeline_mode or "standalone")
         write_state(repo, snapshot)
         write_tui_handoff(repo, roadmap, snapshot, action="status")
+        if bool(getattr(args, "tier_3_history", False)):
+            print(_tier_3_history(repo, as_json=as_json))
+            return 0
         if bool(getattr(args, "runtime_projection", False)):
             projection = build_runtime_projection(
                 repo,
@@ -467,6 +471,43 @@ def main(argv: list[str] | None = None) -> int:
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _tier_3_history(repo: Path, *, as_json: bool = False, limit: int = 10) -> str:
+    records: list[dict[str, object]] = []
+    for event in read_events(repo):
+        if event.get("action") != "evidence_audit_tier3":
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        records.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "phase": event.get("phase"),
+                "verdict": metadata.get("verdict"),
+                "confidence": metadata.get("confidence"),
+                "estimated_cost_usd": metadata.get("estimated_cost_usd"),
+                "latency_ms": metadata.get("latency_ms"),
+            }
+        )
+    records = records[-limit:]
+    if as_json:
+        return json.dumps({"tier_3_history": records}, indent=2, sort_keys=True)
+    if not records:
+        return "Tier 3 history: no evidence_audit_tier3 events recorded."
+    lines = ["Tier 3 history:"]
+    for record in records:
+        cost = record["estimated_cost_usd"]
+        cost_text = "unknown" if cost is None else str(cost)
+        latency = record["latency_ms"]
+        latency_text = "unknown" if latency is None else f"{latency}ms"
+        lines.append(
+            "  "
+            f"{record['timestamp']} phase={record['phase']} verdict={record['verdict']} "
+            f"confidence={record['confidence']} cost_usd={cost_text} latency={latency_text}"
+        )
+    return "\n".join(lines)
 
 
 def _run_returncode(snapshot: StateSnapshot, results: list) -> int:

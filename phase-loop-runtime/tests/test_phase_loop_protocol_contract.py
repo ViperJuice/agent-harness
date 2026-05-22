@@ -142,6 +142,19 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.protocol_text)
 
+    def test_protocol_documents_tier3_rollout_enablement_path(self):
+        for token in (
+            "Enabling Tier 3",
+            "python3 tests/calibrate_tier3.py --dry-run",
+            "confidence threshold",
+            "phase-loop status --tier-3-history",
+            "rollback",
+            "false positives",
+            "cost",
+            "phase_aliases_exclude_tier3",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_protocol_includes_frozen_literals(self):
         for literal in PHASE_STATUSES:
             self.assertIn(f"`{literal}`", self.protocol_text)

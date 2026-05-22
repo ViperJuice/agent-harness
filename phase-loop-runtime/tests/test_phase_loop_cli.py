@@ -3,10 +3,13 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_test_utils import ROOT, make_code_index_blocker_fixture, make_greenfield_closeout_fixture, make_repo
 from phase_loop_test_utils import provenanced_event, provenanced_state
@@ -183,6 +186,76 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             alias_help = subprocess.run([str(CODEX_ALIAS_BIN), "--help"], text=True, capture_output=True, check=True)
             self.assertIn("maintain-skills", alias_help.stdout)
+
+    def test_status_tier_3_history_reports_summaries_without_raw_payloads(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            event_dir = repo / ".phase-loop"
+            event_dir.mkdir()
+            (event_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-22T00:00:00Z",
+                        "repo": str(repo),
+                        "roadmap": str(roadmap),
+                        "phase": "RUNNER",
+                        "action": "evidence_audit_tier3",
+                        "status": "executed",
+                        "metadata": {
+                            "verdict": "real",
+                            "confidence": 0.91,
+                            "estimated_cost_usd": 0.0123,
+                            "latency_ms": 4321,
+                            "prompt_sha256": "abc",
+                            "response_sha256": "def",
+                            "raw_prompt": "should not print",
+                            "raw_response": "should not print",
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            src = str(Path(__file__).resolve().parents[1] / "src")
+            env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+            result = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+
+            self.assertIn("Tier 3 history:", result.stdout)
+            self.assertIn("phase=RUNNER", result.stdout)
+            self.assertIn("verdict=real", result.stdout)
+            self.assertIn("confidence=0.91", result.stdout)
+            self.assertIn("cost_usd=0.0123", result.stdout)
+            self.assertIn("latency=4321ms", result.stdout)
+            self.assertNotIn("should not print", result.stdout)
+            self.assertNotIn("prompt_sha256", result.stdout)
+
+    def test_status_tier_3_history_handles_empty_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+
+            env = os.environ.copy()
+            src = str(Path(__file__).resolve().parents[1] / "src")
+            env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+            result = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+
+            self.assertIn("no evidence_audit_tier3 events recorded", result.stdout)
 
     def test_sync_skills_json_reports_bridge_parity_without_roadmap(self):
         with tempfile.TemporaryDirectory() as td:
