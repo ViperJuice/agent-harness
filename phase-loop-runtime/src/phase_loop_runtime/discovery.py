@@ -7,7 +7,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from .models import (
@@ -103,6 +103,9 @@ class PlanOwnership:
             or repo_path in self.owned_patterns
             or any(_owned_pattern_matches(repo_path, pattern) for pattern in self.owned_patterns)
         )
+
+    def matches_dirty_output(self, repo_path: str) -> bool:
+        return self.matches(repo_path) or expanded_dirty_ownership_matches(self, repo_path)
 
 
 @dataclass(frozen=True)
@@ -1496,6 +1499,52 @@ def _owned_pattern_matches(repo_path: str, pattern: str) -> bool:
     if "*" not in pattern and "?" not in pattern:
         return False
     return fnmatchcase(repo_path, pattern)
+
+
+def expanded_dirty_ownership_matches(ownership: PlanOwnership, repo_path: str) -> bool:
+    if not _valid_relative_posix_path(repo_path):
+        return False
+    return any(_dirty_output_matches_owned_pattern(repo_path, pattern) for pattern in ownership.owned_patterns)
+
+
+def _dirty_output_matches_owned_pattern(repo_path: str, pattern: str) -> bool:
+    if not _valid_relative_posix_path(pattern):
+        return False
+    return _matches_test_or_fixture_sibling(repo_path, pattern) or _matches_vendor_module_test(repo_path, pattern)
+
+
+def _valid_relative_posix_path(repo_path: str) -> bool:
+    path = PurePosixPath(repo_path)
+    return bool(repo_path) and not path.is_absolute() and ".." not in path.parts
+
+
+def _matches_test_or_fixture_sibling(repo_path: str, pattern: str) -> bool:
+    if pattern.endswith("/") or _has_glob(pattern):
+        return False
+    owned = PurePosixPath(pattern)
+    target = PurePosixPath(repo_path)
+    if not owned.suffix or target.parent.parent != owned.parent:
+        return False
+    if target.parent.name == "__tests__":
+        return target.name in {f"{owned.stem}.test{owned.suffix}", f"{owned.stem}.spec{owned.suffix}"}
+    if target.parent.name == "__fixtures__":
+        return target.name.startswith(f"{owned.stem}.")
+    return False
+
+
+def _matches_vendor_module_test(repo_path: str, pattern: str) -> bool:
+    owned = PurePosixPath(pattern)
+    target = PurePosixPath(repo_path)
+    if len(owned.parts) < 3 or owned.parts[0] != "vendor" or owned.parts[2] != "src":
+        return False
+    return (
+        len(target.parts) == 4
+        and target.parts[0] == "vendor"
+        and target.parts[1] == owned.parts[1]
+        and target.parts[2] == "tests"
+        and target.parts[3].startswith("test_")
+        and target.suffix == ".py"
+    )
 
 
 def _has_glob(pattern: str) -> bool:

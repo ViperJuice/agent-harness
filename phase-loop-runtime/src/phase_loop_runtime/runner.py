@@ -4911,7 +4911,7 @@ def _classify_dirty_paths(
         path for path in post_launch_dirty_paths if current_phase and is_sibling_phase_plan_doc(path, roadmap, current_phase)
     ]
     expected_sibling_set = set(expected_sibling_dirty)
-    phase_owned = [path for path in post_launch_dirty_paths if ownership.matches(path)]
+    phase_owned = [path for path in post_launch_dirty_paths if ownership.matches_dirty_output(path)]
     phase_owned_set = set(phase_owned)
 
     rename_map = _detect_dirty_renames(repo)
@@ -4921,7 +4921,7 @@ def _classify_dirty_paths(
             continue
         if src not in post_launch_dirty_paths:
             continue
-        if dst in phase_owned_set or ownership.matches(dst):
+        if dst in phase_owned_set or ownership.matches_dirty_output(dst):
             phase_owned.append(src)
             phase_owned_set.add(src)
             rename_sources_promoted.append(src)

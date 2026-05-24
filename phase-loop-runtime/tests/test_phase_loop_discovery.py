@@ -10,6 +10,7 @@ from phase_loop_runtime.discovery import (
     WORKFLOW_EXECUTE_SKILLS,
     classify_phase_team_eligibility,
     dispatch_hints_for_action,
+    expanded_dirty_ownership_matches,
     execution_policy_dispatch_hints,
     execution_policy_for_action,
     execution_policy_for_lane,
@@ -527,6 +528,63 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
             )
             self.assertTrue(ownership.matches("specs/phase-plans-v1.md"))
             self.assertTrue(ownership.matches("plans/phase-plan-v1-RUNNER.md"))
+
+    def test_dirty_output_ownership_expands_to_paired_tests_but_strict_matches_stays_false(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("apps/portal/src/lib/feature.ts",))
+
+            ownership = parse_plan_ownership(repo, roadmap, plan)
+
+            self.assertFalse(ownership.matches("apps/portal/src/lib/__tests__/feature.test.ts"))
+            self.assertFalse(ownership.matches("apps/portal/src/lib/__tests__/feature.spec.ts"))
+            self.assertTrue(expanded_dirty_ownership_matches(ownership, "apps/portal/src/lib/__tests__/feature.test.ts"))
+            self.assertTrue(expanded_dirty_ownership_matches(ownership, "apps/portal/src/lib/__tests__/feature.spec.ts"))
+            self.assertTrue(ownership.matches_dirty_output("apps/portal/src/lib/__tests__/feature.test.ts"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "apps/portal/src/lib/__tests__/other.test.ts"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "apps/portal/src/other/__tests__/feature.test.ts"))
+
+    def test_dirty_output_ownership_expands_to_paired_fixtures(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("apps/portal/src/lib/feature.ts",))
+
+            ownership = parse_plan_ownership(repo, roadmap, plan)
+
+            self.assertFalse(ownership.matches("apps/portal/src/lib/__fixtures__/feature.json"))
+            self.assertTrue(expanded_dirty_ownership_matches(ownership, "apps/portal/src/lib/__fixtures__/feature.json"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "apps/portal/src/lib/__fixtures__/other.json"))
+
+    def test_dirty_output_ownership_expands_vendor_src_to_module_tests(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(
+                repo,
+                "RUNNER",
+                roadmap,
+                owned_files=("vendor/sample-runtime/src/sample_runtime/runner.py",),
+            )
+
+            ownership = parse_plan_ownership(repo, roadmap, plan)
+
+            self.assertFalse(ownership.matches("vendor/sample-runtime/tests/test_runner.py"))
+            self.assertTrue(expanded_dirty_ownership_matches(ownership, "vendor/sample-runtime/tests/test_runner.py"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "vendor/other-runtime/tests/test_runner.py"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "vendor/sample-runtime/tests/runner_test.py"))
+            self.assertFalse(expanded_dirty_ownership_matches(ownership, "tests/test_runner.py"))
+
+    def test_dirty_output_ownership_expands_vendor_src_directory_to_module_tests(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("vendor/sample-runtime/src/",))
+
+            ownership = parse_plan_ownership(repo, roadmap, plan)
+
+            self.assertTrue(expanded_dirty_ownership_matches(ownership, "vendor/sample-runtime/tests/test_runner.py"))
 
     def test_parse_plan_ownership_reads_wrapped_owned_files(self):
         with tempfile.TemporaryDirectory() as td:
