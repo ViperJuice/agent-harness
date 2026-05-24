@@ -585,13 +585,17 @@ Portal, Greenfield, or any acknowledged Pipeline contract.
 
 ## Reconcile Command
 
+`phase-loop reconcile` has two distinct modes.
+
+Completion reconcile:
+
 `phase-loop reconcile --phase <ALIAS> [--closeout-commit <SHA>]
-[--repair-summary <text>] [--verification-status <not_run|passed|failed>]
-[--recovery-mode]`
-synthesizes a v28-shape `manual_repair` event for the named phase, recording
-the current `HEAD` (or the supplied SHA) as the closeout commit and marking
-`clears_blocker=true`. It then re-reconciles so `phase-loop status` reflects
-the cleared blocker.
+[--repair-summary <text>] [--verification-status passed] [--recovery-mode]`
+
+This synthesizes a v28-shape `manual_repair` event for the named phase,
+recording the current `HEAD` (or the supplied SHA) as the closeout commit and
+marking `clears_blocker=true`. It then re-reconciles so `phase-loop status`
+reflects the cleared blocker.
 
 The command refuses if the working tree is dirty (override with
 `--allow-dirty`) so the synthesized event always references a clean closeout
@@ -600,6 +604,31 @@ manually authoring the v28 P3/P4 event shape and appending to events.jsonl —
 to one CLI call. Use only as a recovery tool when the executor's work is
 correct but ownership classification or lane-evidence gaps left the runner
 blocked; do not use to bypass legitimate verification failures.
+
+Blocked-state recovery:
+
+`phase-loop reconcile --phase <ALIAS> --to-status planned --reason <text>`
+
+This is an explicit blocked-state recovery transition. It is for stale
+non-human dirty-state blockers only, and it records an auditable
+`manual_recovery` event with `from=blocked`, `to=planned` or `to=unplanned`,
+`trigger=cli`, `clears_blocker=true`, and `verification_status=not_run`.
+It does not mark verification passed and is mutually exclusive with
+`--verification-status passed`.
+
+Recovery is allowed only when the selected phase currently reconciles as
+`blocked` and the blocker is dirty-state-derived, such as
+`dirty_worktree_conflict`, phase-owned dirty output, previous-phase-owned dirty
+output, or stale dirty terminal metadata that no longer blocks current git
+state. If a current plan artifact exists, replay reports the phase as
+`planned`; if no current plan artifact exists, replay reports it as
+`unplanned` so the operator can run the planning workflow again.
+
+Sticky or human-required blockers are refused. This includes
+`missing_secret`, `account_or_billing_setup`, `admin_approval`,
+`product_decision_missing`, and `destructive_operation`. Access, product,
+destructive, contract, repeated-verification, and unknown blockers require
+explicit dirty-state evidence before recovery can clear stale blocker fields.
 
 ### Recovery Mode
 

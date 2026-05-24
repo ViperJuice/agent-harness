@@ -17,6 +17,18 @@ from .provenance import (
 from .state import load_state
 
 
+RECONCILE_EVENT_STATUSES = {
+    "complete",
+    "blocked",
+    "unknown",
+    "executed",
+    "awaiting_phase_closeout",
+    "executing",
+    "planned",
+    "unplanned",
+}
+
+
 def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     phases = classify_all(repo, roadmap)
     current_roadmap_sha = roadmap_sha256(roadmap)
@@ -111,7 +123,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         if phase not in phases:
             ledger_warnings.append(_ledger_warning("event", phase, str(status or ""), "phase_missing", raw_event=event))
             continue
-        if status not in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"}:
+        if status not in RECONCILE_EVENT_STATUSES:
             ledger_warnings.append(_ledger_warning("event", phase, str(status or ""), "not_in_allowed_status_set", raw_event=event))
             continue
         if int(event.get("schema_version") or 1) < 2:
@@ -120,8 +132,11 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         if event.get("action") == "state_transition" and _state_transition_metadata(event) is None:
             ledger_warnings.append(_ledger_warning("event", phase, str(status), "malformed_state_transition", raw_event=event))
             continue
-        if phase in phases and status in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"}:
-            if not status_provenance_matches(status, event.get("roadmap_sha256"), event.get("phase_sha256"), current_roadmap_sha, current_phase_sha.get(phase)):
+        if event.get("action") == "manual_recovery" and _manual_recovery_metadata(event) is None:
+            ledger_warnings.append(_ledger_warning("event", phase, str(status), "malformed_manual_recovery", raw_event=event))
+            continue
+        if phase in phases and status in RECONCILE_EVENT_STATUSES:
+            if not _event_status_provenance_matches(event, str(status), current_roadmap_sha, current_phase_sha.get(phase)):
                 pending_event_warnings.setdefault(phase, []).append(
                     _ledger_warning(
                         "event",
@@ -145,7 +160,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 continue
             latest_untrusted_terminal_event.pop(phase, None)
             pending_event_warnings.pop(phase, None)
-            if phases.get(phase) == "blocked" and status == "planned" and not _planned_event_clears_blocker(event):
+            if phases.get(phase) == "blocked" and status in {"planned", "unplanned"} and not _planned_event_clears_blocker(event):
                 ledger_warnings.append(_ledger_warning("event", phase, str(status), "blocker_supersession", raw_event=event))
                 continue
             closeout_summary = _event_closeout_summary(event)
@@ -155,12 +170,12 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             dirty_summary = _event_dirty_summary(event)
             if dirty_summary:
                 dirty_summary_by_phase[phase] = dirty_summary
-            elif status in {"planned", "complete", "executed", "unknown"}:
+            elif status in {"planned", "unplanned", "complete", "executed", "unknown"}:
                 dirty_summary_by_phase.pop(phase, None)
             if closeout_summary:
                 closeout_summary_by_phase[phase] = closeout_summary
                 latest_closeout_summary = {"phase": phase, **closeout_summary}
-            elif status in {"planned", "unknown"}:
+            elif status in {"planned", "unplanned", "unknown"}:
                 closeout_summary_by_phase.pop(phase, None)
             terminal = _event_terminal_summary(event)
             if terminal and _event_terminal_summary_is_event_only(event, terminal):
@@ -181,7 +196,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 terminal_summary_by_phase.pop(phase, None)
                 if latest_terminal_summary and latest_terminal_summary.get("phase") == phase:
                     latest_terminal_summary = None
-            elif status in {"planned", "unknown"}:
+            elif status in {"planned", "unplanned", "unknown"}:
                 terminal_summary_by_phase.pop(phase, None)
             blocker = _event_blocker(event)
             preserve_human_blocker = (
@@ -204,7 +219,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             blocker
             and phase in phases
             and (phases.get(phase) == "blocked" or (status == "executed" and _truthy(blocker.get("human_required"))))
-            and status_provenance_matches(str(status), event.get("roadmap_sha256"), event.get("phase_sha256"), current_roadmap_sha, current_phase_sha.get(phase))
+            and _event_status_provenance_matches(event, str(status), current_roadmap_sha, current_phase_sha.get(phase))
         ):
             human_required = _truthy(blocker.get("human_required"))
             blocker_class = blocker.get("blocker_class")
@@ -689,6 +704,23 @@ def _ledger_duplicate_record(event: dict, dedup_key: tuple[object, ...]) -> dict
     }
 
 
+def _event_status_provenance_matches(
+    event: dict,
+    status: str,
+    current_roadmap_sha: str,
+    current_phase_sha: str | None,
+) -> bool:
+    if event.get("action") == "manual_recovery" and status == "unplanned":
+        status = "planned"
+    return status_provenance_matches(
+        status,
+        event.get("roadmap_sha256"),
+        event.get("phase_sha256"),
+        current_roadmap_sha,
+        current_phase_sha,
+    )
+
+
 def _event_automation_status(event: dict) -> str | None:
     value = _optional_text(event.get("automation_status"))
     if value:
@@ -759,6 +791,7 @@ def _canonical_ledger_reason(reason: str) -> str:
         "blocker_supersession",
         "event_only_status",
         "malformed_state_transition",
+        "malformed_manual_recovery",
     }:
         return reason
     return "provenance_mismatch"
@@ -788,7 +821,7 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     automation = event["automation"]
     status = automation.get("status")
     artifact = automation.get("artifact")
-    if status not in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"} or not artifact:
+    if status not in RECONCILE_EVENT_STATUSES or not artifact:
         return event
 
     artifact_path = Path(str(artifact)).expanduser().resolve()
@@ -965,6 +998,9 @@ def _planned_event_clears_blocker(event: dict) -> bool:
     transition = _state_transition_metadata(event)
     if transition is not None and event.get("status") in {"planned", "executing"}:
         return transition.get("reason") == "repair_precondition_cleared"
+    recovery = _manual_recovery_metadata(event)
+    if recovery is not None and event.get("status") in {"planned", "unplanned"}:
+        return bool(recovery.get("clears_blocker"))
     if event.get("action") != "manual_repair":
         return False
     metadata = event.get("metadata")
@@ -974,6 +1010,33 @@ def _planned_event_clears_blocker(event: dict) -> bool:
     if isinstance(manual_repair, dict):
         return bool(manual_repair.get("clears_blocker"))
     return bool(metadata.get("clears_blocker"))
+
+
+def _manual_recovery_metadata(event: dict) -> dict[str, object] | None:
+    if event.get("action") != "manual_recovery":
+        return None
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    recovery = metadata.get("manual_recovery")
+    if not isinstance(recovery, dict):
+        return None
+    required = ("from", "to", "reason", "trigger")
+    if any(not _optional_text(recovery.get(key)) for key in required):
+        return None
+    if recovery.get("from") != "blocked":
+        return None
+    if recovery.get("to") not in {"planned", "unplanned"}:
+        return None
+    if recovery.get("to") != event.get("status"):
+        return None
+    if recovery.get("trigger") != "cli":
+        return None
+    if recovery.get("verification_status") != "not_run":
+        return None
+    if not recovery.get("clears_blocker"):
+        return None
+    return recovery
 
 
 def _state_transition_metadata(event: dict) -> dict[str, object] | None:
@@ -992,6 +1055,8 @@ def _state_transition_metadata(event: dict) -> dict[str, object] | None:
 
 
 def _event_clears_terminal_summary(event: dict, status: object) -> bool:
+    if _manual_recovery_metadata(event) is not None and status in {"planned", "unplanned"}:
+        return True
     if event.get("action") == "manual_repair":
         metadata = event.get("metadata")
         if isinstance(metadata, dict):

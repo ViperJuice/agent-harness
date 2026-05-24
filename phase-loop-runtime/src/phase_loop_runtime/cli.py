@@ -176,27 +176,37 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--reason")
         if name == "reconcile":
             sub.description = (
-                "Synthesize a v28-shape manual_repair event for the named phase using current "
-                "git state, then re-reconcile so status reflects the cleared blocker."
+                "Synthesize a v28-shape manual_repair completion event, or recover a blocked "
+                "dirty-state phase to planned/unplanned without marking verification passed."
             )
             sub.add_argument("--closeout-commit", help="Commit SHA to record as the closeout commit. Defaults to current HEAD.")
             sub.add_argument("--repair-summary", help="Optional human-authored note explaining the repair.")
+            reconcile_transition = sub.add_mutually_exclusive_group()
+            reconcile_transition.add_argument(
+                "--to-status",
+                choices=("planned",),
+                help=(
+                    "Recover a dirty-state-derived blocked phase back to planned when a current "
+                    "plan exists, or unplanned when no plan exists. Requires --reason and records "
+                    "verification_status=not_run."
+                ),
+            )
             # phase-loop reconcile always records status=complete (line 756);
             # per the field-pair invariants in BAML/closeout schema, complete
             # requires verification_status=passed. Other values are silently
             # accepted today and create state-machine contradictions (see #11
             # part B4). Restrict to passed to reject invalid combos at parse time.
-            sub.add_argument(
+            reconcile_transition.add_argument(
                 "--verification-status",
                 choices=("passed",),
                 help=(
                     "Must be 'passed'. phase-loop reconcile records status=complete; "
                     "the field-pair invariants require verification_status=passed. "
-                    "If your phase is actually blocked or failed, use a different "
-                    "transition (operator commit + new phase run) rather than "
-                    "manual reconcile."
+                    "If your phase is a dirty-state blocked recovery, use "
+                    "--to-status planned --reason <text> instead."
                 ),
             )
+            sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
             sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
         if name == "reopen":
@@ -712,6 +722,16 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         print(f"phase-loop reconcile: {topology.get('reason') or 'git topology unavailable'}", file=sys.stderr)
         return 2
 
+    if getattr(args, "to_status", None) == "planned":
+        return _reconcile_to_planned_command(
+            repo=repo,
+            roadmap=roadmap,
+            phase=phase,
+            args=args,
+            topology=topology,
+            as_json=as_json,
+        )
+
     recovery_mode = bool(getattr(args, "recovery_mode", False))
     allow_dirty = bool(getattr(args, "allow_dirty", False)) or recovery_mode
     if not topology.get("clean") and not allow_dirty:
@@ -783,6 +803,126 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     write_tui_handoff(repo, roadmap, snapshot, action="reconcile")
     print(render_status(snapshot, as_json=as_json))
     return 0
+
+
+def _reconcile_to_planned_command(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    args: argparse.Namespace,
+    topology: dict,
+    as_json: bool,
+) -> int:
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        print("phase-loop reconcile: --to-status planned requires --reason", file=sys.stderr)
+        return 2
+    if bool(getattr(args, "recovery_mode", False)):
+        print("phase-loop reconcile: --to-status planned cannot be combined with --recovery-mode", file=sys.stderr)
+        return 2
+    if not topology.get("clean") and not bool(getattr(args, "allow_dirty", False)):
+        print(
+            "phase-loop reconcile: working tree is dirty. Commit or stash current work "
+            "before blocked-state recovery (or pass --allow-dirty to override).",
+            file=sys.stderr,
+        )
+        return 2
+
+    snapshot_before = reconcile(repo, roadmap)
+    if phase not in snapshot_before.phases:
+        print(f"phase-loop reconcile: phase {phase!r} not found in roadmap {roadmap}", file=sys.stderr)
+        return 2
+    prior_status = snapshot_before.phases.get(phase)
+    if prior_status != "blocked":
+        print(
+            f"phase-loop reconcile: phase {phase!r} is currently {prior_status!r}, not 'blocked'. "
+            "--to-status planned only recovers blocked phases.",
+            file=sys.stderr,
+        )
+        return 2
+
+    allowed, refusal = _dirty_blocker_recovery_allowed(snapshot_before)
+    if not allowed:
+        print(f"phase-loop reconcile: cannot recover sticky blocker {refusal}", file=sys.stderr)
+        return 2
+
+    target_status = "planned" if find_plan_artifact(repo, phase, roadmap=roadmap) is not None else "unplanned"
+    current_dirty_paths = _topology_dirty_paths(topology)
+    manual_recovery = {
+        "from": "blocked",
+        "to": target_status,
+        "reason": reason,
+        "trigger": "cli",
+        "clears_blocker": True,
+        "verification_status": "not_run",
+        "blocker_class": snapshot_before.blocker_class,
+        "current_dirty_paths": current_dirty_paths,
+        "phase_owned_dirty_paths": list(snapshot_before.phase_owned_dirty_paths),
+        "previous_phase_owned_paths": list(snapshot_before.previous_phase_owned_paths),
+        "dirty_paths": list(snapshot_before.dirty_paths),
+    }
+    event = LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=phase,
+        action="manual_recovery",
+        status=target_status,
+        model="manual",
+        reasoning_effort="manual",
+        source="reconcile",
+        metadata={"manual_recovery": manual_recovery},
+        git_topology=dict(topology),
+        **event_provenance(roadmap, phase),
+    )
+    append_event(repo, event)
+
+    snapshot = reconcile(repo, roadmap)
+    write_state(repo, snapshot)
+    write_tui_handoff(repo, roadmap, snapshot, action="reconcile")
+    print(render_status(snapshot, as_json=as_json))
+    return 0
+
+
+def _dirty_blocker_recovery_allowed(snapshot: StateSnapshot) -> tuple[bool, str]:
+    blocker_class = snapshot.blocker_class or "unknown"
+    if snapshot.human_required:
+        return False, blocker_class
+    sticky_blockers = {
+        "missing_secret",
+        "account_or_billing_setup",
+        "admin_approval",
+        "product_decision_missing",
+        "destructive_operation",
+    }
+    if blocker_class in sticky_blockers:
+        return False, blocker_class
+    explicit_dirty_evidence = bool(
+        snapshot.phase_owned_dirty_paths
+        or snapshot.previous_phase_owned_paths
+        or snapshot.phase_owned_dirty
+        or snapshot.dirty_paths
+    )
+    if blocker_class == "dirty_worktree_conflict" or explicit_dirty_evidence:
+        return True, ""
+    return False, blocker_class
+
+
+def _topology_dirty_paths(topology: dict) -> list[str]:
+    status = topology.get("status_short_branch")
+    if not isinstance(status, str):
+        return []
+    paths: list[str] = []
+    for line in status.splitlines():
+        if not line or line.startswith("##"):
+            continue
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.rsplit(" -> ", 1)[-1]
+        if path:
+            paths.append(path)
+    return paths
 
 
 def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_json: bool) -> int:

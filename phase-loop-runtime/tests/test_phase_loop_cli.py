@@ -675,6 +675,19 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertEqual(last["source"], "reconcile")
             self.assertTrue(last["metadata"]["manual_repair"]["closeout_commit"])
 
+    def test_reconcile_help_documents_blocked_state_recovery(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "phase_loop_runtime.cli", "reconcile", "--help"],
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--to-status {planned}", result.stdout)
+        self.assertIn("--reason", result.stdout)
+        self.assertIn("without marking verification passed", result.stdout)
+        self.assertIn("verification_status=not_run", result.stdout)
+
     def test_reconcile_refuses_dirty_tree(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
