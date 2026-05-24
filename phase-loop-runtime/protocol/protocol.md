@@ -583,6 +583,31 @@ environment values, provider tokens, or local account identifiers. The surface
 is standalone-first: it works without governed-pipeline, a source bundle,
 Portal, Greenfield, or any acknowledged Pipeline contract.
 
+## Start Gate
+
+Before `run`, `resume`, or `dry-run` dispatches planning, execution, lane
+scheduling, work-unit mode, repair, closeout, or `launch_with_spec`, the runner
+performs a cross-phase dirty start gate. The gate scans at most the last 50
+ledger events, ignores malformed events and same-phase evidence, keeps the
+latest dirty evidence per prior phase, and intersects `phase_owned_dirty_paths`
+plus `previous_phase_owned_paths` with current git dirty paths.
+
+When an overlap remains dirty, the runner refuses dispatch and appends
+`start_gate_refused` with `blocker_class=dirty_worktree_conflict` and
+`metadata.start_gate.status=refused`. The metadata names the current phase, the
+offending phase, `last_event_timestamp`, `overlapping_dirty_paths`,
+`scanned_events`, and operator `next_actions`: commit or stash the paths, or run
+`phase-loop reconcile --phase <ALIAS> --to-status planned --reason <text>` to
+record `manual_recovery` for stale dirty-state blockers. The terminal summary
+is blocked and the refusal does not launch a child process.
+
+Operators may pass `--allow-cross-phase-dirty <reason>` to `phase-loop run`,
+`phase-loop resume`, or `phase-loop dry-run`. The reason is required and the
+runner appends audited `metadata.start_gate.status=bypassed` before continuing.
+The bypass is limited to this STARTGATE check: it does not mark verification
+passed, perform recovery, auto-commit output, or bypass dirty-worktree,
+Pipeline, access, repair, executor-policy, or launch blockers.
+
 ## Reconcile Command
 
 `phase-loop reconcile` has two distinct modes.

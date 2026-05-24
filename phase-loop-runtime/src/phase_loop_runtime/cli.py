@@ -78,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
     parser.add_argument("--force-replan", action="store_true")
+    parser.add_argument(
+        "--allow-cross-phase-dirty",
+        help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
@@ -130,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name in {"run", "resume", "dry-run"}:
             sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
             sub.add_argument("--force-replan", action="store_true")
+            sub.add_argument(
+                "--allow-cross-phase-dirty",
+                help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
+            )
             sub.add_argument("--reset-capability", action="store_true")
             sub.add_argument("--rotate-executors")
             sub.add_argument("--rotation-mode", choices=("phase", "work_unit"))
@@ -264,6 +272,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    allow_cross_phase_dirty_reason = getattr(args, "allow_cross_phase_dirty", None)
+    if allow_cross_phase_dirty_reason is not None:
+        allow_cross_phase_dirty_reason = str(allow_cross_phase_dirty_reason).strip()
+        if not allow_cross_phase_dirty_reason:
+            parser.error("--allow-cross-phase-dirty requires a non-empty reason")
+    if command not in {"run", "resume", "dry-run"} and allow_cross_phase_dirty_reason is not None:
+        parser.error("--allow-cross-phase-dirty is only valid for run, resume, and dry-run")
     if command not in {"run", "resume"} and (
         bool(getattr(args, "full_phase", False)) or bool(getattr(args, "no_deprecation_hints", False))
     ):
@@ -466,12 +481,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(path.read_text(encoding="utf-8"), end="")
         return 0
-    if command == "resume":
-        snapshot = reconcile(repo, roadmap)
-        write_state(repo, snapshot)
-        write_tui_handoff(repo, roadmap, snapshot, action="resume")
-        print(render_status(snapshot, as_json=as_json))
-        return 0
     if command == "reconcile":
         return _reconcile_command(repo=repo, roadmap=roadmap, args=args, as_json=as_json)
     if command == "reopen":
@@ -528,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         stuck_loop_iterations=getattr(args, "stuck_loop_iterations", 5),
         stuck_loop_minutes=getattr(args, "stuck_loop_minutes", 30),
         force_replan=bool(getattr(args, "force_replan", False)),
+        allow_cross_phase_dirty_reason=allow_cross_phase_dirty_reason,
         product_action_override=command if command in {"execute", "repair", "review"} else None,
         maintenance_options=MaintenanceOptions(
             min_reflections=getattr(args, "min_reflections", 2) or 2,

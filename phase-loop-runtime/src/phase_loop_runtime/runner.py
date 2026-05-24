@@ -400,6 +400,145 @@ def status_snapshot(repo: Path, roadmap: Path, pipeline_mode: str = "standalone"
     )
 
 
+def _dirty_evidence_from_metadata(metadata: object) -> dict[str, object] | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("terminal_summary", "completion_dirty_worktree", "plan_dirty_worktree", "incomplete_execute_dirty_worktree"):
+        value = metadata.get(key)
+        if not isinstance(value, dict):
+            continue
+        if not any(field in value for field in ("phase_owned_dirty_paths", "previous_phase_owned_paths")):
+            continue
+        return {
+            "source": key,
+            "dirty_paths": list(value.get("dirty_paths", ())),
+            "phase_owned_dirty_paths": list(value.get("phase_owned_dirty_paths", ())),
+            "previous_phase_owned_paths": list(value.get("previous_phase_owned_paths", ())),
+            "phase_owned_dirty": bool(value.get("phase_owned_dirty", False)),
+        }
+    return None
+
+
+def _cross_phase_dirty_start_gate(repo: Path, current_phase: str) -> dict[str, object] | None:
+    current_phase = current_phase.upper()
+    current_dirty = set(_dirty_paths(repo))
+    if not current_dirty:
+        return None
+    scanned_events = 0
+    phases_seen: set[str] = set()
+    for event in list(reversed(read_events(repo)))[:50]:
+        scanned_events += 1
+        if not isinstance(event, dict):
+            continue
+        prior_phase = str(event.get("phase", "")).upper()
+        if not prior_phase or prior_phase == current_phase or prior_phase in phases_seen:
+            continue
+        evidence = _dirty_evidence_from_metadata(event.get("metadata"))
+        if evidence is None:
+            continue
+        phases_seen.add(prior_phase)
+        candidate_paths = [
+            str(path)
+            for path in (
+                list(evidence.get("phase_owned_dirty_paths", ()))
+                + list(evidence.get("previous_phase_owned_paths", ()))
+            )
+            if str(path)
+        ]
+        overlapping = sorted(path for path in dict.fromkeys(candidate_paths) if path in current_dirty)
+        if not overlapping:
+            continue
+        return {
+            "status": "refused",
+            "current_phase": current_phase,
+            "offending_phase": prior_phase,
+            "last_event_timestamp": event.get("timestamp"),
+            "overlapping_dirty_paths": overlapping,
+            "scanned_events": scanned_events,
+            "dirty_evidence_source": evidence.get("source"),
+            "current_dirty_paths": sorted(current_dirty),
+            "next_actions": [
+                "Commit or stash the overlapping dirty paths before rerunning phase-loop.",
+                f"phase-loop reconcile --phase {prior_phase} --to-status planned --reason <text>",
+            ],
+        }
+    return None
+
+
+def _start_gate_refused_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    action: str,
+    selection,
+    blocker: dict[str, object],
+    start_gate: dict[str, object],
+) -> LoopEvent:
+    terminal_summary = build_terminal_summary(
+        terminal_status="blocked",
+        terminal_blocker=blocker,
+        verification_status="blocked",
+        next_action=(
+            f"Resolve dirty output from {start_gate['offending_phase']} before dispatching {phase}: "
+            + " or ".join(str(item) for item in start_gate["next_actions"])
+        ),
+        dirty_paths=tuple(start_gate["overlapping_dirty_paths"]),
+        previous_phase_owned_paths=tuple(start_gate["overlapping_dirty_paths"]),
+    )
+    return LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=phase,
+        action="start_gate_refused",
+        status="blocked",
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        blocker=blocker,
+        metadata={
+            "trigger_action": action,
+            "start_gate": start_gate,
+            "terminal_summary": terminal_summary,
+        },
+        **event_provenance(roadmap, phase),
+    )
+
+
+def _start_gate_bypassed_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    action: str,
+    selection,
+    reason: str | None,
+    start_gate: dict[str, object],
+) -> LoopEvent:
+    bypassed = dict(start_gate)
+    bypassed["status"] = "bypassed"
+    bypassed["reason"] = str(reason or "").strip()
+    return LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=phase,
+        action="start_gate_bypassed",
+        status="planned",
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        metadata={
+            "trigger_action": action,
+            "start_gate": bypassed,
+        },
+        **event_provenance(roadmap, phase),
+    )
+
+
 def run_loop(
     repo: Path,
     roadmap: Path,
@@ -445,9 +584,13 @@ def run_loop(
     stuck_loop_iterations: int = 5,
     stuck_loop_minutes: int = 30,
     force_replan: bool = False,
+    allow_cross_phase_dirty_reason: str | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
+    if allow_cross_phase_dirty_reason is not None and not allow_cross_phase_dirty_reason.strip():
+        raise ValueError("allow_cross_phase_dirty_reason must not be empty")
+    allow_cross_phase_dirty_reason = allow_cross_phase_dirty_reason.strip() if allow_cross_phase_dirty_reason else None
     require_literal(lane_scheduler_mode, ("off", "serialized", "concurrent"), "lane scheduler mode")
     try:
         rotation_state = RotationState.from_csv(
@@ -715,6 +858,47 @@ def run_loop(
             if dry_run and results and alias == current:
                 break
             current = alias
+            start_gate = _cross_phase_dirty_start_gate(repo, alias)
+            if start_gate is not None and allow_cross_phase_dirty_reason is None:
+                classifications[alias] = "blocked"
+                blocker = {
+                    "human_required": False,
+                    "blocker_class": "dirty_worktree_conflict",
+                    "blocker_summary": (
+                        f"Start gate refused {alias}: prior phase {start_gate['offending_phase']} "
+                        f"still owns {len(start_gate['overlapping_dirty_paths'])} dirty path(s). "
+                        "Commit or stash the paths, or recover the prior phase with "
+                        f"`phase-loop reconcile --phase {start_gate['offending_phase']} --to-status planned --reason <text>`."
+                    ),
+                    "required_human_inputs": (),
+                    "access_attempts": (),
+                }
+                append_event(
+                    repo,
+                    _start_gate_refused_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action=action,
+                        selection=selection,
+                        blocker=blocker,
+                        start_gate=start_gate,
+                    ),
+                )
+                break
+            if start_gate is not None:
+                append_event(
+                    repo,
+                    _start_gate_bypassed_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action=action,
+                        selection=selection,
+                        reason=allow_cross_phase_dirty_reason,
+                        start_gate=start_gate,
+                    ),
+                )
             status = classifications.get(alias, "unknown")
             plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             stale_pipeline_plan = _stale_pipeline_plan_candidate(repo, roadmap, alias) if plan is None else None

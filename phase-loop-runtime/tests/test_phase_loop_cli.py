@@ -95,6 +95,79 @@ class PhaseLoopCliTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["run", "--rotation-on-policy-pin", "consume"])
 
+    def test_allow_cross_phase_dirty_flags_are_limited_to_dispatch_commands(self):
+        parser = build_parser()
+        for command in ("run", "resume", "dry-run"):
+            args = parser.parse_args([command, "--allow-cross-phase-dirty", "operator accepted overlap"])
+            self.assertEqual(args.allow_cross_phase_dirty, "operator accepted overlap")
+        for command in ("status", "handoff", "archive-state", "monitor", "execute", "reconcile", "maintain-skills", "sync-skills"):
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                parser.parse_args([command, "--allow-cross-phase-dirty", "operator accepted overlap"])
+
+    def test_allow_cross_phase_dirty_help_documents_reason_required(self):
+        for command in ("run", "resume", "dry-run"):
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    [sys.executable, "-m", "phase_loop_runtime.cli", command, "--help"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("--allow-cross-phase-dirty", result.stdout)
+                self.assertIn("Requires a non-empty operator reason", result.stdout)
+
+    def test_allow_cross_phase_dirty_rejects_blank_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            with patch("phase_loop_runtime.cli.run_loop") as fake_run_loop, self.assertRaises(SystemExit) as raised:
+                main(
+                    [
+                        "run",
+                        "--repo",
+                        str(repo),
+                        "--roadmap",
+                        str(roadmap),
+                        "--allow-cross-phase-dirty",
+                        "   ",
+                    ]
+                )
+
+            self.assertEqual(raised.exception.code, 2)
+            fake_run_loop.assert_not_called()
+
+    def test_allow_cross_phase_dirty_is_passed_to_run_loop(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            seen_commands = []
+
+            def fake_run_loop(**kwargs):
+                seen_commands.append(kwargs["action"])
+                self.assertEqual(kwargs["allow_cross_phase_dirty_reason"], "operator accepted overlap")
+                return provenanced_state(repo, roadmap, {"RUNNER": "planned"}), []
+
+            with patch("phase_loop_runtime.cli.run_loop", side_effect=fake_run_loop), patch("phase_loop_runtime.cli.render_status", return_value="status"):
+                for command in ("run", "resume", "dry-run"):
+                    with self.subTest(command=command):
+                        self.assertEqual(
+                            main(
+                                [
+                                    command,
+                                    "--repo",
+                                    str(repo),
+                                    "--roadmap",
+                                    str(roadmap),
+                                    "--phase",
+                                    "RUNNER",
+                                    "--allow-cross-phase-dirty",
+                                    " operator accepted overlap ",
+                                ]
+                            ),
+                            0,
+                        )
+            self.assertEqual(seen_commands, ["run", "resume", "dry-run"])
+
     def test_run_reset_capability_clears_degradation_before_run_loop(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

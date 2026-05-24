@@ -212,6 +212,19 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.protocol_text)
 
+    def test_protocol_documents_start_gate(self):
+        for token in (
+            "## Start Gate",
+            "start_gate_refused",
+            "--allow-cross-phase-dirty",
+            "phase_owned_dirty_paths",
+            "previous_phase_owned_paths",
+            "manual_recovery",
+            "STARTGATE",
+            "last 50",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_protocol_mentions_plan_frontmatter_and_manual_repair_rules(self):
         for token in (
             "phase_loop_plan_version: 1",
