@@ -158,7 +158,18 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             elif status in {"planned", "unknown"}:
                 closeout_summary_by_phase.pop(phase, None)
             terminal = _event_terminal_summary(event)
-            if terminal:
+            if terminal and _event_terminal_summary_is_event_only(event, terminal):
+                ledger_warnings.append(
+                    _ledger_warning(
+                        "event",
+                        phase,
+                        "dry_run",
+                        "event_only_status",
+                        raw_event=event,
+                        value="dry_run",
+                    )
+                )
+            elif terminal:
                 terminal_summary_by_phase[phase] = terminal
                 latest_terminal_summary = {"phase": phase, **terminal}
             elif _event_clears_terminal_summary(event, status):
@@ -586,17 +597,34 @@ def invalidate_stale_downstream_plans(repo: Path, roadmap: Path, completed_phase
     }
 
 
-def _ledger_warning(source: str, phase: str, status: str, reason: str, *, raw_event: dict | None = None) -> dict:
-    return _ledger_warning_record(source, phase, status, reason, raw_event=raw_event)
+def _ledger_warning(
+    source: str,
+    phase: str,
+    status: str,
+    reason: str,
+    *,
+    raw_event: dict | None = None,
+    value: object | None = None,
+) -> dict:
+    return _ledger_warning_record(source, phase, status, reason, raw_event=raw_event, value=value)
 
 
-def _ledger_warning_record(source: str, phase: str, status: str, reason: str, *, raw_event: dict | None = None) -> dict:
+def _ledger_warning_record(
+    source: str,
+    phase: str,
+    status: str,
+    reason: str,
+    *,
+    raw_event: dict | None = None,
+    value: object | None = None,
+) -> dict:
     warning = {
         "source": source,
         "phase": phase,
         "status": status,
         "reason": reason,
         "canonical_reason": _canonical_ledger_reason(reason),
+        "value": value,
     }
     if raw_event is not None:
         warning["timestamp"] = _optional_text(raw_event.get("timestamp"))
@@ -718,6 +746,7 @@ def _canonical_ledger_reason(reason: str) -> str:
         "legacy_pre_schema_v2",
         "planned_without_plan_artifact",
         "blocker_supersession",
+        "event_only_status",
     }:
         return reason
     return "provenance_mismatch"
@@ -892,6 +921,18 @@ def _event_terminal_summary(event: dict) -> dict[str, object]:
         "artifact_paths": dict(terminal.get("artifact_paths", {})) if isinstance(terminal.get("artifact_paths"), dict) else {},
     }
     return {key: value for key, value in summary.items() if value is not None}
+
+
+def _event_terminal_summary_is_event_only(event: dict, terminal: dict[str, object]) -> bool:
+    if terminal.get("terminal_status") != "dry_run":
+        return False
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("dry_run_only") is True:
+        return True
+    launch = metadata.get("launch")
+    return isinstance(launch, dict) and (launch.get("dry_run") is True or launch.get("dry_run_only") is True)
 
 
 def _default_closeout_summary(terminal_status: object) -> dict[str, object]:

@@ -2,6 +2,7 @@ import json
 import unittest
 
 from phase_loop_runtime.baml_modular import BamlValidationError, build_baml_request, parse_baml_response
+from phase_loop_runtime.models import PHASE_STATUSES
 
 
 class PhaseLoopBamlModularTest(unittest.TestCase):
@@ -51,6 +52,24 @@ class PhaseLoopBamlModularTest(unittest.TestCase):
         }
         with self.assertRaises(BamlValidationError):
             parse_baml_response("EmitPhaseCloseout", json.dumps(payload))
+
+    def test_current_closeout_rejects_dry_run_terminal_status(self):
+        payload = {
+            "terminal_status": "dry_run",
+            "verification_status": "not_run",
+            "dirty_paths": [],
+            "produced_if_gates": [],
+            "next_action": None,
+            "blocker_class": None,
+            "blocker_summary": None,
+            "human_required": None,
+            "required_human_inputs": [],
+        }
+
+        self.assertNotIn("dry_run", PHASE_STATUSES)
+        with self.assertRaises(BamlValidationError) as ctx:
+            parse_baml_response("EmitPhaseCloseout", json.dumps(payload))
+        self.assertIn("invalid terminal_status: dry_run", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from phase_loop_runtime.models import (
     DelegationRequest,
     HarnessLaneAssignment,
     LoopEvent,
+    PHASE_STATUSES,
     PipelinePlanMetadata,
     PhaseSourceBundle,
     PipelineProtectedSource,
@@ -474,6 +475,9 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             events = read_events(repo)
             self.assertEqual(events[-1]["status"], "unplanned")
             self.assertEqual(events[-1]["metadata"]["terminal_summary"]["terminal_status"], "dry_run")
+            self.assertTrue(events[-1]["metadata"]["dry_run_only"])
+            self.assertTrue(events[-1]["metadata"]["launch"]["dry_run"])
+            self.assertNotIn("dry_run", PHASE_STATUSES)
             metric_id = events[-1]["metadata"]["terminal_summary"]["metric_id"]
             self.assertEqual(events[-1]["metadata"]["launch"]["metric_id"], metric_id)
             self.assertEqual(read_work_unit_metrics(repo)[-1]["metric_id"], metric_id)

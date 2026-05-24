@@ -31,6 +31,81 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             snapshot = reconcile(repo, roadmap)
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
 
+    def test_event_only_dry_run_terminal_summary_is_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_two_phase_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "ALPHA", roadmap)
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="ALPHA",
+                    action="run",
+                    status="planned",
+                    model="gpt-5.5",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "launch": {"dry_run": True},
+                        "terminal_summary": {
+                            "terminal_status": "dry_run",
+                            "verification_status": "not_run",
+                            "dirty_paths": [],
+                        },
+                        "dry_run_only": True,
+                    },
+                    **event_provenance(roadmap, "ALPHA"),
+                ),
+            )
+
+            snapshot = reconcile(repo, roadmap)
+
+            self.assertEqual(snapshot.phases["ALPHA"], "planned")
+            self.assertIsNone(snapshot.closeout_terminal_status)
+            self.assertIsNone(snapshot.terminal_summary)
+            warning = snapshot.ledger_warnings[-1]
+            self.assertEqual(warning["reason"], "event_only_status")
+            self.assertEqual(warning["value"], "dry_run")
+            self.assertEqual(warning["status"], "dry_run")
+            self.assertEqual(warning["raw_event_summary"]["status"], "planned")
+
+    def test_non_event_only_invalid_terminal_summary_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_two_phase_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "ALPHA", roadmap)
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="ALPHA",
+                    action="run",
+                    status="planned",
+                    model="gpt-5.5",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "terminal_summary": {
+                            "terminal_status": "not_a_phase_status",
+                            "verification_status": "not_run",
+                            "dirty_paths": [],
+                        },
+                    },
+                    **event_provenance(roadmap, "ALPHA"),
+                ),
+            )
+
+            snapshot = reconcile(repo, roadmap)
+
+            self.assertEqual(snapshot.closeout_terminal_status, "not_a_phase_status")
+            self.assertEqual(snapshot.terminal_summary["terminal_status"], "not_a_phase_status")
+            self.assertFalse(any(warning["reason"] == "event_only_status" for warning in snapshot.ledger_warnings))
+
     def test_complete_event_with_stale_blocker_does_not_keep_global_blocker(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

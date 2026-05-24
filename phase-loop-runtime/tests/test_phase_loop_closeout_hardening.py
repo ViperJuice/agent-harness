@@ -41,6 +41,10 @@ class PhaseLoopCloseoutHardeningTest(unittest.TestCase):
         self.assertIn("Field-anchored enum list for terminal_status", request.prompt)
         self.assertIn("Field-anchored enum list for verification_status", request.prompt)
         self.assertIn("terminal_status must never use dry_run", request.prompt)
+        terminal_enum_line = next(
+            line for line in request.prompt.splitlines() if "Field-anchored enum list for terminal_status" in line
+        )
+        self.assertNotIn("dry_run", terminal_enum_line)
         self.assertIn("Terminal-status decision tree", request.prompt)
         self.assertIn("Field-pair invariants", request.prompt)
         self.assertIn("terminal_status=complete requires verification_status=passed", request.prompt)
