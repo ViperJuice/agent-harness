@@ -979,7 +979,40 @@ def run_loop(
                     else:
                         launch_action = "plan"
                 else:
-                    launch_action = "execute" if status in {"planned", "executed"} and plan is not None else "plan"
+                    if status in {"planned", "executed"} and plan is not None:
+                        launch_action = "execute"
+                    elif plan is not None and not force_replan and is_plan_doc_current(repo, alias, plan, roadmap):
+                        # Fix for issue #4: when phase status is "executing", "unplanned",
+                        # or any non-{planned,executed} state but a current plan-doc exists,
+                        # prefer execute over re-planning. Stale "executing" status from a
+                        # prior abandoned run was forcing planner re-dispatch.
+                        append_event(
+                            repo,
+                            LoopEvent(
+                                timestamp=utc_now(),
+                                repo=str(repo),
+                                roadmap=str(roadmap),
+                                phase=alias,
+                                action=action,
+                                status="plan_skipped",
+                                model=selection.model,
+                                reasoning_effort=selection.effort,
+                                source=selection.source,
+                                override_reason=selection.override_reason,
+                                metadata={
+                                    "plan_doc_skip": {
+                                        "reason": "plan_doc_current",
+                                        "plan_artifact": _repo_relative(repo, plan),
+                                        "forced_replan": False,
+                                        "trigger_status": status,
+                                    }
+                                },
+                                **event_provenance(roadmap, alias),
+                            ),
+                        )
+                        launch_action = "execute"
+                    else:
+                        launch_action = "plan"
             planner_source_bundle_context = None
             execution_source_bundle_context = None
             if launch_action == "plan":
