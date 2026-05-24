@@ -181,7 +181,22 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--closeout-commit", help="Commit SHA to record as the closeout commit. Defaults to current HEAD.")
             sub.add_argument("--repair-summary", help="Optional human-authored note explaining the repair.")
-            sub.add_argument("--verification-status", choices=("not_run", "passed", "failed"))
+            # phase-loop reconcile always records status=complete (line 756);
+            # per the field-pair invariants in BAML/closeout schema, complete
+            # requires verification_status=passed. Other values are silently
+            # accepted today and create state-machine contradictions (see #11
+            # part B4). Restrict to passed to reject invalid combos at parse time.
+            sub.add_argument(
+                "--verification-status",
+                choices=("passed",),
+                help=(
+                    "Must be 'passed'. phase-loop reconcile records status=complete; "
+                    "the field-pair invariants require verification_status=passed. "
+                    "If your phase is actually blocked or failed, use a different "
+                    "transition (operator commit + new phase run) rather than "
+                    "manual reconcile."
+                ),
+            )
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
             sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
         if name == "reopen":
