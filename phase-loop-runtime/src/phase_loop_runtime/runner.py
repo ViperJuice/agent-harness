@@ -94,6 +94,7 @@ from .observability import (
     write_terminal_summary,
 )
 from .pipeline_adapter.flag import trust_executor_evidence_enabled
+from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor
 from .prompts import build_prompt
@@ -733,6 +734,7 @@ def run_loop(
     stuck_loop_minutes: int = 30,
     force_replan: bool = False,
     dispatch_lock_enabled: bool = True,
+    parallel_dispatch: bool = False,
     allow_cross_phase_dirty_reason: str | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
@@ -974,6 +976,10 @@ def run_loop(
     loop_context = active_loop(repo, "product") if not dry_run else _null_context()
     current = selected
     phase_cycles_completed = 0
+    coordinator_waves = tuple(iter_waves(roadmap)) if parallel_dispatch and phase is None else ()
+    coordinator_started_waves: set[int] = set()
+    if coordinator_waves and not max_phases_explicit:
+        max_phases = sum(len(wave) for wave in coordinator_waves)
     iterations_remaining = max_phases if not full_phase else max(max_phases * 4, max_phases)
     if max_phases_explicit and not full_phase and not no_deprecation_hints and selected is not None:
         append_event(
@@ -1005,10 +1011,31 @@ def run_loop(
             iterations_remaining -= 1
             snapshot = reconcile(repo, roadmap)
             classifications = snapshot.phases
-            alias = _select_ready_phase(repo, roadmap, classifications, phase)
+            alias = (
+                _select_parallel_dispatch_phase(coordinator_waves, classifications)
+                if coordinator_waves
+                else _select_ready_phase(repo, roadmap, classifications, phase)
+            )
             if alias is None:
                 current = None
                 break
+            coordinator_wave = _coordinator_wave_for_alias(coordinator_waves, alias)
+            if coordinator_wave is not None:
+                wave_index, phase_aliases = coordinator_wave
+                if wave_index not in coordinator_started_waves:
+                    coordinator_started_waves.add(wave_index)
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action="coordinator.wave_started",
+                        status=classifications.get(alias, "unknown"),
+                        selection=selection,
+                        metadata={
+                            "wave_index": wave_index,
+                            "phase_aliases": list(phase_aliases),
+                        },
+                    )
             if stop_requested(repo):
                 current = alias
                 append_event(
@@ -1080,6 +1107,21 @@ def run_loop(
             if dry_run and results and alias == current:
                 break
             current = alias
+            if coordinator_wave is not None:
+                wave_index, phase_aliases = coordinator_wave
+                _append_coordinator_event(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=alias,
+                    action="coordinator.phase_dispatched",
+                    status=classifications.get(alias, "unknown"),
+                    selection=selection,
+                    metadata={
+                        "wave_index": wave_index,
+                        "phase_alias": alias,
+                        "phase_aliases": list(phase_aliases),
+                    },
+                )
             start_gate = _cross_phase_dirty_start_gate(repo, alias)
             if start_gate is not None and allow_cross_phase_dirty_reason is None:
                 classifications[alias] = "blocked"
@@ -3176,6 +3218,49 @@ def run_loop(
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
+            if coordinator_wave is not None:
+                wave_index, phase_aliases = coordinator_wave
+                latest_snapshot = reconcile(repo, roadmap)
+                latest_statuses = latest_snapshot.phases
+                _append_coordinator_event(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=alias,
+                    action="coordinator.phase_completed",
+                    status=latest_statuses.get(alias, status_after_closeout),
+                    selection=selection,
+                    metadata={
+                        "wave_index": wave_index,
+                        "phase_alias": alias,
+                        "phase_aliases": list(phase_aliases),
+                        "phase_status": latest_statuses.get(alias, status_after_closeout),
+                    },
+                )
+                if _parallel_wave_terminal(phase_aliases, latest_statuses):
+                    failed_phases = [
+                        phase_alias
+                        for phase_alias in phase_aliases
+                        if latest_statuses.get(phase_alias) in {"blocked", "unknown"}
+                    ]
+                    succeeded_phases = [
+                        phase_alias
+                        for phase_alias in phase_aliases
+                        if latest_statuses.get(phase_alias) == "complete"
+                    ]
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action="coordinator.wave_completed",
+                        status=latest_statuses.get(alias, status_after_closeout),
+                        selection=selection,
+                        metadata={
+                            "wave_index": wave_index,
+                            "phase_aliases": list(phase_aliases),
+                            "succeeded_phases": succeeded_phases,
+                            "failed_phases": failed_phases,
+                        },
+                    )
             if full_phase:
                 if status_after_closeout in {"complete", "blocked", "awaiting_phase_closeout", "unknown"}:
                     phase_cycles_completed += 1
@@ -4280,6 +4365,62 @@ def _select_ready_phase(repo: Path, roadmap: Path, classifications: dict[str, st
     if awaiting_closeout:
         return awaiting_closeout
     return next((p for p in phases if classifications.get(p) != "complete"), None)
+
+
+def _select_parallel_dispatch_phase(waves: tuple[tuple[str, ...], ...], classifications: dict[str, str]) -> str | None:
+    for wave in waves:
+        if any(classifications.get(alias) not in {"complete", "blocked"} for alias in wave):
+            return next(
+                (
+                    alias
+                    for alias in wave
+                    if classifications.get(alias) != "complete" and classifications.get(alias) != "blocked"
+                ),
+                None,
+            )
+        if any(classifications.get(alias) == "blocked" for alias in wave):
+            return None
+    return None
+
+
+def _coordinator_wave_for_alias(waves: tuple[tuple[str, ...], ...], alias: str) -> tuple[int, tuple[str, ...]] | None:
+    for index, wave in enumerate(waves):
+        if alias in wave:
+            return index, wave
+    return None
+
+
+def _parallel_wave_terminal(wave: tuple[str, ...], classifications: dict[str, str]) -> bool:
+    return all(classifications.get(alias) in {"complete", "blocked"} for alias in wave)
+
+
+def _append_coordinator_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    action: str,
+    status: str,
+    selection,
+    metadata: dict[str, object],
+) -> None:
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action=action,
+            status=status if status in PHASE_STATUSES else "unknown",
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            metadata={"coordinator": metadata},
+            **event_provenance(roadmap, phase),
+        ),
+    )
 
 
 def _launch_event_metadata(

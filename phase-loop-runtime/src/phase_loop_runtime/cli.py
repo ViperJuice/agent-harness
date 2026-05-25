@@ -17,7 +17,7 @@ from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_D
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import build_notification_payload, run_notification_command
-from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock_enabled
+from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock_enabled, parallel_dispatch_enabled
 from .profiles import DEFAULT_PROFILES
 from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
@@ -136,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
             sub.add_argument("--force-replan", action="store_true")
             sub.add_argument("--no-dispatch-lock", action="store_true", help="Disable the per-roadmap dispatch lock for this run.")
+            if parallel_dispatch_enabled():
+                sub.add_argument("--parallel-dispatch", action="store_true", help="Run roadmap phases through the serial coordinator wave loop.")
             sub.add_argument(
                 "--allow-cross-phase-dirty",
                 help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
@@ -567,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         stuck_loop_minutes=getattr(args, "stuck_loop_minutes", 30),
         force_replan=bool(getattr(args, "force_replan", False)),
         dispatch_lock_enabled=dispatch_lock_enabled() and not bool(getattr(args, "no_dispatch_lock", False)),
+        parallel_dispatch=bool(getattr(args, "parallel_dispatch", False)),
         allow_cross_phase_dirty_reason=allow_cross_phase_dirty_reason,
         product_action_override=command if command in {"execute", "repair", "review"} else None,
         maintenance_options=MaintenanceOptions(

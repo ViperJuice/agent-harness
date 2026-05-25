@@ -17,3 +17,7 @@ def allow_lane_ir_override_enabled() -> bool:
 
 def dispatch_lock_enabled() -> bool:
     return os.environ.get("PHASE_LOOP_DISPATCH_LOCK") != "false"
+
+
+def parallel_dispatch_enabled() -> bool:
+    return os.environ.get("PHASE_LOOP_PARALLEL_DISPATCH") == "true"
