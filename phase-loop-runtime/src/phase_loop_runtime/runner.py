@@ -103,6 +103,7 @@ from .reconcile import reconcile
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
+from .worker_pool import worker_summary_path
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
@@ -2312,6 +2313,22 @@ def run_loop(
                 break
             pre_launch_dirty_paths = _dirty_paths(repo) if not dry_run else []
             failed_launch_closeout_override: dict[str, object] | None = None
+            if coordinator_wave is not None:
+                wave_index, phase_aliases = coordinator_wave
+                _append_coordinator_event(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=alias,
+                    action="coordinator.worker_dispatched",
+                    status=classifications.get(alias, "unknown"),
+                    selection=selection,
+                    metadata={
+                        "wave_index": wave_index,
+                        "phase_alias": alias,
+                        "phase_aliases": list(phase_aliases),
+                        "summary_path": str(worker_summary_path(repo, roadmap, alias)),
+                    },
+                )
             result = launch_with_spec(
                 spec,
                 dry_run=dry_run,
@@ -3222,6 +3239,27 @@ def run_loop(
                 wave_index, phase_aliases = coordinator_wave
                 latest_snapshot = reconcile(repo, roadmap)
                 latest_statuses = latest_snapshot.phases
+                worker_terminal = launch_metadata.get("terminal_summary") if isinstance(launch_metadata, dict) else None
+                if isinstance(worker_terminal, dict):
+                    summary_path = worker_summary_path(repo, roadmap, alias)
+                    write_terminal_summary(summary_path, {"phase": alias, **worker_terminal})
+                else:
+                    summary_path = worker_summary_path(repo, roadmap, alias)
+                _append_coordinator_event(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=alias,
+                    action="coordinator.worker_completed",
+                    status=latest_statuses.get(alias, status_after_closeout),
+                    selection=selection,
+                    metadata={
+                        "wave_index": wave_index,
+                        "phase_alias": alias,
+                        "phase_aliases": list(phase_aliases),
+                        "phase_status": latest_statuses.get(alias, status_after_closeout),
+                        "summary_path": str(summary_path),
+                    },
+                )
                 _append_coordinator_event(
                     repo=repo,
                     roadmap=roadmap,
