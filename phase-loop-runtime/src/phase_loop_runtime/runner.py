@@ -296,6 +296,82 @@ def _refuse_pipeline_default_branch_commit(repo: Path) -> dict[str, object] | No
     return None
 
 
+def _emit_ratification_if_reached(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    plan: Path | None,
+    child_automation: dict[str, object],
+) -> dict[str, object] | None:
+    if plan is None or not _pipeline_branchgov_active(repo):
+        return None
+    terminal_status = _child_terminal_status(child_automation)
+    if terminal_status is None:
+        return None
+    metadata = plan_metadata(plan)
+    ratification_gate = metadata.get("ratification_gate") or "complete"
+    if terminal_status != ratification_gate:
+        return None
+    try:
+        from .pipeline_adapter.merge_policy import parse as parse_merge_policy
+        from .pipeline_adapter.ratification import emit_ratification_passed
+
+        merge_policy = parse_merge_policy(metadata)
+        emit_ratification_passed(
+            repo,
+            _roadmap_version(roadmap),
+            phase,
+            ratification_gate,
+            merge_policy,
+            _ratification_audit_payload(child_automation),
+        )
+    except Exception as exc:
+        return {
+            "human_required": False,
+            "blocker_class": getattr(exc, "blocker_class", None) or "contract_bug",
+            "blocker_summary": f"Ratification event emission failed: {exc}",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    return None
+
+
+def _child_terminal_status(child_automation: dict[str, object]) -> str | None:
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict):
+        terminal_status = payload.get("terminal_status")
+        if isinstance(terminal_status, str):
+            return terminal_status
+    status = child_automation.get("automation_status")
+    return status if isinstance(status, str) else None
+
+
+def _ratification_audit_payload(child_automation: dict[str, object]) -> dict[str, object]:
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict):
+        return {
+            "terminal_status": payload.get("terminal_status"),
+            "verification_status": payload.get("verification_status"),
+            "dirty_paths": payload.get("dirty_paths") if isinstance(payload.get("dirty_paths"), list) else [],
+            "produced_if_gates": (
+                payload.get("produced_if_gates") if isinstance(payload.get("produced_if_gates"), list) else []
+            ),
+            "source": child_automation.get("native_closeout_source"),
+        }
+    return {
+        "terminal_status": child_automation.get("automation_status"),
+        "verification_status": child_automation.get("automation_verification_status"),
+        "dirty_paths": child_automation.get("dirty_paths") if isinstance(child_automation.get("dirty_paths"), list) else [],
+        "produced_if_gates": (
+            child_automation.get("produced_if_gates")
+            if isinstance(child_automation.get("produced_if_gates"), list)
+            else []
+        ),
+        "source": "automation",
+    }
+
+
 def is_plan_doc_current(repo: Path, phase: str, plan: Path, roadmap: Path, *, recent_commit_window: int = 50) -> bool:
     current_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     if current_plan is None or current_plan.resolve() != plan.resolve():
@@ -2663,6 +2739,28 @@ def run_loop(
             )
             if executor_closeout_event is not None:
                 append_event(repo, executor_closeout_event)
+            if event_blocker is None and child_automation:
+                ratification_blocker = _emit_ratification_if_reached(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=alias,
+                    plan=plan,
+                    child_automation=child_automation,
+                )
+                if ratification_blocker is not None:
+                    status_after_launch = "blocked"
+                    event_blocker = ratification_blocker
+                    set_phase_status(
+                        repo,
+                        roadmap,
+                        alias,
+                        classifications,
+                        status_after_launch,
+                        reason="ratification_event_blocked",
+                        trigger=launch_action,
+                        selection=selection,
+                        action=action,
+                    )
 
             missing_plan_after_planning: dict[str, object] = {}
             if (

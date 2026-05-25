@@ -1106,6 +1106,7 @@ class PhasePlanIR:
     diagnostics: tuple[LaneIRDiagnostic, ...] = ()
     execution_policy: ExecutionPolicyDocument | None = None
     dispatch_hints: dict[str, DispatchHints] = field(default_factory=dict)
+    merge_policy: Any | None = None
 
     @property
     def valid(self) -> bool:
@@ -1123,6 +1124,7 @@ class PhasePlanIR:
                 "dispatch_hints": {
                     key: value.to_json() for key, value in self.dispatch_hints.items()
                 },
+                "merge_policy": self.merge_policy.to_json() if hasattr(self.merge_policy, "to_json") else self.merge_policy,
             }
         )
 

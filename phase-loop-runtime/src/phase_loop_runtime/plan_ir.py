@@ -43,7 +43,21 @@ def parse_phase_plan_ir(plan: Path) -> PhasePlanIR:
     from .discovery import parse_dispatch_hints, parse_execution_policy, parse_frontmatter
 
     metadata = parse_frontmatter(text)
+    merge_policy = None
     diagnostics: list[LaneIRDiagnostic] = []
+    if "merge_policy" in metadata:
+        try:
+            from .pipeline_adapter.merge_policy import parse as parse_merge_policy
+
+            merge_policy = parse_merge_policy(metadata)
+        except Exception as exc:
+            diagnostics.append(
+                LaneIRDiagnostic(
+                    kind="unsupported_lane_policy",
+                    message=f"invalid merge_policy frontmatter: {exc}",
+                    blocker_class="contract_bug",
+                )
+            )
     try:
         execution_policy = parse_execution_policy(plan, kind="plan")
     except ValueError as exc:
@@ -87,6 +101,7 @@ def parse_phase_plan_ir(plan: Path) -> PhasePlanIR:
         diagnostics=tuple(diagnostics),
         execution_policy=execution_policy,
         dispatch_hints=dispatch_hints,
+        merge_policy=merge_policy,
     )
 
 

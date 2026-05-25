@@ -67,6 +67,39 @@ class PhaseLoopLaneIRTest(unittest.TestCase):
             self.assertEqual(ir.lanes[1].reducer_kind, "acceptance_reducer")
             self.assertEqual(ir.lanes[1].execution_policy.work_unit_kind, "phase_reducer")
             self.assertEqual(ir.dispatch_hints["default"].required_capabilities, ("structured_output",))
+            self.assertIsNone(ir.merge_policy)
+
+    def test_parser_exposes_merge_policy_without_breaking_metadata_or_hints(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(
+                repo,
+                "RUNNER",
+                roadmap,
+                extra_frontmatter={"merge_policy": '{"on_pass": "auto", "approvers": ["ops"]}'},
+                body=(
+                    "# RUNNER\n\n"
+                    "## Lanes\n\n"
+                    "### SL-0 - Contract\n\n"
+                    "- **Owned files**: none\n"
+                    "- **Interfaces provided**: `CONTRACT-api`\n"
+                    "- **Tasks**:\n"
+                    "  - verify: `python3 -m unittest tests.test_contract`\n\n"
+                    "## Dispatch Hints\n\n"
+                    "- preferred executors: `codex`\n"
+                    "- required capabilities: `structured_output`\n"
+                ),
+            )
+
+            ir = parse_phase_plan_ir(plan)
+
+            self.assertTrue(ir.valid, [diagnostic.to_json() for diagnostic in ir.diagnostics])
+            self.assertEqual(ir.metadata["merge_policy"], '{"on_pass": "auto", "approvers": ["ops"]}')
+            self.assertEqual(ir.merge_policy.on_pass, "auto")
+            self.assertEqual(ir.merge_policy.approvers, ("ops",))
+            self.assertEqual(ir.lanes[0].lane_id, "SL-0")
+            self.assertEqual(ir.dispatch_hints["default"].required_capabilities, ("structured_output",))
 
     def test_parser_reports_malformed_contract_diagnostics(self):
         with tempfile.TemporaryDirectory() as td:
