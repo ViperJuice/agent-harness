@@ -95,6 +95,29 @@ class PhaseLoopCliTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["run", "--rotation-on-policy-pin", "consume"])
 
+    def test_no_dispatch_lock_is_limited_to_dispatch_commands(self):
+        parser = build_parser()
+        for command in ("run", "resume", "dry-run"):
+            self.assertTrue(parser.parse_args([command, "--no-dispatch-lock"]).no_dispatch_lock)
+        for command in ("status", "handoff", "archive-state", "monitor", "execute", "reconcile", "maintain-skills", "sync-skills"):
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                parser.parse_args([command, "--no-dispatch-lock"])
+
+    def test_no_dispatch_lock_is_passed_to_run_loop(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+
+            def fake_run_loop(**kwargs):
+                self.assertFalse(kwargs["dispatch_lock_enabled"])
+                return provenanced_state(repo, roadmap, {"RUNNER": "planned"}), []
+
+            with patch("phase_loop_runtime.cli.run_loop", side_effect=fake_run_loop), patch("phase_loop_runtime.cli.render_status", return_value="status"):
+                self.assertEqual(
+                    main(["run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--no-dispatch-lock"]),
+                    0,
+                )
+
     def test_allow_cross_phase_dirty_flags_are_limited_to_dispatch_commands(self):
         parser = build_parser()
         for command in ("run", "resume", "dry-run"):

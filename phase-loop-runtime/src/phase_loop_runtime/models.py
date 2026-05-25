@@ -107,6 +107,7 @@ BLOCKER_CLASSES = (
     "stuck_loop",
     "merge_conflict",
     "operator_override_missing_reason",
+    "concurrent_dispatch",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (

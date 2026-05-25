@@ -38,6 +38,7 @@ from .discovery import (
     previous_phase_owned_dirty_paths,
     roadmap_closeout_evidence_audit_enabled,
 )
+from .dispatch_lock import DispatchLock, DispatchLockContention
 from .events import append_event, event_path, read_events
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
@@ -731,6 +732,7 @@ def run_loop(
     stuck_loop_iterations: int = 5,
     stuck_loop_minutes: int = 30,
     force_replan: bool = False,
+    dispatch_lock_enabled: bool = True,
     allow_cross_phase_dirty_reason: str | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
@@ -847,6 +849,79 @@ def run_loop(
     selected = _select_ready_phase(repo, roadmap, classifications, phase)
     results: list[LaunchResult] = []
     selection = resolve_profile(model_profile or explicit_product_action or "execute", model=model, effort=effort)
+    dispatch_lock_context = _null_context()
+    if dispatch_lock_enabled and not dry_run:
+        try:
+            dispatch_lock_context = DispatchLock(repo, roadmap).acquire()
+        except DispatchLockContention as exc:
+            blocker = {
+                "human_required": False,
+                "blocker_class": "concurrent_dispatch",
+                "blocker_summary": exc.blocker_summary(roadmap),
+                "required_human_inputs": (),
+            }
+            snapshot = StateSnapshot(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phases=classifications,
+                current_phase=selected,
+                last_action=action,
+                model=selection.model,
+                reasoning_effort=selection.effort,
+                source=selection.source,
+                override_reason=selection.override_reason,
+                human_required=False,
+                blocker_class="concurrent_dispatch",
+                blocker_summary=str(blocker["blocker_summary"]),
+                required_human_inputs=(),
+                terminal_summary=build_terminal_summary(
+                    terminal_status="blocked",
+                    terminal_blocker=blocker,
+                    verification_status="blocked",
+                    next_action=str(blocker["blocker_summary"]),
+                ),
+                **snapshot_provenance(roadmap),
+            )
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase=selected or "UNKNOWN",
+                    action=action,
+                    status="blocked",
+                    model=selection.model,
+                    reasoning_effort=selection.effort,
+                    source=selection.source,
+                    override_reason=selection.override_reason,
+                    blocker=blocker,
+                    metadata={
+                        "dispatch_lock": {
+                            "status": "blocked",
+                            "lock_path": str(exc.lock_path),
+                            "holder_pid": exc.holder_pid,
+                            "elapsed_seconds": exc.elapsed_seconds,
+                            "roadmap": exc.roadmap or str(roadmap),
+                        },
+                        "terminal_summary": snapshot.terminal_summary,
+                    },
+                    **event_provenance(roadmap, selected or "UNKNOWN"),
+                ),
+            )
+            _write_state_and_handoff(
+                repo,
+                roadmap,
+                snapshot,
+                action=action,
+                results=[],
+                output_path=output_path,
+                override_phase=selected,
+                source_bundle_path=effective_source_bundle_path,
+                pipeline_mode=effective_pipeline_mode,
+            )
+            return snapshot, []
     blocker = active_loop_blocker(repo, desired_mode="product")
     if blocker:
         snapshot = StateSnapshot(
@@ -925,7 +1000,7 @@ def run_loop(
                 **event_provenance(roadmap, selected),
             ),
         )
-    with loop_context:
+    with dispatch_lock_context, loop_context:
         while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
             iterations_remaining -= 1
             snapshot = reconcile(repo, roadmap)

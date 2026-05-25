@@ -108,6 +108,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "stuck_loop",
                 "merge_conflict",
                 "operator_override_missing_reason",
+                "concurrent_dispatch",
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))

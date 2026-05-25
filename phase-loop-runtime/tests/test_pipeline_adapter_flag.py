@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from phase_loop_runtime.pipeline_adapter.flag import branchgov_enabled, trust_executor_evidence_enabled
+from phase_loop_runtime.pipeline_adapter.flag import branchgov_enabled, dispatch_lock_enabled, trust_executor_evidence_enabled
 
 
 def test_branchgov_flag_unset_is_enabled(monkeypatch):
@@ -45,3 +45,22 @@ def test_trust_executor_evidence_flag_non_canonical_values_are_disabled(monkeypa
         monkeypatch.setenv("PHASE_LOOP_TRUST_EXECUTOR_EVIDENCE", value)
 
         assert trust_executor_evidence_enabled() is False
+
+
+def test_dispatch_lock_flag_unset_is_enabled(monkeypatch):
+    monkeypatch.delenv("PHASE_LOOP_DISPATCH_LOCK", raising=False)
+
+    assert dispatch_lock_enabled() is True
+
+
+def test_dispatch_lock_flag_exact_false_is_disabled(monkeypatch):
+    monkeypatch.setenv("PHASE_LOOP_DISPATCH_LOCK", "false")
+
+    assert dispatch_lock_enabled() is False
+
+
+def test_dispatch_lock_flag_non_canonical_values_are_enabled(monkeypatch):
+    for value in ("true", "True", "1", "yes", ""):
+        monkeypatch.setenv("PHASE_LOOP_DISPATCH_LOCK", value)
+
+        assert dispatch_lock_enabled() is True
