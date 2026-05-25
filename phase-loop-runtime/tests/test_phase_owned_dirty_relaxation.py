@@ -53,14 +53,14 @@ class PhaseOwnedDirtyRelaxationTests(unittest.TestCase):
                 ["apps/portal/package.json", "apps/portal/package-lock.json"],
             )
 
-    def test_default_flag_off_keeps_unowned_sibling_blocked(self):
+    def test_exact_false_flag_keeps_unowned_sibling_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
             plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("apps/portal/package.json",))
             commit_fixture_paths(repo, "add runner plan", plan)
 
-            with patch.dict("os.environ", {}, clear=True):
+            with patch.dict("os.environ", {"PHASE_LOOP_TRUST_EXECUTOR_EVIDENCE": "false"}, clear=True):
                 summary = _classify_dirty_paths(
                     repo,
                     roadmap,

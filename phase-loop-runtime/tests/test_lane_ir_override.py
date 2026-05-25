@@ -30,10 +30,16 @@ OVERLAPPING_PLAN = """# RUNNER
 
 
 class LaneIrOverrideTest(unittest.TestCase):
-    def test_override_flag_is_hidden_by_default(self):
-        with patch.dict(os.environ, {}, clear=True):
+    def test_override_flag_is_hidden_when_exact_false(self):
+        with patch.dict(os.environ, {"PHASE_LOOP_ALLOW_LANE_IR_OVERRIDE": "false"}, clear=True):
             with self.assertRaises(SystemExit):
                 build_parser().parse_args(["run", "--allow-lane-ir-override", "overlapping_write_ownership"])
+
+    def test_override_flag_is_visible_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            parsed = build_parser().parse_args(["run", "--allow-lane-ir-override", "overlapping_write_ownership"])
+
+        self.assertEqual(parsed.allow_lane_ir_override, "overlapping_write_ownership")
 
     def test_override_requires_reason_when_enabled(self):
         with patch.dict(os.environ, {"PHASE_LOOP_ALLOW_LANE_IR_OVERRIDE": "true"}, clear=True), tempfile.TemporaryDirectory() as td:
