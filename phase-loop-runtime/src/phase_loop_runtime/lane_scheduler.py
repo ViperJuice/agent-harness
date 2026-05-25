@@ -182,6 +182,31 @@ def worktree_assignments_for_wave(
     )
 
 
+def worktree_assignments_for_phase_wave(
+    repo: Path,
+    phases: tuple[str, ...] | list[str],
+    *,
+    branch: str,
+    mode: str,
+    base_sha: str | None = None,
+) -> tuple[LaneWorktreeAssignment, ...]:
+    if mode == "serialized":
+        return tuple(
+            LaneWorktreeAssignment(lane_id=phase, worktree_path=str(repo), isolation_mode="main_worktree")
+            for phase in phases
+        )
+    return tuple(
+        LaneWorktreeAssignment(
+            lane_id=phase,
+            worktree_path=str(lane_worktree_path(repo, branch=branch, lane_id=phase)),
+            isolation_mode="git_worktree",
+            branch=branch,
+            base_sha=base_sha,
+        )
+        for phase in phases
+    )
+
+
 def _completed_lane_ids(ir: PhasePlanIR, work_units: dict[str, WorkUnitState]) -> tuple[str, ...]:
     completed = {
         state.identity.lane_id
