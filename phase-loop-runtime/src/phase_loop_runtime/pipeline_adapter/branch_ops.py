@@ -7,6 +7,12 @@ from .flag import branchgov_enabled
 from .markers import detect_pipeline_mode
 
 
+# Stable prefix of the BranchGov default-branch refusal message. Shared so
+# reconcile._blocker_precondition_cleared can identify this blocker variant
+# without copying the literal string (the suffix interpolates the branch name).
+REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX = "Refusing git commit on default branch"
+
+
 class PipelineBranchInvariantError(RuntimeError):
     def __init__(self, message: str, *, blocker_class: str = "contract_bug") -> None:
         super().__init__(message)
@@ -68,7 +74,7 @@ def refuse_default_branch_commit(repo_root: Path, default_branch: str) -> None:
         return
     if _current_branch(repo) == default_branch:
         raise PipelineDefaultBranchRefusalError(
-            f"Refusing git commit on default branch {default_branch} while pipeline branch governance is enabled."
+            f"{REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX} {default_branch} while pipeline branch governance is enabled."
         )
 
 

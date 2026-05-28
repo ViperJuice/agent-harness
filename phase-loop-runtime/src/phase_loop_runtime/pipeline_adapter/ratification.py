@@ -77,9 +77,15 @@ def _default_branch(repo: Path) -> str:
     remote_head = _git_output_or_empty(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if remote_head.startswith("origin/"):
         return remote_head.removeprefix("origin/")
-    upstream = _git_output_or_empty(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-    if upstream.startswith("origin/"):
-        return upstream.removeprefix("origin/")
+    # Authoritative fallback: ask the remote for its HEAD when origin/HEAD is unset.
+    # The previous fallback used @{upstream} which returns the current branch's
+    # tracking ref and could mis-identify the pipeline branch as the default.
+    ls_remote = _git_output_or_empty(repo, "ls-remote", "--symref", "origin", "HEAD")
+    for line in ls_remote.splitlines():
+        if line.startswith("ref: refs/heads/"):
+            ref = line.split("\t", 1)[0].removeprefix("ref: refs/heads/").strip()
+            if ref:
+                return ref
     return "main"
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.events import read_events
-from phase_loop_runtime.launcher import LaunchResult
+from phase_loop_runtime.launcher import AuthPreflightResult, LaunchResult
 from phase_loop_runtime.plan_ir import iter_waves
 from phase_loop_runtime.runner import run_loop
 from phase_loop_runtime.worker_pool import PhaseWorkerJob, run_phase_worker_pool
@@ -44,7 +44,10 @@ class V34ParallelDispatchSoakTest(unittest.TestCase):
                     log_path=str(log_path) if log_path else None,
                 )
 
-            with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch):
+            with (
+                patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+                patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch),
+            ):
                 snapshot, results = run_loop(repo, roadmap, parallel_dispatch=True)
 
             self.assertEqual(len(results), 4)

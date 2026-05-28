@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.events import read_events
-from phase_loop_runtime.launcher import LaunchResult
+from phase_loop_runtime.launcher import AuthPreflightResult, LaunchResult
 from phase_loop_runtime.runner import run_loop
 from phase_loop_runtime.state import load_state
 from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
@@ -37,7 +37,10 @@ def test_pipeline_adapter_preserves_standalone_ledgers(tmp_path, monkeypatch):
             log_path=str(log_path) if log_path else None,
         )
 
-    with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch):
+    with (
+        patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+        patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch),
+    ):
         run_loop(repo, roadmap, phase="RUNNER")
 
     state = load_state(repo)

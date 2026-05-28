@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch
 
 from phase_loop_runtime.events import read_events
-from phase_loop_runtime.launcher import LaunchResult
+from phase_loop_runtime.launcher import AuthPreflightResult, LaunchResult
 from phase_loop_runtime.runner import run_loop
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
@@ -47,6 +47,7 @@ def test_runner_emits_ratification_when_enabled_pipeline_reaches_gate(tmp_path, 
         return LaunchResult(command=spec.command, returncode=0, output=json.dumps(closeout), executor=spec.executor)
 
     with (
+        patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
         patch("phase_loop_runtime.runner._ensure_pipeline_branch_before_dispatch", return_value=None),
         patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch),
     ):

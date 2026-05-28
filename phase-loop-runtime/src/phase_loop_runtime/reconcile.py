@@ -7,6 +7,7 @@ from .classifier import classify_all
 from .discovery import PLAN_RE, find_plan_artifact, parse_automation_status, plan_matches_roadmap
 from .events import read_events
 from .models import BLOCKER_CLASSES, StateSnapshot, utc_now
+from .pipeline_adapter.branch_ops import REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX
 from .provenance import (
     phase_provenance_map,
     phase_sha256,
@@ -372,6 +373,60 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             ledger_warnings.append(
                 _ledger_warning("event", repaired_phase, "complete", "clean_manual_repair_superseded_nonhuman_blocker")
             )
+    # Self-clearing stale blocker pass (regenesis v37 fix).
+    #
+    # state.json (or the latest event) can hold a cached blocker whose
+    # precondition was already resolved out-of-band (operator manually
+    # created the pipeline branch, resolved the merge, etc.). Without
+    # this pass reconcile would echo the stale blocker forever and the
+    # runner would refuse to advance.
+    #
+    # Narrow scope, intentionally:
+    #   - human_required=True blockers NEVER self-clear -- the operator
+    #     tagged it and the runner does not second-guess that.
+    #   - dirty_worktree_conflict is intentionally NOT covered here. The
+    #     runner already emits "repair_precondition_cleared" state
+    #     transitions for that class via a richer event-level mechanism
+    #     (see test_phase_loop_repair_skipped_when_blocker_cleared);
+    #     clearing it in reconcile would preempt that flow and break the
+    #     audit trail.
+    #   - Human-action classes (admin_approval, missing_secret,
+    #     product_decision_missing, ...) default-deny -- they cannot be
+    #     detected from repo state.
+    if (
+        current
+        and phases.get(current) == "blocked"
+        and blocker_class
+        and not human_required
+        and _blocker_precondition_cleared(
+            repo, str(blocker_class), blocker_summary=str(blocker_summary or "")
+        )
+    ):
+        cleared_class = str(blocker_class)
+        phases[current] = "planned" if find_plan_artifact(repo, current, roadmap=roadmap) else "unplanned"
+        human_required = False
+        blocker_class = None
+        blocker_summary = None
+        required_human_inputs = ()
+        access_attempts = ()
+        dirty_paths = ()
+        phase_owned_dirty_paths = ()
+        previous_phase_owned_paths = ()
+        unowned_dirty_paths = ()
+        pre_existing_dirty_paths = ()
+        phase_owned_dirty = False
+        terminal_summary = None
+        closeout_terminal_status = None
+        ledger_warnings.append(
+            _ledger_warning(
+                "blocker",
+                current,
+                phases[current],
+                "blocker_precondition_self_cleared",
+                value=cleared_class,
+            )
+        )
+        current = _current_phase(phases)
     return StateSnapshot(
         timestamp=utc_now(),
         repo=str(repo),
@@ -397,6 +452,94 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         ledger_duplicates_skipped=tuple(ledger_duplicates_skipped),
         **snapshot_provenance(roadmap),
     )
+
+
+def _blocker_precondition_cleared(repo: Path, blocker_class: str, *, blocker_summary: str = "") -> bool:
+    """True when the current repo/git state no longer satisfies the cached
+    blocker's precondition. The runner should drop the cached blocker in
+    that case.
+
+    NOTE: ``dirty_worktree_conflict`` is intentionally NOT covered here.
+    The runner emits a richer ``repair_precondition_cleared`` state
+    transition for that class on its own (see
+    test_phase_loop_repair_skipped_when_blocker_cleared). Clearing it in
+    reconcile would preempt that flow and drop the audit trail.
+
+    Default-deny: human-action classes (admin_approval, missing_secret,
+    product_decision_missing, account_or_billing_setup, ...) and
+    branch_sync_conflict variants we cannot reliably detect (e.g.
+    ``base_ref_unavailable`` from release_guard) stay cached.
+    """
+    if blocker_class == "branch_sync_conflict":
+        # Narrow to the BranchGov default-branch refusal variant -- the
+        # v37 case. Identified by the blocker_summary text emitted in
+        # pipeline_adapter.branch_ops.refuse_default_branch_commit.
+        # release_guard's "base_ref_unavailable" variant and other
+        # branch_sync_conflict producers stay cached.
+        summary = blocker_summary or ""
+        if REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX not in summary:
+            return False
+        try:
+            current_branch = subprocess.check_output(
+                ["git", "-C", str(repo), "branch", "--show-current"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            return False
+        if not current_branch:
+            return False
+        remote_head = ""
+        try:
+            remote_head = subprocess.check_output(
+                ["git", "-C", str(repo), "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            remote_head = ""
+        default_branch = remote_head.removeprefix("origin/") if remote_head.startswith("origin/") else ""
+        if not default_branch:
+            try:
+                ls_remote = subprocess.check_output(
+                    ["git", "-C", str(repo), "ls-remote", "--symref", "origin", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                ls_remote = ""
+            for line in ls_remote.splitlines():
+                if line.startswith("ref: refs/heads/"):
+                    ref = line.split("\t", 1)[0].removeprefix("ref: refs/heads/").strip()
+                    if ref:
+                        default_branch = ref
+                        break
+        if not default_branch:
+            # When the default branch cannot be discovered, default-deny
+            # rather than risk clearing a stale blocker that may still
+            # apply.
+            return False
+        return current_branch != default_branch
+    if blocker_class == "merge_conflict":
+        # Cached blocker was "merge in progress with conflicts". If
+        # `git status --porcelain` no longer reports unmerged paths
+        # (UU/AA/DD/UD/DU/AU/UA), the precondition is cleared.
+        try:
+            out = subprocess.check_output(
+                ["git", "-C", str(repo), "status", "--porcelain"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            return False
+        unmerged_prefixes = ("UU", "AA", "DD", "UD", "DU", "AU", "UA")
+        return not any(line.startswith(unmerged_prefixes) for line in out.splitlines())
+    # Default-deny: dirty_worktree_conflict (handled by runner mechanism),
+    # human-action blocker classes (admin_approval, missing_secret,
+    # product_decision_missing, account_or_billing_setup,
+    # operator_override_missing_reason, etc.) and any unknown class do
+    # NOT self-clear from repo state alone.
+    return False
 
 
 def _event_blocker(event: dict) -> dict:

@@ -120,6 +120,42 @@ class PhaseLoopPlanDocSkipTest(unittest.TestCase):
 
             self.assertTrue(is_plan_doc_current(repo, "RUNNER", plan, roadmap))
 
+    def test_phase_frontmatter_match_marks_plan_current_without_last_generated_or_recent_commit(self):
+        # Regenesis DEF-2: plan exists at expected path, frontmatter says
+        # phase: RUNNER, but it has no last_generated and never appeared in
+        # recent git activity. The runner should still treat it as current
+        # because the frontmatter phase matches the queried phase.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap)
+            # Deliberately do NOT commit the plan, and do NOT set
+            # last_generated. Frontmatter phase: RUNNER is set by
+            # write_phase_plan unconditionally.
+            self.assertTrue(is_plan_doc_current(repo, "RUNNER", plan, roadmap))
+
+    def test_phase_frontmatter_mismatch_falls_through_to_git_lookup(self):
+        # Plan exists at the expected path for queried phase but its
+        # frontmatter `phase:` field disagrees AND it has no last_generated
+        # AND no git activity. is_plan_doc_current should NOT treat it as
+        # current via the frontmatter shortcut.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            import hashlib
+            roadmap_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+            plan.write_text(
+                "---\n"
+                "phase_loop_plan_version: 1\n"
+                "phase: ACCESS\n"  # mismatched on purpose
+                f"roadmap: specs/phase-plans-v1.md\n"
+                f"roadmap_sha256: {roadmap_hash}\n"
+                "---\n"
+                "# body\n"
+            )
+            self.assertFalse(is_plan_doc_current(repo, "RUNNER", plan, roadmap))
+
     def test_force_replan_help_is_limited_to_runner_commands(self):
         parser = build_parser()
         for command in ("run", "resume", "dry-run"):

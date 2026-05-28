@@ -86,7 +86,7 @@ CANONICAL_REFRESH_ADVISORY_FIXTURES = {
 }
 
 class TestPhaseLoopPipelineBridge(unittest.TestCase):
-    FIXTURE_DIR = "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge"
+    FIXTURE_DIR = str(Path(__file__).resolve().parent / "fixtures" / "phase_loop_pipeline_bridge")
     FIXTURES = [
         "complete.json",
         "blocked.json",

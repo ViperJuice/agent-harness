@@ -27,7 +27,7 @@ DEPRECATED_V5_ROOT_FIELDS = {
 }
 
 class TestPhaseLoopPipelineCloseout(unittest.TestCase):
-    FIXTURE_DIR = "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge"
+    FIXTURE_DIR = str(Path(__file__).resolve().parent / "fixtures" / "phase_loop_pipeline_bridge")
     VALID_FIXTURES = [
         "complete.json",
         "blocked.json",

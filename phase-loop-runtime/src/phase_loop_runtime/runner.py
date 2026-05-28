@@ -248,9 +248,16 @@ def _default_branch(repo: Path) -> str:
     remote_head = _git_output_or_empty(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if remote_head.startswith("origin/"):
         return remote_head.removeprefix("origin/")
-    upstream = _git_output_or_empty(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-    if upstream.startswith("origin/"):
-        return upstream.removeprefix("origin/")
+    # Authoritative fallback: ask the remote for its HEAD when origin/HEAD is unset.
+    # The previous fallback used @{upstream}, which returns the CURRENT branch's
+    # tracking ref — wrong (e.g. on a pipeline branch, returned that branch as
+    # "default") and would cause BranchGov to refuse commits there.
+    ls_remote = _git_output_or_empty(repo, "ls-remote", "--symref", "origin", "HEAD")
+    for line in ls_remote.splitlines():
+        if line.startswith("ref: refs/heads/"):
+            ref = line.split("\t", 1)[0].removeprefix("ref: refs/heads/").strip()
+            if ref:
+                return ref
     return "main"
 
 
@@ -381,7 +388,15 @@ def is_plan_doc_current(repo: Path, phase: str, plan: Path, roadmap: Path, *, re
     current_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     if current_plan is None or current_plan.resolve() != plan.resolve():
         return False
-    if plan_metadata(plan).get("last_generated", "").strip():
+    metadata = plan_metadata(plan)
+    if metadata.get("last_generated", "").strip():
+        return True
+    # When the plan's frontmatter `phase:` matches the queried phase,
+    # the plan IS the active artifact even without last_generated metadata
+    # or recent git activity. Fixes regenesis DEF-2: the planner used to
+    # re-dispatch when both heuristics failed even though the plan was
+    # demonstrably the right one for this phase.
+    if str(metadata.get("phase", "")).strip().upper() == phase.upper():
         return True
     rel_plan = _repo_relative(repo, plan)
     try:
@@ -6183,6 +6198,29 @@ def _perform_phase_closeout(
     closeout_dirty_paths = tuple(
         dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
     )
+    # Fallback (regenesis v37 fix): when codex's classification left
+    # phase_owned_dirty_paths empty but every dirty path matches the
+    # active plan's owned-files glob, auto-classify as phase-owned and
+    # proceed. Works around codex emitting empty phase_owned_dirty_paths
+    # despite valid dirty_paths. Does NOT bypass the blocker if any dirty
+    # path is NOT owned by the plan.
+    if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
+        plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
+        if plan_for_fallback is not None:
+            ownership_for_fallback = parse_plan_ownership(repo, roadmap, plan_for_fallback)
+            if ownership_for_fallback.valid and all(
+                ownership_for_fallback.matches_dirty_output(p) for p in snapshot.dirty_paths
+            ):
+                reclassified_paths = tuple(
+                    dict.fromkeys((*snapshot.dirty_paths, *snapshot.previous_phase_owned_paths))
+                )
+                closeout_dirty_paths = reclassified_paths
+                snapshot = replace(
+                    snapshot,
+                    phase_owned_dirty=True,
+                    phase_owned_dirty_paths=tuple(snapshot.dirty_paths),
+                )
+                metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(snapshot.dirty_paths)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
         blocker = {
