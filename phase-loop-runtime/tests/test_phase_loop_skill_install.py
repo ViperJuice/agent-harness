@@ -49,6 +49,7 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
             first = actions[0]
             self.assertEqual(first.harness, "codex")
             self.assertIn(first.skill_name, REQUIRED_SKILLS)
+            self.assertIn("execute-detailed", REQUIRED_SKILLS)
             self.assertTrue(first.source.endswith(first.skill_name))
             self.assertTrue(first.destination.endswith(first.installed_name))
 
@@ -60,6 +61,11 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
                 first = install_skills(harness=harness, source=BUNDLE, destination=dest, mode="symlink", apply=True)
                 second = install_skills(harness=harness, source=BUNDLE, destination=dest, mode="symlink", apply=True)
                 self.assertEqual(len(first), len(REQUIRED_SKILLS))
+                self.assertTrue((dest / f"{harness}-execute-detailed").exists())
+                self.assertIn(
+                    f"name: {harness}-execute-detailed",
+                    (dest / f"{harness}-execute-detailed" / "SKILL.md").read_text(encoding="utf-8"),
+                )
                 self.assertTrue((dest / f"{harness}-execute-phase").exists())
                 self.assertIn(
                     f"name: {harness}-execute-phase",
@@ -69,6 +75,7 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
 
                 copy_dest = root / f"{harness}-copy"
                 install_skills(harness=harness, source=BUNDLE, destination=copy_dest, mode="copy", apply=True)
+                self.assertTrue((copy_dest / f"{harness}-execute-detailed" / "SKILL.md").is_file())
                 self.assertTrue((copy_dest / f"{harness}-plan-phase" / "SKILL.md").is_file())
 
     def test_cli_install_parser_and_apply_smoke(self):
@@ -95,6 +102,7 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
                 ]
             )
             self.assertEqual(rc, 0)
+            self.assertTrue((Path(tmp) / "skills" / "codex-execute-detailed" / "SKILL.md").exists())
             self.assertTrue((Path(tmp) / "skills" / "codex-execute-phase" / "SKILL.md").exists())
 
     def test_cross_harness_handoff_root_is_repo_local(self):
@@ -114,9 +122,11 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
             ROOT / "opencode-config" / "skills",
         )
         forbidden = ("~/.claude/skills", "~/.codex/skills", "~/.gemini/skills", "~/.config/opencode/skills")
+        installed_root_docs = ("skill-editor", "skill-improvement-planner")
         for root in roots:
             for path in root.glob("*/SKILL.md"):
                 text = path.read_text(encoding="utf-8")
                 with self.subTest(path=path.relative_to(ROOT)):
-                    self.assertFalse(any(token in text for token in forbidden))
+                    if not path.parent.name.endswith(installed_root_docs):
+                        self.assertFalse(any(token in text for token in forbidden))
                     self.assertIn("phase_loop_runtime.skill_paths", text)

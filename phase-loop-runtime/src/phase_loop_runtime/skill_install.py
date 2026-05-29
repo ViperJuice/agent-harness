@@ -9,6 +9,7 @@ from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, current_harness, resolve_s
 
 
 REQUIRED_SKILLS: tuple[str, ...] = (
+    "execute-detailed",
     "execute-phase",
     "plan-phase",
     "plan-detailed",
