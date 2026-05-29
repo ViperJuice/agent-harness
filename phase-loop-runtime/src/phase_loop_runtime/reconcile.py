@@ -860,12 +860,48 @@ def _event_dedup_key(event: dict) -> tuple[object, ...]:
     )
 
 
+def _event_content_signature(event: dict) -> tuple[object, ...]:
+    """Stable content signature drawn from the executor's terminal_summary.
+
+    DEF-4: the runner emits two events with identical (timestamp, phase,
+    action, status, automation_status, blocker_class) keys during a single
+    blocked-execute call — one carrying an empty terminal_summary, the other
+    carrying the executor's dirty_paths / phase_owned_dirty_paths /
+    produced_if_gates. Without a content signature they share a dedup
+    identity; the first event wins and the rich one is silently dropped,
+    leaving the snapshot's dirty_paths empty and the closeout auto-classifier
+    unable to fire.
+
+    Including the content signature in the dedup identity lets both events
+    survive reconcile. The reducer's existing overwrite-on-non-empty +
+    no-pop-on-blocked semantics then naturally surface the rich event's data.
+
+    True byte-identical duplicates still collapse: their content signatures
+    match exactly. The regression guard for that is intentional — replayed
+    ledgers (e.g. after restoring `events.jsonl.bak-*`) must not double-count.
+    """
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return ()
+    summary = metadata.get("terminal_summary")
+    if not isinstance(summary, dict):
+        return ()
+    return (
+        tuple(sorted(str(p) for p in (summary.get("dirty_paths") or ()))),
+        tuple(sorted(str(p) for p in (summary.get("phase_owned_dirty_paths") or ()))),
+        tuple(sorted(str(g) for g in (summary.get("produced_if_gates") or ()))),
+        _optional_text(summary.get("terminal_status")),
+        _optional_text(summary.get("verification_status")),
+    )
+
+
 def _event_dedup_identity(event: dict, dedup_key: tuple[object, ...]) -> tuple[object, ...]:
     return (
         *dedup_key,
         _optional_text(event.get("roadmap_sha256")),
         _optional_text(event.get("phase_sha256")),
         event.get("schema_version"),
+        _event_content_signature(event),
     )
 
 
