@@ -1638,6 +1638,86 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             self.assertEqual(snapshot.blocker_class, "dirty_worktree_conflict")
             self.assertEqual(snapshot.blocker_summary, "plan repair required before execution")
 
+    def test_phase_reopen_event_clears_prior_terminal_summary(self):
+        """phase_reopen is explicit operator intent to discard a stuck terminal
+        state. The reducer must clear the prior terminal_summary so the next
+        `phase-loop run` re-dispatches instead of replaying the stale closeout.
+
+        Before this was made explicit, the same effect happened incidentally
+        via the planned-status branch — but a future refactor of the elif
+        ordering could silently break the recoverable-blocker recovery path.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            # 1. An executor reports a blocked closeout carrying a real terminal_summary.
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="RUNNER",
+                    action="run",
+                    status="blocked",
+                    model="gpt-5.5",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "terminal_summary": {
+                            "terminal_status": "blocked",
+                            "verification_status": "blocked",
+                            "dirty_paths": ["src/foo.py"],
+                            "blocker_class": "missing_secret",
+                        },
+                    },
+                    **event_provenance(roadmap, "RUNNER"),
+                ),
+            )
+            pre_snapshot = reconcile(repo, roadmap)
+            self.assertEqual(pre_snapshot.phases["RUNNER"], "blocked")
+            self.assertIsNotNone(pre_snapshot.terminal_summary)
+
+            # 2. Operator runs `phase-loop reopen --phase RUNNER --reason "SSO refreshed"`.
+            # That synthesizes a planned phase_reopen event.
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="RUNNER",
+                    action="phase_reopen",
+                    status="planned",
+                    model=None,
+                    reasoning_effort=None,
+                    source="fixture",
+                    metadata={
+                        "phase_reopen": {
+                            "reason": "SSO refreshed",
+                            "prior_status": "blocked",
+                            "prior_closeout_commit": "abc123",
+                            "reopen_commit": "def456",
+                        },
+                    },
+                    **event_provenance(roadmap, "RUNNER"),
+                ),
+            )
+
+            post_snapshot = reconcile(repo, roadmap)
+
+            self.assertEqual(post_snapshot.phases["RUNNER"], "planned")
+            # The explicit phase_reopen branch in _event_clears_terminal_summary
+            # must clear the stale blocked-event terminal_summary.
+            self.assertIsNone(
+                post_snapshot.terminal_summary,
+                msg=(
+                    "phase_reopen must clear prior terminal_summary so the next "
+                    f"`phase-loop run` re-dispatches; got {post_snapshot.terminal_summary!r}"
+                ),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

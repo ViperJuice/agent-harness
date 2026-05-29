@@ -1099,6 +1099,32 @@ def _event_dirty_summary(event: dict) -> dict[str, object]:
                 "phase_owned_dirty": bool(value.get("phase_owned_dirty", False)),
                 "terminal_status": value.get("terminal_status"),
             }
+    # Fallback: executor's terminal_summary carries dirty_paths directly when
+    # the runner hasn't (yet) wrapped them into the completion_dirty_worktree /
+    # plan_dirty_worktree / incomplete_execute_dirty_worktree shapes. Without
+    # this read, the closeout fallback at runner.py:6207 sees empty
+    # snapshot.dirty_paths and refuses, even though the executor accurately
+    # reported its phase-owned output. Skip dry-run summaries so the
+    # event_only_status warning path stays intact.
+    terminal_summary = metadata.get("terminal_summary")
+    # Only fall back when the executor actually reported dirty work AND it's
+    # not a dry-run. Empty-dirty terminal_summaries from closeout-refused
+    # follow-up events would otherwise overwrite the prior executor report.
+    if (
+        isinstance(terminal_summary, dict)
+        and terminal_summary.get("dirty_paths")
+        and terminal_summary.get("terminal_status") != "dry_run"
+        and not metadata.get("dry_run_only")
+    ):
+        return {
+            "dirty_paths": list(terminal_summary.get("dirty_paths", ())),
+            "phase_owned_dirty_paths": list(terminal_summary.get("phase_owned_dirty_paths", ())),
+            "previous_phase_owned_paths": list(terminal_summary.get("previous_phase_owned_paths", ())),
+            "unowned_dirty_paths": list(terminal_summary.get("unowned_dirty_paths", ())),
+            "pre_existing_dirty_paths": list(terminal_summary.get("pre_existing_dirty_paths", ())),
+            "phase_owned_dirty": bool(terminal_summary.get("phase_owned_dirty", False)),
+            "terminal_status": terminal_summary.get("terminal_status"),
+        }
     return {}
 
 
@@ -1188,6 +1214,10 @@ def _planned_event_clears_blocker(event: dict) -> bool:
     recovery = _manual_recovery_metadata(event)
     if recovery is not None and event.get("status") in {"planned", "unplanned"}:
         return bool(recovery.get("clears_blocker"))
+    # phase_reopen is explicit operator intent to re-dispatch from a stuck
+    # status (typed event with --reason); always clears any prior blocker.
+    if event.get("action") == "phase_reopen" and event.get("status") == "planned":
+        return True
     if event.get("action") != "manual_repair":
         return False
     metadata = event.get("metadata")
@@ -1243,6 +1273,8 @@ def _state_transition_metadata(event: dict) -> dict[str, object] | None:
 
 def _event_clears_terminal_summary(event: dict, status: object) -> bool:
     if _manual_recovery_metadata(event) is not None and status in {"planned", "unplanned"}:
+        return True
+    if event.get("action") == "phase_reopen" and status == "planned":
         return True
     if event.get("action") == "manual_repair":
         metadata = event.get("metadata")

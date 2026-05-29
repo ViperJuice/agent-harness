@@ -1037,13 +1037,19 @@ def _topology_dirty_paths(topology: dict) -> list[str]:
 
 
 def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_json: bool) -> int:
-    """Reverse a spurious closeout: append a typed phase_reopen event for --phase.
+    """Reverse a spurious closeout OR recover a blocked phase: append a typed
+    phase_reopen event for --phase.
 
-    Use when an executor reported a phase as complete + verification_status=passed
-    but the underlying IF gates were not actually satisfied (e.g., a repair iteration
-    that reported done with zero diff and no real work). Appending a phase_reopen
-    event flips the phase back to planned in the reducer; the next phase-loop run
-    will re-execute it.
+    Two recovery scenarios:
+    1. Spurious complete: an executor reported complete + verification_status=passed
+       but the IF gates were not actually satisfied.
+    2. Recoverable blocked: an executor self-blocked (e.g., missing_secret) and the
+       blocker has since been resolved (e.g., AWS SSO refreshed). Without reopen,
+       blocked phases stick because `phase-loop run` reuses the prior terminal
+       summary instead of re-dispatching.
+
+    In both cases, the phase_reopen event flips the phase back to planned in the
+    reducer; the next `phase-loop run` will re-execute it.
 
     Refuses by default if the working tree is dirty (override with --allow-dirty)
     so the recorded prior_closeout_commit corresponds to a clean state.
@@ -1075,10 +1081,12 @@ def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_j
         print(f"phase-loop reopen: phase {phase!r} not found in roadmap {roadmap}", file=sys.stderr)
         return 2
     prior_status = snapshot_before.phases.get(phase)
-    if prior_status != "complete":
+    reopen_allowed_statuses = ("complete", "blocked")
+    if prior_status not in reopen_allowed_statuses:
         print(
-            f"phase-loop reopen: phase {phase!r} is currently {prior_status!r}, not 'complete'. "
-            "Only complete phases can be reopened. Use `phase-loop reconcile` for blocked phases.",
+            f"phase-loop reopen: phase {phase!r} is currently {prior_status!r}, "
+            f"not one of {reopen_allowed_statuses}. Only complete or blocked phases "
+            "can be reopened.",
             file=sys.stderr,
         )
         return 2
@@ -1088,7 +1096,7 @@ def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_j
 
     phase_reopen = {
         "reason": reason,
-        "prior_status": "complete",
+        "prior_status": prior_status,
         "prior_closeout_commit": prior_closeout,
         "reopen_commit": head,
     }

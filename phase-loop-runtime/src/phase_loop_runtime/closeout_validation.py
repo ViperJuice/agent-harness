@@ -71,9 +71,35 @@ def validate_produced_gates(plan_path: Path, closeout_payload: dict[str, Any]) -
             )
         return ValidationResult(ok=True, expected_gates=expected)
 
-    produced = _normalize_gates(closeout_payload.get("produced_if_gates"))
+    produced_raw = _normalize_gates(closeout_payload.get("produced_if_gates"))
+    # Filter to canonical IF-gate tokens. Executors sometimes emit free-text
+    # description sentences in produced_if_gates (e.g. when the plan declares
+    # no IF gate, codex has been observed outputting
+    # ["...verified...; active plan declares no interface-freeze gate"]).
+    # Treat non-IF-token entries as commentary, not as produced gates.
+    produced = tuple(g for g in produced_raw if IF_GATE_RE.fullmatch(g))
+    non_gate_chatter = tuple(g for g in produced_raw if not IF_GATE_RE.fullmatch(g))
     missing = tuple(gate for gate in expected if gate not in produced)
     unexpected = tuple(gate for gate in produced if gate not in expected)
+
+    # If the plan declares no IF gates, the phase is internal/tooling and
+    # cannot fail the contract check. Allow with a warning if the executor
+    # emitted any chatter.
+    if not expected:
+        warning = None
+        if non_gate_chatter:
+            warning = (
+                "executor produced non-IF-gate strings in produced_if_gates "
+                "for a plan that declares no IF gates; treated as commentary"
+            )
+        return ValidationResult(
+            ok=True,
+            warning=warning,
+            expected_gates=expected,
+            produced_gates=produced,
+            missing_gates=missing,
+            unexpected_gates=unexpected,
+        )
 
     if terminal_status == "complete" and (not produced or missing or unexpected):
         summary = "completed closeout produced_if_gates did not match the active phase plan"

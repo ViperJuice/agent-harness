@@ -861,7 +861,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertEqual(events[-1]["phase"], "RUNNER")
             self.assertIn("spurious completion", events[-1]["metadata"]["phase_reopen"]["reason"])
 
-    def test_reopen_refuses_phase_that_is_not_complete(self):
+    def test_reopen_refuses_phase_that_is_not_complete_or_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
@@ -871,8 +871,56 @@ class PhaseLoopCliTest(unittest.TestCase):
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("not 'complete'", result.stderr)
-            self.assertIn("phase-loop reconcile", result.stderr)  # hints at the other tool
+            self.assertIn("not one of", result.stderr)
+            self.assertIn("'complete'", result.stderr)
+            self.assertIn("'blocked'", result.stderr)
+
+    def test_reopen_flips_blocked_phase_back_to_planned(self):
+        """Recoverable-blocker scenario: executor self-blocked (e.g. missing_secret
+        / expired SSO token), the operator resolves the blocker out-of-band, and
+        reopen must clear the stuck state so the next `phase-loop run` re-dispatches."""
+        from phase_loop_runtime.events import read_events
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # Land a blocked-execute event for RUNNER
+            append_event(repo, provenanced_event(repo, roadmap, "RUNNER", "blocked", action="execute"))
+            status_pre = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertEqual(json.loads(status_pre.stdout)["phases"]["RUNNER"], "blocked")
+
+            result = subprocess.run(
+                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "blocker resolved (e.g. SSO refreshed)"],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            status_post = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertEqual(json.loads(status_post.stdout)["phases"]["RUNNER"], "planned")
+
+            events = read_events(repo)
+            self.assertEqual(events[-1]["action"], "phase_reopen")
+            self.assertEqual(events[-1]["status"], "planned")
+            # prior_status must accurately reflect the recovered-from status, not
+            # be hardcoded "complete" as it was before the recoverable-blocked patch.
+            self.assertEqual(events[-1]["metadata"]["phase_reopen"]["prior_status"], "blocked")
+            # The reopen must clear the prior terminal_summary so the next
+            # `phase-loop run` re-dispatches instead of reusing the stale
+            # blocked summary. Guards against future changes to
+            # _event_clears_terminal_summary or the reducer's elif ordering
+            # that would silently break the recoverable-blocker recovery path.
+            status_post_json = json.loads(status_post.stdout)
+            terminal_summary = status_post_json.get("terminal_summary")
+            if terminal_summary is not None:
+                self.assertNotEqual(
+                    terminal_summary.get("phase"),
+                    "RUNNER",
+                    msg=f"phase_reopen should clear RUNNER's terminal_summary; got {terminal_summary!r}",
+                )
 
     def test_reopen_refuses_dirty_tree(self):
         with tempfile.TemporaryDirectory() as td:
