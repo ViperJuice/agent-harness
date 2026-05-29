@@ -15,6 +15,7 @@ from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
 from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PipelinePlanMetadata, StateSnapshot, utc_now
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
+from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import build_notification_payload, run_notification_command
 from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock_enabled, parallel_dispatch_enabled
@@ -84,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -185,6 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
             sub.add_argument("--apply", action="store_true")
+        if name == "migrate-events":
+            sub.description = "Migrate legacy DEF-4 executor closeout event action tokens in .phase-loop/events.jsonl."
+            sub.add_argument("--backup-suffix", default=".bak-before-def4-migrate")
         if name == "init":
             sub.add_argument("--install-hooks", action="store_true", help="Install opt-in local git hooks for this repo.")
         if name == "adoption-bundle":
@@ -431,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             for record in records:
                 print(f"{record.status}\t{record.action}\t{record.skill_name}\t{record.source}\t{record.target}")
         return 1 if any(record.action == "blocked" for record in records) else 0
+    if command == "migrate-events":
+        return _migrate_events_command(repo=repo, dry_run=bool(args.dry_run), backup_suffix=args.backup_suffix)
     if command == "archive-state":
         print(render_archive_result(archive_state(repo, reason=getattr(args, "reason", None)), as_json=as_json))
         return 0
@@ -742,6 +748,16 @@ def _adoption_bundle_command(*, repo: Path, action: str, as_json: bool) -> int:
         if payload.get("error"):
             print(f"error: {payload['error']}", file=sys.stderr)
     return code
+
+
+def _migrate_events_command(*, repo: Path, dry_run: bool, backup_suffix: str) -> int:
+    try:
+        result = migrate_ledger(repo, dry_run=dry_run, backup_suffix=backup_suffix)
+    except MigrationError as exc:
+        print(f"phase-loop migrate-events: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result.to_json(), sort_keys=True))
+    return 0
 
 
 def _init_command(*, repo: Path, dry_run: bool, as_json: bool, install_hooks: bool) -> int:
