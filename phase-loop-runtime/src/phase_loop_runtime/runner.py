@@ -4649,7 +4649,8 @@ def _executor_closeout_event(
         repo=str(repo),
         roadmap=str(roadmap),
         phase=phase,
-        action="run",
+        # DEF-4: keep executor-terminal closeouts distinct from runner-classified run events.
+        action="executor.closeout",
         status=source_status,
         model=selection.model,
         reasoning_effort=selection.effort,

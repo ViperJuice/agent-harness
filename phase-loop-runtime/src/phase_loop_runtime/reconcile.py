@@ -108,10 +108,23 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             access_attempts = snapshot.access_attempts
     pending_event_warnings: dict[str, list[dict]] = {}
     latest_untrusted_terminal_event: dict[str, dict] = {}
+    legacy_executor_closeout_action_warned = False
     for raw_event in read_events(repo):
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
+        event, normalized_legacy_executor_closeout = _normalize_legacy_executor_closeout_action(event)
         if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
             continue
+        if normalized_legacy_executor_closeout and not legacy_executor_closeout_action_warned:
+            ledger_warnings.append(
+                _ledger_warning(
+                    "event",
+                    str(event.get("phase", "")).upper(),
+                    str(event.get("status") or ""),
+                    "legacy_executor_closeout_action_normalized",
+                    raw_event=raw_event,
+                )
+            )
+            legacy_executor_closeout_action_warned = True
         dedup_key = _event_dedup_key(event)
         if event.get("action") == "phase_reopen":
             seen_event_keys = {key for key in seen_event_keys if key[1] != dedup_key[1]}
@@ -1015,6 +1028,7 @@ def _canonical_ledger_reason(reason: str) -> str:
         "event_only_status",
         "malformed_state_transition",
         "malformed_manual_recovery",
+        "legacy_executor_closeout_action_normalized",
     }:
         return reason
     return "provenance_mismatch"
@@ -1084,6 +1098,17 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     if blocker:
         normalized["blocker"] = blocker
     return normalized
+
+
+def _normalize_legacy_executor_closeout_action(event: dict) -> tuple[dict, bool]:
+    metadata = event.get("metadata")
+    if event.get("action") != "run" or not isinstance(metadata, dict):
+        return event, False
+    if not isinstance(metadata.get("executor_closeout_event"), dict):
+        return event, False
+    normalized = dict(event)
+    normalized["action"] = "executor.closeout"
+    return normalized, True
 
 
 def _normalize_blocker(raw: dict) -> dict:

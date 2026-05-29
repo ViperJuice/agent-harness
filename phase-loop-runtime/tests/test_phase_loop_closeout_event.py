@@ -21,14 +21,14 @@ from phase_loop_test_utils import make_repo, write_phase_plan
 
 
 class PhaseLoopCloseoutEventTest(unittest.TestCase):
-    def test_executor_complete_closeout_emits_run_event(self):
+    def test_executor_complete_closeout_emits_executor_closeout_event(self):
         with tempfile.TemporaryDirectory() as td:
             repo, roadmap = self._fixture(Path(td))
 
             self._run_with_closeout(repo, roadmap, self._payload("complete"))
 
             event = self._executor_closeout_events(repo)[0]
-            self.assertEqual(event["action"], "run")
+            self.assertEqual(event["action"], "executor.closeout")
             self.assertEqual(event["status"], "complete")
             self.assertEqual(event["metadata"]["executor_closeout_event"]["source_status"], "complete")
 

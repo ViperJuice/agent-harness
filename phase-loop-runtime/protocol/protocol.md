@@ -1513,7 +1513,7 @@ After a live child executor emits a valid native closeout, the runner appends an
 executor-terminal `LoopEvent` before applying later runner-owned dirty-path or
 closeout classification. The event is append-only evidence with:
 
-- `action: run`
+- `action: executor.closeout`
 - `status` equal to the executor closeout `terminal_status`
 - current `roadmap_sha256` and `phase_sha256` from
   `event_provenance(roadmap, phase)`
@@ -1522,6 +1522,12 @@ closeout classification. The event is append-only evidence with:
 - `metadata.executor_closeout_event.produced_if_gates`
 - `metadata.executor_closeout_event.dirty_paths`
 - normalized child automation metadata under `metadata.child_automation`
+
+Writers emit only the `executor.closeout` action for this executor-terminal
+record. Legacy ledgers that contain `action: run` with a dict-valued
+`metadata.executor_closeout_event` remain valid audit evidence; reducers
+normalize that legacy shape to `executor.closeout` at read time for identity and
+status processing without rewriting the on-disk event.
 
 The executor-terminal event does not replace the later runner-classified event.
 Reducer authority remains ledger-order based: the most recent terminal event
