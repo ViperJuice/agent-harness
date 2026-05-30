@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
+from .build_bundle import DEFAULT_SOURCES, build_bundle
 from .closeout import build_phase_loop_closeout
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, select_roadmap
 from .events import append_event, read_events
@@ -85,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -169,6 +170,19 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--harness", action="append", default=[], choices=("codex", "claude", "gemini", "opencode"))
             sub.add_argument("--check", action="store_true")
             sub.add_argument("--apply", action="store_true")
+        if name == "build-bundle":
+            sub.description = "Regenerate the harness-neutral phase-loop skills bundle from canonical harness roots."
+            sub.add_argument(
+                "--source",
+                action="append",
+                help=(
+                    "Canonical source root. Repeat for claude, codex, gemini, and opencode. "
+                    "Defaults: " + ", ".join(DEFAULT_SOURCES.values())
+                ),
+            )
+            sub.add_argument("--destination", default="vendor/phase-loop-skills")
+            sub.add_argument("--apply", action="store_true", help="Write generated bundle files. Without --apply, this command is read-only.")
+            sub.add_argument("--force", action="store_true", help="Rewrite generated outputs even when content is unchanged.")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -394,6 +408,34 @@ def main(argv: list[str] | None = None) -> int:
         print(render_skill_sync_result(summary, as_json=as_json))
         blocker = summary.get("blocker")
         return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
+    if command == "build-bundle":
+        sources = list(args.source or DEFAULT_SOURCES.values())
+        resolved_sources = [repo / source if not Path(source).is_absolute() else Path(source) for source in sources]
+        destination = Path(args.destination)
+        if not destination.is_absolute():
+            destination = repo / destination
+        dry_run = bool(args.dry_run or not args.apply)
+        result = build_bundle(
+            resolved_sources,
+            destination,
+            dry_run=dry_run,
+            apply=bool(args.apply),
+            force=bool(args.force),
+        )
+        if as_json or dry_run:
+            print(result.to_json())
+        else:
+            verb = "applied" if result.applied else "planned"
+            print(f"build-bundle {verb}: {len(result.files_written)} file changes")
+            for skill in result.skills_regenerated:
+                print(f"regenerated\t{skill}")
+            for path in result.overrides_written:
+                print(f"override\t{path}")
+            for skipped in result.skills_skipped:
+                print(f"skipped\t{skipped.skill}\tmissing={','.join(skipped.missing_harnesses)}")
+            for warning in result.warnings:
+                print(f"warning\t{warning.skill}\t{warning.message}")
+        return 0
     if command == "install":
         if bool(getattr(args, "status", False)):
             payload = build_install_status(repo, harnesses=(args.harness,) if args.harness else None)
