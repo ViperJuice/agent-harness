@@ -97,6 +97,12 @@ Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-r
 
 If writing an artifact, use the active session's file-editing tool, report the path, and do not commit unless requested.
 
+### Manifest write
+
+After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry` (`plan-manifest append`). Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=<harness>-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_path` / `handoff_ref`). Include a committed lifecycle event with `by=<harness>-plan-detailed` when the helper contract requires lifecycle provenance.
+
+Manifest write failures are non-fatal during the dual-mode window: emit a ledger warning, add the failure to the mandatory reflection, and preserve the existing closeout, handoff, and final response behavior.
+
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:

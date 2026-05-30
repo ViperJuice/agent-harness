@@ -43,15 +43,21 @@ handoff roots, helper roots, and reflection roots.
 3. Read the plan artifact in full.
 4. Validate that it contains non-empty `## Changes`, `## Verification`, and
    `## Acceptance criteria` sections.
-5. Apply the `## Changes` section in declared order. Use `apply_patch` or the
+5. Best-effort mark the detailed plan manifest entry as `executing` through
+   `phase_loop_runtime.plan_manifest.update_lifecycle` (`plan-manifest append`)
+   after plan validation and before source edits. Use `by=<harness>-execute-detailed`
+   and metadata that identifies the run and plan artifact. Manifest lifecycle
+   failures emit ledger/reflection warnings only and do not abort execution
+   during the dual-mode window.
+6. Apply the `## Changes` section in declared order. Use `apply_patch` or the
    active file-editing tool for manual edits. If implementation requires a file
    or behavior not named by the plan, stop and report
    `dirty worktree from non-plan output`.
-6. Run every command in `## Verification` unless unsafe, unavailable, or blocked
+7. Run every command in `## Verification` unless unsafe, unavailable, or blocked
    by missing credentials. Report each command with pass/fail status.
-7. Compare the final state against each item in `## Acceptance criteria` and
+8. Compare the final state against each item in `## Acceptance criteria` and
    report satisfied or unmet status.
-8. Run `git status --short --untracked-files=all` and classify every dirty path
+9. Run `git status --short --untracked-files=all` and classify every dirty path
    as plan-owned, pre-existing unrelated, or non-plan output.
 
 ## Failure Diagnostics
@@ -66,6 +72,10 @@ handoff roots, helper roots, and reflection roots.
   not pre-existing and is not produced by the detailed plan's declared changes.
 
 ## Closeout
+
+### Manifest lifecycle
+
+During closeout, best-effort call `phase_loop_runtime.plan_manifest.update_lifecycle` with `completed` when verification and acceptance passed, or `failed` when verification failed, acceptance was unmet, or closeout found non-plan output. Include verification metadata, reflection metadata, dirty-path classification, and the final diagnostic in the lifecycle event. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, record the failure in the mandatory reflection, and preserve the existing detailed executor closeout.
 
 Before final response, write a reflection for every non-trivial run. Write it to
 `resolve_skill_bundle_root("codex")/<harness>-execute-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
