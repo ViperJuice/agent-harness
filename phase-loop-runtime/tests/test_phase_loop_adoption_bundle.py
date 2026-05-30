@@ -1,6 +1,8 @@
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -77,6 +79,9 @@ def _runtime_projection_fixture():
         "handoff_status": "written",
         "current_phase_boundary": "DOTADOPT",
         "last_event_iso": "2026-05-22T00:00:00Z",
+        "plans_in_flight": 0,
+        "plans_executing": [],
+        "last_plan_event_iso": "none",
         "install_status": "installed",
         "gitignore_init_status": "present",
         "operating_mode": "standalone",
@@ -101,6 +106,18 @@ def _bulleted_mapping(section):
     return values
 
 
+def _copy_bundle_inputs(repo: Path) -> None:
+    for relative in (
+        "docs/dotfiles-source-authority-contract.md",
+        "docs/c4/phase-loop-runtime-c4-document.md",
+        "docs/tasks/dotfiles-task-catalog.md",
+    ):
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, destination)
+    shutil.copytree(REPO_ROOT / "vendor" / "phase-loop-runtime" / "baml_src", repo / "vendor" / "phase-loop-runtime" / "baml_src")
+
+
 class PhaseLoopAdoptionBundleTest(unittest.TestCase):
     def test_fixture_parses_as_dotfiles_adoption_manifest(self):
         fixture = _load_fixture()
@@ -109,6 +126,7 @@ class PhaseLoopAdoptionBundleTest(unittest.TestCase):
 
         self.assertEqual(parsed.payload, fixture)
         self.assertEqual(fixture["operating_mode"], "standalone")
+        self.assertIsInstance(fixture["plan_refs"], list)
         self.assertEqual(fixture["redacted_metadata_ref"], RUNTIME_PROJECTION_REF)
         self.assertEqual(fixture["visibility_contract_ref"], "docs/dotfiles-visibility-contract.md")
 
@@ -151,6 +169,7 @@ class PhaseLoopAdoptionBundleTest(unittest.TestCase):
 
         concrete_refs = [fixture["visibility_contract_ref"]]
         concrete_refs.extend(ref["source_path"] for ref in fixture["schema_refs"])
+        concrete_refs.extend(ref["file"] for ref in fixture["plan_refs"])
         concrete_refs.extend(ref["source_path"] for ref in fixture["c4_document_refs"])
         concrete_refs.extend(ref["source_path"] for ref in fixture["task_catalog_refs"])
         for relative_path in concrete_refs:
@@ -159,6 +178,68 @@ class PhaseLoopAdoptionBundleTest(unittest.TestCase):
                 self.assertNotIn("..", Path(relative_path).parts)
                 self.assertTrue(_resolve_repo_path(relative_path).exists())
                 self.assertTrue(all(forbidden not in relative_path for forbidden in FORBIDDEN_REF_PARTS))
+
+        for ref in fixture["plan_refs"]:
+            self.assertRegex(ref["digest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertIn(ref["type"], {"phase", "detailed"})
+            self.assertTrue(all(forbidden not in json.dumps(ref) for forbidden in FORBIDDEN_REF_PARTS))
+
+    def test_manifest_plan_refs_are_repo_relative_sorted_and_hashed(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            _copy_bundle_inputs(repo)
+            (repo / "plans").mkdir(parents=True)
+            alpha = repo / "plans" / "phase-plan-v38-ALPHA.md"
+            beta = repo / "plans" / "detailed-beta.md"
+            alpha.write_text("# ALPHA\n", encoding="utf-8")
+            beta.write_text("# Beta\n", encoding="utf-8")
+            (repo / "plans" / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "plans": [
+                            {
+                                "slug": "z-missing",
+                                "file": "plans/missing.md",
+                                "type": "phase",
+                                "status": "committed",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:00Z",
+                                "owner_skill": "codex-plan-phase",
+                                "lifecycle": [],
+                            },
+                            {
+                                "slug": "v38-alpha",
+                                "file": "plans/phase-plan-v38-ALPHA.md",
+                                "type": "phase",
+                                "status": "executing",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:00Z",
+                                "owner_skill": "codex-plan-phase",
+                                "lifecycle": [],
+                            },
+                            {
+                                "slug": "detailed-beta",
+                                "file": "plans/detailed-beta.md",
+                                "type": "detailed",
+                                "status": "committed",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:00Z",
+                                "owner_skill": "codex-plan-detailed",
+                                "lifecycle": [],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            bundle = generate_adoption_bundle(repo, generated_at="2026-05-30T00:00:00Z")
+
+            self.assertEqual([ref["slug"] for ref in bundle["plan_refs"]], ["detailed-beta", "v38-alpha"])
+            self.assertEqual(bundle["plan_refs"][0]["digest"], f"sha256:{hashlib.sha256(beta.read_bytes()).hexdigest()}")
+            self.assertEqual(bundle["plan_refs"][1]["digest"], f"sha256:{hashlib.sha256(alpha.read_bytes()).hexdigest()}")
+            parse_baml_response("DotfilesAdoptionManifest", json.dumps(bundle))
 
     def test_simulated_governed_pipeline_adoption_flow(self):
         fixture = _load_fixture()

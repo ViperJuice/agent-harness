@@ -4,10 +4,11 @@ import hashlib
 import json
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from .baml_modular import parse_baml_response
+from .plan_manifest import read_manifest
 
 
 SOURCE_AUTHORITY_CONTRACT = Path("docs/dotfiles-source-authority-contract.md")
@@ -28,6 +29,7 @@ def generate_adoption_bundle(
     payload: dict[str, object] = {
         "source_roots": _source_roots(root),
         "schema_refs": _schema_refs(root),
+        "plan_refs": _plan_refs(root),
         "c4_document_refs": _c4_document_refs(root),
         "task_catalog_refs": _task_catalog_refs(root),
         "operating_mode": operating_mode,
@@ -151,6 +153,31 @@ def _schema_refs(repo: Path) -> list[dict[str, str]]:
             }
         )
     return refs
+
+
+def _plan_refs(repo: Path) -> list[dict[str, str]]:
+    try:
+        manifest = read_manifest(repo)
+    except (OSError, ValueError):
+        return []
+    refs: list[dict[str, str]] = []
+    for entry in manifest.plans:
+        path = PurePath(entry.file)
+        if path.is_absolute() or ".." in path.parts:
+            continue
+        plan_path = repo / Path(entry.file)
+        if not plan_path.is_file():
+            continue
+        refs.append(
+            {
+                "slug": entry.slug,
+                "type": entry.type,
+                "file": entry.file,
+                "digest": f"sha256:{hashlib.sha256(plan_path.read_bytes()).hexdigest()}",
+                "status": entry.status,
+            }
+        )
+    return sorted(refs, key=lambda item: (item["type"], item["slug"], item["file"]))
 
 
 def _c4_document_refs(repo: Path) -> list[dict[str, str]]:

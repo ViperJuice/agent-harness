@@ -139,7 +139,7 @@ def export_function_schema(function_name: str) -> dict[str, Any]:
     return_type = _export_target_type(baml_text, function_name)
     fields = _class_fields(baml_text, return_type)
     enum_literals = _enum_literal_map()
-    required = [field_name for field_name, _field_type, _optional in fields]
+    required = _required_fields(return_type, fields)
     properties = {
         field_name: _schema_for_baml_field(baml_text, field_name, field_type, optional, enum_literals, seen=(return_type,))
         for field_name, field_type, optional in fields
@@ -377,7 +377,7 @@ def _schema_for_baml_class(
     if class_name in seen:
         raise BamlValidationError(f"recursive BAML class export is unsupported: {class_name}")
     fields = _class_fields(baml_text, class_name)
-    required = [field_name for field_name, _field_type, _optional in fields]
+    required = _required_fields(class_name, fields)
     return {
         "type": "object",
         "additionalProperties": False,
@@ -394,6 +394,12 @@ def _schema_for_baml_class(
             for field_name, field_type, optional in fields
         },
     }
+
+
+def _required_fields(class_name: str, fields: list[tuple[str, str, bool]]) -> list[str]:
+    if class_name == "PhaseLoopCloseoutV1":
+        return [field_name for field_name, _field_type, _optional in fields]
+    return [field_name for field_name, _field_type, optional in fields if not optional]
 
 
 def _validate_payload_against_schema(payload: Any, schema: dict[str, Any], path: str = "$") -> None:

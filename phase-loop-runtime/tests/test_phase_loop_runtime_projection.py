@@ -37,6 +37,67 @@ class PhaseLoopRuntimeProjectionTest(unittest.TestCase):
             for token in ("/home/", "/Users/", "/mnt/", "op://", "sk-", "AKIA", "ghp_"):
                 self.assertNotIn(token, serialized)
 
+    def test_runtime_projection_includes_plan_manifest_activity(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            for name in ("phase-plan-v38-MS.md", "phase-plan-v38-PE.md", "phase-plan-v38-PH.md"):
+                (repo / "plans" / name).write_text(f"# {name}\n", encoding="utf-8")
+            (repo / "plans" / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "plans": [
+                            {
+                                "slug": "v38-MS",
+                                "file": "plans/phase-plan-v38-MS.md",
+                                "type": "phase",
+                                "status": "committed",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:01Z",
+                                "owner_skill": "codex-plan-phase",
+                                "lifecycle": [],
+                            },
+                            {
+                                "slug": "v38-PE",
+                                "file": "plans/phase-plan-v38-PE.md",
+                                "type": "phase",
+                                "status": "executing",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:02Z",
+                                "owner_skill": "codex-plan-phase",
+                                "lifecycle": [
+                                    {
+                                        "transition": "executing",
+                                        "by": "codex-execute-phase",
+                                        "at": "2026-05-30T00:00:03Z",
+                                        "metadata": {},
+                                    }
+                                ],
+                            },
+                            {
+                                "slug": "v38-PH",
+                                "file": "plans/phase-plan-v38-PH.md",
+                                "type": "phase",
+                                "status": "completed",
+                                "created_at": "2026-05-30T00:00:00Z",
+                                "updated_at": "2026-05-30T00:00:04Z",
+                                "owner_skill": "codex-plan-phase",
+                                "lifecycle": [],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = build_runtime_projection(repo, roadmap, pipeline_mode="standalone")
+
+            self.assertEqual(payload["plans_in_flight"], 2)
+            self.assertEqual(payload["plans_executing"], ["v38-PE"])
+            self.assertEqual(payload["last_plan_event_iso"], "2026-05-30T00:00:03Z")
+            parse_baml_response("DotfilesRuntimeProjection", json.dumps(payload))
+
     def test_status_runtime_projection_json_cli(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

@@ -24,6 +24,15 @@ FIXTURES = {
                 "digest": "sha256:example",
             }
         ],
+        "plan_refs": [
+            {
+                "slug": "v38-PE",
+                "file": "plans/phase-plan-v38-PE.md",
+                "type": "phase",
+                "digest": "sha256:example",
+                "status": "committed",
+            }
+        ],
         "c4_document_refs": [
             {
                 "title": "phase-loop context",
@@ -53,6 +62,9 @@ FIXTURES = {
         "handoff_status": "written",
         "current_phase_boundary": "DOTSCHEMAS",
         "last_event_iso": "2026-05-22T00:00:00Z",
+        "plans_in_flight": 2,
+        "plans_executing": ["v38-PE"],
+        "last_plan_event_iso": "2026-05-30T00:00:00Z",
         "install_status": "installed",
         "gitignore_init_status": "present",
         "operating_mode": "standalone",
@@ -98,6 +110,7 @@ EXPECTED_FIELDS = {
     "DotfilesAdoptionManifest": {
         "source_roots",
         "schema_refs",
+        "plan_refs",
         "c4_document_refs",
         "task_catalog_refs",
         "operating_mode",
@@ -115,6 +128,9 @@ EXPECTED_FIELDS = {
         "handoff_status",
         "current_phase_boundary",
         "last_event_iso",
+        "plans_in_flight",
+        "plans_executing",
+        "last_plan_event_iso",
         "install_status",
         "gitignore_init_status",
         "operating_mode",
@@ -164,6 +180,24 @@ class PhaseLoopDotfilesSchemasTest(unittest.TestCase):
 
         with self.assertRaises(BamlValidationError):
             parse_baml_response("DotfilesRuntimeProjection", json.dumps(fixture))
+
+    def test_dotfiles_plan_ref_digest_is_optional(self):
+        schema = export_function_schema("DotfilesPlanRef")
+
+        self.assertEqual(set(schema["required"]), {"slug", "file", "type", "status"})
+        self.assertIn("digest", schema["properties"])
+        parsed = parse_baml_response(
+            "DotfilesPlanRef",
+            json.dumps(
+                {
+                    "slug": "phase-plans-v38",
+                    "file": "specs/phase-plans-v38.md",
+                    "type": "phase",
+                    "status": "committed",
+                }
+            ),
+        )
+        self.assertEqual(parsed.payload["slug"], "phase-plans-v38")
 
     def test_task_catalog_tasks_export_as_structured_entries(self):
         schema = export_function_schema("DotfilesTaskCatalog")

@@ -9,6 +9,7 @@ from .baml_modular import parse_baml_response
 from .events import read_events
 from .install_status import build_install_status
 from .models import PIPELINE_MODE_LITERALS, StateSnapshot, require_literal, utc_now
+from .plan_manifest import read_manifest
 from .reconcile import reconcile
 from .skill_paths import current_harness
 
@@ -22,6 +23,7 @@ def build_runtime_projection(
     require_literal(pipeline_mode, PIPELINE_MODE_LITERALS, "pipeline mode")
     resolved = snapshot or reconcile(repo, roadmap)
     install = build_install_status(repo)
+    plan_activity = _plan_activity(repo)
     payload: dict[str, object] = {
         "runtime_version": __version__,
         "protocol_version": "phase-loop-protocol-v1",
@@ -31,6 +33,9 @@ def build_runtime_projection(
         "handoff_status": "written" if (repo / ".phase-loop" / "tui-handoff.md").is_file() else "missing",
         "current_phase_boundary": resolved.current_phase or "none",
         "last_event_iso": _last_event_iso(repo) or resolved.timestamp or utc_now(),
+        "plans_in_flight": plan_activity["plans_in_flight"],
+        "plans_executing": plan_activity["plans_executing"],
+        "last_plan_event_iso": plan_activity["last_plan_event_iso"],
         "install_status": str(install.get("summary") or "unknown"),
         "gitignore_init_status": _gitignore_init_status(repo),
         "operating_mode": pipeline_mode,
@@ -69,6 +74,27 @@ def _last_event_iso(repo: Path) -> str | None:
         return None
     timestamp = events[-1].get("timestamp")
     return str(timestamp) if timestamp else None
+
+
+def _plan_activity(repo: Path) -> dict[str, object]:
+    try:
+        manifest = read_manifest(repo)
+    except (OSError, ValueError):
+        return {"plans_in_flight": 0, "plans_executing": [], "last_plan_event_iso": "none"}
+    in_flight_statuses = {"committed", "executing"}
+    plans_in_flight = sum(1 for entry in manifest.plans if entry.status in in_flight_statuses)
+    plans_executing = sorted(entry.slug for entry in manifest.plans if entry.status == "executing")
+    lifecycle_timestamps: list[str] = []
+    updated_timestamps: list[str] = []
+    for entry in manifest.plans:
+        lifecycle_timestamps.extend(event.at for event in entry.lifecycle if event.at)
+        if entry.updated_at:
+            updated_timestamps.append(entry.updated_at)
+    return {
+        "plans_in_flight": plans_in_flight,
+        "plans_executing": plans_executing,
+        "last_plan_event_iso": max(lifecycle_timestamps) if lifecycle_timestamps else max(updated_timestamps, default="none"),
+    }
 
 
 def _gitignore_init_status(repo: Path) -> str:

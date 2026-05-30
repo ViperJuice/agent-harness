@@ -73,6 +73,7 @@ class PhaseLoopPlanManifestTest(unittest.TestCase):
 
         ref_schema = export_function_schema("DotfilesPlanRef")
         self.assertEqual(set(ref_schema["required"]), {"slug", "file", "type", "status"})
+        self.assertIn("digest", ref_schema["properties"])
 
     def test_append_entry_is_file_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,6 +23,9 @@ RUNTIME_PROJECTION_FIXTURE = {
     "handoff_status": "written",
     "current_phase_boundary": "DOTADOPT",
     "last_event_iso": "2026-05-22T00:00:00Z",
+    "plans_in_flight": 0,
+    "plans_executing": [],
+    "last_plan_event_iso": "none",
     "install_status": "installed",
     "gitignore_init_status": "present",
     "operating_mode": "standalone",
@@ -109,6 +112,7 @@ class PhaseLoopV22E2ETest(unittest.TestCase):
 
         referenced_paths = [bundle["visibility_contract_ref"]]
         referenced_paths.extend(ref["source_path"] for ref in bundle["schema_refs"])
+        referenced_paths.extend(ref["file"] for ref in bundle["plan_refs"])
         referenced_paths.extend(ref["source_path"] for ref in bundle["c4_document_refs"])
         referenced_paths.extend(ref["source_path"] for ref in bundle["task_catalog_refs"])
         for relative_path in referenced_paths:
@@ -119,6 +123,9 @@ class PhaseLoopV22E2ETest(unittest.TestCase):
 
         for ref in bundle["schema_refs"]:
             path = _resolve_repo_relative(ref["source_path"])
+            self.assertEqual(ref["digest"], f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}")
+        for ref in bundle["plan_refs"]:
+            path = _resolve_repo_relative(ref["file"])
             self.assertEqual(ref["digest"], f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}")
 
         parse_baml_response("DotfilesC4Document", json.dumps(_build_c4_fixture()))

@@ -26,6 +26,7 @@ class DotfilesTaskCatalogRef {
 class DotfilesAdoptionManifest {
   source_roots DotfilesSourceRoot[]
   schema_refs DotfilesSchemaRef[]
+  plan_refs DotfilesPlanRef[]
   c4_document_refs DotfilesC4Ref[]
   task_catalog_refs DotfilesTaskCatalogRef[]
   operating_mode string

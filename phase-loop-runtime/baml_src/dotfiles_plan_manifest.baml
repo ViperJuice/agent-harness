@@ -14,6 +14,7 @@ class DotfilesPlanRef {
   slug string
   file string
   type string
+  digest string?
   status string
 }
 
