@@ -154,23 +154,9 @@ Determine the next step before final response and handoff:
 - If the roadmap needs extension, report `Next phase: none - roadmap extension needed` and `Next command: <harness>-phase-roadmap-builder <roadmap_path>`.
 - If all phases are complete, report `Next phase: none - roadmap complete` and `Next command: none - roadmap complete`.
 
-Add a machine-readable automation handoff that agrees with the human-readable next step fields:
+Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-```yaml
-automation:
-  status: <complete|executed|blocked|unknown>
-  next_skill: <<harness>-plan-phase|<harness>-execute-phase|<harness>-phase-roadmap-builder|none>
-  next_command: <command string or none>
-  next_model_hint: <plan|execute|roadmap|repair|none>
-  next_effort_hint: <high|medium|none>
-  human_required: <true|false>
-  blocker_class: <frozen blocker class or none>
-  blocker_summary: <short actionable summary or none>
-  required_human_inputs: []
-  verification_status: <passed|failed|blocked>
-  artifact: <absolute phase plan artifact path or none>
-  artifact_state: <actual artifact state>
-```
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Set `automation.status=complete`, `verification_status=passed`, and `human_required=false` only when acceptance criteria and required verification are satisfied. Set `automation.status=executed` when implementation ran but acceptance reduction, artifact tracking, or a required verification remains unresolved. Use the consumed phase plan as the handoff `artifact`; the autonomous phase loop trusts phase status handoffs only when that plan's phase-loop frontmatter still matches the selected roadmap. For repairable plan gaps such as malformed dependencies or missing lane interfaces, set `automation.status=blocked`, `next_skill=<harness>-plan-phase`, `next_command=<harness>-plan-phase <roadmap_path> <current_alias>`, `next_model_hint=plan`, `next_effort_hint=high`, and `human_required=false`. For true human blockers, set `human_required=true`, a frozen `blocker_class`, a redacted `blocker_summary`, non-secret `required_human_inputs`, and redacted `access_attempts` when access was involved. Never include secret values.
 
@@ -186,7 +172,7 @@ Report:
 - commands not run and why;
 - follow-up risks or manual checks.
 
-If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-execute-phase/<run_id>.md`

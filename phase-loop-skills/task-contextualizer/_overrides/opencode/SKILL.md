@@ -1,16 +1,16 @@
 ---
 name: task-contextualizer
-description: "Harness subagent briefing guide. Use before spawning Harness explorer or worker subagents, especially for parallel research or implementation. Produces concise prompts with file paths, architecture context, ownership boundaries, expected output, and non-reversion rules."
+description: "OpenCode subagent briefing guide. Use before spawning OpenCode explorer or worker subagents, especially for parallel research or implementation. Produces concise prompts with file paths, architecture context, ownership boundaries, expected output, and non-reversion rules."
 ---
 
-# Harness Task Contextualizer
+# OpenCode Task Contextualizer
 
-Use this before any Harness `spawn_agent` call. Subagents need concrete context and boundaries; broad prompts waste time and increase the chance of conflicting edits.
+Use this before any OpenCode agent delegation call. Subagents need concrete context and boundaries; broad prompts waste time and increase the chance of conflicting edits.
 
 ## When to Use
 
 - The user explicitly asked for agents, subagents, delegation, or parallel work.
-- You are about to spawn an `explorer` or `worker`.
+- You are about to delegate to a read-only or implementation agent.
 - You need several independent investigations or disjoint implementation lanes.
 
 Do not spawn a subagent only because a task is large. If the next critical-path step depends on the answer, do it locally.
@@ -30,7 +30,7 @@ Every subagent prompt must include:
 
 ## Explorer Brief
 
-Use `agent_type="explorer"` for read-only questions. Ask a specific question and require file:line evidence.
+Use the available read-only agent role for reconnaissance questions. Ask a specific question and require file:line evidence.
 
 ```text
 Goal: Map how <feature/module> works so the main thread can plan safely.
@@ -54,11 +54,7 @@ Return concise findings with file:line references, reusable patterns, files like
 
 ## Worker Brief
 
-Use `agent_type="worker"` for implementation only when write ownership is disjoint.
-For phase-loop lane work, worker fanout is valid only after the runner or phase
-plan proves machine-verified disjoint lanes and scheduler-owned worktree
-assignments. Do not turn a prompt-only `Parallel-safe: yes` note into
-write-capable parallel execution.
+Use the available implementation agent role only when write ownership is disjoint.
 
 ```text
 Goal: Implement <bounded task>.
@@ -90,9 +86,9 @@ For copy-ready variants, read `references/subagent-briefs.md`.
 
 ## Runtime State
 
-This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/<harness>-task-contextualizer/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("opencode")/<harness>-task-contextualizer/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `resolve_handoff_root(repo)/<harness>-task-contextualizer/<run_id>.md`
 - Latest handoff pointer: `resolve_handoff_root(repo)/<harness>-task-contextualizer/latest.md`
 

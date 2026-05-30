@@ -12,10 +12,10 @@ Aggregates reflection files for Harness skills and produces a structured improve
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
 - Harness meta-skill source changes move through three tiers: canonical source at `<harness>-config/skills/<harness>-<skill>/SKILL.md`, harness-neutral bundle at `vendor/phase-loop-skills/<bare-skill>/SKILL.md`, and installed runtime roots at `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.opencode/skills/`.
-- The harness-neutral bundle is currently bundle-derived-from-<harness>. Leave `vendor/phase-loop-skills/` and installed runtime roots stale until the end-of-v36 cutover; the cutover regenerates the bundle from the <harness>-derived source path and runs `./bootstrap.sh`, which installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
+- The harness-neutral bundle is currently bundle-derived-from-codex. Leave `vendor/phase-loop-skills/` and installed runtime roots stale until the end-of-v36 cutover; the cutover regenerates the bundle from the codex-derived source path and runs `./bootstrap.sh`, which installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
 - Planning only. Do not modify `SKILL.md` files.
-- Scan Harness skill state under `resolve_skill_bundle_root("codex")/<skill>/reflections/**`.
-- Also scan the <harness>-derived source-controlled reflection root `resolve_skill_bundle_root("codex")/<skill>/reflections/**` when aggregating cross-harness feedback.
+- Scan Harness skill state under `resolve_skill_bundle_root("gemini")/<skill>/reflections/**`.
+- Also scan the codex-derived source-controlled reflection root `resolve_skill_bundle_root("codex")/<skill>/reflections/**`.
 - Exclude any path with an `archive/` component.
 - Follow the recursive reflection rules in `<harness>-config/shared/runtime-state.md`.
 - Act only on recurring evidence unless the user explicitly asks to apply one-off feedback.
@@ -29,9 +29,7 @@ The three-tier pipeline is canonical source -> harness-neutral bundle -> install
 
 - `--target <skill-name>`: plan for one skill.
 - `--min-reflections <N>`: default `2`.
-- `--output <path>`: default `resolve_skill_bundle_root("codex")/<harness>-skill-improvement-planner/plans/plan-v<N>-<ISO>.md`.
-
-When invoked by `<harness>-phase-loop maintain-skills`, planner output is the default result. Do not edit skills or call `<harness>-skill-editor` from this planner turn.
+- `--output <path>`: default `resolve_skill_bundle_root("gemini")/<harness>-skill-improvement-planner/plans/plan-v<N>-<ISO>.md`.
 
 ## Workflow
 
@@ -64,7 +62,6 @@ When invoked by `<harness>-phase-loop maintain-skills`, planner output is the de
    - speculative notes;
    - contradictions;
    - archival directive for `<harness>-skill-editor`.
-   - runner handoff fields showing the approved next command, or `none` when no edits are approved.
 
 ## Plan Format
 
@@ -103,11 +100,9 @@ Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-r
 
 In Default mode, write the plan only if the user asked for an artifact. Otherwise summarize the recommendations. Do not archive reflections; that is the editor's job.
 
-For `maintain-skills` planner-only runs, report `<harness>-skill-editor --improvement-plan <path> --allow-skill <<harness>-* skill>` only as the explicit follow-on command. Do not imply that editor execution is automatic.
-
 If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/<harness>-skill-improvement-planner/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("gemini")/<harness>-skill-improvement-planner/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-skill-improvement-planner/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/<harness>-skill-improvement-planner/latest.md`
 

@@ -1,11 +1,11 @@
 ---
 name: plan-detailed
-description: "Harness detailed planner for one bounded change. Use when the user wants an immediately implementable plan for a bug fix, small feature, or targeted refactor. Researches the repo with local reads by default, optionally uses explicit explorer subagents, and returns a concise plan with changes, docs impact, verification, and acceptance criteria."
+description: "OpenCode detailed planner for one bounded change. Use when the user wants an immediately implementable plan for a bug fix, small feature, or targeted refactor. Researches the repo with local reads by default, optionally uses explicit explorer subagents, and returns a concise plan with changes, docs impact, verification, and acceptance criteria."
 ---
 
-# Harness Plan Detailed
+# OpenCode Plan Detailed
 
-Plans one bounded implementation. Use this instead of the phase roadmap pipeline when a single developer or one Harness thread should do the work end to end.
+Plans one bounded implementation. Use this instead of the phase roadmap pipeline when a single developer or one OpenCode thread should do the work end to end.
 
 ## Core Rules
 
@@ -95,11 +95,11 @@ Do not run the verification commands while planning unless the user explicitly a
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-If writing an artifact, use `apply_patch`, report the path, and do not commit unless requested.
+If writing an artifact, use the active session's file-editing tool, report the path, and do not commit unless requested.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/<harness>-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-plan-detailed/<run_id>.md`

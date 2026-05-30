@@ -7,9 +7,12 @@ description: "Harness-optimized roadmap planner. Use when the user wants to turn
 
 Builds a multi-phase roadmap that downstream `<harness>-plan-phase` can turn into implementation lanes. This is the Harness port of the Claude-oriented roadmap builder; do not edit or depend on the original skill at runtime.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for roadmap
-closeout `automation:` metadata, including `next_skill`, `next_command`, and
-`verification_status`.
+## Shared Protocol
+
+Follow `shared/phase-loop/protocol.md` for the shared closeout contract.
+Roadmap-builder closeout must emit `automation:` metadata that agrees with the
+human-readable `Next phase`, `next_skill`, `next_command`, and
+`verification_status` fields.
 
 ## Core Rules
 
@@ -20,10 +23,8 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - During planning-only roadmap creation, do not execute test suites, builds, formatters, generators, or migrations. Capture end-to-end verification commands in the roadmap without running them.
 - Use local truth first: read named specs, `AGENTS.md`, and repo docs the user explicitly points at. Do not invent phases from vague context.
 - Use PMCP for external capability research when current docs or third-party tooling facts affect the roadmap. Prefer `gateway_catalog_search`, then `gateway_describe`, then `gateway_invoke`; use Context7 for library/product docs. Use Bright Data only if PMCP exposes it in the current environment.
-- Before asking the user for credentials, account setup, infrastructure state, admin action, or another access blocker, inspect repo-local docs/config and safe read-only or metadata-only state from available CLIs: `op`, `gh`, `vercel`/`npx vercel`, `supabase`/`npx supabase`, `gcloud`, `wrangler`, `cloudflared`, and `gam`. Never record secret values.
 - Use `request_user_input` only when available; in Default mode ask one concise plain-text question only if a missing decision would make the roadmap wrong.
 - Prefer fewer serial phases and more parallel work inside each phase. A phase boundary exists only when a contract must freeze before downstream work starts.
-- Keep release preparation and release dispatch in separate phases when a workflow needs both. The prepare phase owns version, changelog, release-doc, workflow-input, and evidence edits; the dispatch phase owns clean-tree preflight and external release triggering, and downstream plans should mark it with `phase_loop_mutation: release_dispatch`.
 - Do not spawn subagents unless the user explicitly asks for agents, subagents, delegation, or parallel agent work.
 
 ## Inputs
@@ -60,8 +61,6 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
    - end-to-end `Verification` commands.
 6. Validate manually:
    - stable headings are present;
-   - implementation units use `## Phases` and `### Phase N — <Name> (<ALIAS>)` consistently;
-   - implementation-unit headings and suggested next commands do not use `Step`, `Slice`, `Stage`, `Phase Flow`, or other non-phase synonyms unless the user explicitly requested a different taxonomy;
    - aliases are unique;
    - dependency graph is acyclic;
    - every produced gate has a producing phase;
@@ -116,17 +115,17 @@ Use this shape so `<harness>-plan-phase` can parse it:
 
 ## Closeout
 
-In Default mode, write the roadmap with `apply_patch`, then run `git status --short -- <artifact>`. If the artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <artifact>` and include the `_reviews.md` sibling if one was produced. Rerun `git status --short -- <artifact>` and report `Artifact state: staged|tracked|modified|unstaged|blocked`. Do not commit unless the user asked for a commit.
+In Default mode, write the roadmap with the active session's file-editing tool, then run `git status --short -- <artifact>`. If the artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <artifact>` and include the `_reviews.md` sibling if one was produced. Rerun `git status --short -- <artifact>` and report `Artifact state: staged|tracked|modified|unstaged|blocked`. Do not commit unless the user asked for a commit.
 
 Before final response and handoff, choose the next phase to plan from the roadmap DAG. If at least one phase is ready, report `Next phase: <alias> - <phase name>` and `Next command: <harness>-plan-phase <artifact> <alias>`. If no phase should be planned next, report `Next phase: none - <reason>` and `Next command: none - <reason>`.
 
 Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
+If a roadmap edit changes downstream scope, amend the nearest downstream phase
+that is not already executing and treat any older downstream phase plan or
+handoff as stale until it is regenerated.
+
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
-
-If no phase should be planned next, set `next_skill: none`, `next_command: none`, `next_model_hint: none`, and keep `automation.status=complete` when the roadmap is complete or `automation.status=blocked` when progress needs a human decision. Blocked access or decision cases must use the frozen blocker taxonomy from `<harness>-config/shared/runtime-state.md`, include redacted `access_attempts` when relevant, and set `required_human_inputs` to non-secret requested inputs only.
-
-Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
 
 Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
 
@@ -135,5 +134,3 @@ Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/<harness>-phase-roadmap-builder/latest.md`
 
 Handoff frontmatter must include `from: <harness>-phase-roadmap-builder`, `timestamp:`, `repo:`, `repo_root:`, `branch:`, `branch_slug:`, `commit:`, `run_id:`, `artifact:`, `artifact_state:`, `next_skill:`, `next_command:`, and `next_phase:`. Update `latest.md` with the same handoff content.
-
-If roadmap creation is blocked by credentials, account setup, infrastructure state, admin action, or other access prerequisites, write a handoff with `human_required=true` and redacted `access_attempts` entries before asking the user to act. Each `access_attempts` entry must include `source`, `probe`, `result`, `details`, and `timestamp`, and `details` may report only metadata such as command availability, account or project identity, vault/item/field names, environment variable names, presence, and validation status.

@@ -1,6 +1,6 @@
 ---
 name: phase-loop
-description: "Harness TUI bridge for the repo-local <harness>-phase-loop runner. Use when the user wants phase-loop status, resume, bounded run, dry-run, or skill-maintenance from inside the selected harness."
+description: "Harness TUI bridge for the repo-local <harness>-phase-loop runner. Use when the user wants phase-loop status, resume, bounded run, dry-run, or skill-maintenance from inside Harness."
 ---
 
 # Harness Phase Loop
@@ -15,7 +15,7 @@ parsing, model policy, event writing, or execution logic.
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
-- Use the installed repo command: `<harness>-config/bin/<harness>-phase-loop`. Non-the selected harness
+- Use the installed repo command: `<harness>-phase-loop`. Non-Harness
   control planes should use the neutral `<harness>-config/bin/phase-loop` command.
 - Prefer the outside-TUI runner for full-roadmap execution; this TUI bridge keeps interactive `run` calls bounded and operator-driven.
 - Preserve manual TUI use of `<harness>-phase-roadmap-builder`, `<harness>-plan-phase`, and `<harness>-execute-phase`; this bridge is optional operator convenience.
@@ -39,26 +39,26 @@ Optional flags may be passed through when requested: `--repo`, `--roadmap`, `--p
 ## Preflight
 
 1. Resolve the repo root and run `git status --short`.
-2. Confirm `<harness>-config/bin/<harness>-phase-loop --help` lists `status`, `resume`, `run`, `dry-run`, and `maintain-skills`.
+2. Confirm `<harness>-phase-loop --help` lists `status`, `resume`, `run`, `dry-run`, and `maintain-skills`.
 3. For commands that need a roadmap, let the CLI discover it unless the user supplied `--roadmap`; do not reimplement roadmap or phase selection in the skill text.
 4. If unrelated dirty work overlaps files the runner would modify, report `human_required=true` with `blocker_class=dirty_worktree_conflict` instead of continuing.
 
 ## Command Mapping
 
-- `<harness>-phase-loop handoff`: run `<harness>-config/bin/<harness>-phase-loop handoff`.
-- `<harness>-phase-loop status`: run `<harness>-config/bin/<harness>-phase-loop status`.
-- `<harness>-phase-loop resume`: run `<harness>-config/bin/<harness>-phase-loop resume`.
-- `<harness>-phase-loop state`: run `<harness>-config/bin/<harness>-phase-loop state --json` when exact machine state is needed.
-- `<harness>-phase-loop monitor`: run `<harness>-config/bin/<harness>-phase-loop monitor --once --json` for a single machine-readable observation.
+- `<harness>-phase-loop handoff`: run `<harness>-phase-loop handoff`.
+- `<harness>-phase-loop status`: run `<harness>-phase-loop status`.
+- `<harness>-phase-loop resume`: run `<harness>-phase-loop resume`.
+- `<harness>-phase-loop state`: run `<harness>-phase-loop state --json` when exact machine state is needed.
+- `<harness>-phase-loop monitor`: run `<harness>-phase-loop monitor --once --json` for a single machine-readable observation.
 - `<harness>-phase-loop monitor --notify-command <cmd>`: run monitor with callback-by-exception; the command receives redacted JSON on stdin.
-- `<harness>-phase-loop run`: run `<harness>-config/bin/<harness>-phase-loop run --max-phases <N>`.
-- `<harness>-phase-loop dry-run`: run `<harness>-config/bin/<harness>-phase-loop dry-run --max-phases <N>`.
-- `<harness>-phase-loop run --observe`: run `<harness>-config/bin/<harness>-phase-loop run --max-phases <N> --observe`; launch artifacts are written by default, so this flag is compatibility-only.
-- `<harness>-phase-loop dry-run --observe`: run `<harness>-config/bin/<harness>-phase-loop dry-run --max-phases <N> --observe`; launch artifacts are written by default, so this flag is compatibility-only.
-- `<harness>-phase-loop maintain-skills`: run `<harness>-config/bin/<harness>-phase-loop maintain-skills`.
-- `<harness>-phase-loop maintain-skills --observe`: run `<harness>-config/bin/<harness>-phase-loop maintain-skills --observe`; launch artifacts are written by default, so this flag is compatibility-only.
+- `<harness>-phase-loop run`: run `<harness>-phase-loop run --max-phases <N>`.
+- `<harness>-phase-loop dry-run`: run `<harness>-phase-loop dry-run --max-phases <N>`.
+- `<harness>-phase-loop run --observe`: run `<harness>-phase-loop run --max-phases <N> --observe`; launch artifacts are written by default, so this flag is compatibility-only.
+- `<harness>-phase-loop dry-run --observe`: run `<harness>-phase-loop dry-run --max-phases <N> --observe`; launch artifacts are written by default, so this flag is compatibility-only.
+- `<harness>-phase-loop maintain-skills`: run `<harness>-phase-loop maintain-skills`.
+- `<harness>-phase-loop maintain-skills --observe`: run `<harness>-phase-loop maintain-skills --observe`; launch artifacts are written by default, so this flag is compatibility-only.
 - `<harness>-phase-loop maintain-skills --apply-skill-edits --improvement-plan <path> --allow-skill <<harness>-* skill>`: run apply-enabled maintenance only when the user explicitly requests skill edits and names the allowed Harness skill targets.
-- `<harness>-phase-loop sync-skills`: run `<harness>-config/bin/<harness>-phase-loop sync-skills --check` unless the user explicitly asks to repair drift.
+- `<harness>-phase-loop sync-skills`: run `<harness>-phase-loop sync-skills --check` unless the user explicitly asks to repair drift.
 - `<harness>-phase-loop sync-skills --apply`: run apply mode only when the user explicitly wants local bridge-skill repair for manual reentry.
 
 Keep `run` bounded. If the user requests an unbounded run, choose `--max-phases 1` and say that the bridge keeps TUI-initiated runs bounded.
@@ -70,7 +70,7 @@ autonomous child launches; installed workflow skills under `resolve_skill_bundle
 are the recommended manual reentry surface but are not a runtime prerequisite.
 If the advisory bridge record reports `missing_root`, `missing_skill`, or
 `drifted`, repair the local `<harness>-phase-loop` bridge with
-`<harness>-config/bin/<harness>-phase-loop sync-skills --apply` before relying on
+`<harness>-phase-loop sync-skills --apply` before relying on
 manual reentry.
 
 Harness is live-supported, but nested Harness-on-Harness disposable proof remains a
@@ -80,17 +80,17 @@ Harness-thread runs may still observe or exercise the non-Harness live matrix.
 
 When supervising a loop from a TUI, launch artifacts are written by default. If
 the TUI session has been idle while another control plane ran the loop, first run
-`<harness>-config/bin/<harness>-phase-loop handoff` or read
+`<harness>-phase-loop handoff` or read
 `.phase-loop/tui-handoff.md`. That file is the canonical human-readable
 entrypoint and links to `.phase-loop/state.json`,
 `.phase-loop/events.jsonl`, `.phase-loop/runs/`, and the latest run
-log when known. Use `<harness>-config/bin/<harness>-phase-loop state --json` when exact
+log when known. Use `<harness>-phase-loop state --json` when exact
 machine state is needed. Creating `.phase-loop/stop` pauses the loop
 before the next phase launch; remove it before continuing.
 
-Use `<harness>-config/bin/<harness>-phase-loop run --max-phases <N> --observe
+Use `<harness>-phase-loop run --max-phases <N> --observe
 --closeout-mode <manual|commit|push>` for execution. Use
-`<harness>-config/bin/<harness>-phase-loop monitor` for observation only. Monitor mode
+`<harness>-phase-loop monitor` for observation only. Monitor mode
 can be polled by a human, TUI, or external supervisor and can notify on
 `blocked`, `stale`, `complete`, `awaiting_phase_closeout`, `operator_halt`, or
 `terminal_exit` transitions through `--notify-command`. The notification
@@ -227,10 +227,10 @@ If the runner cannot be used but a manual phase command is clear from durable st
 
 Use the narrowest command that proves the requested bridge action:
 
-- `<harness>-config/bin/<harness>-phase-loop --help`
-- `<harness>-config/bin/<harness>-phase-loop handoff`
-- `<harness>-config/bin/<harness>-phase-loop status`
-- `<harness>-config/bin/<harness>-phase-loop dry-run --max-phases 1 --observe`
+- `<harness>-phase-loop --help`
+- `<harness>-phase-loop handoff`
+- `<harness>-phase-loop status`
+- `<harness>-phase-loop dry-run --max-phases 1 --observe`
 
 For roadmap-level closeout, also inspect `.phase-loop/state.json`,
 `.phase-loop/events.jsonl`, relevant handoffs, and path-scoped `git status`

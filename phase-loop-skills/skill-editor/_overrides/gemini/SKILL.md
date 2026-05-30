@@ -1,6 +1,6 @@
 ---
 name: skill-editor
-description: "Harness skill editor. Use when the user wants to apply an improvement plan produced by <harness>-skill-improvement-planner to Harness skill files. Edits only targeted `<harness>-*` skills by default, archives consumed reflections after successful edits, and uses apply_patch for manual changes."
+description: "Harness skill editor. Use when the user wants to apply an improvement plan produced by <harness>-skill-improvement-planner to Harness skill files. Edits only targeted `<harness>-*` skills by default, archives consumed reflections after successful edits, and uses structured file-editing tools for manual changes."
 ---
 
 # Harness Skill Editor
@@ -12,9 +12,9 @@ Applies a structured improvement plan to Harness skill files. It is deliberately
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
 - Harness meta-skill source changes move through three tiers: canonical source at `<harness>-config/skills/<harness>-<skill>/SKILL.md`, harness-neutral bundle at `vendor/phase-loop-skills/<bare-skill>/SKILL.md`, and installed runtime roots at `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.opencode/skills/`.
-- The harness-neutral bundle is currently bundle-derived-from-<harness>. Leave `vendor/phase-loop-skills/` and installed runtime roots stale until the end-of-v36 cutover; after edits, report bundle regeneration from the <harness>-derived source path plus `./bootstrap.sh` as the required follow-up. `./bootstrap.sh` installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
+- The harness-neutral bundle is currently bundle-derived-from-codex. Leave `vendor/phase-loop-skills/` and installed runtime roots stale until the end-of-v36 cutover; after edits, report bundle regeneration from the codex-derived source path plus `./bootstrap.sh` as the required follow-up. `./bootstrap.sh` installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
 - Read the improvement plan and target `SKILL.md` before editing.
-- Use `apply_patch` for manual edits.
+- Use the active session's file-editing tool for manual edits.
 - Edit only skills named by the plan.
 - Default target set is `<harness>-*` skills. Do not edit the original Claude-oriented skills unless the plan explicitly names them and the user confirms that scope.
 - Preserve skill frontmatter validity.
@@ -27,9 +27,7 @@ The three-tier pipeline is canonical source -> harness-neutral bundle -> install
 
 ## Inputs
 
-- Plan path: explicit path, or latest `resolve_skill_bundle_root("codex")/<harness>-skill-improvement-planner/plans/plan-v*.md`.
-- `--improvement-plan <path>`: explicit approved planner artifact from `maintain-skills`.
-- `--allow-skill <<harness>-* skill>`: repeatable target allowlist. Required when the editor is launched by `<harness>-phase-loop maintain-skills`.
+- Plan path: explicit path, or latest `resolve_skill_bundle_root("gemini")/<harness>-skill-improvement-planner/plans/plan-v*.md`.
 - `--dry-run`: parse and report intended edits without changing files.
 
 If no plan path is explicit, first check the current repo and branch handoff from `<harness>-skill-improvement-planner` using `<harness>-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-skill-improvement-planner/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
@@ -45,8 +43,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 3. If contradictions exist, stop and ask the user how to resolve them unless the plan already contains a resolution.
 4. Validate target skills:
    - source path under `<harness>-config/skills/<harness>-<skill>/SKILL.md` when working in this dotfiles repo;
-   - symlink/runtime path under `resolve_skill_bundle_root("codex")/<skill>/SKILL.md` only when no source path exists.
-   - when an allowlist is present, every edited skill must be on that allowlist and must start with `<harness>-`.
+   - symlink/runtime path under `resolve_skill_bundle_root("gemini")/<skill>/SKILL.md` only when no source path exists.
 5. For `--dry-run`, report the target files and recommendation summaries, then stop.
 6. Apply recommendations:
    - group changes per target skill to avoid conflicting edits;
@@ -65,8 +62,6 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 ## Failure Policy
 
 - Malformed plan: stop and report exact parse failure.
-- Missing or empty `--allow-skill` from a `maintain-skills` editor prompt: refuse edits.
-- Non-`<harness>-*` allowlist target from a `maintain-skills` editor prompt: refuse edits.
 - Missing target skill: mark that recommendation failed; continue only if other independent targets remain.
 - Patch conflict: re-read the file, adjust once, then report if still blocked.
 - Validation failure: fix if local to the edit; otherwise roll forward with a clear report and do not archive affected reflections.
@@ -83,11 +78,9 @@ Report:
 - reflections archived;
 - validation commands run.
 
-When launched from `<harness>-phase-loop maintain-skills`, do not edit Claude, OpenCode, Gemini, Antigravity, PI, or any non-`<harness>-*` skill even if the improvement plan mentions one. Archive consumed reflections only after editor validation succeeds.
-
 If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/<harness>-skill-editor/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("gemini")/<harness>-skill-editor/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-skill-editor/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/<harness>-skill-editor/latest.md`
 
