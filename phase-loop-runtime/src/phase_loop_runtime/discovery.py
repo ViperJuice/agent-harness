@@ -1365,11 +1365,15 @@ def _protected_source_file_diagnostic(
 
 
 def parse_plan_ownership(repo: Path, roadmap: Path, plan: Path | None) -> PlanOwnership:
-    control_paths = (_relative_repo_path(repo, roadmap),)
+    # plans/manifest.json is written by the runtime's own skill bundle and read
+    # back for plan discovery in every repo, so the closeout classifier must
+    # treat it as a control path (phase-owned) rather than an unowned dirty file.
+    runtime_control = ("plans/manifest.json",)
+    control_paths = (_relative_repo_path(repo, roadmap), *runtime_control)
     if plan is None:
         return PlanOwnership(owned_patterns=(), control_paths=control_paths, valid=False, errors=("missing_plan_artifact",))
 
-    control_paths = (_relative_repo_path(repo, roadmap), _relative_repo_path(repo, plan))
+    control_paths = (_relative_repo_path(repo, roadmap), _relative_repo_path(repo, plan), *runtime_control)
     try:
         text = plan.read_text(encoding="utf-8")
     except OSError:
