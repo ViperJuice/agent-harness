@@ -4,11 +4,17 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+
+try:  # Optional in stripped adapter runtimes; normal installs and tests provide it.
+    import yaml
+except Exception:  # pragma: no cover
+    yaml = None
 
 from .events import read_events
 from .models import (
@@ -185,6 +191,14 @@ class CloseoutParseError:
     field: str
     raw_message: str
     invalid_literal: str | None = None
+
+
+@dataclass(frozen=True)
+class SuiteCommandFinding:
+    code: str
+    message: str
+    source: str
+    value: object = None
 
 
 def _extract_invalid_literal(message: str) -> str | None:
@@ -465,6 +479,180 @@ def parse_frontmatter(text: str) -> dict[str, str]:
         key, value = line.split(":", 1)
         data[key.strip()] = value.strip().strip("'\"")
     return data
+
+
+def parse_frontmatter_document(text: str) -> dict[str, Any]:
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        return {}
+    body = text[4:end]
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(body)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    data: dict[str, Any] = {}
+    current_mapping: dict[str, Any] | None = None
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith((" ", "\t")) and current_mapping is not None and ":" in line:
+            key, value = line.split(":", 1)
+            current_mapping[key.strip()] = _plain_frontmatter_scalar(value.strip())
+            continue
+        current_mapping = None
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value:
+            data[key] = _plain_frontmatter_scalar(value)
+        else:
+            nested: dict[str, Any] = {}
+            data[key] = nested
+            current_mapping = nested
+    return data
+
+
+def resolve_suite_command(repo: Path, roadmap: Path, plan: Path | None = None) -> list[str] | None:
+    command, _findings = resolve_suite_command_doc(repo, roadmap, plan)
+    return command
+
+
+def resolve_suite_command_doc(repo: Path, roadmap: Path, plan: Path | None = None) -> tuple[list[str] | None, tuple[SuiteCommandFinding, ...]]:
+    findings: list[SuiteCommandFinding] = []
+    roadmap_value = _automation_suite_command(roadmap)
+    plan_value = _automation_suite_command(plan) if plan is not None else None
+    source = str(plan) if plan_value is not None and plan is not None else str(roadmap)
+    raw_value = plan_value if plan_value is not None else roadmap_value
+    if raw_value is None:
+        return None, ()
+    command, finding = _normalize_suite_command(raw_value, source=source)
+    if finding is not None:
+        findings.append(finding)
+    return command, tuple(findings)
+
+
+def validate_plan_verification_commands_for_intake(repo: Path, plan: Path) -> list[Any]:
+    from .verification_evidence import ValidationFinding, validate_verification_commands
+
+    commands, _operational = verification_commands_from_plan(plan)
+    findings = list(validate_verification_commands(repo, commands))
+    _suite, suite_findings = resolve_suite_command_doc(repo, _roadmap_from_plan(repo, plan), plan)
+    for suite_finding in suite_findings:
+        findings.append(
+            ValidationFinding(
+                code=suite_finding.code,
+                message=suite_finding.message,
+                command_index=-1,
+                value=str(suite_finding.value) if suite_finding.value is not None else None,
+            )
+        )
+    return findings
+
+
+def verification_commands_from_plan(plan: Path) -> tuple[list[list[str]], list[dict[str, Any]]]:
+    try:
+        text = plan.read_text(encoding="utf-8")
+    except OSError:
+        return [], []
+    match = re.search(r"^##\s+Verification\s*$\n(?P<body>.*?)(?=^##\s+\S|\Z)", text, re.MULTILINE | re.DOTALL)
+    if not match:
+        return [], []
+    commands: list[list[str]] = []
+    operational: list[dict[str, Any]] = []
+    for line_number, line in enumerate(match.group("body").splitlines(), start=text[: match.start("body")].count("\n") + 1):
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        raw = stripped[2:].strip()
+        command_text = _strip_markdown_command(raw)
+        if not command_text:
+            continue
+        if re.search(r"\bevidence\s*:\s*operational\b", raw, re.IGNORECASE):
+            operational.append({"line": line_number, "command": command_text, "reason": "evidence: operational"})
+            continue
+        for chunk in _split_shell_and(command_text):
+            try:
+                argv = shlex.split(chunk)
+            except ValueError:
+                argv = []
+            if argv:
+                commands.append(argv)
+    return commands, operational
+
+
+def _automation_suite_command(path: Path | None) -> object:
+    if path is None:
+        return None
+    try:
+        data = parse_frontmatter_document(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    automation = data.get("automation")
+    if not isinstance(automation, dict):
+        return None
+    return automation.get("suite_command")
+
+
+def _normalize_suite_command(value: object, *, source: str) -> tuple[list[str] | None, SuiteCommandFinding | None]:
+    if isinstance(value, str):
+        try:
+            argv = shlex.split(value)
+        except ValueError as exc:
+            return None, SuiteCommandFinding("malformed_suite_command", str(exc), source, value)
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        argv = list(value)
+    elif isinstance(value, list):
+        return None, SuiteCommandFinding(
+            "malformed_suite_command",
+            "automation.suite_command list entries must be strings",
+            source,
+            value,
+        )
+    else:
+        return None, SuiteCommandFinding(
+            "malformed_suite_command",
+            "automation.suite_command must be a shell string or list of strings",
+            source,
+            value,
+        )
+    if not argv or any(not part for part in argv):
+        return None, SuiteCommandFinding("empty_suite_command", "automation.suite_command must not be empty", source, value)
+    return argv, None
+
+
+def _strip_markdown_command(value: str) -> str:
+    text = value.strip()
+    if text.startswith("`") and "`" in text[1:]:
+        end = text.find("`", 1)
+        return text[1:end].strip()
+    return text
+
+
+def _split_shell_and(command: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\s+&&\s+", command) if part.strip()]
+
+
+def _plain_frontmatter_scalar(value: str) -> Any:
+    value = value.strip().strip("'\"")
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            data = json.loads(value)
+            return data
+        except json.JSONDecodeError:
+            return [item.strip().strip("'\"") for item in value[1:-1].split(",") if item.strip()]
+    return value
+
+
+def _roadmap_from_plan(repo: Path, plan: Path) -> Path:
+    metadata = plan_metadata(plan)
+    roadmap = metadata.get("roadmap")
+    return (repo / roadmap) if roadmap else repo / "specs" / "phase-plans-v1.md"
 
 
 def parse_roadmap_phases(roadmap: Path) -> list[str]:
