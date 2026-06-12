@@ -16,6 +16,7 @@ class PhaseLoopBamlDependencyTest(unittest.TestCase):
             "dotfiles_runtime_projection",
             "dotfiles_c4_document",
             "dotfiles_task_catalog",
+            "verification_evidence",
         ):
             self.assertIn(f'"baml_src/{name}.baml"', text)
 

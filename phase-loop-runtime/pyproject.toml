@@ -37,4 +37,5 @@ phase_loop_runtime = ["py.typed"]
     "baml_src/dotfiles_c4_document.baml",
     "baml_src/dotfiles_task_catalog.baml",
     "baml_src/evaluate_suspected_fake_evidence.baml",
+    "baml_src/verification_evidence.baml",
 ]

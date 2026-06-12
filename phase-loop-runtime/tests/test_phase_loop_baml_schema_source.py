@@ -96,6 +96,27 @@ class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):
                 "dependencies",
                 "status",
             ),
+            "verification_evidence.baml": (
+                "class VerificationEvidence",
+                "class VerificationCommandEvidence",
+                "class VerificationEnvRefreshEvidence",
+                "class VerificationSuiteEvidence",
+                "class VerificationValidationFinding",
+                "schema_version",
+                "run_id",
+                "phase_alias",
+                "commands",
+                "env_refresh",
+                "suite",
+                "started_at",
+                "finished_at",
+                "log_sha256",
+                "argv",
+                "cwd",
+                "exit_code",
+                "duration_s",
+                "log_offset",
+            ),
         }
         for file_name, fragments in expected.items():
             text = (BAML_SRC_DIR / file_name).read_text(encoding="utf-8")
