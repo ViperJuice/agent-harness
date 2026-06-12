@@ -36,7 +36,10 @@ from .discovery import (
     phase_source_bundle_diagnostic,
     plan_artifact_diagnostic,
     previous_phase_owned_dirty_paths,
+    resolve_suite_command_doc,
     roadmap_closeout_evidence_audit_enabled,
+    validate_plan_verification_commands_for_intake,
+    verification_commands_from_plan,
 )
 from .dispatch_lock import DispatchLock, DispatchLockContention
 from .events import append_event, event_path, read_events
@@ -103,6 +106,14 @@ from .reconcile import reconcile
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
+from .verification_evidence import (
+    ARTIFACT_NAME as VERIFICATION_ARTIFACT_NAME,
+    LOG_NAME as VERIFICATION_LOG_NAME,
+    detect_changed_dependency_manifests,
+    resolve_install_command,
+    run_verification,
+    validate_verification_artifact,
+)
 from .worker_pool import read_worker_summary, worker_summary_path, write_worker_summary
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
@@ -2162,6 +2173,71 @@ def run_loop(
                         pipeline_mode=effective_pipeline_mode,
                     )
                     break
+            if not dry_run and launch_action == "execute" and plan is not None:
+                verification_preflight_blocker = _execute_verification_preflight_blocker(repo, roadmap, plan)
+                if verification_preflight_blocker is not None:
+                    classifications[alias] = "blocked"
+                    terminal_summary = build_terminal_summary(
+                        terminal_status="blocked",
+                        terminal_blocker=verification_preflight_blocker,
+                        verification_status="blocked",
+                        next_action=str(verification_preflight_blocker["blocker_summary"]),
+                    )
+                    append_event(
+                        repo,
+                        LoopEvent(
+                            timestamp=utc_now(),
+                            repo=str(repo),
+                            roadmap=str(roadmap),
+                            phase=alias,
+                            action=action,
+                            status="blocked",
+                            model=selection.model,
+                            reasoning_effort=selection.effort,
+                            source=selection.source,
+                            override_reason=selection.override_reason,
+                            blocker=verification_preflight_blocker,
+                            metadata={
+                                "verification_preflight": {
+                                    "status": "blocked",
+                                    "enforcement": _verification_enforcement_mode(),
+                                },
+                                "terminal_summary": terminal_summary,
+                            },
+                            selected_executor=dispatch_decision.selected_executor,
+                            **event_provenance(roadmap, alias),
+                        ),
+                    )
+                    snapshot = StateSnapshot(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phases=classifications,
+                        current_phase=alias,
+                        last_action=action,
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        human_required=False,
+                        blocker_class=str(verification_preflight_blocker["blocker_class"]),
+                        blocker_summary=str(verification_preflight_blocker["blocker_summary"]),
+                        required_human_inputs=(),
+                        terminal_summary={"phase": alias, **terminal_summary},
+                        **snapshot_provenance(roadmap),
+                    )
+                    _write_state_and_handoff(
+                        repo,
+                        roadmap,
+                        snapshot,
+                        action=action,
+                        results=results,
+                        output_path=output_path,
+                        override_phase=selected,
+                        source_bundle_path=effective_source_bundle_path,
+                        pipeline_mode=effective_pipeline_mode,
+                    )
+                    break
             prompt_bundle = build_prompt(
                 launch_action,
                 roadmap=roadmap,
@@ -2601,8 +2677,48 @@ def run_loop(
             event_blocker = None
             child_automation: dict[str, object] = {}
             post_launch_plan = find_plan_artifact(repo, alias, roadmap=roadmap)
+            runner_verification: dict[str, object] | None = None
             if not dry_run:
+                verification_plan = post_launch_plan or plan
+                if launch_action == "execute" and verification_plan is not None:
+                    runner_verification = _run_execute_verification(
+                        repo=repo,
+                        roadmap=roadmap,
+                        plan=verification_plan,
+                        artifacts=artifacts,
+                    )
+                    if runner_verification and artifacts:
+                        merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
+                    if (
+                        runner_verification
+                        and not runner_verification.get("ok", False)
+                        and _verification_enforcement_mode() == "hard"
+                    ):
+                        status_after_launch = "blocked"
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason="runner_verification_failed",
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
+                        event_blocker = {
+                            "human_required": False,
+                            "blocker_class": "repeated_verification_failure",
+                            "blocker_summary": str(
+                                runner_verification.get("blocker_summary")
+                                or "Runner-owned verification failed before closeout reduction."
+                            ),
+                            "required_human_inputs": (),
+                            "access_attempts": (),
+                        }
                 child_automation = _parsed_child_automation(result, spec)
+                if runner_verification:
+                    child_automation["runner_verification"] = runner_verification
                 if failed_launch_closeout_override and child_automation:
                     child_automation["failed_launch_closeout_override"] = failed_launch_closeout_override
                     child_automation["original_returncode"] = failed_launch_closeout_override.get("original_returncode")
@@ -4612,6 +4728,105 @@ def _launch_event_metadata(
     if metadata["terminal_summary"].get("metric_id"):
         metadata["launch"]["metric_id"] = metadata["terminal_summary"]["metric_id"]
     return metadata
+
+
+def _verification_enforcement_mode() -> str:
+    value = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
+    return "hard" if value == "hard" else "warn"
+
+
+def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
+    if _verification_enforcement_mode() != "hard":
+        return None
+    findings = validate_plan_verification_commands_for_intake(repo, plan)
+    if findings:
+        first = findings[0]
+        summary = getattr(first, "message", None) or str(first)
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Plan verification command intake failed: {summary}",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    suite_command, suite_findings = resolve_suite_command_doc(repo, roadmap, plan)
+    if suite_findings:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Suite command declaration is invalid: {suite_findings[0].message}",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    if suite_command is None:
+        return {
+            "human_required": False,
+            "blocker_class": "verification_evidence_missing",
+            "blocker_summary": "Execute launch requires automation.suite_command when PHASE_LOOP_VERIFY_ENFORCE=hard.",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    return None
+
+
+def _run_execute_verification(
+    *,
+    repo: Path,
+    roadmap: Path,
+    plan: Path,
+    artifacts: dict[str, Path],
+) -> dict[str, object]:
+    run_dir = artifacts.get("root")
+    if run_dir is None:
+        return {
+            "ok": False,
+            "code": "missing_run_dir",
+            "blocker_summary": "Runner-owned verification requires an observed run directory.",
+        }
+    commands, operational_exemptions = verification_commands_from_plan(plan)
+    suite_command, suite_findings = resolve_suite_command_doc(repo, roadmap, plan)
+    if suite_findings:
+        return {
+            "ok": False,
+            "code": suite_findings[0].code,
+            "blocker_summary": suite_findings[0].message,
+            "suite_command": None,
+            "operational_exemptions": operational_exemptions,
+        }
+    manifests = detect_changed_dependency_manifests(repo, "HEAD")
+    install_argv = resolve_install_command(repo, manifests) if manifests else None
+    env_refresh = (
+        {"triggered": True, "manifests": manifests, "install_argv": install_argv or [], "exit_code": 127}
+        if manifests and install_argv is None
+        else ({"triggered": True, "manifests": manifests, "install_argv": install_argv} if manifests else None)
+    )
+    result = run_verification(
+        repo,
+        run_dir,
+        commands,
+        suite_command,
+        env_refresh,
+        float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+        operational_exemptions=operational_exemptions,
+    )
+    artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
+    validation = validate_verification_artifact(artifact_path)
+    validation_json = validation.to_json()
+    summary = {
+        "ok": validation.ok,
+        "code": validation.code,
+        "verification_artifact_path": str(artifact_path),
+        "verification_log_path": str(run_dir / VERIFICATION_LOG_NAME),
+        "suite_command": suite_command,
+        "env_refresh": env_refresh,
+        "verification_exit_summary": validation_json.get("exit_summary", {}),
+        "operational_exemptions": operational_exemptions,
+        "validation": validation_json,
+        "run_id": result.run_id,
+    }
+    if not validation.ok:
+        summary["blocker_summary"] = f"Runner-owned verification failed: {validation.code}"
+    return summary
 
 
 def _executor_closeout_event(

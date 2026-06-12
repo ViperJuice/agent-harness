@@ -5,11 +5,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
 
 
@@ -53,6 +54,7 @@ class VerificationResult:
     started_at: str
     finished_at: str
     log_sha256: str
+    operational_exemptions: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ def run_verification(
     suite_command: list[str] | None,
     env_refresh: object,
     timeout_s: float | None,
+    operational_exemptions: list[Mapping[str, Any]] | None = None,
 ) -> VerificationResult:
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
@@ -123,6 +126,7 @@ def run_verification(
         started_at=started_at,
         finished_at=finished_at,
         log_sha256=log_sha256,
+        operational_exemptions=[dict(item) for item in operational_exemptions or []],
     )
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
     return result
@@ -141,7 +145,7 @@ def validate_verification_commands(repo: Path, commands: list[list[str]]) -> lis
                 )
             )
             continue
-        executable = argv[0]
+        executable = _executable_argv(argv)[0] if _executable_argv(argv) else ""
         if not _executable_resolves(repo_path, executable):
             findings.append(
                 ValidationFinding(
@@ -271,6 +275,54 @@ def append_evidence_entry(doc_path: Path, entry: Mapping[str, Any]) -> dict[str,
     return payload
 
 
+def detect_changed_dependency_manifests(repo: Path, base_ref: str, head_ref: str | None = None) -> list[str]:
+    repo_path = _resolve_repo(repo)
+    command = ["git", "diff", "--name-only", base_ref]
+    if head_ref:
+        command.append(head_ref)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if completed.returncode not in {0, 1}:
+        return []
+    manifests: list[str] = []
+    for line in completed.stdout.splitlines():
+        path = line.strip()
+        if not path or path.startswith("../") or path.startswith("/"):
+            continue
+        name = PurePath(path).name
+        if name in {"package.json", "package-lock.json", "pnpm-lock.yaml", "pyproject.toml", "uv.lock"}:
+            manifests.append(path)
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            manifests.append(path)
+    return sorted(dict.fromkeys(manifests))
+
+
+def resolve_install_command(repo: Path, manifests: list[str]) -> list[str] | None:
+    repo_path = _resolve_repo(repo)
+    names = {PurePath(path).name for path in manifests}
+    if names.intersection({"package.json", "package-lock.json"}):
+        return ["npm", "install"]
+    if "pnpm-lock.yaml" in names:
+        return ["pnpm", "install"]
+    if "uv.lock" in names or ("pyproject.toml" in names and shutil.which("uv")):
+        return ["uv", "sync"]
+    requirements = sorted(name for name in names if name.startswith("requirements") and name.endswith(".txt"))
+    if requirements:
+        return [sys.executable, "-m", "pip", "install", "-r", requirements[0]]
+    if "pyproject.toml" in names and (repo_path / "pyproject.toml").exists():
+        return [sys.executable, "-m", "pip", "install", "-e", "."]
+    return None
+
+
 def _exit_summary(result: VerificationResult) -> dict[str, Any]:
     return {
         "commands": [command.exit_code for command in result.commands],
@@ -293,16 +345,18 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
 
 def _run_process(repo: Path, log_file: Any, argv: Sequence[str], timeout_s: float | None) -> VerificationCommandEvidence:
     command_argv = [str(part) for part in argv]
+    process_env, process_argv = _process_env_and_argv(command_argv)
     offset = log_file.tell()
     started = time.monotonic()
-    if not command_argv:
+    if not process_argv:
         log_file.write(b"empty verification command argv\n")
         log_file.flush()
-        return VerificationCommandEvidence([], ".", 127, _duration(started), offset)
+        return VerificationCommandEvidence(command_argv, ".", 127, _duration(started), offset)
     try:
         completed = subprocess.run(
-            command_argv,
+            process_argv,
             cwd=repo,
+            env=process_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout_s if timeout_s and timeout_s > 0 else None,
@@ -352,7 +406,7 @@ def _record_env_refresh(
 
 
 def _result_to_payload(result: VerificationResult) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": result.schema_version,
         "run_id": result.run_id,
         "phase_alias": result.phase_alias,
@@ -363,6 +417,9 @@ def _result_to_payload(result: VerificationResult) -> dict[str, Any]:
         "finished_at": result.finished_at,
         "log_sha256": result.log_sha256,
     }
+    if result.operational_exemptions:
+        payload["operational_exemptions"] = list(result.operational_exemptions)
+    return payload
 
 
 def _command_to_payload(command: VerificationCommandEvidence) -> dict[str, Any]:
@@ -455,6 +512,8 @@ def _iter_path_arguments(argv: Sequence[str]) -> list[tuple[int, str]]:
     references: list[tuple[int, str]] = []
     cwd_flags = {"--cwd", "--chdir", "-C"}
     for index, value in enumerate(argv[1:], start=1):
+        if _is_env_assignment(value):
+            continue
         if value in cwd_flags and index + 1 < len(argv):
             references.append((index + 1, argv[index + 1]))
             continue
@@ -466,6 +525,31 @@ def _iter_path_arguments(argv: Sequence[str]) -> list[tuple[int, str]]:
             if _looks_path_like(value):
                 references.append((index, value))
     return references
+
+
+def _executable_argv(argv: Sequence[str]) -> list[str]:
+    return [str(part) for part in argv if not _is_env_assignment(str(part))]
+
+
+def _process_env_and_argv(argv: Sequence[str]) -> tuple[dict[str, str] | None, list[str]]:
+    env = os.environ.copy()
+    command: list[str] = []
+    env_changed = False
+    for index, part in enumerate(argv):
+        value = str(part)
+        if not command and _is_env_assignment(value):
+            key, raw = value.split("=", 1)
+            env[key] = raw
+            env_changed = True
+            continue
+        command = [str(item) for item in argv[index:]]
+        break
+    return (env if env_changed else None), command
+
+
+def _is_env_assignment(value: str) -> bool:
+    key, sep, _raw = value.partition("=")
+    return bool(sep) and key.replace("_", "").isalnum() and key[0].isalpha()
 
 
 def _looks_path_like(value: str) -> bool:
