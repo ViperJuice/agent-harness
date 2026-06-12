@@ -30,6 +30,7 @@ from .skill_install import actions_to_json, install_skills
 from .state import write_state
 from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
+from .verification_evidence import ARTIFACT_NAME, LOG_NAME, validate_verification_artifact
 from . import __version__
 
 
@@ -242,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "--to-status planned --reason <text> instead."
                 ),
             )
+            sub.add_argument("--verification-log", help="Path to the runner-owned verification artifact required with --verification-status passed.")
             sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
             sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
@@ -907,6 +909,19 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             print(f"phase-loop reconcile: --recovery-mode requires {', '.join(missing)}", file=sys.stderr)
             return 2
 
+    verification_evidence = None
+    if getattr(args, "verification_status", None) == "passed":
+        verification_log = getattr(args, "verification_log", None)
+        if verification_log or _reconcile_verification_log_required(repo, roadmap, phase):
+            verification_evidence = _validate_reconcile_verification_log(repo, verification_log)
+            if not verification_evidence.get("ok"):
+                print(
+                    "phase-loop reconcile: verification evidence invalid "
+                    f"(code={verification_evidence.get('code')}, artifact={verification_evidence.get('artifact_path')})",
+                    file=sys.stderr,
+                )
+                return 2
+
     closeout_commit = getattr(args, "closeout_commit", None) or topology.get("head")
     if not isinstance(closeout_commit, str) or not closeout_commit:
         print("phase-loop reconcile: cannot resolve closeout commit SHA", file=sys.stderr)
@@ -932,6 +947,8 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     repair_summary = getattr(args, "repair_summary", None)
     if repair_summary:
         manual_repair["repair_summary"] = repair_summary
+    if verification_evidence is not None:
+        manual_repair["verification_evidence"] = verification_evidence
     if recovery_mode:
         manual_repair["recovery_mode"] = True
 
@@ -956,6 +973,41 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     write_tui_handoff(repo, roadmap, snapshot, action="reconcile")
     print(render_status(snapshot, as_json=as_json))
     return 0
+
+
+def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[str, object]:
+    if not value:
+        return {"ok": False, "code": "missing_verification_log", "artifact_path": None}
+    raw_path = Path(value)
+    artifact_path = raw_path if raw_path.is_absolute() else repo / raw_path
+    if artifact_path.name == LOG_NAME:
+        artifact_path = artifact_path.parent / ARTIFACT_NAME
+    artifact_path = artifact_path.resolve()
+    repo_path = repo.resolve()
+    phase_loop_runs = (repo_path / ".phase-loop" / "runs").resolve()
+    try:
+        inside_repo = artifact_path.is_relative_to(repo_path)
+        inside_runs = artifact_path.is_relative_to(phase_loop_runs)
+    except AttributeError:  # pragma: no cover - py3.8 compatibility for downstream packagers
+        inside_repo = str(artifact_path).startswith(str(repo_path) + "/")
+        inside_runs = str(artifact_path).startswith(str(phase_loop_runs) + "/")
+    if not (inside_repo or inside_runs):
+        return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
+    validation = validate_verification_artifact(artifact_path).to_json()
+    return validation
+
+
+def _reconcile_verification_log_required(repo: Path, roadmap: Path, phase: str) -> bool:
+    if phase.upper() == "RG":
+        return True
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    if plan is None:
+        return False
+    try:
+        text = plan.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "--verification-log" in text or "IF-0-RG-1" in text
 
 
 def _reconcile_to_planned_command(

@@ -155,6 +155,19 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("IF-Gate Tier 1 Validation", shared)
         self.assertIn("`phase-loop init`", shared)
 
+    def test_runnergate_verification_evidence_contract_is_documented(self):
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+
+        for token in (
+            "agent_reported_verification_status",
+            "--verification-log <path>",
+            "PHASE_LOOP_VERIFY_ENFORCE",
+            "verification_evidence_missing",
+            "append_evidence_entry",
+            "fresh entry",
+        ):
+            self.assertIn(token, protocol)
+
     def test_adoption_bundle_lifecycle_docs_freeze_refresh_contract(self):
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
 

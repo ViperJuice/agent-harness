@@ -109,6 +109,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "merge_conflict",
                 "operator_override_missing_reason",
                 "concurrent_dispatch",
+                "verification_evidence_missing",
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))

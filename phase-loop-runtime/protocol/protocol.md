@@ -615,7 +615,8 @@ Pipeline, access, repair, executor-policy, or launch blockers.
 Completion reconcile:
 
 `phase-loop reconcile --phase <ALIAS> [--closeout-commit <SHA>]
-[--repair-summary <text>] [--verification-status passed] [--recovery-mode]`
+[--repair-summary <text>] [--verification-status passed]
+[--verification-log <path>] [--recovery-mode]`
 
 This synthesizes a v28-shape `manual_repair` event for the named phase,
 recording the current `HEAD` (or the supplied SHA) as the closeout commit and
@@ -629,6 +630,15 @@ manually authoring the v28 P3/P4 event shape and appending to events.jsonl —
 to one CLI call. Use only as a recovery tool when the executor's work is
 correct but ownership classification or lane-evidence gaps left the runner
 blocked; do not use to bypass legitimate verification failures.
+
+When completion reconcile uses `--verification-status passed`, it must also
+provide `--verification-log <path>` pointing at the runner-owned
+`verification.json` artifact for the run. The runner validates the artifact
+schema, the sibling `verification.log` SHA-256 against `log_sha256`, and every
+command, env-refresh, and suite exit code before appending a completion repair
+event. Remediation output and event metadata include only the artifact path,
+validation code, and exit summary; raw verification log output is never copied
+into reconcile metadata.
 
 Blocked-state recovery:
 
@@ -1374,6 +1384,25 @@ malformed instead of preserving the forbidden content.
   `failed`, `blocked`, `not_run`, or `unknown`.
 - `commands`: Optional command strings used as metadata-only proof of what was
   checked.
+- `agent_reported_verification_status`: Additive metadata preserving the
+  executor's self-reported verification value before runner evidence
+  validation.
+- `results`: Optional metadata-only validation records. Closeout acceptance of
+  `passed` is authoritative only when backed by a valid IF-0-VC-1
+  `verification.json` artifact whose sibling `verification.log` hash matches
+  `log_sha256` and whose command, env-refresh, and suite exit codes are all
+  zero.
+
+By default, `PHASE_LOOP_VERIFY_ENFORCE=hard` behavior is active: missing,
+malformed, nonzero, or tampered verification evidence blocks a passed closeout
+with blocker class `verification_evidence_missing`. Operators may set
+`PHASE_LOOP_VERIFY_ENFORCE=warn` to preserve the reported closeout while
+emitting structured warning metadata during staged adoption. Operational
+evidence amendments must use
+`verification_evidence.append_evidence_entry(doc_path, entry)`, which appends a
+fresh entry with a runner timestamp and preserves prior document bytes. A
+blocked operational gate may be re-verdicted only from a fresh entry of the
+originally specified evidence kind.
 
 #### DFPARSOAK Receipt Boundary
 

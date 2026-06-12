@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Mapping
 
+from .closeout_validation import verification_enforcement_mode
 from .models import (
     PIPELINE_CLOSEOUT_OUTCOMES,
     PIPELINE_CLOSEOUT_SCHEMA,
@@ -26,6 +28,7 @@ from .models import (
     WorkUnitCloseout,
 )
 from .redaction import build_source_truth_impact, metadata_redaction_diagnostic
+from .verification_evidence import ARTIFACT_NAME, validate_verification_artifact
 
 
 def reduce_lane_dirty_paths(
@@ -90,6 +93,22 @@ def build_phase_loop_closeout(
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
     blocker_data = dict(blocker or terminal.get("terminal_blocker") or {})
+    verification_results: list[dict[str, Any]] = []
+    agent_reported_verification_status = str(
+        terminal.get("verification_status") or normalized_automation.get("verification_status") or "unknown"
+    )
+    evidence_update = _apply_verification_evidence_gate(
+        phase_alias=phase_alias,
+        plan_path=Path(plan_path),
+        terminal=terminal,
+        automation=normalized_automation,
+        blocker=blocker_data,
+    )
+    if evidence_update:
+        terminal = evidence_update["terminal"]
+        normalized_automation = evidence_update["automation"]
+        blocker_data = evidence_update["blocker"]
+        verification_results = evidence_update["results"]
     metadata = plan_metadata or (pipeline_diagnostic.metadata if pipeline_diagnostic else None)
 
     source_bundle_path = source_bundle.path if source_bundle else (metadata.source_bundle if metadata else None)
@@ -147,6 +166,8 @@ def build_phase_loop_closeout(
     verification = PhaseLoopVerification(
         status=str(terminal.get("verification_status") or normalized_automation.get("verification_status") or "unknown"),
         commands=tuple(_verification_commands(terminal)),
+        results=tuple(verification_results),
+        agent_reported_verification_status=agent_reported_verification_status,
     )
 
     blkr = PhaseLoopBlocker(
@@ -189,6 +210,123 @@ def build_phase_loop_closeout(
         payload["work_unit"] = _work_unit_fields(work_unit_closeout)
         payload["lane"] = _lane_closeout_fields(work_unit_closeout)
     return _clean(payload)
+
+
+def _apply_verification_evidence_gate(
+    *,
+    phase_alias: str,
+    plan_path: Path,
+    terminal: dict[str, Any],
+    automation: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any] | None:
+    reported = str(terminal.get("verification_status") or automation.get("verification_status") or "")
+    if reported != "passed":
+        return None
+    artifact_path = _verification_artifact_path(terminal)
+    if artifact_path is None:
+        if _verification_evidence_required(phase_alias, plan_path):
+            validation_payload = {
+                "ok": False,
+                "code": "missing_verification_artifact",
+                "artifact_path": None,
+                "log_path": None,
+                "exit_summary": {},
+                "findings": ["passed closeout requires IF-0-VC-1 verification evidence"],
+                "enforcement": verification_enforcement_mode(os.environ),
+            }
+            return _verification_evidence_block_or_warn(
+                validation_payload=validation_payload,
+                terminal=terminal,
+                automation=automation,
+                blocker=blocker,
+            )
+        return None
+    validation = validate_verification_artifact(artifact_path)
+    validation_payload = validation.to_json()
+    mode = verification_enforcement_mode(os.environ)
+    validation_payload["enforcement"] = mode
+    return _verification_evidence_block_or_warn(
+        validation_payload=validation_payload,
+        terminal=terminal,
+        automation=automation,
+        blocker=blocker,
+    )
+
+
+def _verification_evidence_block_or_warn(
+    *,
+    validation_payload: dict[str, Any],
+    terminal: dict[str, Any],
+    automation: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any]:
+    updated_terminal = dict(terminal)
+    updated_automation = dict(automation)
+    updated_blocker = dict(blocker)
+    if validation_payload.get("ok"):
+        return {
+            "terminal": updated_terminal,
+            "automation": updated_automation,
+            "blocker": updated_blocker,
+            "results": [validation_payload],
+        }
+    mode = str(validation_payload.get("enforcement") or verification_enforcement_mode(os.environ))
+    if mode == "warn":
+        validation_payload["warning"] = "verification evidence failed validation under PHASE_LOOP_VERIFY_ENFORCE=warn"
+        return {
+            "terminal": updated_terminal,
+            "automation": updated_automation,
+            "blocker": updated_blocker,
+            "results": [validation_payload],
+        }
+    updated_terminal["terminal_status"] = "blocked"
+    updated_terminal["verification_status"] = "blocked"
+    updated_automation["status"] = "blocked"
+    updated_automation["verification_status"] = "blocked"
+    updated_automation["blocker_class"] = "verification_evidence_missing"
+    updated_automation["blocker_summary"] = f"Verification evidence invalid: {validation_payload.get('code')}"
+    updated_automation["human_required"] = False
+    updated_blocker.update(
+        {
+            "human_required": False,
+            "blocker_class": "verification_evidence_missing",
+            "blocker_summary": f"Verification evidence invalid: {validation_payload.get('code')}",
+            "required_human_inputs": (),
+        }
+    )
+    return {
+        "terminal": updated_terminal,
+        "automation": updated_automation,
+        "blocker": updated_blocker,
+        "results": [validation_payload],
+    }
+
+
+def _verification_evidence_required(phase_alias: str, plan_path: Path) -> bool:
+    if phase_alias.upper() == "RG":
+        return True
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "IF-0-RG-1" in text or "--verification-log" in text
+
+
+def _verification_artifact_path(terminal: Mapping[str, Any]) -> Path | None:
+    artifact_paths = terminal.get("artifact_paths")
+    if not isinstance(artifact_paths, Mapping):
+        return None
+    explicit = artifact_paths.get("verification") or artifact_paths.get("verification_artifact") or artifact_paths.get("verification_log")
+    if explicit:
+        candidate = Path(str(explicit))
+        if candidate.name == "verification.log":
+            return candidate.parent / ARTIFACT_NAME
+        return candidate
+    root = artifact_paths.get("root")
+    if root:
+        return Path(str(root)) / ARTIFACT_NAME
+    return None
 
 
 def phase_loop_closeout_diagnostic(payload: Mapping[str, Any] | None) -> dict[str, str] | None:

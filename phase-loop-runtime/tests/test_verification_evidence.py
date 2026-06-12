@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime.verification_evidence import (
+    append_evidence_entry,
     load_verification_artifact,
     run_verification,
+    validate_verification_artifact,
     validate_verification_commands,
 )
 
@@ -104,6 +106,48 @@ class VerificationEvidenceTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 load_verification_artifact(artifact)
+
+    def test_validate_verification_artifact_checks_hash_and_exit_codes(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+
+            validation = validate_verification_artifact(run_dir / "verification.json")
+
+            self.assertTrue(validation.ok)
+            self.assertEqual(validation.code, "ok")
+            self.assertEqual(validation.exit_summary["commands"], [0])
+
+            (run_dir / "verification.log").write_text("tampered", encoding="utf-8")
+            tampered = validate_verification_artifact(run_dir / "verification.json")
+            self.assertFalse(tampered.ok)
+            self.assertEqual(tampered.code, "log_sha256_mismatch")
+
+    def test_validate_verification_artifact_reports_nonzero_exit(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "raise SystemExit(9)"]], None, None, 5)
+
+            validation = validate_verification_artifact(run_dir / "verification.json")
+
+            self.assertFalse(validation.ok)
+            self.assertEqual(validation.code, "nonzero_exit")
+            self.assertEqual(validation.exit_summary["commands"], [9])
+
+    def test_append_evidence_entry_preserves_existing_bytes_and_appends_json_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            doc = Path(td) / "evidence.md"
+            doc.write_bytes(b"existing evidence")
+
+            payload = append_evidence_entry(doc, {"kind": "operator_check", "status": "passed"})
+
+            data = doc.read_bytes()
+            self.assertTrue(data.startswith(b"existing evidence\n"))
+            appended = json.loads(data.splitlines()[-1])
+            self.assertEqual(appended["entry"], {"kind": "operator_check", "status": "passed"})
+            self.assertEqual(payload["entry"]["kind"], "operator_check")
 
 
 if __name__ == "__main__":

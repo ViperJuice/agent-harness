@@ -108,6 +108,7 @@ BLOCKER_CLASSES = (
     "merge_conflict",
     "operator_override_missing_reason",
     "concurrent_dispatch",
+    "verification_evidence_missing",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (
@@ -702,6 +703,7 @@ class PhaseLoopVerification:
     status: str
     commands: tuple[str, ...] = ()
     results: tuple[dict[str, Any], ...] = ()
+    agent_reported_verification_status: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return clean_dict(asdict(self))

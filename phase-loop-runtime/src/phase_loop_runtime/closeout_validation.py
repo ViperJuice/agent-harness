@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 IF_GATE_RE = re.compile(r"\bIF-\d+-[A-Z0-9_-]+-\d+\b")
@@ -122,6 +122,11 @@ def validate_produced_gates(plan_path: Path, closeout_payload: dict[str, Any]) -
         missing_gates=missing,
         unexpected_gates=unexpected,
     )
+
+
+def verification_enforcement_mode(env: Mapping[str, str] | None = None) -> str:
+    value = str((env or {}).get("PHASE_LOOP_VERIFY_ENFORCE") or "").strip().lower()
+    return "warn" if value == "warn" else "hard"
 
 
 def _normalize_gates(value: Any) -> tuple[str, ...]:

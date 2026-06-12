@@ -64,6 +64,26 @@ class ValidationFinding:
     value: str | None = None
 
 
+@dataclass(frozen=True)
+class VerificationArtifactValidation:
+    ok: bool
+    code: str
+    artifact_path: str
+    log_path: str | None = None
+    exit_summary: dict[str, Any] | None = None
+    findings: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "code": self.code,
+            "artifact_path": self.artifact_path,
+            "log_path": self.log_path,
+            "exit_summary": self.exit_summary or {},
+            "findings": list(self.findings),
+        }
+
+
 def run_verification(
     repo: Path,
     run_dir: Path,
@@ -175,6 +195,100 @@ def load_verification_artifact(path: Path) -> VerificationResult:
         finished_at=_require_str(data["finished_at"], "finished_at"),
         log_sha256=_require_str(data["log_sha256"], "log_sha256"),
     )
+
+
+def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
+    artifact_path = Path(path)
+    log_path = artifact_path.parent / LOG_NAME
+    try:
+        result = load_verification_artifact(artifact_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="malformed_artifact",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            findings=(str(exc),),
+        )
+    try:
+        actual_log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="missing_log",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            exit_summary=_exit_summary(result),
+            findings=(str(exc),),
+        )
+    if actual_log_sha256 != result.log_sha256:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="log_sha256_mismatch",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            exit_summary=_exit_summary(result),
+            findings=("verification.log sha256 does not match verification.json log_sha256",),
+        )
+    nonzero = _nonzero_exit_findings(result)
+    if nonzero:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="nonzero_exit",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            exit_summary=_exit_summary(result),
+            findings=tuple(nonzero),
+        )
+    return VerificationArtifactValidation(
+        ok=True,
+        code="ok",
+        artifact_path=str(artifact_path),
+        log_path=str(log_path),
+        exit_summary=_exit_summary(result),
+    )
+
+
+def append_evidence_entry(doc_path: Path, entry: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(entry, Mapping):
+        raise ValueError("evidence entry must be a metadata mapping")
+    path = Path(doc_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"timestamp": _utc_now(), "entry": dict(entry)}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    needs_separator = path.exists() and path.stat().st_size > 0
+    if needs_separator:
+        try:
+            with path.open("rb") as existing:
+                existing.seek(-1, os.SEEK_END)
+                needs_separator = existing.read(1) != b"\n"
+        except OSError:
+            needs_separator = False
+    with path.open("ab") as handle:
+        if needs_separator:
+            handle.write(b"\n")
+        handle.write(encoded.encode("utf-8"))
+    return payload
+
+
+def _exit_summary(result: VerificationResult) -> dict[str, Any]:
+    return {
+        "commands": [command.exit_code for command in result.commands],
+        "env_refresh": result.env_refresh.exit_code if result.env_refresh is not None else None,
+        "suite": result.suite.exit_code if result.suite is not None else None,
+    }
+
+
+def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
+    findings: list[str] = []
+    for index, command in enumerate(result.commands):
+        if command.exit_code != 0:
+            findings.append(f"commands[{index}].exit_code={command.exit_code}")
+    if result.env_refresh is not None and result.env_refresh.exit_code != 0:
+        findings.append(f"env_refresh.exit_code={result.env_refresh.exit_code}")
+    if result.suite is not None and result.suite.exit_code != 0:
+        findings.append(f"suite.exit_code={result.suite.exit_code}")
+    return findings
 
 
 def _run_process(repo: Path, log_file: Any, argv: Sequence[str], timeout_s: float | None) -> VerificationCommandEvidence:

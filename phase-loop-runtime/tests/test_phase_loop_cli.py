@@ -17,11 +17,12 @@ from phase_loop_test_utils import provenanced_event, provenanced_state
 from phase_loop_test_utils import write_phase_plan
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source
 from phase_loop_runtime.cli import build_parser, main
-from phase_loop_runtime.events import append_event
+from phase_loop_runtime.events import append_event, read_events
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.state import write_state
 from phase_loop_runtime.state_degradation import load_degradation, record_degradation
 from phase_loop_smoke_utils import append_manual_import_event, isolated_codex_home, write_skill_handoff
+from phase_loop_runtime.verification_evidence import run_verification
 
 
 BIN = shutil.which("phase-loop") or "phase-loop"
@@ -781,8 +782,88 @@ class PhaseLoopCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--to-status {planned}", result.stdout)
         self.assertIn("--reason", result.stdout)
+        self.assertIn("--verification-log", result.stdout)
         self.assertIn("without marking verification passed", result.stdout)
         self.assertIn("verification_status=not_run", result.stdout)
+
+    def test_reconcile_passed_requires_verification_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+
+            result = subprocess.run(
+                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RG", "--verification-status", "passed"],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("verification evidence invalid", result.stderr)
+            self.assertIn("missing_verification_log", result.stderr)
+
+    def test_reconcile_passed_rejects_invalid_verification_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            artifact = repo / ".phase-loop/runs/test-run/verification.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text('{"schema_version": 1}', encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(BIN),
+                    "reconcile",
+                    "--repo",
+                    str(repo),
+                    "--roadmap",
+                    str(roadmap),
+                    "--phase",
+                    "RUNNER",
+                    "--verification-status",
+                    "passed",
+                    "--verification-log",
+                    str(artifact),
+                    "--allow-dirty",
+                ],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("malformed_artifact", result.stderr)
+
+    def test_reconcile_passed_accepts_valid_verification_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+
+            result = subprocess.run(
+                [
+                    str(BIN),
+                    "reconcile",
+                    "--repo",
+                    str(repo),
+                    "--roadmap",
+                    str(roadmap),
+                    "--phase",
+                    "RUNNER",
+                    "--verification-status",
+                    "passed",
+                    "--verification-log",
+                    str(run_dir / "verification.json"),
+                    "--allow-dirty",
+                ],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            events = read_events(repo)
+            evidence = events[-1]["metadata"]["manual_repair"]["verification_evidence"]
+            self.assertEqual(evidence["code"], "ok")
+            self.assertEqual(evidence["exit_summary"]["commands"], [0])
 
     def test_reconcile_refuses_dirty_tree(self):
         with tempfile.TemporaryDirectory() as td:
