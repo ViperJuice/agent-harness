@@ -98,6 +98,8 @@ def build_phase_loop_closeout(
         terminal.get("verification_status") or normalized_automation.get("verification_status") or "unknown"
     )
     evidence_update = _apply_verification_evidence_gate(
+        phase_alias=phase_alias,
+        plan_path=Path(plan_path),
         terminal=terminal,
         automation=normalized_automation,
         blocker=blocker_data,
@@ -212,6 +214,8 @@ def build_phase_loop_closeout(
 
 def _apply_verification_evidence_gate(
     *,
+    phase_alias: str,
+    plan_path: Path,
     terminal: dict[str, Any],
     automation: dict[str, Any],
     blocker: dict[str, Any],
@@ -221,21 +225,53 @@ def _apply_verification_evidence_gate(
         return None
     artifact_path = _verification_artifact_path(terminal)
     if artifact_path is None:
+        if _verification_evidence_required(phase_alias, plan_path):
+            validation_payload = {
+                "ok": False,
+                "code": "missing_verification_artifact",
+                "artifact_path": None,
+                "log_path": None,
+                "exit_summary": {},
+                "findings": ["passed closeout requires IF-0-VC-1 verification evidence"],
+                "enforcement": verification_enforcement_mode(os.environ),
+            }
+            return _verification_evidence_block_or_warn(
+                validation_payload=validation_payload,
+                terminal=terminal,
+                automation=automation,
+                blocker=blocker,
+            )
         return None
     validation = validate_verification_artifact(artifact_path)
     validation_payload = validation.to_json()
     mode = verification_enforcement_mode(os.environ)
     validation_payload["enforcement"] = mode
+    return _verification_evidence_block_or_warn(
+        validation_payload=validation_payload,
+        terminal=terminal,
+        automation=automation,
+        blocker=blocker,
+    )
+
+
+def _verification_evidence_block_or_warn(
+    *,
+    validation_payload: dict[str, Any],
+    terminal: dict[str, Any],
+    automation: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any]:
     updated_terminal = dict(terminal)
     updated_automation = dict(automation)
     updated_blocker = dict(blocker)
-    if validation.ok:
+    if validation_payload.get("ok"):
         return {
             "terminal": updated_terminal,
             "automation": updated_automation,
             "blocker": updated_blocker,
             "results": [validation_payload],
         }
+    mode = str(validation_payload.get("enforcement") or verification_enforcement_mode(os.environ))
     if mode == "warn":
         validation_payload["warning"] = "verification evidence failed validation under PHASE_LOOP_VERIFY_ENFORCE=warn"
         return {
@@ -249,13 +285,13 @@ def _apply_verification_evidence_gate(
     updated_automation["status"] = "blocked"
     updated_automation["verification_status"] = "blocked"
     updated_automation["blocker_class"] = "verification_evidence_missing"
-    updated_automation["blocker_summary"] = f"Verification evidence invalid: {validation.code}"
+    updated_automation["blocker_summary"] = f"Verification evidence invalid: {validation_payload.get('code')}"
     updated_automation["human_required"] = False
     updated_blocker.update(
         {
             "human_required": False,
             "blocker_class": "verification_evidence_missing",
-            "blocker_summary": f"Verification evidence invalid: {validation.code}",
+            "blocker_summary": f"Verification evidence invalid: {validation_payload.get('code')}",
             "required_human_inputs": (),
         }
     )
@@ -265,6 +301,16 @@ def _apply_verification_evidence_gate(
         "blocker": updated_blocker,
         "results": [validation_payload],
     }
+
+
+def _verification_evidence_required(phase_alias: str, plan_path: Path) -> bool:
+    if phase_alias.upper() == "RG":
+        return True
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "IF-0-RG-1" in text or "--verification-log" in text
 
 
 def _verification_artifact_path(terminal: Mapping[str, Any]) -> Path | None:

@@ -38,6 +38,58 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             self.assertEqual(closeout["blocker"]["blocker_class"], "verification_evidence_missing")
             self.assertEqual(closeout["verification"]["results"][0]["code"], "malformed_artifact")
 
+    def test_rg_passed_closeout_without_artifact_path_blocks_in_hard_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+
+            closeout = build_phase_loop_closeout(
+                phase_alias="RG",
+                plan_path=plan,
+                terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+                automation={"status": "complete", "verification_status": "passed", "human_required": False},
+            )
+
+            self.assertEqual(closeout["terminal_status"], "blocked")
+            self.assertEqual(closeout["verification"]["status"], "blocked")
+            self.assertEqual(closeout["blocker"]["blocker_class"], "verification_evidence_missing")
+            self.assertEqual(closeout["verification"]["results"][0]["code"], "missing_verification_artifact")
+
+    def test_legacy_non_rg_passed_closeout_without_artifact_path_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = repo / "plans/phase-plan-v1-LEGACY.md"
+            plan.parent.mkdir(parents=True, exist_ok=True)
+            plan.write_text("# LEGACY\n", encoding="utf-8")
+
+            closeout = build_phase_loop_closeout(
+                phase_alias="LEGACY",
+                plan_path=plan,
+                terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+                automation={"status": "complete", "verification_status": "passed", "human_required": False},
+            )
+
+            self.assertEqual(closeout["terminal_status"], "complete")
+            self.assertEqual(closeout["verification"]["status"], "passed")
+            self.assertEqual(closeout["verification"]["results"], [])
+
+    def test_declared_rg_contract_requires_artifact_path_for_non_rg_phase(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = repo / "plans/phase-plan-v1-AUDIT.md"
+            plan.parent.mkdir(parents=True, exist_ok=True)
+            plan.write_text("**Interfaces provided**: IF-0-RG-1\n", encoding="utf-8")
+
+            closeout = build_phase_loop_closeout(
+                phase_alias="AUDIT",
+                plan_path=plan,
+                terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+                automation={"status": "complete", "verification_status": "passed", "human_required": False},
+            )
+
+            self.assertEqual(closeout["terminal_status"], "blocked")
+            self.assertEqual(closeout["verification"]["results"][0]["code"], "missing_verification_artifact")
+
     def test_warn_mode_records_warning_without_blocking_closeout(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
