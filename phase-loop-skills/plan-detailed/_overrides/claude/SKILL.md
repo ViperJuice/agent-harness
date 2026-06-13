@@ -304,6 +304,11 @@ utilities, and patterns worth reusing.>
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
+
+## Verification Contract
+
+Detailed plans must contain machine-checkable verification commands and an effective `automation.suite_command` whenever the runner will execute them. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap or plan amendment before downstream execution relies on it.
+
 ## Closeout
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.

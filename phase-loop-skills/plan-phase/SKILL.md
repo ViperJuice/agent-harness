@@ -237,6 +237,11 @@ reducer or verification work units, use a lane selector with
 `work-unit=phase_reducer` or `work-unit=phase_verify`; do not invent action
 selectors such as `reduce` or `verify`.
 
+
+## Verification Contract
+
+Generated plans must contain machine-checkable verification commands and an effective `automation.suite_command`; phase plans must validate those commands through IF-0-VC-2 before they are handoff-ready. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before downstream plans rely on it.
+
 ## Closeout
 
 ### Manifest write

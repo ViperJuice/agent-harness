@@ -165,6 +165,11 @@ out of contract:
 - `verification_status`: `not_run`, `passed`, `failed`, `blocked`
 - `blocker_class`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, `sandbox_command_restriction`, `upstream_phase_unmet`, `contract_bug`, `gold_record_amendment`, `unretryable_external_outage`, `stuck_loop`
 
+
+## Verification Contract
+
+Generated plans must contain machine-checkable verification commands and an effective `automation.suite_command`; phase plans must validate those commands through IF-0-VC-2 before they are handoff-ready. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before downstream plans rely on it.
+
 ## Closeout
 
 ### Manifest write

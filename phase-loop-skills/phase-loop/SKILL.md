@@ -43,6 +43,11 @@ Optional flags may be passed through when requested: `--repo`, `--roadmap`, `--p
 3. For commands that need a roadmap, let the CLI discover it unless the user supplied `--roadmap`; do not reimplement roadmap or phase selection in the skill text.
 4. If unrelated dirty work overlaps files the runner would modify, report `human_required=true` with `blocker_class=dirty_worktree_conflict` instead of continuing.
 
+
+## Runner Evidence Contract
+
+Use artifact-backed re-verdicting for blocked gates: a gate changes verdict only by rerunning the originally specified runner check and reading the runner-owned artifact. proxy evidence requires a roadmap amendment before the bridge reports the gate as passed. When both canonical `.phase-loop/` state and legacy `.codex/phase-loop/` compatibility files exist, canonical `.phase-loop/` state takes precedence for status, monitor, resume, reconcile, and repair decisions.
+
 ## Command Mapping
 
 - `<harness>-phase-loop handoff`: run `<harness>-phase-loop handoff`.

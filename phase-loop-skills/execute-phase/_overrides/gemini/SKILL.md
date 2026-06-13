@@ -119,6 +119,11 @@ The main thread remains responsible for integrating results, reviewing diffs, ru
 - Installed-skill conflicts are warnings when the injected repo bundle was
   delivered successfully; they do not block an otherwise valid shared closeout.
 
+
+## Runner Verification Evidence
+
+Before reporting a successful closeout, require the runner-owned verification artifact. The closeout must name `verification_artifact_path`, quote the artifact summary line, and must not report `verification_status=passed` unless that artifact exists and supports the executed work. Treat dependency-manifest install refresh and the full suite before closeout as runner-enforced expectations, not optional narrative checks. A blocked gate may be re-verdicted only by rerunning the originally specified runner check; proxy evidence requires a roadmap or plan amendment before the verdict changes.
+
 ## Closeout
 
 ### Manifest lifecycle

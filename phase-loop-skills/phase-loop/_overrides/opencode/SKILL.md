@@ -76,6 +76,11 @@ harness-private state.
 If a downstream roadmap amendment lands, route the next step back through the
 planner and treat older downstream plans as stale.
 
+
+## Runner Evidence Contract
+
+Use artifact-backed re-verdicting for blocked gates: a gate changes verdict only by rerunning the originally specified runner check and reading the runner-owned artifact. proxy evidence requires a roadmap amendment before the bridge reports the gate as passed. When both canonical `.phase-loop/` state and legacy `.codex/phase-loop/` compatibility files exist, canonical `.phase-loop/` state takes precedence for status, monitor, resume, reconcile, and repair decisions.
+
 ## Command Mapping
 
 - `<harness>-phase-loop handoff`: use `phase-loop handoff` or `codex-phase-loop handoff`.
