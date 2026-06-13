@@ -1753,6 +1753,10 @@ summary fields.
 - `tui_handoff_path`
 - `run_log_path`
 - `recommended_action`
+- `not_run_ratio`
+- `not_run_count`
+- `sample_size`
+- `threshold`
 
 This payload is the normalized machine callback surface for monitors,
 notification commands, and external supervisors.

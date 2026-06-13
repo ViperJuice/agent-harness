@@ -237,6 +237,10 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "tui_handoff_path",
                 "run_log_path",
                 "recommended_action",
+                "not_run_ratio",
+                "not_run_count",
+                "sample_size",
+                "threshold",
             ),
         )
 

@@ -142,6 +142,11 @@ class PhaseLoopMetricsTest(unittest.TestCase):
             self.assertEqual(summary["by_executor"]["claude"], 1)
             self.assertEqual(summary["by_terminal_status"]["blocked"], 1)
             self.assertEqual(summary["by_blocker_class"]["repeated_verification_failure"], 1)
+            self.assertEqual(summary["not_run_ratio"], 0.0)
+            self.assertEqual(summary["not_run_count"], 0)
+            self.assertEqual(summary["sample_size"], 1)
+            self.assertEqual(summary["threshold"], 0.2)
+            self.assertFalse(summary["not_run_alert"])
 
     def test_hotfix_metric_is_counted_without_raw_payload(self):
         with tempfile.TemporaryDirectory() as td:

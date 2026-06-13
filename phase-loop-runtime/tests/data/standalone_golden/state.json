@@ -32,6 +32,11 @@
     "by_verification_status": {
       "passed": 1
     },
+    "not_run_alert": false,
+    "not_run_count": 0,
+    "not_run_ratio": 0.0,
+    "sample_size": 1,
+    "threshold": 0.2,
     "total": 1
   },
   "model": "gpt-5.5",

@@ -19,6 +19,7 @@ from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_sour
 from phase_loop_runtime.cli import build_parser, main
 from phase_loop_runtime.events import append_event, read_events
 from phase_loop_runtime.launcher import LaunchResult
+from phase_loop_runtime.observability import append_work_unit_metric, build_terminal_summary, build_work_unit_metric
 from phase_loop_runtime.state import write_state
 from phase_loop_runtime.state_degradation import load_degradation, record_degradation
 from phase_loop_smoke_utils import append_manual_import_event, isolated_codex_home, write_skill_handoff
@@ -30,6 +31,38 @@ CODEX_ALIAS_BIN = shutil.which("codex-phase-loop") or "codex-phase-loop"
 
 
 class PhaseLoopCliTest(unittest.TestCase):
+    def test_status_surfaces_not_run_ratio_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            for index in range(50):
+                verification_status = "not_run" if index < 11 else "passed"
+                append_work_unit_metric(
+                    repo,
+                    build_work_unit_metric(
+                        repo=repo,
+                        phase="RUNNER",
+                        action="execute",
+                        launch_metadata={"executor": "codex", "selected_model": "gpt-5.5"},
+                        terminal_summary=build_terminal_summary(
+                            terminal_status="complete",
+                            terminal_blocker=None,
+                            verification_status=verification_status,
+                            next_action="done",
+                        ),
+                    ),
+                )
+
+            result = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap)],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+            self.assertIn("Verification not_run alert", result.stdout)
+            self.assertIn("11 of 50", result.stdout)
+
     def test_neutral_and_codex_alias_wrappers_share_public_help(self):
         neutral_help = subprocess.run([str(BIN), "--help"], text=True, capture_output=True, check=True)
         alias_help = subprocess.run([str(CODEX_ALIAS_BIN), "--help"], text=True, capture_output=True, check=True)

@@ -47,7 +47,14 @@ NOTIFICATION_PAYLOAD_FIELDS = (
     "tui_handoff_path",
     "run_log_path",
     "recommended_action",
+    "not_run_ratio",
+    "not_run_count",
+    "sample_size",
+    "threshold",
 )
+
+NOT_RUN_ALERT_THRESHOLD = 0.2
+NOT_RUN_ALERT_SAMPLE_SIZE = 50
 
 
 def stop_file(repo: Path) -> Path:
@@ -347,6 +354,10 @@ def read_work_unit_metrics(repo: Path, limit: int | None = None) -> list[dict[st
 
 
 def summarize_work_unit_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
+    trailing = metrics[-NOT_RUN_ALERT_SAMPLE_SIZE:]
+    not_run_count = sum(1 for metric in trailing if metric.get("verification_status") == "not_run")
+    sample_size = len(trailing)
+    not_run_ratio = round(not_run_count / sample_size, 3) if sample_size else 0.0
     summary: dict[str, Any] = {
         "total": len(metrics),
         "by_executor": {},
@@ -355,6 +366,11 @@ def summarize_work_unit_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]
         "by_terminal_status": {},
         "by_verification_status": {},
         "by_blocker_class": {},
+        "not_run_ratio": not_run_ratio,
+        "not_run_count": not_run_count,
+        "sample_size": sample_size,
+        "threshold": NOT_RUN_ALERT_THRESHOLD,
+        "not_run_alert": bool(sample_size and not_run_ratio > NOT_RUN_ALERT_THRESHOLD),
     }
     for metric in metrics:
         _bump(summary["by_executor"], metric.get("executor"))
@@ -954,6 +970,7 @@ def build_notification_payload(
 ) -> dict[str, Any]:
     terminal = state_summary.get("terminal_summary") or state_summary.get("latest_terminal_summary") or {}
     heartbeat = state_summary.get("latest_heartbeat") or {}
+    metrics_summary = monitor_status.get("metrics_summary") if isinstance(monitor_status.get("metrics_summary"), dict) else {}
     payload = {
         "timestamp": utc_now(),
         "repo": str(repo),
@@ -973,6 +990,10 @@ def build_notification_payload(
         "tui_handoff_path": state_summary.get("tui_handoff_path"),
         "run_log_path": heartbeat.get("log_path") if isinstance(heartbeat, dict) else None,
         "recommended_action": monitor_status.get("recommended_action"),
+        "not_run_ratio": metrics_summary.get("not_run_ratio"),
+        "not_run_count": metrics_summary.get("not_run_count"),
+        "sample_size": metrics_summary.get("sample_size"),
+        "threshold": metrics_summary.get("threshold"),
     }
     return {field: payload[field] for field in NOTIFICATION_PAYLOAD_FIELDS}
 

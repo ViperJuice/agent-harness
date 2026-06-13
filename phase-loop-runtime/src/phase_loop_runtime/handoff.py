@@ -598,6 +598,12 @@ def _metrics_summary_lines(summary: dict[str, object]) -> list[str]:
     if not summary.get("total"):
         return []
     lines = [f"- recent_total: `{summary.get('total')}`"]
+    if summary.get("not_run_alert"):
+        lines.append(
+            "- verification not_run ratio warning: "
+            f"`{summary.get('not_run_count')}/{summary.get('sample_size')}` "
+            f"ratio `{summary.get('not_run_ratio')}` exceeds threshold `{summary.get('threshold')}`"
+        )
     for label, key in (
         ("by_executor", "by_executor"),
         ("by_model", "by_model"),

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.handoff import tui_handoff_path, write_tui_handoff
 from phase_loop_runtime.models import DelegationBudget, DelegationRequest, LoopEvent, StateSnapshot, utc_now
-from phase_loop_runtime.observability import run_artifacts, write_run_heartbeat
+from phase_loop_runtime.observability import append_work_unit_metric, build_terminal_summary, build_work_unit_metric, run_artifacts, write_run_heartbeat
 from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
 from phase_loop_runtime.profiles import resolve_profile
 from phase_loop_runtime.provenance import event_provenance, snapshot_provenance
@@ -20,6 +20,42 @@ from phase_loop_test_utils import make_completed_roadmap_fixture, make_regenesis
 
 
 class PhaseLoopHandoffTest(unittest.TestCase):
+    def test_handoff_surfaces_not_run_ratio_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            for index in range(50):
+                verification_status = "not_run" if index < 11 else "passed"
+                append_work_unit_metric(
+                    repo,
+                    build_work_unit_metric(
+                        repo=repo,
+                        phase="RUNNER",
+                        action="execute",
+                        launch_metadata={"executor": "codex", "selected_model": "gpt-5.5"},
+                        terminal_summary=build_terminal_summary(
+                            terminal_status="complete",
+                            terminal_blocker=None,
+                            verification_status=verification_status,
+                            next_action="done",
+                        ),
+                    ),
+                )
+            snapshot = StateSnapshot(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phases={"RUNNER": "planned"},
+                current_phase="RUNNER",
+                **snapshot_provenance(roadmap),
+            )
+
+            text = write_tui_handoff(repo, roadmap, snapshot, action="status").read_text(encoding="utf-8")
+
+            self.assertIn("verification not_run ratio warning", text)
+            self.assertIn("`11/50`", text)
+            self.assertIn("threshold `0.2`", text)
+
     def test_handoff_includes_delegation_lineage(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
