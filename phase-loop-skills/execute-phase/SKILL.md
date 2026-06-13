@@ -140,6 +140,11 @@ The main thread remains responsible for integrating results, reviewing diffs, ru
 - If a release plan with `phase_loop_mutation: release_dispatch` discovers that release-affecting files must be edited before dispatch, do not call the external release command. Stop with `automation.status=blocked`, `human_required=true`, `blocker_class=dirty_worktree_conflict`, and a summary telling the operator to complete/commit the prepare work first.
 - If a phase is ready to report `complete`, verify that `git status --short` is clean for the target repo. If the repo is dirty only because of phase-owned output and required verification passed, do not report it as a human blocker; report `blocked`, `human_required=false`, `blocker_class=dirty_worktree_conflict`, and state that a loop repair turn can commit, isolate, or convert the state to a true human blocker. Use `human_required=true` only when pre-existing unrelated dirty paths overlap the required work, the repo is on the wrong branch/ref, or a true human/product/access decision is needed.
 
+
+## Runner Verification Evidence
+
+Before reporting a successful closeout, require the runner-owned verification artifact. The closeout must name `verification_artifact_path`, quote the artifact summary line, and must not report `verification_status=passed` unless that artifact exists and supports the executed work. Treat dependency-manifest install refresh and the full suite before closeout as runner-enforced expectations, not optional narrative checks. A blocked gate may be re-verdicted only by rerunning the originally specified runner check; proxy evidence requires a roadmap or plan amendment before the verdict changes.
+
 ## Closeout
 
 ### Manifest lifecycle
