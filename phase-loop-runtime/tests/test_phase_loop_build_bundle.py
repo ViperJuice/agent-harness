@@ -183,5 +183,32 @@ class PhaseLoopBuildBundleTest(unittest.TestCase):
                 )
 
 
+    def test_aux_subdirs_propagate_into_neutral_bundle(self):
+        # scripts/, references/, assets/ from a canonical source must land in the
+        # neutral bundle so `install` copytrees them to every harness root
+        # (regression: build_bundle previously emitted only SKILL.md, so e.g.
+        # scripts/validate_roadmap.py never reached installed bundles).
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            sources = self.make_sources(root)
+            skill = REQUIRED_SKILLS[0]
+            aux_file = sources["claude"] / f"claude-{skill}" / "scripts" / "validate_roadmap.py"
+            aux_file.parent.mkdir(parents=True, exist_ok=True)
+            aux_file.write_text("print('ok')\n", encoding="utf-8")
+            pyc = sources["claude"] / f"claude-{skill}" / "scripts" / "__pycache__" / "x.pyc"
+            pyc.parent.mkdir(parents=True, exist_ok=True)
+            pyc.write_text("junk", encoding="utf-8")
+
+            destination = root / "bundle"
+            build_bundle(sources, destination, dry_run=False, apply=True)
+
+            carried = destination / skill / "scripts" / "validate_roadmap.py"
+            self.assertTrue(carried.is_file(), "aux script not carried into neutral bundle")
+            self.assertEqual(carried.read_text(encoding="utf-8"), "print('ok')\n")
+            self.assertFalse(
+                (destination / skill / "scripts" / "__pycache__" / "x.pyc").exists(),
+                "__pycache__ should be excluded from the bundle",
+            )
+
 if __name__ == "__main__":
     unittest.main()

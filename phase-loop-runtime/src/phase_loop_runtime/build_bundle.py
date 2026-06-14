@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -10,6 +11,12 @@ from .skill_install import REQUIRED_SKILLS
 
 
 ACTIVE_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "opencode")
+
+# Harness-agnostic auxiliary subdirectories carried verbatim into the neutral
+# bundle so that `install` (which copytrees the whole skill dir) propagates them
+# to every harness root. Without this, the SKILL Step 8 helper
+# `scripts/validate_roadmap.py` never leaves the canonical source tree.
+AUX_SUBDIRS: tuple[str, ...] = ("scripts", "references", "assets")
 DEFAULT_SOURCES: dict[str, str] = {
     "claude": "claude-config/claude-skills",
     "codex": "codex-config/skills",
@@ -104,6 +111,32 @@ def build_bundle(
         if _record_write(base_path, neutral_base, dry_run=dry_run, apply=effective_apply, force=force):
             skills_regenerated.append(skill)
             files_written.append(base_path.as_posix())
+
+        # Carry harness-agnostic auxiliary subdirs (scripts/, references/,
+        # assets/) into the neutral bundle. Source from the first harness whose
+        # canonical dir provides each subdir (ACTIVE_HARNESSES order), since the
+        # content is shared, not harness-specific.
+        for aux in AUX_SUBDIRS:
+            source_aux = next(
+                (
+                    canonical_paths[harness].parent / aux
+                    for harness in ACTIVE_HARNESSES
+                    if (canonical_paths[harness].parent / aux).is_dir()
+                ),
+                None,
+            )
+            if source_aux is None:
+                continue
+            for src_file in sorted(source_aux.rglob("*")):
+                if not src_file.is_file():
+                    continue
+                if "__pycache__" in src_file.parts or src_file.suffix == ".pyc":
+                    continue
+                target = skill_dir / aux / src_file.relative_to(source_aux)
+                files_written.append(target.as_posix())
+                if effective_apply:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, target)
 
         for harness in ACTIVE_HARNESSES:
             readme_path = skill_dir / "_overrides" / harness / "README.md"
