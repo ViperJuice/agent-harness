@@ -372,27 +372,47 @@ def check_dag_acyclic(phases: List[Phase], errors: List[str]) -> None:
 def check_lane_count_hint(phases: List[Phase], errors: List[str]) -> None:
     """Encourage ≥2 lanes per phase for parallelism.
 
-    Accepts as sufficient any of:
+    The lane hint may appear in **Scope notes** OR an explicit **Lanes**
+    section. Accepts as sufficient any of:
       - `Single lane` stated explicitly (intentional exception)
-      - preamble / interface-only marker
-      - numeric lane count (`2 lanes`, `2–3 lanes`)
+      - preamble / interface-only marker (in **Scope notes**)
+      - numeric lane count, digits or words (`2 lanes`, `2–3 lanes`, `four lanes`)
       - partition language (`lane A`, `owns`, `disjoint`, `partition`)
+      - >=2 lane-token bullets (`X-lane-y`, `SL-N`) in either section
     """
-    numeric_re = re.compile(r"\b(\d+)(?:\s*[\-–]\s*\d+)?\s+lanes?\b", re.IGNORECASE)
+    word_num = r"(?:two|three|four|five|six|seven|eight|nine|ten)"
+    numeric_re = re.compile(
+        r"\b(?:\d+(?:\s*[\-–]\s*\d+)?|" + word_num + r"(?:\s*[\-–]\s*" + word_num + r")?)\s+lanes?\b",
+        re.IGNORECASE,
+    )
     partition_re = re.compile(
         r"\blane\s+[A-Z0-9]+\b|\bpartition|\bdisjoint|\bowns\b|\bsingle lane\b",
         re.IGNORECASE,
     )
+    lane_token_re = re.compile(r"\b[A-Z][A-Z0-9]*-lane-[A-Za-z0-9]+\b|\bSL-[A-Za-z0-9]+\b")
+    # Tolerant **Lanes** extraction: allows trailing text after the label, e.g.
+    # `**Lanes** (parallel)`, which the strict _field template rejects.
+    lanes_section_re = re.compile(
+        r"^\*\*Lanes\*\*[^\n]*\n(?P<body>(?:(?!^\*\*|^### |^## ).*\n?)+)",
+        re.MULTILINE,
+    )
     for ph in phases:
         if PREAMBLE_MARKER_RE.search(ph.scope_notes):
             continue
-        if numeric_re.search(ph.scope_notes):
+        # Honor a dedicated **Lanes** section in addition to **Scope notes**;
+        # roadmaps legitimately put lane decomposition in either place.
+        lanes_match = lanes_section_re.search(ph.raw_body)
+        haystack = ph.scope_notes + "\n" + (lanes_match.group("body") if lanes_match else "")
+        if numeric_re.search(haystack):
             continue
-        if partition_re.search(ph.scope_notes):
+        if partition_re.search(haystack):
+            continue
+        if len(set(lane_token_re.findall(haystack))) >= 2:
             continue
         errors.append(
-            f"(G) Phase {ph.number} ({ph.alias}): **Scope notes** gives no lane count or partition hint. "
-            f"Add e.g., 'decompose into N lanes', 'Single lane' with justification, or mark as preamble/interface-only."
+            f"(G) Phase {ph.number} ({ph.alias}): no lane count or partition hint in "
+            f"**Scope notes** or **Lanes**. Add e.g., 'decompose into N lanes', "
+            f"'Single lane' with justification, or mark as preamble/interface-only."
         )
 
 
