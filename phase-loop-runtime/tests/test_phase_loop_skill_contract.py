@@ -464,6 +464,64 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_claude_roadmap_validator_accepts_word_lane_counts_and_lanes_section(self):
+        script = ROOT / "claude-config" / "claude-skills" / "claude-phase-roadmap-builder" / "scripts" / "validate_roadmap.py"
+        with tempfile.TemporaryDirectory() as td:
+            roadmap = Path(td) / "phase-roadmap.md"
+            roadmap.write_text(
+                "# Roadmap\n\n"
+                "## Context\ncontext\n\n"
+                "## Top Interface-Freeze Gates\n- IF-0-A-1 — gate.\n\n"
+                "## Phases\n\n"
+                "### Phase 1 — Base (A)\n\n"
+                "**Objective**\nBase.\n\n"
+                "**Exit criteria**\n- [ ] ok.\n\n"
+                "**Scope notes**\nFour lanes covering disjoint files.\n\n"
+                "**Key files**\n- a.py\n\n"
+                "**Depends on**\n- (none)\n\n"
+                "**Produces**\n- IF-0-A-1\n\n"
+                "### Phase 2 — Build (B)\n\n"
+                "**Objective**\nBuild.\n\n"
+                "**Exit criteria**\n- [ ] ok.\n\n"
+                "**Lanes** (parallel)\n- B-lane-one: x.\n- B-lane-two: y.\n\n"
+                "**Scope notes**\nSee lanes above.\n\n"
+                "**Key files**\n- b.py\n\n"
+                "**Depends on**\n- A\n\n"
+                "**Produces**\n- (none)\n\n"
+                "## Phase Dependency DAG\nA -> B\n\n"
+                "## Execution Notes\nPlan A then B.\n\n"
+                "## Verification\npytest\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(["python3", str(script), str(roadmap)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("(G)", result.stderr)
+
+    def test_claude_roadmap_validator_flags_single_lane_non_preamble_phase(self):
+        script = ROOT / "claude-config" / "claude-skills" / "claude-phase-roadmap-builder" / "scripts" / "validate_roadmap.py"
+        with tempfile.TemporaryDirectory() as td:
+            roadmap = Path(td) / "phase-roadmap.md"
+            roadmap.write_text(
+                "# Roadmap\n\n"
+                "## Context\ncontext\n\n"
+                "## Top Interface-Freeze Gates\n- IF-0-A-1 — gate.\n\n"
+                "## Phases\n\n"
+                "### Phase 1 — Solo (A)\n\n"
+                "**Objective**\nOne thing.\n\n"
+                "**Exit criteria**\n- [ ] ok.\n\n"
+                "**Scope notes**\nJust does one thing; no parallelism.\n\n"
+                "**Key files**\n- a.py\n\n"
+                "**Depends on**\n- (none)\n\n"
+                "**Produces**\n- IF-0-A-1\n\n"
+                "## Phase Dependency DAG\nA\n\n"
+                "## Execution Notes\nPlan A.\n\n"
+                "## Verification\npytest\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(["python3", str(script), str(roadmap)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("(G)", result.stderr)
+
     def test_claude_plan_validator_rejects_prose_owned_files(self):
         script = ROOT / "claude-config" / "claude-skills" / "claude-plan-phase" / "scripts" / "validate_plan_doc.py"
         with tempfile.TemporaryDirectory() as td:
