@@ -902,6 +902,53 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
             self.assertIsNotNone(result.process_group_id)
 
+    def test_stale_child_is_torn_down_and_marked_stalled(self):
+        # A child that goes silent past quiet_blocker_seconds while still running
+        # (no terminal exit) must be cleaned up and flagged stalled, not waited on
+        # forever — even though no launch timeout is set (timeout_seconds=None).
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_path = root / "output.log"
+            heartbeat_path = root / "heartbeat.json"
+
+            result = launch(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                log_path=log_path,
+                heartbeat_path=heartbeat_path,
+                heartbeat_interval_seconds=0,
+                quiet_warning_seconds=0,
+                quiet_blocker_seconds=0,
+            )
+
+            self.assertTrue(result.stalled)
+            self.assertFalse(result.timed_out)
+            self.assertFalse(result.interrupted)
+            self.assertIsNotNone(result.cleanup_evidence)
+            self.assertEqual(result.cleanup_evidence["reason"], "stalled")
+            self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
+
+    def test_launch_contract_blocker_maps_stall_to_stalled_child_observation(self):
+        from phase_loop_runtime.runner import _launch_contract_blocker
+
+        stalled = _launch_contract_blocker(
+            LaunchResult(command=["codex"], returncode=-15, stalled=True),
+            {},
+            "codex",
+            "PROTO",
+        )
+        self.assertIsNotNone(stalled)
+        self.assertEqual(stalled["blocker_class"], "stalled_child_observation")
+        self.assertFalse(stalled["human_required"])
+
+        # A clean timeout must still map to repeated_verification_failure.
+        timed = _launch_contract_blocker(
+            LaunchResult(command=["codex"], returncode=-15, timed_out=True),
+            {},
+            "codex",
+            "PROTO",
+        )
+        self.assertEqual(timed["blocker_class"], "repeated_verification_failure")
+
     def test_repair_prompt_uses_deterministic_checklist_and_recovery_entrypoints(self):
         prompt = build_prompt(
             "repair",

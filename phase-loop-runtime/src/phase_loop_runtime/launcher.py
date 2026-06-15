@@ -172,6 +172,7 @@ class LaunchResult:
     finished_at: str | None = None
     timed_out: bool = False
     interrupted: bool = False
+    stalled: bool = False
     cleanup_evidence: dict[str, Any] | None = None
 
     @property
@@ -222,6 +223,8 @@ class LaunchResult:
             data["timed_out"] = self.timed_out
         if self.interrupted:
             data["interrupted"] = self.interrupted
+        if self.stalled:
+            data["stalled"] = self.stalled
         if self.cleanup_evidence:
             data["cleanup_evidence"] = self.cleanup_evidence
         return {key: value for key, value in data.items() if value not in (None, [])}
@@ -1317,6 +1320,7 @@ def launch(
         last_heartbeat = 0.0
         timed_out = False
         interrupted = False
+        stalled = False
         cleanup_evidence: dict[str, Any] | None = None
         while True:
             try:
@@ -1355,6 +1359,17 @@ def launch(
                             flush=True,
                         )
                     last_heartbeat = now
+                    # Act on a stale heartbeat: a child that goes silent past
+                    # quiet_blocker_seconds (quiet_level "stale" — no log update for
+                    # the blocker threshold) while still running, e.g. stalled after
+                    # logging its verification pass but before emitting
+                    # terminal-summary.json, would otherwise spin forever, because
+                    # launch_timeout_seconds is runner-managed and frequently None.
+                    # Tear down the process group and surface the stall loudly via
+                    # stalled_child_observation instead of hanging silently.
+                    if heartbeat.get("quiet_level") == "stale" and process.poll() is None:
+                        stalled = True
+                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
                 if timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
                     timed_out = True
                     cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
@@ -1410,6 +1425,7 @@ def launch(
         finished_at=_utc_now(),
         timed_out=timed_out,
         interrupted=interrupted,
+        stalled=stalled,
         cleanup_evidence=cleanup_evidence,
     )
 
@@ -2035,6 +2051,7 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         finished_at=result.finished_at,
         timed_out=result.timed_out,
         interrupted=result.interrupted,
+        stalled=result.stalled,
         cleanup_evidence=result.cleanup_evidence,
     )
 

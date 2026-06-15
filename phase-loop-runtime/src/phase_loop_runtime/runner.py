@@ -2441,6 +2441,7 @@ def run_loop(
                         "finished_at": result.finished_at,
                         "timed_out": result.timed_out,
                         "interrupted": result.interrupted,
+                        "stalled": result.stalled,
                         "cleanup_evidence": result.cleanup_evidence,
                     },
                 )
@@ -5719,7 +5720,7 @@ def _native_closeout_extraction_failure(
     if _find_json_closeout_payload(text):
         return None
     stripped = text.strip()
-    if result.timed_out or result.interrupted or stripped.count("{") > stripped.count("}"):
+    if result.timed_out or result.interrupted or result.stalled or stripped.count("{") > stripped.count("}"):
         reason = "truncated_output"
     elif "terminal_status" in stripped or "verification_status" in stripped:
         reason = "malformed_native_closeout"
@@ -5919,7 +5920,7 @@ def _repair_launch_cleared_phase(
 
 
 def _successful_missing_closeout_blocker(result: LaunchResult, blocker: dict | None) -> bool:
-    if result.returncode != 0 or result.timed_out or result.interrupted:
+    if result.returncode != 0 or result.timed_out or result.interrupted or result.stalled:
         return False
     if not blocker or blocker.get("human_required"):
         return False
@@ -5935,6 +5936,17 @@ def _launch_contract_blocker(
     executor: str,
     phase: str,
 ) -> dict[str, object] | None:
+    if result.stalled:
+        return {
+            "human_required": False,
+            "blocker_class": "stalled_child_observation",
+            "blocker_summary": (
+                f"{_executor_display_name(executor)} live launch for {phase} went silent past the quiet-blocker threshold "
+                "(no log output, child still running) and required process-group cleanup before it could emit a terminal summary."
+            ),
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
     if result.timed_out:
         return {
             "human_required": False,
