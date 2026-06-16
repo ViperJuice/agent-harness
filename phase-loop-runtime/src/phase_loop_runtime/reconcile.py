@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from .classifier import classify_all
+from .closeout_classifier import classify_unowned_path
 from .discovery import PLAN_RE, find_plan_artifact, manifest_plan_artifact, parse_automation_status, plan_matches_roadmap
 from .events import read_events
 from .models import BLOCKER_CLASSES, StateSnapshot, utc_now
@@ -708,6 +709,49 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
     return override_kinds
 
 
+def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> bool:
+    """BREAKGLASS SL-2: True when a non-stale ``closeout_allow_unowned`` operator
+    attestation is recorded for this exact phase content. Scoping mirrors
+    ``_lane_ir_override``: roadmap_sha256 + phase_sha256 (content-bound freshness) +
+    phase + roadmap path + non-empty operator_reason. A stale attestation (content
+    drifted since it was written) no longer matches and does NOT authorize a later
+    closeout.
+    """
+    roadmap_path = roadmap.resolve()
+    current_roadmap_sha = roadmap_sha256(roadmap)
+    current_phase_sha = phase_sha256(roadmap, phase)
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    plan_path = plan.resolve() if plan else None
+    for event in read_events(repo):
+        if event.get("action") != "closeout_allow_unowned":
+            continue
+        if event.get("roadmap_sha256") != current_roadmap_sha or event.get("phase_sha256") != current_phase_sha:
+            continue
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        try:
+            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
+        except OSError:
+            continue
+        if event_roadmap != roadmap_path:
+            continue
+        metadata = event.get("metadata")
+        payload = metadata.get("runner.closeout_allow_unowned_invoked") if isinstance(metadata, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if not str(payload.get("operator_reason") or "").strip():
+            continue
+        event_plan = payload.get("plan_path")
+        if event_plan and plan_path is not None:
+            try:
+                if Path(str(event_plan)).expanduser().resolve() != plan_path:
+                    continue
+            except OSError:
+                continue
+        return True
+    return False
+
+
 def _clean_planned_artifact_supersedes_blocker(repo: Path, roadmap: Path, phase: str, warnings: list[dict] | tuple[dict, ...]) -> bool:
     if not any(warning.get("source") == "event" and warning.get("status") == "planned" for warning in warnings):
         return False
@@ -786,6 +830,10 @@ def _clean_verified_dirty_closeout_recovery_supersedes_blocker(
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
             continue
+        # BREAKGLASS SL-2: operator attestation events are not closeout/terminal events;
+        # they must not shadow the verified-dirty-closeout recovery event as latest_event.
+        if event.get("action") == "closeout_allow_unowned":
+            continue
         event_phase = str(event.get("phase", "")).upper()
         status = event.get("status")
         if event_phase != phase:
@@ -809,8 +857,17 @@ def _clean_verified_dirty_closeout_recovery_supersedes_blocker(
         return None
     if dirty.get("reason") != "verified_dirty_closeout_recovery":
         return None
-    if dirty.get("unowned_dirty_paths"):
-        return None
+    unowned = tuple(dirty.get("unowned_dirty_paths") or ())
+    if unowned:
+        # BREAKGLASS SL-2 (reconcile parity): a recorded operator attestation lifts the
+        # unowned-remainder bail — EXCEPT secrets, which are never break-glassable. The
+        # repo is already clean here (the closeout committed; the top-of-function _dirty
+        # guard is the real secrets backstop since SL-1 never commits a secret, leaving
+        # the worktree dirty); the explicit secrets check is defense-in-depth.
+        if not _closeout_allow_unowned_attested(repo, roadmap, phase):
+            return None
+        if any(classify_unowned_path(p).sensitivity_class == "secrets" for p in unowned):
+            return None
     closeout_summary = _event_closeout_summary(latest_event)
     if not closeout_summary.get("closeout_commit"):
         return None
