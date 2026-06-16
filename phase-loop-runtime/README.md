@@ -2,13 +2,23 @@
 
 Vendored phase-loop runtime package for this dotfiles repository.
 
-Install locally from the repository root:
+Install the console scripts from inside the package directory:
 
 ```bash
-python3 -m pip install -e file://$PWD/vendor/phase-loop-runtime
+cd vendor/phase-loop-runtime && python3 -m pip install . --no-build-isolation
 ```
 
-The editable install exposes two console scripts:
+This is a **non-editable** install on purpose. Editable (`-e`) mode is rejected
+by the build backend under pip's build isolation, and even when forced it drops
+only a PEP 660 `.pth` finder — which the shell-out tests cannot import after they
+swap `HOME` (they extend `PYTHONPATH` with user-site, and `PYTHONPATH` entries do
+not activate `.pth` finders). A plain install copies the current source into
+site-packages, so the console scripts and the test suite both see live code.
+
+Because the install is a snapshot, **re-run the install command after editing the
+vendored source** so the `phase-loop` entry point picks up your changes.
+
+The install exposes two console scripts:
 
 - `phase-loop`
 - `codex-phase-loop`
@@ -17,7 +27,27 @@ Both commands call `phase_loop_runtime.cli:main` and keep the existing parser
 and version behavior. The canonical protocol document is bundled at
 `protocol/protocol.md`.
 
-This package is vendored for v18 and is not published to PyPI in this phase.
+This package is vendored and is not published to PyPI in this phase.
+
+## Closeout ownership gate & operator break-glass
+
+When a phase verifies green but the executor touched files outside the plan's
+declared owned-files globs, the **graduated closeout gate** classifies the
+beyond-ownership remainder (`closeout_classifier.classify_unowned_path`):
+
+- SAFE classes (`docs`, `plans`, `handoffs`, `config_nonsource`) auto-commit as a
+  recorded `soft` exception.
+- UNSAFE classes (`source`, `ci`, `secrets`, `lockfile`) block with
+  `closeout_scope_violation`.
+
+The operator escape is `phase-loop run --phase <P> --closeout-allow-unowned
+"<reason>"` (also valid on `resume`/`dry-run`; reason required and non-empty;
+`--phase` required, which bounds the override to a single phase). It folds the
+`source`/`ci`/`lockfile` remainder into the closeout commit as a recorded
+`break_glass` exception carrying the reason. **`secrets` are never
+break-glassable** — a `.env*`/`*.pem`/`secrets/**` path blocks regardless of the
+reason. An empty reason yields `operator_override_missing_reason`. See
+`protocol/protocol.md` → "Closeout Exceptions" for the full contract.
 
 ## Skills Bundle
 
