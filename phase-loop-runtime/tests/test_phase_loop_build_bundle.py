@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_test_utils import ROOT
-from phase_loop_runtime.build_bundle import ACTIVE_HARNESSES, build_bundle
+from phase_loop_runtime.build_bundle import ACTIVE_HARNESSES, DEFAULT_SOURCES, build_bundle
 from phase_loop_runtime.cli import build_parser, main
 from phase_loop_runtime.skill_install import REQUIRED_SKILLS
 
@@ -160,7 +160,11 @@ class PhaseLoopBuildBundleTest(unittest.TestCase):
     def test_real_canonical_execute_detailed_matches_committed_bundle(self):
         with tempfile.TemporaryDirectory() as td:
             destination = Path(td) / "bundle"
-            result = build_bundle(None, destination, dry_run=False, apply=True)
+            # Anchor the canonical sources to ROOT (repo root) rather than the
+            # CWD-relative DEFAULT_SOURCES fallback, so this test passes whether the
+            # suite runs from the repo root or from vendor/phase-loop-runtime.
+            sources = {harness: ROOT / rel for harness, rel in DEFAULT_SOURCES.items()}
+            result = build_bundle(sources, destination, dry_run=False, apply=True)
             self.assertNotIn("execute-detailed", [item.skill for item in result.skills_skipped])
 
             generated = sorted(
