@@ -53,6 +53,16 @@ WORK_UNIT_METRIC_SCHEMA_VERSION = "work_unit_metric.v1"
 NORMALIZED_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 UNSUPPORTED_POLICY_BEHAVIORS = ("block", "fallback", "inherit_default")
 CLOSEOUT_MODES = ("manual", "commit", "push")
+# Closeout-exception vocabulary (roadmap v40 PROTO freeze). GATE/BREAKGLASS import
+# these; they do not redefine them. Sensitivity classes drive the graduated gate:
+# SAFE classes may auto-pass as a recorded soft exception; UNSAFE classes require an
+# explicit break-glass reason. Any path that matches no class is treated as UNSAFE
+# (deny-by-default).
+SAFE_SENSITIVITY_CLASSES = ("docs", "plans", "handoffs", "config_nonsource")
+UNSAFE_SENSITIVITY_CLASSES = ("source", "ci", "secrets", "lockfile")
+SENSITIVITY_CLASSES = SAFE_SENSITIVITY_CLASSES + UNSAFE_SENSITIVITY_CLASSES
+CLOSEOUT_EXCEPTION_KINDS = ("soft", "break_glass")
+CLOSEOUT_EXCEPTIONS_METADATA_KEY = "closeout_exceptions"
 PERMISSION_POSTURES = ("explicit", "permissive", "manual", "unknown")
 SUBAGENT_POSTURES = ("native", "limited", "none", "unknown")
 CLAUDE_EXECUTION_MODES = ("solo", "subagent", "agent_team")
@@ -104,6 +114,7 @@ BLOCKER_CLASSES = (
     "contract_bug",
     "gold_record_amendment",
     "closeout_evidence_drift",
+    "closeout_scope_violation",
     "unretryable_external_outage",
     "stuck_loop",
     "merge_conflict",
@@ -267,6 +278,29 @@ class ModelSelection:
 
     def __post_init__(self) -> None:
         require_literal(self.profile, MODEL_PROFILES, "model profile")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class CloseoutException:
+    """A recorded, visible exception to the ownership gate (roadmap v40).
+
+    Frozen by PROTO so GATE (soft) and BREAKGLASS (break_glass) construct the same
+    record. Recorded under the ``closeout.<CLOSEOUT_EXCEPTIONS_METADATA_KEY>``
+    metadata key, never counted as a clean pass.
+    """
+
+    paths: tuple[str, ...]
+    exception_kind: str
+    sensitivity_class: str
+    reason: str | None = None
+    verification_status: str = "passed"
+
+    def __post_init__(self) -> None:
+        require_literal(self.exception_kind, CLOSEOUT_EXCEPTION_KINDS, "closeout exception kind")
+        require_literal(self.sensitivity_class, SENSITIVITY_CLASSES, "sensitivity class")
 
     def to_json(self) -> dict[str, Any]:
         return clean_dict(asdict(self))

@@ -2294,3 +2294,59 @@ The soak closeout records `lane_id`, `wave_id`, `worktree_path`,
 paths, and redacted evidence refs. Governed Pipeline still owns scheduling and
 closeout ingest; Greenfield still owns authority schemas and contract-pack
 expectations.
+
+## Closeout Exceptions (Graduated Ownership Gate)
+
+Roadmap v40 introduces a **graduated** closeout gate for the case where a phase
+verifies green (`verification_status == "passed"`) but the executor modified
+files outside the plan's declared owned-files globs. Instead of an unconditional
+hard block, beyond-ownership paths are classified and either auto-committed as a
+recorded soft exception or held for an explicit operator break-glass. This
+section freezes the shared vocabulary (PROTO); GATE and BREAKGLASS implement the
+behavior. The frozen constants live in
+`vendor/phase-loop-runtime/src/phase_loop_runtime/models.py` and are the single
+source of truth — this prose and the four harness `runtime-state.md` mirrors
+restate them and must agree.
+
+### Sensitivity taxonomy (`SENSITIVITY_CLASSES`)
+
+Every unowned dirty path is mapped to one sensitivity class:
+
+- **SAFE** (`SAFE_SENSITIVITY_CLASSES`): `docs`, `plans`, `handoffs`,
+  `config_nonsource`. Low blast radius; may auto-pass as a soft exception when
+  verification passed.
+- **UNSAFE** (`UNSAFE_SENSITIVITY_CLASSES`): `source`, `ci`, `secrets`,
+  `lockfile`. Always blocks unless the operator supplies an explicit break-glass
+  reason.
+
+**Deny-by-default rule:** any path that matches **no** SAFE class is treated as
+UNSAFE. An unmatched/unknown path is never auto-passed. This is the safety
+substitute for separation of duties in a single-operator fleet: the classifier,
+not a human second-signature, decides what may auto-commit.
+
+### Closeout-exception record (`CloseoutException`)
+
+A frozen dataclass with exactly these fields:
+
+| Field | Meaning |
+|---|---|
+| `paths` | the beyond-ownership paths this exception covers |
+| `exception_kind` | a `CLOSEOUT_EXCEPTION_KINDS` member: `soft` or `break_glass` |
+| `sensitivity_class` | the `SENSITIVITY_CLASSES` member that classified the paths |
+| `reason` | operator-supplied break-glass reason (`None` for `soft`) |
+| `verification_status` | always `passed` — unverified work is never excepted |
+
+- `soft` — all unowned paths were SAFE; the gate auto-commits and records the
+  exception. No blocker.
+- `break_glass` — unowned paths included an UNSAFE class; commit only under an
+  explicit operator reason. An empty/missing reason is the
+  `operator_override_missing_reason` blocker. A verified-but-unowned UNSAFE path
+  with no override is the `closeout_scope_violation` blocker.
+
+### Visibility
+
+Every exception is recorded in closeout metadata under the
+`closeout.closeout_exceptions` key (`CLOSEOUT_EXCEPTIONS_METADATA_KEY`) and in
+the event ledger, with its own tally — never silently folded into a clean-pass
+count. `soft` and `break_glass` exceptions share the tally, distinguished by
+`exception_kind`.
