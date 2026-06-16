@@ -75,6 +75,70 @@ def test_closeout_autoclassifies_when_phase_owned_dirty_paths_empty_but_dirty_pa
     assert event.metadata["closeout"].get("closeout_dirty_paths_autoclassified") == ["README.md"]
 
 
+PARTIAL_PLAN = """# PARTIAL
+
+## Lanes
+
+### SL-0 - Owned
+- **Owned files**: `owned_a.py`, `owned_b.py`
+- **Interfaces provided**: a
+- **Interfaces consumed**: none
+"""
+
+
+def test_closeout_partial_classify_commits_owned_subset_and_blocks_on_unowned_remainder(tmp_path):
+    # OWNFIX #36-item1: reproduced from the real ai-stack-v2 INVENTORY run, where the
+    # executor emitted empty phase_owned_dirty_paths and one of N dirty paths
+    # (a test the plan under-enumerated) was unowned. The old all-or-nothing fallback
+    # blocked ALL verified-owned paths. The fix: auto-classify and commit the owned
+    # subset, then surface the genuinely-unowned remainder via closeout_scope_violation
+    # (human_required) so an autonomous loop stops cleanly instead of stranding work.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "owned_b.py").write_text("b\n", encoding="utf-8")
+    (repo / "stray_test.py").write_text("not declared by the plan\n", encoding="utf-8")
+    head_before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"},
+        current_phase="PARTIAL",
+        phase_owned_dirty=False,
+        phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "owned_b.py", "stray_test.py"),
+        closeout_terminal_status="complete",
+        **snapshot_provenance(roadmap),
+    )
+
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    # Owned subset was committed (verified work preserved, no manual intervention).
+    head_after = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert head_after != head_before, "expected the owned subset to be committed"
+    assert event.metadata["closeout"].get("closeout_dirty_paths_autoclassified") == ["owned_a.py", "owned_b.py"]
+    committed = _git(repo, "show", "--stat", "--name-only", "--format=", "HEAD").stdout
+    assert "owned_a.py" in committed and "owned_b.py" in committed
+    assert "stray_test.py" not in committed
+    # The genuinely-unowned remainder is surfaced loudly, not stranded.
+    assert status == "blocked"
+    assert event.blocker["blocker_class"] == "closeout_scope_violation"
+    assert event.blocker["human_required"] is True
+    assert "stray_test.py" in event.blocker["blocker_summary"]
+    assert event.metadata["closeout"]["unowned_dirty_paths"] == ["stray_test.py"]
+    # Verification passed; the block is scope, not verification.
+    assert event.metadata["closeout"]["verification_status"] == "passed"
+    # stray_test.py is still dirty (left for the operator to declare / break-glass).
+    assert "stray_test.py" in _git(repo, "status", "--short").stdout
+
+
 def test_closeout_still_blocks_when_dirty_paths_are_not_plan_owned(tmp_path):
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"

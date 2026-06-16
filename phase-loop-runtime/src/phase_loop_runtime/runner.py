@@ -6465,23 +6465,37 @@ def _perform_phase_closeout(
     # proceed. Works around codex emitting empty phase_owned_dirty_paths
     # despite valid dirty_paths. Does NOT bypass the blocker if any dirty
     # path is NOT owned by the plan.
+    unowned_remainder: tuple[str, ...] = ()
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
             ownership_for_fallback = parse_plan_ownership(repo, roadmap, plan_for_fallback)
-            if ownership_for_fallback.valid and all(
-                ownership_for_fallback.matches_dirty_output(p) for p in snapshot.dirty_paths
-            ):
-                reclassified_paths = tuple(
-                    dict.fromkeys((*snapshot.dirty_paths, *snapshot.previous_phase_owned_paths))
+            if ownership_for_fallback.valid:
+                # OWNFIX #36-item1: partial-classify. The de6ce6f fallback was
+                # all-or-nothing — a SINGLE unowned dirty path (e.g. a test the plan
+                # under-enumerated, as reproduced from the real ai-stack-v2 INVENTORY
+                # run) defeated `all(...)` and blocked every verified-owned path.
+                # Instead, auto-classify the matching subset (so verified owned work
+                # commits without manual intervention) and carry the genuinely-unowned
+                # remainder forward to a loud, human-required scope blocker below.
+                matched = tuple(
+                    p for p in snapshot.dirty_paths if ownership_for_fallback.matches_dirty_output(p)
                 )
-                closeout_dirty_paths = reclassified_paths
-                snapshot = replace(
-                    snapshot,
-                    phase_owned_dirty=True,
-                    phase_owned_dirty_paths=tuple(snapshot.dirty_paths),
-                )
-                metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(snapshot.dirty_paths)
+                if matched:
+                    matched_set = set(matched)
+                    unowned_remainder = tuple(p for p in snapshot.dirty_paths if p not in matched_set)
+                    reclassified_paths = tuple(
+                        dict.fromkeys((*matched, *snapshot.previous_phase_owned_paths))
+                    )
+                    closeout_dirty_paths = reclassified_paths
+                    snapshot = replace(
+                        snapshot,
+                        phase_owned_dirty=True,
+                        phase_owned_dirty_paths=matched,
+                    )
+                    metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(matched)
+                    if unowned_remainder:
+                        metadata["closeout"]["closeout_unowned_remainder"] = list(unowned_remainder)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
         # OWNFIX #17: an invalid Lane IR is the real reason classification failed and
@@ -6614,6 +6628,35 @@ def _perform_phase_closeout(
                         "closeout_refusal_reason": decision.get("refusal_reason"),
                     }
                 )
+    # OWNFIX #36-item1: if the owned subset committed cleanly but a genuinely-unowned
+    # remainder exists, surface it loudly AFTER preserving the owned work. Only fires on
+    # commit success (status complete/planned) so it never overrides an earlier block
+    # (commit failure, audit drift, lane-IR). The remainder cannot be auto-resolved
+    # until the plan declares it or GATE's classifier lands, so it is human_required —
+    # the autonomous loop then stops cleanly (runner.py ~1438) instead of spinning.
+    # Verification genuinely passed; this block is about scope, not verification.
+    if unowned_remainder and status in ("complete", "planned"):
+        status = "blocked"
+        blocker = {
+            "human_required": True,
+            "blocker_class": "closeout_scope_violation",
+            "blocker_summary": (
+                f"Committed {len(closeout_dirty_paths)} phase-owned path(s); "
+                f"{len(unowned_remainder)} verified dirty path(s) are outside the plan's "
+                f"owned files and need an ownership declaration or break-glass: "
+                f"{', '.join(unowned_remainder)}"
+            ),
+            "required_human_inputs": (
+                "Declare the path(s) in the phase plan's owned files, or rerun closeout with break-glass.",
+            ),
+            "access_attempts": (),
+        }
+        metadata["closeout"].update(
+            {
+                "closeout_refusal_reason": "unowned_dirty_remainder",
+                "unowned_dirty_paths": list(unowned_remainder),
+            }
+        )
     event = LoopEvent(
         timestamp=utc_now(),
         repo=str(repo),
