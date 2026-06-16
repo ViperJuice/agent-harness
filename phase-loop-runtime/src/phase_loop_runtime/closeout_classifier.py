@@ -52,7 +52,9 @@ _LOCKFILE_NAMES = frozenset(
         "requirements.txt",
     }
 )
-_DOC_SUFFIXES = frozenset({".md", ".rst", ".txt"})
+# Bare suffix → docs only for unambiguous documentation formats. A `.txt` is NOT
+# auto-docs (e.g. src/foo.txt is source-adjacent); it is docs only under docs/.
+_DOC_SUFFIXES = frozenset({".md", ".rst"})
 
 
 def _verdict(sensitivity_class: str) -> SensitivityVerdict:

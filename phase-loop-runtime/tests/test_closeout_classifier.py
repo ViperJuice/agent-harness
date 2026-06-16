@@ -38,6 +38,12 @@ class CloseoutClassifierTest(unittest.TestCase):
             self.assertFalse(v.safe, path)
             self.assertIn(v.sensitivity_class, m.UNSAFE_SENSITIVITY_CLASSES, path)
 
+    def test_txt_is_docs_only_under_docs_dir(self):
+        # A bare .txt is NOT auto-docs (source-adjacent text); only docs are SAFE.
+        self.assertFalse(classify_unowned_path("src/foreign.txt").safe)
+        self.assertEqual(classify_unowned_path("docs/notes.txt").sensitivity_class, "docs")
+        self.assertTrue(classify_unowned_path("docs/notes.txt").safe)
+
     def test_tests_are_unsafe(self):
         for path in ("tests/test_x.py", "tests/queue/test_db_migrations.py", "pkg/__tests__/a.test.ts", "test_top.py"):
             v = classify_unowned_path(path)
