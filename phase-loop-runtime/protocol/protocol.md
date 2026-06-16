@@ -2374,3 +2374,42 @@ owned status via structural sibling matching upstream (`_runtime_relaxation_evid
 `expanded_dirty_ownership_matches`). A test path reaching the classifier failed that
 matching, so it maps to `source` (UNSAFE) and is never auto-committed — operator
 break-glass (BREAKGLASS), not auto-commit, is the escape.
+
+### Operator break-glass (BREAKGLASS)
+
+The escape for the `closeout_scope_violation` block is the
+`--closeout-allow-unowned <reason>` CLI flag (valid on `run`/`resume`/`dry-run`
+only; requires a non-empty reason, rejected pre-`run_loop`; requires `--phase`,
+which bounds the blast radius to a single phase). It threads
+`allow_unowned_reason` through `run_loop` into `_perform_phase_closeout`, where
+the UNSAFE remainder is folded into the same closeout commit as `break_glass`
+`CloseoutException`s carrying the reason — the remainder is emptied, so the
+post-commit scope block does not fire. No amend, no second commit.
+
+- **`secrets` are NEVER break-glassable.** A path whose `classify_unowned_path`
+  class is `secrets` (`.env*`, `*.pem`, `secrets/**`) is held back regardless of
+  the reason and still blocks with `closeout_scope_violation` — a one-line reason
+  must not commit a secret into history (irreversible). Break-glass folds only
+  `source`/`ci`/`lockfile`.
+- **Empty reason.** The CLI rejects a blank reason before `run_loop`. For
+  programmatic callers, an explicitly-empty reason reaching closeout emits the
+  `operator_override_missing_reason` blocker and does NOT commit the unsafe paths.
+- **Audit / bounded blast radius.** Every break-glass commit records a
+  `break_glass` `CloseoutException` (exact paths + reason, in the shared tally)
+  AND a phase-scoped `closeout_allow_unowned` attestation event in the ledger.
+  The audit always names what was punched through and why.
+
+### Reconcile parity (BREAKGLASS SL-2)
+
+`reconcile` reads the `closeout_allow_unowned` attestation event to lift the
+`unowned_dirty_paths` bail in `_clean_verified_dirty_closeout_recovery_supersedes_blocker`
+(the **non-human** verified-dirty-closeout-recovery path) — so a phase whose
+verified dirty closeout already committed but recorded an unowned remainder
+recovers under recorded operator attestation. This is *parity*, not the primary
+escape: a live human-required `closeout_scope_violation` is broken through by the
+`--closeout-allow-unowned` rerun (which commits), not by reconcile. Attestation
+matching mirrors `_lane_ir_override`: `roadmap_sha256` + `phase_sha256` (content
+freshness) + phase + non-empty reason. A **stale** attestation (content drifted
+since it was written) no longer matches and does not authorize a later closeout;
+a recorded `secrets`-class remainder never recovers (the clean-worktree guard is
+the real backstop — SL-1 never commits a secret, so the worktree stays dirty).
