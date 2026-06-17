@@ -139,5 +139,88 @@ class PhaseLoopRoadmapValidateTest(unittest.TestCase):
                     json.loads(stdout.getvalue())
 
 
+_VALID_ROADMAP = """# Test Roadmap
+
+## Context
+context.
+
+## Phases
+
+### Phase 1 — Foundation (FOUND)
+**Objective**
+Do the thing.
+
+**Exit criteria**
+- [ ] it works
+
+**Scope notes**
+Decompose into 2 lanes.
+
+**Key files**
+- src/a.py
+
+**Depends on**
+- (none)
+
+**Produces**
+- IF-0-FOUND-1
+
+## Top Interface-Freeze Gates
+- IF-0-FOUND-1
+
+## Phase Dependency DAG
+FOUND
+
+## Execution Notes
+notes.
+
+## Verification
+verify.
+"""
+
+
+class RoadmapLintModuleTest(unittest.TestCase):
+    """The full roadmap lint now lives in the always-installed runtime
+    (phase_loop_runtime.roadmap_lint), exposed as `phase-loop validate-roadmap`.
+    The skill-bundle script is a thin shim over it (A8)."""
+
+    def test_lint_accepts_a_clean_roadmap(self):
+        from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+        self.assertEqual(lint_roadmap_text(_VALID_ROADMAP), [])
+
+    def test_lint_flags_missing_alias_headings_gates_and_root(self):
+        from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+        errors = lint_roadmap_text("# Bad\n\n## Phases\n\n### Phase 1 — No Alias\n")
+        codes = " ".join(errors)
+        self.assertIn("(A)", codes)  # missing required headings
+        self.assertIn("(B)", codes)  # invalid phase heading / no phases
+        self.assertIn("(E)", codes)  # no root phases
+
+    def test_lint_detects_dependency_cycle(self):
+        from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+        cyclic = _VALID_ROADMAP.replace("- (none)", "- LATER") + (
+            "\n### Phase 2 — Later (LATER)\n"
+            "**Objective**\no\n\n**Exit criteria**\n- [ ] x\n\n**Scope notes**\n2 lanes\n\n"
+            "**Key files**\n- src/b.py\n\n**Depends on**\n- FOUND\n\n**Produces**\n- IF-0-LATER-1\n"
+        )
+        # FOUND now depends on LATER and LATER depends on FOUND → cycle.
+        errors = lint_roadmap_text(cyclic)
+        self.assertTrue(any(e.startswith("(F)") for e in errors), errors)
+
+    def test_validate_roadmap_cli_subcommand(self):
+        with tempfile.TemporaryDirectory() as td:
+            good = Path(td) / "good.md"
+            good.write_text(_VALID_ROADMAP, encoding="utf-8")
+            bad = Path(td) / "bad.md"
+            bad.write_text("# Bad\n\n## Phases\n\n### Phase 1 — No Alias\n", encoding="utf-8")
+
+            self.assertEqual(main(["validate-roadmap", str(good)]), 0)
+            self.assertEqual(main(["validate-roadmap", "--roadmap", str(good)]), 0)
+            self.assertEqual(main(["validate-roadmap", str(bad)]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

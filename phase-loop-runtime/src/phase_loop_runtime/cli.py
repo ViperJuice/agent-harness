@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "hotfix", "evidence-audit", "closeout-drift-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "hotfix", "evidence-audit", "closeout-drift-audit", "validate-roadmap"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -195,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--destination", default="vendor/phase-loop-skills")
             sub.add_argument("--apply", action="store_true", help="Write generated bundle files. Without --apply, this command is read-only.")
             sub.add_argument("--force", action="store_true", help="Rewrite generated outputs even when content is unchanged.")
+        if name == "validate-roadmap":
+            sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints)."
+            sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -354,6 +357,16 @@ def main(argv: list[str] | None = None) -> int:
     if command == "version":
         print(f"phase-loop {__version__}")
         return 0
+    if command == "validate-roadmap":
+        from . import roadmap_lint
+
+        candidate = getattr(args, "roadmap_path", None) or args.roadmap
+        if not candidate:
+            repo = resolve_repo(args.repo or ".")
+            candidate = select_roadmap(repo, None)
+        if not candidate:
+            parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
+        return roadmap_lint.main(["validate-roadmap", str(candidate)])
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
         if args.roadmap:
