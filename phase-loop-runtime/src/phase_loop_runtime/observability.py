@@ -828,16 +828,30 @@ def apply_child_terminal_summary_overlay(
     extraction_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     updated = dict(summary)
+    # #38: the runner's verdict is authoritative. When the runner has already rejected
+    # the child's closeout (it set a blocking terminal_status / terminal_blocker — e.g.
+    # a produced_if_gates contract_bug), the child's self-reported BAML closeout must
+    # NOT be overlaid back onto terminal_status / verification_status / terminal_blocker.
+    # Otherwise the persisted terminal-summary.json surfaces "complete"/"passed" to the
+    # next execute run and the executor reconcile-skips instead of redoing the work. The
+    # child's claim remains in the event ledger (child_automation) for forensics.
+    # (Narrowly scoped to runner *rejections*; planned/executed downgrade siblings are
+    # not yet covered — see issue #38.)
+    runner_blocker = summary.get("terminal_blocker")
+    runner_blocked = summary.get("terminal_status") == "blocked" or (
+        isinstance(runner_blocker, dict) and runner_blocker.get("blocker_class")
+    )
     if isinstance(child_baml_closeout, dict):
-        terminal_status = _nonempty_text(child_baml_closeout.get("terminal_status"))
-        if terminal_status is not None:
-            updated["terminal_status"] = terminal_status
-        verification_status = _nonempty_text(child_baml_closeout.get("verification_status"))
-        if verification_status is not None:
-            updated["verification_status"] = verification_status
-        next_action = _nonempty_text(child_baml_closeout.get("next_action"))
-        if next_action is not None:
-            updated["next_action"] = next_action
+        if not runner_blocked:
+            terminal_status = _nonempty_text(child_baml_closeout.get("terminal_status"))
+            if terminal_status is not None:
+                updated["terminal_status"] = terminal_status
+            verification_status = _nonempty_text(child_baml_closeout.get("verification_status"))
+            if verification_status is not None:
+                updated["verification_status"] = verification_status
+            next_action = _nonempty_text(child_baml_closeout.get("next_action"))
+            if next_action is not None:
+                updated["next_action"] = next_action
         produced = _string_list(child_baml_closeout.get("produced_if_gates"))
         if produced is not None:
             updated["produced_if_gates"] = produced
@@ -845,20 +859,21 @@ def apply_child_terminal_summary_overlay(
         if dirty_paths is not None and not updated.get("dirty_paths"):
             updated["dirty_paths"] = dirty_paths
 
-        blocker_class = _optional_child_literal(child_baml_closeout.get("blocker_class"))
-        blocker_summary = _optional_child_literal(child_baml_closeout.get("blocker_summary"))
-        human_required = bool(child_baml_closeout.get("human_required", False))
-        required_inputs = _string_list(child_baml_closeout.get("required_human_inputs")) or []
-        if blocker_class or blocker_summary or human_required:
-            updated["terminal_blocker"] = {
-                "human_required": human_required,
-                "blocker_class": blocker_class,
-                "blocker_summary": blocker_summary,
-                "required_human_inputs": required_inputs,
-                "access_attempts": (),
-            }
-        elif updated.get("terminal_blocker") is None:
-            updated["terminal_blocker"] = None
+        if not runner_blocked:
+            blocker_class = _optional_child_literal(child_baml_closeout.get("blocker_class"))
+            blocker_summary = _optional_child_literal(child_baml_closeout.get("blocker_summary"))
+            human_required = bool(child_baml_closeout.get("human_required", False))
+            required_inputs = _string_list(child_baml_closeout.get("required_human_inputs")) or []
+            if blocker_class or blocker_summary or human_required:
+                updated["terminal_blocker"] = {
+                    "human_required": human_required,
+                    "blocker_class": blocker_class,
+                    "blocker_summary": blocker_summary,
+                    "required_human_inputs": required_inputs,
+                    "access_attempts": (),
+                }
+            elif updated.get("terminal_blocker") is None:
+                updated["terminal_blocker"] = None
 
     sanitized_failure = _sanitize_extraction_failure(extraction_failure)
     if sanitized_failure is not None:

@@ -32,6 +32,40 @@ class PhaseLoopRunnerCloseoutValidationTest(unittest.TestCase):
             self.assertEqual(snapshot.blocker_class, "contract_bug")
             self.assertIn("zero produced_if_gates", snapshot.blocker_summary)
 
+    def test_rejected_closeout_does_not_persist_complete_terminal_summary(self):
+        # #38: a rejected closeout (here produced_if_gates contract_bug) must not leave
+        # a terminal-summary.json claiming complete/passed — the next execute run reads
+        # it as authoritative and reconcile-skips instead of redoing the work. The
+        # runner's blocking verdict must win on disk, with the blocker as the marker.
+        with tempfile.TemporaryDirectory() as td:
+            repo, roadmap = self._native_fixture(Path(td))
+
+            def fake_launch(spec, **_kwargs):
+                payload = {
+                    "terminal_status": "complete",
+                    "verification_status": "passed",
+                    "dirty_paths": [],
+                    "produced_if_gates": ["IF-0-NATIVE-1", "IF-0-EXTRA-1"],
+                }
+                return LaunchResult(command=spec.command, returncode=0, output=json.dumps(payload), executor=spec.executor)
+
+            with patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})), patch(
+                "phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch
+            ):
+                snapshot, _results = run_loop(repo, roadmap, phase="RUNNER", executor="codex")
+
+            self.assertEqual(snapshot.phases["RUNNER"], "blocked")
+            self.assertEqual(snapshot.blocker_class, "contract_bug")
+
+            terminal_files = sorted(repo.rglob("terminal-summary.json"))
+            self.assertTrue(terminal_files, "expected a persisted terminal-summary.json")
+            for ts in terminal_files:
+                data = json.loads(ts.read_text(encoding="utf-8"))
+                self.assertNotEqual(data.get("terminal_status"), "complete", ts)
+                self.assertNotEqual(data.get("verification_status"), "passed", ts)
+                self.assertEqual(data.get("terminal_status"), "blocked", ts)
+                self.assertEqual((data.get("terminal_blocker") or {}).get("blocker_class"), "contract_bug", ts)
+
     def test_complete_with_matching_produced_gates_advances(self):
         with tempfile.TemporaryDirectory() as td:
             repo, roadmap = self._native_fixture(Path(td))

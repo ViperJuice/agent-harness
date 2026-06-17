@@ -70,6 +70,63 @@ class PhaseLoopWorkUnitObservabilityTest(unittest.TestCase):
         self.assertEqual(summary["produced_if_gates"], ["IF-0-RECONCILESTATEAUDIT-1"])
         self.assertIsNone(summary["terminal_blocker"])
 
+    def test_runner_block_is_authoritative_over_child_complete_claim(self):
+        # #38: when the runner has rejected the child's closeout (here a
+        # produced_if_gates contract_bug), the child's self-reported "complete" must
+        # NOT be overlaid back onto the persisted terminal-summary. Otherwise the file
+        # surfaces complete/passed to the next run and the executor reconcile-skips
+        # instead of redoing the work.
+        runner_blocker = {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": "completed closeout produced_if_gates did not match the active phase plan",
+            "required_human_inputs": [],
+            "access_attempts": (),
+        }
+        summary = build_terminal_summary(
+            terminal_status="blocked",
+            terminal_blocker=runner_blocker,
+            verification_status="blocked",
+            next_action=runner_blocker["blocker_summary"],
+            child_baml_closeout={
+                "terminal_status": "complete",
+                "verification_status": "passed",
+                "produced_if_gates": ["IF-0-NATIVE-1", "IF-0-EXTRA-1"],
+                "dirty_paths": [],
+                "blocker_class": "none",
+                "blocker_summary": "none",
+                "human_required": False,
+                "required_human_inputs": [],
+            },
+        )
+
+        # runner verdict wins
+        self.assertEqual(summary["terminal_status"], "blocked")
+        self.assertEqual(summary["verification_status"], "blocked")
+        self.assertEqual(summary["terminal_blocker"]["blocker_class"], "contract_bug")
+
+    def test_child_overlay_still_applies_when_runner_not_blocked(self):
+        # Guard is scoped to runner rejections — a non-blocked runner verdict still
+        # mirrors the child's closeout (no regression to the BAML-mirror behavior).
+        summary = build_terminal_summary(
+            terminal_status="executing",
+            terminal_blocker=None,
+            verification_status="not_run",
+            next_action="Await runner closeout.",
+            child_baml_closeout={
+                "terminal_status": "complete",
+                "verification_status": "passed",
+                "produced_if_gates": ["IF-0-NATIVE-1"],
+                "dirty_paths": [],
+                "blocker_class": "none",
+                "blocker_summary": "none",
+                "human_required": False,
+                "required_human_inputs": [],
+            },
+        )
+        self.assertEqual(summary["terminal_status"], "complete")
+        self.assertEqual(summary["verification_status"], "passed")
+
     def test_terminal_summary_preserves_existing_shape_without_child_closeout(self):
         summary = build_terminal_summary(
             terminal_status="executed",
