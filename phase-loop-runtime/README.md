@@ -66,7 +66,9 @@ runtime — no skill-bundle script required:
 
 ```bash
 phase-loop validate-roadmap specs/phase-plans-v1.md
-# equivalent module form:
+# module form — only when phase_loop_runtime is on the ACTIVE python's path
+# (e.g. a pip install into your env); does NOT resolve under `uv tool install`
+# isolation, where you should use the console command above:
 python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
 ```
 
