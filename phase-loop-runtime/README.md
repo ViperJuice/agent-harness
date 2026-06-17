@@ -49,6 +49,31 @@ break-glassable** — a `.env*`/`*.pem`/`secrets/**` path blocks regardless of t
 reason. An empty reason yields `operator_override_missing_reason`. See
 `protocol/protocol.md` → "Closeout Exceptions" for the full contract.
 
+### Closeout verdict is runner-authoritative (issue #38)
+
+When the runner rejects a child's closeout (e.g. a `produced_if_gates`
+`contract_bug`), the persisted `terminal-summary.json` reflects the runner's
+**blocking** verdict — the child's self-reported `complete`/`passed` is not
+overlaid back onto it. This prevents the next run from reading a stale "complete"
+summary and reconcile-skipping the work. The child's claim is preserved in the
+event ledger (`child_automation`) for forensics.
+
+## Roadmap validation
+
+Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic
+dependency DAG, IF-gate reconciliation, lane-count hints) via the always-installed
+runtime — no skill-bundle script required:
+
+```bash
+phase-loop validate-roadmap specs/phase-plans-v1.md
+# equivalent module form:
+python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
+```
+
+Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth). The
+skill bundle's `phase-roadmap-builder/scripts/validate_roadmap.py` is a thin shim
+over it. Exit 0 = clean; non-zero prints each issue on stderr.
+
 ## Skills Bundle
 
 The vendored runtime also exposes the harness-neutral Skills Bundle installer.
