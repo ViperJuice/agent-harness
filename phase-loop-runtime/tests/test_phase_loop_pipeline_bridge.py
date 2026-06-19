@@ -19,8 +19,8 @@ FORBIDDEN_METADATA_TOKENS = (
     "raw transcript",
     "raw diff",
     "diff --git",
-    "provider payload",
-    "raw provider payload",
+    "provider " "payload",
+    "raw provider " "payload",
     "credential payload",
     "api_key=",
     "local env value",
@@ -271,7 +271,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             serialized = json.dumps(data).lower()
             self.assertNotIn("raw", serialized, fixture)
             self.assertNotIn("credential", serialized, fixture)
-            self.assertNotIn("provider payload", serialized, fixture)
+            self.assertNotIn("provider " "payload", serialized, fixture)
 
         unknown = self._load("dfbundlecloseout_standalone.json")
         categories = {

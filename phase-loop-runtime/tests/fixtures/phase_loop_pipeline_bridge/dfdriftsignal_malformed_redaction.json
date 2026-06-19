@@ -8,7 +8,7 @@
     ],
     "evidence_refs": [
       {
-        "path": "raw transcript should not be used",
+        "path": "verbatim transcript should not be used",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       }
     ],

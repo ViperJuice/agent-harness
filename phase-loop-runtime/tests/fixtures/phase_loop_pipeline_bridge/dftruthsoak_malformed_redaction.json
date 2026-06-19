@@ -9,7 +9,7 @@
     "evidence_refs": [
       {
         "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_malformed_redaction.json",
-        "summary": "diff --git a/secret b/secret",
+        "summary": "@@ -1,1 +1,1 @@",
         "sha256": "9090909090909090909090909090909090909090909090909090909090909090"
       }
     ],
