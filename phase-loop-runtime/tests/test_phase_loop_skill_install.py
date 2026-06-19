@@ -53,6 +53,18 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
             self.assertTrue(first.source.endswith(first.skill_name))
             self.assertTrue(first.destination.endswith(first.installed_name))
 
+    def test_dry_run_covers_codex_and_non_codex_required_workflow_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for harness in ("codex", "claude"):
+                dest = root / f"{harness}-skills"
+                actions = install_skills(harness=harness, source=BUNDLE, destination=dest, apply=False)
+                self.assertEqual(
+                    tuple(action.installed_name for action in actions),
+                    tuple(f"{harness}-{skill}" for skill in REQUIRED_SKILLS),
+                )
+                self.assertFalse(dest.exists())
+
     def test_symlink_and_copy_installs_are_idempotent_for_each_harness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

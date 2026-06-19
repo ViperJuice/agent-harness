@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 import subprocess
 import tempfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -79,7 +80,7 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
 
     def test_cli_version_flag(self):
         result = subprocess.run(
-            ["phase-loop", "--version"],
+            [sys.executable, "-m", "phase_loop_runtime.cli", "--version"],
             capture_output=True,
             text=True,
             check=True,
@@ -88,7 +89,7 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
 
     def test_cli_version_command(self):
         result = subprocess.run(
-            ["phase-loop", "version"],
+            [sys.executable, "-m", "phase_loop_runtime.cli", "version"],
             capture_output=True,
             text=True,
             check=True,
@@ -97,13 +98,18 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
 
     def test_cli_help_is_neutral(self):
         result = subprocess.run(
-            ["phase-loop", "--help"],
+            [sys.executable, "-m", "phase_loop_runtime.cli", "--help"],
             capture_output=True,
             text=True,
             check=True,
         )
         self.assertIn("Neutral phase-loop runner", result.stdout)
         self.assertIn("codex-phase-loop remains a Codex bridge alias", result.stdout)
+
+    def test_pyproject_console_scripts_share_cli_main(self):
+        pyproject = (ROOT / "vendor" / "phase-loop-runtime" / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('phase-loop = "phase_loop_runtime.cli:main"', pyproject)
+        self.assertIn('codex-phase-loop = "phase_loop_runtime.cli:main"', pyproject)
 
     def test_runtime_boundary_locks_future_extraction_identity(self):
         doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
@@ -112,6 +118,32 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
         self.assertIn("neutral `phase-loop` command", doc)
         self.assertIn("backward-compatible `codex-phase-loop`", doc)
         self.assertIn("same parser", doc)
+
+    def test_runtime_boundary_cites_substrate_without_dotfiles_root_dependency(self):
+        doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        flat = " ".join(doc.split())
+        for token in (
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "IF-0-SUBSTRATE-1",
+            "canonical `.phase-loop/**` state",
+            "without governed-pipeline",
+            "without governed-pipeline, `.pipeline/**`, Portal, Greenfield, a source bundle, credentials, Host bootstrap",
+            "MCP gateway setup",
+            "provider-supplied payloads",
+            "local environment contents",
+            "Governed Pipeline owns adoption",
+            "source-bundle emission",
+            "closeout ingest",
+            "Portal projection",
+        ):
+            self.assertIn(token, flat)
+        for token in (
+            "requires the full dotfiles",
+            "client dependency on the dotfiles root",
+            "must install owner dotfiles",
+            "source shell profile before use",
+        ):
+            self.assertNotIn(token, flat)
 
 if __name__ == "__main__":
     unittest.main()

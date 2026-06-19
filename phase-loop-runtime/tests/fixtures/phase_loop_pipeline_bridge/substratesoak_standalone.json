@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "artifact_paths": {
-      "terminal": ".phase-loop/runs/dfdriftsignal/dfdriftsignal_complete-terminal-summary.json"
+      "terminal": ".phase-loop/runs/substratesoak/standalone-terminal-summary.json"
     },
     "changed_paths": [
-      "vendor/phase-loop-runtime/src/phase_loop_runtime/redaction.py"
+      "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_standalone.json"
     ],
     "evidence_refs": [
       {
-        "path": "verbatim transcript should not be used",
-        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_standalone.json",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
       }
     ],
-    "plan_path": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "plan_path": "plans/phase-plan-v41-SUBSTRATESOAK.md",
     "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "automation": {
-    "artifact": "plans/phase-plan-v14-DFDRIFTSIGNAL.md",
+    "artifact": "plans/phase-plan-v41-SUBSTRATESOAK.md",
     "artifact_state": "tracked",
     "blocker_class": "none",
     "blocker_summary": "none",
     "human_required": false,
-    "next_command": "codex-plan-phase specs/phase-plans-v14.md DFBRIDGEPARITY",
+    "next_command": "codex-plan-phase specs/phase-plans-v41.md NEXT",
     "next_effort_hint": "medium",
     "next_model_hint": "plan",
     "next_skill": "codex-plan-phase",
@@ -34,21 +34,18 @@
     "human_required": false,
     "required_human_inputs": []
   },
-  "phase": "DFDRIFTSIGNAL",
+  "phase": "SUBSTRATESOAK",
   "schema": "phase_loop_closeout.v1",
   "source_bundle": {
-    "path": ".pipeline/artifacts/phase-source-bundle.json",
-    "phase_id": "pipeline.phase.dfdriftsignal",
-    "pipeline_mode": "pipeline_required",
-    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "pipeline_mode": "standalone"
   },
   "source_truth_impact": {
     "canonical_refresh_reason_codes": [],
     "canonical_refresh_recommended": false,
     "changed_path_boundaries": [
       {
-        "category": "code",
-        "path": "vendor/phase-loop-runtime/src/phase_loop_runtime/redaction.py"
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_standalone.json"
       }
     ],
     "redaction_posture": "metadata_only"
@@ -56,7 +53,7 @@
   "terminal_status": "complete",
   "verification": {
     "commands": [
-      "python3 -m unittest test_phase_loop_pipeline_closeout"
+      "PYTHONPATH=vendor/phase-loop-runtime/src python -m pytest vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py -k substratesoak"
     ],
     "status": "passed"
   }

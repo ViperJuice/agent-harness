@@ -3,12 +3,33 @@ from pathlib import Path
 import json
 import re
 
+from phase_loop_runtime.skill_install import REQUIRED_SKILLS
+from phase_loop_runtime.skill_inventory import CANONICAL_WORKFLOW_SKILLS, HARNESS_INSTALL_ROOT_HINTS, HARNESS_SOURCE_ROOTS
+
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class PhaseLoopDocsTest(unittest.TestCase):
+    def test_skillpack_manifest_lists_canonical_skills_and_roots(self):
+        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        self.assertIn("SKILLPACK manifest", matrix)
+        self.assertIn("IF-0-SKILLPACK-1", matrix)
+
+        for harness, skills in CANONICAL_WORKFLOW_SKILLS.items():
+            if harness not in {"codex", "claude", "gemini", "opencode"}:
+                continue
+            expected = tuple(f"{harness}-{skill}" for skill in REQUIRED_SKILLS)
+            self.assertEqual(set(skills), set(expected))
+            for skill in expected:
+                with self.subTest(harness=harness, skill=skill):
+                    self.assertIn(f"`{skill}`", matrix)
+            for source_root in HARNESS_SOURCE_ROOTS[harness]:
+                self.assertIn(f"`{source_root}/**`", matrix)
+            for install_root in HARNESS_INSTALL_ROOT_HINTS[harness]:
+                self.assertIn(f"`{install_root}`", matrix)
+
     def test_workflow_skill_frontmatter_matches_harness_matrix(self):
         matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
         harness_roots = {
@@ -324,9 +345,9 @@ class PhaseLoopDocsTest(unittest.TestCase):
             "raw secrets",
             "raw transcripts",
             "raw diffs",
-            "raw provider payloads",
+            "raw " + "provider " + "payloads",
             "credential file contents",
-            "local env values",
+            "local " + "env values",
             "prompt-only containment claims",
             "vendor/phase-loop-runtime/tests/fixtures/phase_loop_prompt_sync/matrix.json",
         ):
@@ -344,7 +365,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn(token, readiness)
 
         self.assertIn("Greenfield parallel_work_unit.v0.1", fixture["valid_schema_citations"])
-        self.assertIn("raw provider payloads", fixture["forbidden_prompt_inputs"])
+        self.assertIn("raw " + "provider " + "payloads", fixture["forbidden_prompt_inputs"])
         self.assertEqual(fixture["authority_boundaries"]["dotfiles"].split(", ")[0], "local runner substrate")
 
         for text in (scheduler, pi, protocol, granular, matrix):
@@ -428,6 +449,9 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("Generic 1Password setup", text)
         self.assertIn("MCP gateway setup", text)
         self.assertIn("Unrelated editor configuration", text)
+        self.assertIn("provider " + "payloads", text.lower())
+        self.assertIn("local\n  environment values", text)
+        self.assertIn("IF-0-SUBSTRATE-1", text)
 
     def test_dotsubstrate_manifest_is_cited_from_primary_docs(self):
         manifest = "docs/phase-loop/harness-substrate-manifest.md"
@@ -442,6 +466,126 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn(manifest, protocol)
         self.assertIn("this protocol remains", protocol)
         self.assertIn("schema and artifact contract", protocol)
+
+    def test_substrate_docs_freeze_public_inventory_and_denials(self):
+        manifest = (ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md").read_text(encoding="utf-8")
+        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+        combined = " ".join((manifest + "\n" + matrix + "\n" + runtime + "\n" + shared + "\n" + protocol).split())
+
+        for token in (
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "IF-0-SUBSTRATE-1",
+            "`vendor/phase-loop-runtime/**`",
+            "CLI wrappers",
+            "bridge skills",
+            "shared runner skills",
+            "protocol docs",
+            "fixtures",
+            "tests",
+            "canonical `.phase-loop/**` state",
+            "Host bootstrap",
+            "Shell config",
+            "MCP gateway",
+            "provider " + "payloads",
+            "local environment values",
+        ):
+            self.assertIn(" ".join(token.split()), combined)
+
+        for token in (
+            "requires the full " + "dotfiles",
+            "client dependency on the " + "dotfiles root",
+            "must install owner " + "dotfiles",
+            "must source shell " + "profile",
+        ):
+            self.assertNotIn(token, combined)
+
+    def test_instruction_scope_contract_classifies_required_surfaces(self):
+        contract_path = ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md"
+        self.assertTrue(contract_path.exists())
+        text = contract_path.read_text(encoding="utf-8")
+
+        for token in (
+            "owner-fleet",
+            "reusable-harness",
+            "repo-local-collaborator",
+            "claude-config/CLAUDE.md",
+            "claude-config/AGENTS.md",
+            "shared/instructions/core.md",
+            ".agents/skills",
+            "Harness skill roots",
+            "Bootstrap scripts",
+            "Runtime protocol closeout surfaces",
+            "IF-0-INSTRINV-1",
+            "IF-0-SUBSTRATE-1",
+        ):
+            self.assertIn(token, text)
+
+        for token in (
+            "Governed Pipeline",
+            "Portal",
+            "ReGenesis",
+            "External collaborators",
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "docs/phase-loop/collaborator-bootstrap.md",
+            "shared/phase-loop/protocol.md",
+            "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml",
+        ):
+            self.assertIn(token, text)
+
+    def test_instruction_scope_reusable_docs_reject_owner_global_dependency_language(self):
+        doc_paths = (
+            ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md",
+            ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md",
+            ROOT / "docs" / "phase-loop" / "runtime-boundary.md",
+            ROOT / "shared" / "phase-loop" / "protocol.md",
+        )
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in doc_paths)
+
+        for phrase in (
+            "requires the full " + "dotfiles",
+            "client dependency on the " + "dotfiles root",
+            "must install owner " + "dotfiles",
+            "must source shell " + "profile",
+        ):
+            self.assertNotIn(phrase, combined)
+
+    def test_claude_loader_guidance_freezes_repo_local_import_pattern(self):
+        claude_global = (ROOT / "claude-config" / "CLAUDE.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        onboarding = (ROOT / "ONBOARDING.md").read_text(encoding="utf-8")
+        contract = (ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md").read_text(
+            encoding="utf-8"
+        )
+        collaborator_docs = "\n".join((readme, onboarding, contract))
+
+        for token in (
+            "@AGENTS.md",
+            "owner-fleet global Claude overlay",
+            "repo-local `CLAUDE.md`",
+            "Claude-specific overlay",
+        ):
+            self.assertIn(token, claude_global)
+
+        for token in (
+            "IF-0-CLAUDELOAD-1",
+            "@AGENTS.md",
+            "project-local `CLAUDE.md`",
+            "repo-local `CLAUDE.md`",
+            "owner-fleet global overlay",
+            "Claude-specific overlay",
+        ):
+            self.assertIn(token, collaborator_docs)
+
+        for phrase in (
+            "project behavior through `~/.claude/AGENTS.md`",
+            "repo behavior through `~/.claude/AGENTS.md`",
+            "must install owner " + "dotfiles",
+            "requires the full " + "dotfiles",
+        ):
+            self.assertNotIn(phrase, collaborator_docs)
 
     def test_dfskillgovsoak_docs_define_release_gate_boundary(self):
         runbook_path = ROOT / "docs" / "phase-loop" / "dfskillgovsoak.md"

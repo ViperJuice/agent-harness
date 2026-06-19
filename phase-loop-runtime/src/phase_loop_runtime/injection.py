@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import re
 import shutil
 
 from .baml_modular import BamlValidationError, build_baml_request
+from .closeout_validation import extract_plan_produces as _extract_closeout_plan_produces
 from .models import HarnessLaneAssignment, PromptBundle
 from .runtime_paths import (
     phase_loop_claude_agents_file,
@@ -143,6 +143,12 @@ CLAUDE_TASKLEDGER_HOOK_EVENTS = (
 )
 
 
+def _extract_plan_produces(plan: Path | None) -> tuple[str, ...]:
+    if plan is None or not plan.exists():
+        return ()
+    return _extract_closeout_plan_produces(plan)
+
+
 def build_prompt_bundle(
     *,
     repo: Path,
@@ -166,6 +172,7 @@ def build_prompt_bundle(
         phase_alias=phase or "unknown",
         plan_produces=_extract_plan_produces(plan),
         plan_owned_files=(),
+        include_schema_description=action in {"execute", "repair", "review"},
     )
     bundle_body = "\n\n".join(part for part in (body.strip(), closeout_instruction) if part)
     bundle_sha = _bundle_sha256(
@@ -323,6 +330,7 @@ def _render_baml_closeout_instruction(
     plan_produces: tuple[str, ...] | list[str],
     plan_owned_files: tuple[str, ...] | list[str],
     closeout_commit_sha: str | None = None,
+    include_schema_description: bool = True,
 ) -> str:
     payload = {
         "phase_alias": phase_alias,
@@ -334,19 +342,11 @@ def _render_baml_closeout_instruction(
         prompt = build_baml_request("EmitPhaseCloseout", payload).prompt
     except BamlValidationError as exc:
         prompt = f"Emit one closeout conforming to emit_phase_closeout.baml / EmitPhaseCloseout. BAML prompt render failed: {exc}"
+    if not include_schema_description:
+        marker = "\n\nPhase-loop closeout JSON schema description:\n"
+        if marker in prompt:
+            prompt = prompt[: prompt.index(marker)].rstrip()
     return "EmitPhaseCloseout (`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
-
-
-def _extract_plan_produces(plan: Path | None) -> tuple[str, ...]:
-    if plan is None or not plan.exists():
-        return ()
-    text = plan.read_text(encoding="utf-8")
-    gates: list[str] = []
-    for match in re.finditer(r"IF-[A-Za-z0-9_.-]+", text):
-        gate = match.group(0)
-        if gate not in gates:
-            gates.append(gate)
-    return tuple(gates)
 
 
 def materialize_claude_plugin_bundle(*, repo: Path, run_root: Path, prompt_bundle: PromptBundle) -> dict[str, object]:

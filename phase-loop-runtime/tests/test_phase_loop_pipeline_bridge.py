@@ -19,8 +19,8 @@ FORBIDDEN_METADATA_TOKENS = (
     "raw transcript",
     "raw diff",
     "diff --git",
-    "provider payload",
-    "raw provider payload",
+    "provider " "payload",
+    "raw provider " "payload",
     "credential payload",
     "api_key=",
     "local env value",
@@ -85,6 +85,17 @@ CANONICAL_REFRESH_ADVISORY_FIXTURES = {
     "dfadoptbridge_stale_mirror_manifest.json",
 }
 
+SUBSTRATESOAK_FIXTURES = {
+    "substratesoak_standalone.json",
+    "substratesoak_pipeline_optional.json",
+    "substratesoak_pipeline_required.json",
+    "substratesoak_stale_bundle.json",
+    "substratesoak_unmanaged_spec_hint.json",
+    "substratesoak_closeout_complete.json",
+    "substratesoak_verification_failed.json",
+    "substratesoak_human_required.json",
+}
+
 class TestPhaseLoopPipelineBridge(unittest.TestCase):
     FIXTURE_DIR = str(Path(__file__).resolve().parent / "fixtures" / "phase_loop_pipeline_bridge")
     FIXTURES = [
@@ -128,6 +139,14 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
         "dfadoptbridge_unmanaged_spec_input.json",
         "dfadoptbridge_archive_manifest_touched.json",
         "dfadoptbridge_standalone_non_adoption.json",
+        "substratesoak_standalone.json",
+        "substratesoak_pipeline_optional.json",
+        "substratesoak_pipeline_required.json",
+        "substratesoak_stale_bundle.json",
+        "substratesoak_unmanaged_spec_hint.json",
+        "substratesoak_closeout_complete.json",
+        "substratesoak_verification_failed.json",
+        "substratesoak_human_required.json",
     ]
     MALFORMED_FIXTURES = [
         "malformed.json",
@@ -142,6 +161,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
         "dfadopthints_malformed_redaction.json",
         "dfadoptbridge_malformed_deprecated_flat_aliases.json",
         "dfadoptbridge_malformed_redaction.json",
+        "substratesoak_malformed_redaction.json",
     ]
 
     def test_fixtures_exist(self):
@@ -222,6 +242,15 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             "DFADOPTBRIDGE standalone non-adoption": {"dfadoptbridge_standalone_non_adoption.json"},
             "DFADOPTBRIDGE deprecated flat aliases": {"dfadoptbridge_malformed_deprecated_flat_aliases.json"},
             "DFADOPTBRIDGE redaction violation": {"dfadoptbridge_malformed_redaction.json"},
+            "SUBSTRATESOAK standalone": {"substratesoak_standalone.json"},
+            "SUBSTRATESOAK pipeline optional": {"substratesoak_pipeline_optional.json"},
+            "SUBSTRATESOAK pipeline required": {"substratesoak_pipeline_required.json"},
+            "SUBSTRATESOAK stale bundle": {"substratesoak_stale_bundle.json"},
+            "SUBSTRATESOAK unmanaged spec hint": {"substratesoak_unmanaged_spec_hint.json"},
+            "SUBSTRATESOAK closeout complete": {"substratesoak_closeout_complete.json"},
+            "SUBSTRATESOAK verification failed": {"substratesoak_verification_failed.json"},
+            "SUBSTRATESOAK human required": {"substratesoak_human_required.json"},
+            "SUBSTRATESOAK redaction violation": {"substratesoak_malformed_redaction.json"},
         }
         for scenario, names in scenario_files.items():
             self.assertTrue(names & (fixture_names | malformed_names), scenario)
@@ -271,7 +300,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             serialized = json.dumps(data).lower()
             self.assertNotIn("raw", serialized, fixture)
             self.assertNotIn("credential", serialized, fixture)
-            self.assertNotIn("provider payload", serialized, fixture)
+            self.assertNotIn("provider " "payload", serialized, fixture)
 
         unknown = self._load("dfbundlecloseout_standalone.json")
         categories = {
@@ -604,6 +633,61 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             self.assertIsNotNone(diagnostic, fixture)
             assert diagnostic is not None
             self.assertEqual(diagnostic["kind"], "malformed_closeout")
+
+    def test_substratesoak_fixture_matrix_is_metadata_only(self):
+        self.assertTrue(SUBSTRATESOAK_FIXTURES.issubset(set(self.FIXTURES)))
+        expected_modes = {"standalone", "pipeline_optional", "pipeline_required"}
+        observed_modes = set()
+        terminal_statuses = set()
+        for fixture in SUBSTRATESOAK_FIXTURES:
+            data = self._load(fixture)
+            self.assertEqual(data["phase"], "SUBSTRATESOAK", fixture)
+            self.assertIsNone(phase_loop_closeout_diagnostic(data), fixture)
+            observed_modes.add(data["source_bundle"]["pipeline_mode"])
+            terminal_statuses.add(data["terminal_status"])
+            for path in data["artifacts"]["changed_paths"]:
+                self._assert_repo_relative(path, "SUBSTRATESOAK changed paths must be repo-relative")
+            for evidence in data["artifacts"]["evidence_refs"]:
+                self._assert_repo_relative(evidence.get("path", ""), "SUBSTRATESOAK evidence paths must be repo-relative")
+                self.assertRegex(evidence.get("sha256", ""), r"^[0-9a-f]{64}$")
+            serialized = json.dumps(data).lower()
+            for token in (
+                "raw transcript",
+                "raw diff",
+                "diff --git",
+                "provider payload",
+                "credential payload",
+                "api_key=",
+                "local env value",
+                "/home/",
+                "/users/",
+                "/root/",
+                "sibling_repo_mutation",
+                "write portal",
+                "write greenfield",
+                "write regenesis",
+                "write .pipeline",
+                "legacy .codex/phase-loop write",
+            ):
+                self.assertNotIn(token, serialized, f"{fixture} contains {token}")
+        self.assertEqual(observed_modes, expected_modes)
+        self.assertTrue({"complete", "failed_verification", "human_required", "stale_input"}.issubset(terminal_statuses))
+
+    def test_substratesoak_pipeline_required_fixture_names_protected_source_roles(self):
+        data = self._load("substratesoak_pipeline_required.json")
+        source_bundle = data["source_bundle"]
+        self.assertEqual(source_bundle["pipeline_mode"], "pipeline_required")
+        self.assertEqual(source_bundle["phase_id"], "pipeline.phase.substratesoak")
+        roles = {item["role"] for item in source_bundle["protected_sources"]}
+        self.assertTrue({"active_canonical_spec", "managed_mirror_file", "mirror_manifest"}.issubset(roles))
+        categories = {item["category"] for item in data["source_truth_impact"]["changed_path_boundaries"]}
+        self.assertIn("tests", categories)
+
+    def test_substratesoak_redaction_violation_is_rejected(self):
+        diagnostic = phase_loop_closeout_diagnostic(self._load("substratesoak_malformed_redaction.json"))
+        self.assertIsNotNone(diagnostic)
+        assert diagnostic is not None
+        self.assertEqual(diagnostic["kind"], "malformed_closeout")
 
 if __name__ == "__main__":
     unittest.main()

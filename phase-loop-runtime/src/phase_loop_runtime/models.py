@@ -233,6 +233,27 @@ CANONICAL_REFRESH_REASON_CODES = (
     "greenfield_authority_refs_touched",
 )
 REDACTION_POSTURES = ("metadata_only", "rejected_forbidden_metadata")
+SPEC_DELTA_CLOSEOUT_SCHEMA = "spec_delta_closeout.v1"
+SPEC_DELTA_DECISIONS = (
+    "no_spec_delta",
+    "roadmap_amendment",
+    "canonical_spec_update",
+    "governed_pipeline_refresh",
+    "mirror_cutover_required",
+    "dotfiles_skill_source_update",
+    "human_source_judgment_required",
+)
+SPEC_DELTA_TARGET_SURFACES = (
+    "shared/phase-loop/protocol.md",
+    "vendor/phase-loop-runtime/protocol/protocol.md",
+    "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml",
+    "codex-config/skills/**",
+    "claude-config/claude-skills/**",
+    "gemini-config/skills/**",
+    "opencode-config/skills/**",
+    "vendor/phase-loop-skills/**",
+    "vendor/phase-loop-runtime/tests/**",
+)
 
 TERMINAL_SUMMARY_FIELDS = (
     "terminal_status",
@@ -801,6 +822,27 @@ class SourceTruthImpact:
 
 
 @dataclass(frozen=True)
+class SpecDeltaCloseout:
+    decision: str
+    target_surfaces: tuple[str, ...] = ()
+    evidence_paths: tuple[str, ...] = ()
+    redaction_posture: str = "metadata_only"
+    blocker_class: str | None = None
+    schema: str = SPEC_DELTA_CLOSEOUT_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != SPEC_DELTA_CLOSEOUT_SCHEMA:
+            raise ValueError(f"invalid spec delta closeout schema: {self.schema}")
+        require_literal(self.decision, SPEC_DELTA_DECISIONS, "spec delta decision")
+        require_literal(self.redaction_posture, REDACTION_POSTURES, "redaction posture")
+        if self.blocker_class is not None:
+            require_literal(self.blocker_class, BLOCKER_CLASSES, "blocker class")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
 class PhaseLoopCloseout:
     phase: str
     terminal_status: str
@@ -810,6 +852,7 @@ class PhaseLoopCloseout:
     blocker: PhaseLoopBlocker
     source_bundle: PhaseLoopSourceBundle
     source_truth_impact: SourceTruthImpact | None = None
+    spec_delta_closeout: SpecDeltaCloseout | None = None
     schema: str = PIPELINE_CLOSEOUT_SCHEMA
 
     def __post_init__(self) -> None:
@@ -829,6 +872,7 @@ class PhaseLoopCloseout:
                 "blocker": self.blocker.to_json(),
                 "source_bundle": self.source_bundle.to_json(),
                 "source_truth_impact": self.source_truth_impact.to_json() if self.source_truth_impact else None,
+                "spec_delta_closeout": self.spec_delta_closeout.to_json() if self.spec_delta_closeout else None,
             }
         )
 

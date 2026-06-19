@@ -1,0 +1,64 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/substratesoak/verification-failed-terminal-summary.json"
+    },
+    "changed_paths": [
+      "docs/phase-loop/substrate-soak-portal-projection.md"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_verification_failed.json",
+        "sha256": "2020202020202020202020202020202020202020202020202020202020202020"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "SUBSTRATESOAK portal projection verification failed after local repair.",
+    "human_required": false,
+    "next_command": "none - verification failed",
+    "next_effort_hint": "high",
+    "next_model_hint": "repair",
+    "next_skill": "codex-execute-phase",
+    "required_human_inputs": [],
+    "status": "blocked",
+    "verification_status": "failed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "repeated_verification_failure",
+    "blocker_summary": "SUBSTRATESOAK portal projection verification failed after local repair.",
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "SUBSTRATESOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [
+      "docs_source_truth_touched"
+    ],
+    "canonical_refresh_recommended": true,
+    "changed_path_boundaries": [
+      {
+        "category": "docs",
+        "path": "docs/phase-loop/substrate-soak-portal-projection.md"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "failed_verification",
+  "verification": {
+    "commands": [
+      "PYTHONPATH=vendor/phase-loop-runtime/src python -m pytest vendor/phase-loop-runtime/tests/test_phase_loop_substrate_soak_portal.py"
+    ],
+    "status": "failed"
+  }
+}

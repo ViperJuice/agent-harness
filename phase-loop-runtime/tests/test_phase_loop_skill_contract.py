@@ -1,4 +1,5 @@
 import hashlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,9 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
     def assert_file_contains_normalized(self, path: Path, tokens: tuple[str, ...]) -> None:
         text = " ".join(path.read_text(encoding="utf-8").split())
         for token in tokens:
+            if isinstance(token, tuple):
+                self.assertTrue(any(option in text for option in token), msg=f"{path} missing token: {token}")
+                continue
             self.assertIn(token, text, msg=f"{path} missing token: {token}")
 
     def test_runtime_state_docs_reference_shared_contract(self):
@@ -126,6 +130,60 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
             self.assert_file_contains(harness["execute"], execute_tokens)
             self.assert_file_contains(harness["bridge"], bridge_tokens)
 
+    def test_harness_workflow_skills_require_spec_delta_closeout(self):
+        decisions = (
+            "spec_delta_closeout.v1",
+            "no_spec_delta",
+            "roadmap_amendment",
+            "canonical_spec_update",
+            "governed_pipeline_refresh",
+            "mirror_cutover_required",
+            "dotfiles_skill_source_update",
+            "human_source_judgment_required",
+            "target surfaces",
+            "metadata_only",
+        )
+        harness_paths = (
+            ROOT / "codex-config" / "skills" / "codex-phase-roadmap-builder" / "SKILL.md",
+            ROOT / "codex-config" / "skills" / "codex-plan-phase" / "SKILL.md",
+            ROOT / "codex-config" / "skills" / "codex-execute-phase" / "SKILL.md",
+            ROOT / "codex-config" / "skills" / "codex-phase-loop" / "SKILL.md",
+            ROOT / "claude-config" / "claude-skills" / "claude-phase-roadmap-builder" / "SKILL.md",
+            ROOT / "claude-config" / "claude-skills" / "claude-plan-phase" / "SKILL.md",
+            ROOT / "claude-config" / "claude-skills" / "claude-execute-phase" / "SKILL.md",
+            ROOT / "claude-config" / "claude-skills" / "claude-phase-loop" / "SKILL.md",
+            ROOT / "gemini-config" / "skills" / "gemini-phase-roadmap-builder" / "SKILL.md",
+            ROOT / "gemini-config" / "skills" / "gemini-plan-phase" / "SKILL.md",
+            ROOT / "gemini-config" / "skills" / "gemini-execute-phase" / "SKILL.md",
+            ROOT / "gemini-config" / "skills" / "gemini-phase-loop" / "SKILL.md",
+            ROOT / "opencode-config" / "skills" / "opencode-phase-roadmap-builder" / "SKILL.md",
+            ROOT / "opencode-config" / "skills" / "opencode-plan-phase" / "SKILL.md",
+            ROOT / "opencode-config" / "skills" / "opencode-execute-phase" / "SKILL.md",
+            ROOT / "opencode-config" / "skills" / "opencode-phase-loop" / "SKILL.md",
+        )
+        for path in harness_paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assert_file_contains(path, decisions)
+
+    def test_workflow_skills_preserve_standalone_mode_without_mandatory_downstream_systems(self):
+        roots = (
+            ROOT / "vendor" / "phase-loop-skills",
+            ROOT / "codex-config" / "skills",
+            ROOT / "claude-config" / "claude-skills",
+            ROOT / "gemini-config" / "skills",
+            ROOT / "opencode-config" / "skills",
+        )
+        forbidden = re.compile(
+            r"must use Governed Pipeline|requires Governed Pipeline|must use Portal|requires Portal|"
+            r"must use Greenfield|requires Greenfield|must use \.pipeline|requires \.pipeline|"
+            r"must provide a source bundle|requires a source bundle|must install owner dotfiles|"
+            r"must source shell profile"
+        )
+        for root in roots:
+            for path in sorted(root.glob("*/SKILL.md")):
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertIsNone(forbidden.search(path.read_text(encoding="utf-8")))
+
     def test_codex_plan_phase_names_planbundle_frontmatter_rules(self):
         path = ROOT / "codex-config" / "skills" / "codex-plan-phase" / "SKILL.md"
         self.assert_file_contains(
@@ -173,7 +231,7 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
                 "private evidence",
                 "raw data",
                 "credentials",
-                "provider payloads",
+                "provider-supplied payloads",
                 "legacy `.codex/phase-loop/` state",
                 "standalone execution behavior",
                 "missing, stale, malformed, or mismatched source bundles",
@@ -222,7 +280,7 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
             "Portal contracts",
             "Greenfield authority files",
             "raw evidence",
-            "provider payloads",
+            ("provider payloads", "provider-supplied payloads"),
             "credentials",
             "legacy `.codex/phase-loop/` state",
         )
@@ -247,7 +305,7 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
             "Portal contracts",
             "Greenfield authority files",
             "raw evidence",
-            "provider payloads",
+            ("provider payloads", "provider-supplied payloads"),
             "credentials",
         )
         for path in runner_skills:
@@ -562,6 +620,12 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
             "# RUNNER: Example\n\n"
             "## Context\nExample context.\n\n"
             "## Interface Freeze Gates\n- [ ] IF-0-RUNNER-1 — `RunnerContract`\n\n"
+            "## Spec Closeout Plan\n"
+            "- schema: `spec_delta_closeout.v1`\n"
+            "- decision: `no_spec_delta`\n"
+            "- target surfaces: `plans/phase-plan-v1-RUNNER.md`\n"
+            "- evidence paths: `plans/phase-plan-v1-RUNNER.md`\n"
+            "- redaction posture: `metadata_only`\n\n"
             "## Lane Index & Dependencies\n\n"
             "SL-1 — Core\n"
             "  Depends on: (none)\n"

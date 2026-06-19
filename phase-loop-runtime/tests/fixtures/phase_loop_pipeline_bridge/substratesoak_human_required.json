@@ -1,0 +1,59 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/substratesoak/human-required-terminal-summary.json"
+    },
+    "changed_paths": [],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_human_required.json",
+        "sha256": "2121212121212121212121212121212121212121212121212121212121212121"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "product_decision_missing",
+    "blocker_summary": "Operator must select the next downstream adoption owner.",
+    "human_required": true,
+    "next_command": "none - product decision required",
+    "next_effort_hint": "none",
+    "next_model_hint": "none",
+    "next_skill": "none",
+    "required_human_inputs": [
+      "Select the downstream adoption owner for SUBSTRATESOAK follow-up."
+    ],
+    "status": "blocked",
+    "verification_status": "blocked"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "blocker_class": "product_decision_missing",
+    "blocker_summary": "Operator must select the next downstream adoption owner.",
+    "human_required": true,
+    "required_human_inputs": [
+      "Select the downstream adoption owner for SUBSTRATESOAK follow-up."
+    ]
+  },
+  "phase": "SUBSTRATESOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "pipeline_mode": "standalone"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "human_required",
+  "verification": {
+    "commands": [
+      "phase-loop execute SUBSTRATESOAK"
+    ],
+    "status": "blocked"
+  }
+}

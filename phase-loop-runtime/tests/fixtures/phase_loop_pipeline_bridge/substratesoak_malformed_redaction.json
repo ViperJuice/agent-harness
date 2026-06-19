@@ -1,28 +1,28 @@
 {
   "artifacts": {
     "artifact_paths": {
-      "terminal": ".phase-loop/runs/dftruthsoak/redaction-terminal-summary.json"
+      "terminal": ".phase-loop/runs/substratesoak/redaction-terminal-summary.json"
     },
     "changed_paths": [
-      "docs/phase-loop/runtime-boundary.md"
+      "docs/phase-loop/substrate-soak-report.md"
     ],
     "evidence_refs": [
       {
-        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dftruthsoak_malformed_redaction.json",
-        "summary": "@@ -1,1 +1,1 @@",
-        "sha256": "9090909090909090909090909090909090909090909090909090909090909090"
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_malformed_redaction.json",
+        "summary": "token=substratesoakexamplevalue",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
       }
     ],
-    "plan_path": "plans/phase-plan-v14-DFTRUTHSOAK.md",
-    "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    "plan_path": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "automation": {
-    "artifact": "plans/phase-plan-v14-DFTRUTHSOAK.md",
+    "artifact": "plans/phase-plan-v41-SUBSTRATESOAK.md",
     "artifact_state": "tracked",
     "blocker_class": "none",
     "blocker_summary": "none",
     "human_required": false,
-    "next_command": "codex-plan-phase ../governed-pipeline/specs/phase-plans-v10.md GPTRUTHSOAK",
+    "next_command": "codex-plan-phase specs/phase-plans-v41.md NEXT",
     "next_effort_hint": "medium",
     "next_model_hint": "plan",
     "next_skill": "codex-plan-phase",
@@ -35,7 +35,7 @@
     "human_required": false,
     "required_human_inputs": []
   },
-  "phase": "DFTRUTHSOAK",
+  "phase": "SUBSTRATESOAK",
   "schema": "phase_loop_closeout.v1",
   "source_bundle": {
     "pipeline_mode": "standalone"
@@ -48,7 +48,7 @@
     "changed_path_boundaries": [
       {
         "category": "docs",
-        "path": "docs/phase-loop/runtime-boundary.md"
+        "path": "docs/phase-loop/substrate-soak-report.md"
       }
     ],
     "redaction_posture": "metadata_only"
@@ -56,7 +56,7 @@
   "terminal_status": "complete",
   "verification": {
     "commands": [
-      "python3 -m unittest test_phase_loop_pipeline_bridge"
+      "PYTHONPATH=vendor/phase-loop-runtime/src python -m pytest vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
     ],
     "status": "passed"
   }

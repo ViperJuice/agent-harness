@@ -9,6 +9,10 @@ details stay in harness-local runtime docs.
 Harness-specific path ownership for the dotfiles-hosted substrate is recorded
 in `docs/phase-loop/harness-substrate-manifest.md`; this protocol remains the
 schema and artifact contract.
+IF-0-SUBSTRATE-1 limits downstream substrate citations to runtime code, CLI
+wrappers, bridge skills, shared runner skills, protocol docs, fixtures, tests,
+scripts, and canonical `.phase-loop/**` state; broader dotfiles checkout
+contents are not client dependencies.
 Harness workflow skill naming is recorded in
 `docs/phase-loop/harness-skill-matrix.md`; that matrix freezes the
 `<harness>-<workflow>` contract, Pi Agent role-style exceptions, direct route
@@ -71,6 +75,52 @@ Unknown `pipeline_mode` values fail closed as typed metadata diagnostics.
 Plans without this metadata, or with metadata that no longer matches the
 selected roadmap, are stale for autonomous execution and must route back
 through planning instead of execution.
+
+## Spec Delta Closeout
+
+`spec_delta_closeout.v1` is the metadata-only decision record used when a phase
+may change reusable harness specs, runtime contracts, roadmap/plan templates, or
+workflow skills. Roadmap builders name the expected policy for each phase,
+phase plans copy that policy into a machine-readable `Spec Closeout Plan`,
+execute-phase closeouts choose exactly one decision, and phase-loop handoffs
+preserve the same decision for downstream routing.
+
+Required fields:
+
+- `schema`: `spec_delta_closeout.v1`
+- `decision`: one of `no_spec_delta`, `roadmap_amendment`,
+  `canonical_spec_update`, `governed_pipeline_refresh`,
+  `mirror_cutover_required`, `dotfiles_skill_source_update`, or
+  `human_source_judgment_required`
+- `target_surfaces`: repo-relative paths or globs describing the spec surfaces
+  affected or intentionally deferred
+- `evidence_paths`: repo-relative metadata evidence, such as a phase plan,
+  lane closeout, verification log, or runner artifact
+- `redaction_posture`: `metadata_only`
+- `blocker_class`: optional frozen blocker class when the decision cannot be
+  completed automatically
+
+The frozen target-surface vocabulary for dotfiles-hosted harness spec work is
+`shared/phase-loop/protocol.md`, `vendor/phase-loop-runtime/protocol/protocol.md`,
+`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`,
+`codex-config/skills/**`, `claude-config/claude-skills/**`,
+`gemini-config/skills/**`, `opencode-config/skills/**`,
+`vendor/phase-loop-skills/**`, and `vendor/phase-loop-runtime/tests/**`.
+
+`metadata_only` allows repo-relative paths, hashes, phase aliases, IF gates,
+decision literals, artifact names, and redacted diagnostics. It forbids raw
+specs, raw patch bodies, credentials, provider-supplied payloads, local environment values, and
+inferred reads from ignored/private/raw evidence sources. Standalone dotfiles
+phase-loop runs may emit `no_spec_delta` or `dotfiles_skill_source_update`
+without Governed Pipeline, `.pipeline/**`, Portal contracts, ReGenesis files,
+credentials, PMCP, owner shell setup, or sibling repo writes. Decisions that
+require Governed Pipeline ingest, mirror cutover, or human source judgment are
+metadata-only downstream routing signals, not dotfiles write authorization.
+
+Missing or malformed spec-delta closeout evidence is a repairable automation
+blocker with `blocker_class=contract_bug` unless the phase explicitly chooses
+`human_source_judgment_required`, in which case the closeout must name the
+non-secret human input required.
 
 ## Plan-Doc-Current Heuristic
 
@@ -257,7 +307,7 @@ The frozen ledger-debug rejection reasons are:
 The `raw_event_summary` is an event identity summary only. It may include
 schema version, source, phase, action, status, timestamp, and whether roadmap
 or phase hashes were present. It must not serialize raw event payloads,
-provider output, prompts, local environment values, credentials, or arbitrary
+provider output, prompts, local environment contents, credentials, or arbitrary
 nested metadata.
 
 Ledger Debug is diagnostic-only. It does not repair, rewrite, or reclassify
@@ -359,12 +409,16 @@ bundle bytes. Protected-source entries must cite one of
 `PIPELINE_PROTECTED_SOURCE_CATEGORIES`, and protected-source files must exist
 with matching SHA-256 hashes.
 
+Governed Pipeline owns adoption, source-bundle emission, canonical refresh,
+replan, closeout ingest, Greenfield reduction, and Portal projection.
 Governed-pipeline owns canonical source-truth refresh, source-bundle emission,
 protected-source freshness, scheduling, closeout ingest, Greenfield reduction,
 and Portal projection. Dotfiles consumes those inputs and emits redacted
 metadata; it does not infer authority over governed-pipeline, Portal,
 Greenfield, `.pipeline/**`, private evidence, raw data, credentials, or
-provider payloads.
+provider-supplied payloads. Host bootstrap, Shell config, SSH setup, MCP gateway setup,
+generic 1Password setup, raw-evidence, credential-bearing payloads, and local
+environment values are outside the protocol substrate.
 Governed-pipeline also owns canonical spec adoption, archive creation, managed
 mirror refresh, source-truth reconciliation, canonical refresh, replan, and
 preflight block decisions. Dotfiles may echo validated adoption role metadata
@@ -868,7 +922,7 @@ recent invocation summaries with `phase-loop status --tier-3-history`, and
 rollback by disabling the phase entry if false positives, latency, or cost
 exceed operator tolerance. The status-history surface only reports timestamp,
 phase, verdict, confidence, cost, and latency; it must not expose raw prompts,
-raw responses, artifact contents, or provider payloads.
+raw responses, artifact contents, or provider-supplied payloads.
 
 The v23 `phase_aliases_exclude_tier3` entries for `T2DETECTORS`, `T3SCHEMA`,
 `T3RUNNER`, and `T3VALIDATE` remain in place until v23 completes. Removing
@@ -982,7 +1036,7 @@ Capacity-like provider signals classify as `unretryable_external_outage` with
 `suggested_ttl_seconds: 1800` and `demoted_to: manual_only`. The frozen
 capacity patterns are `capacity`, `exhausted`, `rate.limit`, `503`, and
 `temporarily.unavailable`; `claude auth status` quota-like JSON is reduced
-through the same capacity path without storing credential or provider payload
+through the same capacity path without storing credential or provider-supplied payload
 values.
 
 ### Session Capability Degradation During Dispatch
@@ -993,7 +1047,7 @@ for a candidate and before selecting it. A session-degraded executor is skipped
 silently so a live fallback can run. If every otherwise viable live candidate
 is session-degraded, dispatch returns `blocked_reason:
 all_candidates_session_degraded` with a summary naming the action and no
-credential or provider payload values.
+credential or provider-supplied payload values.
 
 `phase-loop run --reset-capability`, `phase-loop resume --reset-capability`,
 and `phase-loop dry-run --reset-capability` clear only
@@ -1030,7 +1084,7 @@ policy-pin literals are `skip` and `fallback-next`.
 Executor degradation remains the DISPATCH authority: candidates listed in
 `.phase-loop/executor-degradation.json` are excluded by the existing
 `active_degraded_executors(repo)` filter during final dispatch. Rotation does
-not read provider payloads or reimplement degradation. New launch events with a
+not read provider-supplied payloads or reimplement degradation. New launch events with a
 resolved dispatch decision stamp top-level `selected_executor`; old events
 without that field reduce identically.
 
@@ -1342,7 +1396,7 @@ automation:
 - `artifact_paths`: A map of logical names to absolute paths for produced artifacts.
 - `changed_paths`: A list of repository paths modified during the phase.
 - `evidence_refs`: Metadata-only evidence references. Entries may include paths,
-  labels, and hashes, but not raw transcripts, provider payloads, local
+  labels, and hashes, but not raw transcripts, provider-supplied payloads, local
   environment values, credentials, or private evidence bytes.
 
 #### Source Truth Impact Object
@@ -1350,7 +1404,7 @@ automation:
 `source_truth_impact` is advisory metadata only. Impact hints are advisory:
 governed-pipeline owns canonical refresh, replan, and block decisions.
 Dotfiles must not update governed-pipeline canonical docs/specs, `.pipeline/**`,
-Portal contracts, Greenfield authority files, raw evidence, or legacy
+Portal contracts, Greenfield authority files, raw-evidence, or legacy
 `.codex/phase-loop/` state in response to these hints.
 
 - `changed_path_boundaries`: A list of objects containing `path` and `category`.
@@ -1373,8 +1427,8 @@ Portal contracts, Greenfield authority files, raw evidence, or legacy
 - `redaction_posture`: One of `metadata_only` or
   `rejected_forbidden_metadata`.
 
-Impact and evidence metadata exclude raw diffs, raw transcripts, secret-like values,
-absolute private paths, provider payloads, credential payloads, local environment values,
+Impact and evidence metadata exclude raw patch bodies, raw transcripts, secret-like values,
+absolute private paths, provider-supplied payloads, credential-bearing payloads, local environment contents,
 and private evidence bytes. Redaction violations make the closeout
 malformed instead of preserving the forbidden content.
 
@@ -1419,7 +1473,7 @@ explicitly recorded; silent downgrade is invalid.
 
 DFPARSOAK closeout evidence must remain redacted evidence handles or hashes. It
 must preserve no sibling-repo mutation and must not contain raw logs, raw
-transcripts, raw prompts, provider payloads, credentials, local env values, raw
+transcripts, raw prompts, provider-supplied payloads, credentials, local environment contents, raw
 diffs, ignored private paths, or host-only evidence paths.
 
 #### Source Bundle Object
@@ -1434,8 +1488,8 @@ diffs, ignored private paths, or host-only evidence paths.
   `pipeline_required`; optional or absent for standalone closeout.
 - `protected_sources`: Optional metadata-only protected-source echo. Entries
   may include `path`, `category`, `sha256`, and adoption-sensitive `role`, but
-  must not include raw spec bodies, raw diffs, provider payloads, credentials,
-  local environment values, private evidence, or absolute private paths.
+  must not include raw specification bodies, raw patch bodies, provider-supplied payloads, credentials,
+  local environment contents, private evidence, or absolute private paths.
 
 Pipeline-required execution must fail closed before child launch when the plan
 or deterministic bridge output cannot supply matching `source_bundle.path`,
@@ -2123,6 +2177,8 @@ For this roadmap family, `.phase-loop/` is the canonical durable runtime path
 for state, ledger, handoff, and observed-run artifacts. Existing
 `.codex/phase-loop/` artifacts remain a legacy read fallback so active repos are
 not stranded during migration. New writes use `.phase-loop/`.
+Legacy `.codex/phase-loop/` is never a new write target for closeout,
+delegation, source-bundle, or runner evidence artifacts.
 
 `phase-loop init [--repo <path>] [--dry-run]` initializes the repo-local
 handoff storage expected by workflow skills. It idempotently adds
@@ -2173,6 +2229,10 @@ location is `packages/pipeline-runtime/test/fixtures/phase-loop-bridge/`, and
 mirror updates, closeout ingest, canonical refresh, replan, and preflight block
 decisions are governed-pipeline-owned work. Dotfiles must not edit the
 governed-pipeline mirror path from this repository.
+Fixture and closeout examples remain metadata-only: they do not authorize raw
+evidence reads, credential-bearing payloads, provider-supplied payloads, local environment
+values, `.pipeline/**` writes, Portal writes, Greenfield writes, or broad
+dotfiles root dependencies.
 
 ### Available Scenarios
 
@@ -2207,7 +2267,7 @@ Pipeline-required fixtures use `source_bundle.path`, `source_bundle.sha256`,
 protected-source `role`, plan `sha256`, changed-path categories, advisory
 reason codes, and evidence-ref `sha256` metadata. They do not grant dotfiles
 permission to write governed-pipeline mirror paths, `.pipeline/**`, Portal
-contracts, Greenfield authority files, raw evidence, raw data, credentials, or
+contracts, Greenfield authority files, raw-evidence, raw data, credentials, or
 legacy `.codex/phase-loop/**` state.
 
 DFADOPTSOAK is the dotfiles adoption integration release gate. It proves root
@@ -2237,7 +2297,7 @@ DFPROMPTSYNC adds a prompt-safe contract map at
 `vendor/phase-loop-runtime/tests/fixtures/phase_loop_prompt_sync/matrix.json`. Prompt bundles and harness
 lane workflows may cite schema names, field names, fixture paths, artifact
 refs, and digests from those receipts, but must not copy raw secrets, raw
-transcripts, raw diffs, raw provider payloads, credential file contents, local
+transcripts, raw patch bodies, raw provider-supplied payloads, credential file contents, local
 env values, or prompt-only containment claims.
 
 ## Direct Invocation Policy

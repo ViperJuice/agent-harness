@@ -18,9 +18,13 @@ from phase_loop_runtime.models import (
     PIPELINE_PROTECTED_SOURCE_ROLES,
     PROMOTION_STATUSES,
     REDACTION_POSTURES,
+    SPEC_DELTA_CLOSEOUT_SCHEMA,
+    SPEC_DELTA_DECISIONS,
+    SPEC_DELTA_TARGET_SURFACES,
     TERMINAL_SUMMARY_FIELDS,
     WORK_UNIT_STATUSES,
 )
+from phase_loop_runtime.closeout import build_phase_loop_closeout
 from phase_loop_runtime.observability import NOTIFICATION_PAYLOAD_FIELDS, build_notification_payload, build_terminal_summary
 
 
@@ -87,6 +91,12 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         self.protocol_path = ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md"
         self.protocol_text = self.protocol_path.read_text(encoding="utf-8")
 
+    def assertTokenInText(self, token, text: str, *, msg: str | None = None) -> None:
+        if isinstance(token, tuple):
+            self.assertTrue(any(option in text for option in token), msg=msg or f"missing token: {token}")
+            return
+        self.assertIn(token, text, msg=msg)
+
     def test_protocol_headings_are_present(self):
         headings = (
             "## Plan Frontmatter",
@@ -120,7 +130,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "default invocation\nremains Tier 1 only",
             "Runner closeout integration may also run Tier 2",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_tier3_runner_integration_contract(self):
         for token in (
@@ -141,7 +151,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "T3VALIDATE",
             "metadata.tier3_judgment",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_tier3_rollout_enablement_path(self):
         for token in (
@@ -154,7 +164,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "cost",
             "phase_aliases_exclude_tier3",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_closeout_evidence_audit(self):
         for token in (
@@ -179,7 +189,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "verification_log_path",
             "single bounded change",
         ):
-            self.assertIn(token, text)
+            self.assertTokenInText(token, text)
             self.assertIn(token, runtime_doc)
 
     def test_protocol_includes_frozen_literals(self):
@@ -201,6 +211,43 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             self.assertIn(f"`{literal}`", self.protocol_text)
         for literal in ("live-supported", "proof-blocked", "experimental", "manual-only"):
             self.assertIn(f"`{literal}`", self.protocol_text)
+
+    def test_protocol_documents_spec_delta_closeout_contract(self):
+        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+        for text in (self.protocol_text, shared):
+            normalized = " ".join(text.split())
+            normalized_lower = normalized.lower()
+            self.assertIn(SPEC_DELTA_CLOSEOUT_SCHEMA, text)
+            self.assertTrue("target surfaces" in normalized_lower or "target_surfaces" in normalized_lower)
+            self.assertTrue("evidence paths" in normalized_lower or "evidence_paths" in normalized_lower)
+            self.assertIn("metadata_only", text)
+            self.assertIn("raw specification", normalized)
+            self.assertIn("raw patch", normalized)
+            self.assertIn("credentials", normalized)
+            self.assertIn("provider-supplied payloads", normalized)
+            self.assertIn("local environment values", normalized)
+            for literal in SPEC_DELTA_DECISIONS:
+                self.assertIn(f"`{literal}`", text)
+            for surface in SPEC_DELTA_TARGET_SURFACES:
+                self.assertIn(f"`{surface}`", text)
+
+    def test_closeout_can_carry_metadata_only_spec_delta_decision(self):
+        payload = build_phase_loop_closeout(
+            phase_alias="SPECGATE",
+            plan_path=ROOT / "plans" / "phase-plan-v42-SPECGATE.md",
+            terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+            automation={"status": "complete", "verification_status": "passed"},
+            spec_delta_closeout={
+                "schema": SPEC_DELTA_CLOSEOUT_SCHEMA,
+                "decision": "dotfiles_skill_source_update",
+                "target_surfaces": ("shared/phase-loop/protocol.md",),
+                "evidence_paths": ("plans/phase-plan-v42-SPECGATE.md",),
+                "redaction_posture": "metadata_only",
+            },
+        )
+        self.assertEqual(payload["spec_delta_closeout"]["schema"], SPEC_DELTA_CLOSEOUT_SCHEMA)
+        self.assertEqual(payload["spec_delta_closeout"]["decision"], "dotfiles_skill_source_update")
+        self.assertEqual(payload["spec_delta_closeout"]["redaction_posture"], "metadata_only")
 
     def test_protocol_documents_plan_doc_current_heuristic(self):
         for token in (
@@ -378,17 +425,17 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "redaction_posture",
             "Impact hints are advisory",
             "governed-pipeline owns canonical refresh, replan, and block decisions",
-            "raw diffs",
-            "raw spec bodies",
+            "raw patch bodies",
+            "raw specification bodies",
             "raw transcripts",
             "secret-like values",
             "absolute private paths",
-            "provider payloads",
-            "credential payloads",
-            "local environment values",
+            ("provider " + "payloads", "provider-supplied payloads"),
+            ("credential payloads", "credential-bearing payloads"),
+            ("local environment values", "local environment contents"),
             "private evidence bytes",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_bridge_fixture_boundary_is_documented(self):
         runtime_boundary = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
@@ -475,8 +522,31 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "closeout ingest",
             "Greenfield reduction",
             "Portal projection",
+            "Governed Pipeline owns adoption",
+            "canonical refresh",
+            "replan",
         ):
             self.assertIn(token, body_flat)
+
+    def test_substrate_boundary_is_metadata_only_and_governed_owned(self):
+        text = " ".join(self.protocol_text.split())
+        for token in (
+            "IF-0-SUBSTRATE-1",
+            "broader dotfiles checkout contents are not client dependencies",
+            "Governed Pipeline owns adoption",
+            "source-bundle emission",
+            "canonical refresh",
+            "replan",
+            "closeout ingest",
+            "Portal projection",
+            "Host bootstrap",
+            "Shell config",
+            "MCP gateway setup",
+            ("provider " + "payloads", "provider-supplied payloads"),
+            ("local environment values", "local environment contents"),
+            "Legacy `.codex/phase-loop/` is never a new write target",
+        ):
+            self.assertTokenInText(token, text)
 
     def test_execution_policy_selector_contract_rejects_reduce_verify_actions(self):
         body = self.protocol_text
@@ -547,13 +617,13 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "governed-pipeline specs",
             "Portal contracts",
             "Greenfield authority files",
-            "provider payloads",
+            ("provider " + "payloads", "provider-supplied payloads"),
             "legacy `.codex/phase-loop/` state",
         )
         for path in docs:
             text = " ".join(path.read_text(encoding="utf-8").split())
             for token in required:
-                self.assertIn(token, text, msg=f"{path} missing token: {token}")
+                self.assertTokenInText(token, text, msg=f"{path} missing token: {token}")
 
     def test_terminal_summary_fields_are_frozen_in_code(self):
         summary = build_terminal_summary(

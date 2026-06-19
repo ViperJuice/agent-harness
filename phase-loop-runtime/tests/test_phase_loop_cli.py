@@ -1,7 +1,6 @@
 import json
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,8 +25,8 @@ from phase_loop_smoke_utils import append_manual_import_event, isolated_codex_ho
 from phase_loop_runtime.verification_evidence import run_verification
 
 
-BIN = shutil.which("phase-loop") or "phase-loop"
-CODEX_ALIAS_BIN = shutil.which("codex-phase-loop") or "codex-phase-loop"
+BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
+CODEX_ALIAS_BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
 
 
 class PhaseLoopCliTest(unittest.TestCase):
@@ -54,7 +53,7 @@ class PhaseLoopCliTest(unittest.TestCase):
                 )
 
             result = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap)],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap)],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -64,8 +63,8 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertIn("11 of 50", result.stdout)
 
     def test_neutral_and_codex_alias_wrappers_share_public_help(self):
-        neutral_help = subprocess.run([str(BIN), "--help"], text=True, capture_output=True, check=True)
-        alias_help = subprocess.run([str(CODEX_ALIAS_BIN), "--help"], text=True, capture_output=True, check=True)
+        neutral_help = subprocess.run([*BIN, "--help"], text=True, capture_output=True, check=True)
+        alias_help = subprocess.run([*CODEX_ALIAS_BIN, "--help"], text=True, capture_output=True, check=True)
 
         for output in (neutral_help.stdout, alias_help.stdout):
             self.assertIn("Neutral phase-loop runner", output)
@@ -74,16 +73,16 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertIn("execute", output)
 
     def test_version_flag_and_command_report_same_public_version(self):
-        flag = subprocess.run([str(BIN), "--version"], text=True, capture_output=True, check=True)
-        command = subprocess.run([str(BIN), "version"], text=True, capture_output=True, check=True)
-        alias_flag = subprocess.run([str(CODEX_ALIAS_BIN), "--version"], text=True, capture_output=True, check=True)
+        flag = subprocess.run([*BIN, "--version"], text=True, capture_output=True, check=True)
+        command = subprocess.run([*BIN, "version"], text=True, capture_output=True, check=True)
+        alias_flag = subprocess.run([*CODEX_ALIAS_BIN, "--version"], text=True, capture_output=True, check=True)
 
         self.assertEqual(flag.stdout, command.stdout)
         self.assertEqual(flag.stdout, alias_flag.stdout)
         self.assertRegex(flag.stdout, r"^phase-loop \d+\.\d+\.\d+")
 
     def test_execute_help_documents_direct_bridge_flags(self):
-        result = subprocess.run([str(BIN), "execute", "--help"], text=True, capture_output=True, check=True)
+        result = subprocess.run([*BIN, "execute", "--help"], text=True, capture_output=True, check=True)
 
         self.assertIn("phase", result.stdout)
         self.assertIn("--bundle", result.stdout)
@@ -258,7 +257,7 @@ class PhaseLoopCliTest(unittest.TestCase):
                 )
 
     def test_help_status_json_and_dry_run_aliases(self):
-        help_result = subprocess.run([str(BIN), "--help"], text=True, capture_output=True, check=True)
+        help_result = subprocess.run([*BIN, "--help"], text=True, capture_output=True, check=True)
         self.assertIn("maintain-skills", help_result.stdout)
         self.assertIn("sync-skills", help_result.stdout)
         self.assertIn("monitor", help_result.stdout)
@@ -273,24 +272,24 @@ class PhaseLoopCliTest(unittest.TestCase):
         self.assertIn("--no-heartbeat", help_result.stdout)
         self.assertIn("--closeout-mode", help_result.stdout)
         self.assertIn("handoff", help_result.stdout)
-        maintenance_help = subprocess.run([str(BIN), "maintain-skills", "--help"], text=True, capture_output=True, check=True)
+        maintenance_help = subprocess.run([*BIN, "maintain-skills", "--help"], text=True, capture_output=True, check=True)
         self.assertIn("--min-reflections", maintenance_help.stdout)
         self.assertIn("--apply-skill-edits", maintenance_help.stdout)
         self.assertIn("--allow-skill", maintenance_help.stdout)
         self.assertIn("--improvement-plan", maintenance_help.stdout)
-        sync_help = subprocess.run([str(BIN), "sync-skills", "--help"], text=True, capture_output=True, check=True)
+        sync_help = subprocess.run([*BIN, "sync-skills", "--help"], text=True, capture_output=True, check=True)
         self.assertIn("--harness", sync_help.stdout)
         self.assertIn("--apply", sync_help.stdout)
 
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
-            status = subprocess.run([str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
+            status = subprocess.run([*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
             self.assertEqual(json.loads(status.stdout)["phases"]["RUNNER"], "unplanned")
             self.assertIn("git_topology", json.loads(status.stdout))
             self.assertTrue((repo / ".phase-loop" / "tui-handoff.md").exists())
 
-            dry_run = subprocess.run([str(BIN), "--repo", str(repo), "--roadmap", str(roadmap), "--dry-run"], text=True, capture_output=True, check=True)
+            dry_run = subprocess.run([*BIN, "--repo", str(repo), "--roadmap", str(roadmap), "--dry-run"], text=True, capture_output=True, check=True)
             self.assertIn("Executor: codex", dry_run.stdout)
             self.assertIn("Injection mode: prompt_only", dry_run.stdout)
             self.assertIn("Expected skill pack: codex-plan-phase", dry_run.stdout)
@@ -298,24 +297,24 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertNotIn("--output-last-message", dry_run.stdout)
             self.assertTrue((repo / ".phase-loop" / "events.jsonl").exists())
 
-            subcommand = subprocess.run([str(BIN), "dry-run", "--repo", str(repo), "--roadmap", str(roadmap)], text=True, capture_output=True, check=True)
+            subcommand = subprocess.run([*BIN, "dry-run", "--repo", str(repo), "--roadmap", str(roadmap)], text=True, capture_output=True, check=True)
             self.assertIn("Phase statuses", subcommand.stdout)
 
-            handoff = subprocess.run([str(BIN), "handoff", "--repo", str(repo), "--roadmap", str(roadmap)], text=True, capture_output=True, check=True)
+            handoff = subprocess.run([*BIN, "handoff", "--repo", str(repo), "--roadmap", str(roadmap)], text=True, capture_output=True, check=True)
             self.assertIn("Machine Sources", handoff.stdout)
             self.assertIn("Current Status", handoff.stdout)
             self.assertIn("Resume Command", handoff.stdout)
             self.assertIn("Phase statuses", subcommand.stdout)
 
-            handoff_json = subprocess.run([str(BIN), "handoff", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
+            handoff_json = subprocess.run([*BIN, "handoff", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
             self.assertTrue(json.loads(handoff_json.stdout)["tui_handoff_exists"])
 
-            monitor = subprocess.run([str(BIN), "monitor", "--repo", str(repo), "--roadmap", str(roadmap), "--once", "--json"], text=True, capture_output=True, check=True)
+            monitor = subprocess.run([*BIN, "monitor", "--repo", str(repo), "--roadmap", str(roadmap), "--once", "--json"], text=True, capture_output=True, check=True)
             monitor_data = json.loads(monitor.stdout)
             self.assertIn("monitor_status", monitor_data)
             self.assertEqual(monitor_data["monitor_status"]["current_phase"], "CONTRACT")
 
-            alias_help = subprocess.run([str(CODEX_ALIAS_BIN), "--help"], text=True, capture_output=True, check=True)
+            alias_help = subprocess.run([*CODEX_ALIAS_BIN, "--help"], text=True, capture_output=True, check=True)
             self.assertIn("maintain-skills", alias_help.stdout)
 
     def test_status_tier_3_history_reports_summaries_without_raw_payloads(self):
@@ -354,7 +353,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             src = str(Path(__file__).resolve().parents[1] / "src")
             env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
             result = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -379,7 +378,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             src = str(Path(__file__).resolve().parents[1] / "src")
             env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
             result = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--tier-3-history"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -392,7 +391,7 @@ class PhaseLoopCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             result = subprocess.run(
-                [str(BIN), "sync-skills", "--repo", str(repo), "--harness", "codex", "--json"],
+                [*BIN, "sync-skills", "--repo", str(repo), "--harness", "codex", "--json"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -420,7 +419,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             from phase_loop_smoke_utils import isolated_home_env
             result = subprocess.run(
-                [str(BIN), "sync-skills", "--repo", str(repo), "--harness", "claude"],
+                [*BIN, "sync-skills", "--repo", str(repo), "--harness", "claude"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -439,9 +438,9 @@ class PhaseLoopCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
-            result = subprocess.run([str(BIN), "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run"], text=True, capture_output=True, check=True)
+            result = subprocess.run([*BIN, "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run"], text=True, capture_output=True, check=True)
             self.assertIn("RUNNER", result.stdout)
-            maintain = subprocess.run([str(BIN), "maintain-skills", "--repo", str(repo), "--roadmap", str(roadmap), "--dry-run"], text=True, capture_output=True, check=True)
+            maintain = subprocess.run([*BIN, "maintain-skills", "--repo", str(repo), "--roadmap", str(roadmap), "--dry-run"], text=True, capture_output=True, check=True)
             self.assertIn("model_reasoning_effort", maintain.stdout)
 
     def test_non_codex_executor_reports_claude_live_dry_run_metadata(self):
@@ -449,7 +448,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
             result = subprocess.run(
-                [str(BIN), "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--executor", "claude"],
+                [*BIN, "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--executor", "claude"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -467,7 +466,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "run",
                     "--repo",
                     str(repo),
@@ -494,7 +493,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
             result = subprocess.run(
-                [str(BIN), "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--executor", "command"],
+                [*BIN, "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--executor", "command"],
                 text=True,
                 capture_output=True,
             )
@@ -508,7 +507,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "run",
                     "--repo",
                     str(repo),
@@ -561,7 +560,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo",
@@ -599,7 +598,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo",
@@ -631,7 +630,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo",
@@ -665,7 +664,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo",
@@ -695,7 +694,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
-            result = subprocess.run([str(BIN), "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run"], text=True, capture_output=True, check=True)
+            result = subprocess.run([*BIN, "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run"], text=True, capture_output=True, check=True)
 
             self.assertIn("Log:", result.stdout)
             runs = sorted((repo / ".phase-loop" / "runs").glob("*/"))
@@ -706,7 +705,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertTrue((runs[0] / "terminal-summary.json").exists())
             self.assertTrue((repo / ".phase-loop" / "metrics.jsonl").exists())
             status = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap)],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap)],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -719,7 +718,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
             result = subprocess.run(
-                [str(BIN), "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--no-observe"],
+                [*BIN, "run", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--dry-run", "--no-observe"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -787,7 +786,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
             result = subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--repair-summary", "fixture recovery"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--repair-summary", "fixture recovery"],
                 text=True,
                 capture_output=True,
             )
@@ -825,7 +824,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
             result = subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RG", "--verification-status", "passed"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RG", "--verification-status", "passed"],
                 text=True,
                 capture_output=True,
             )
@@ -844,7 +843,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "reconcile",
                     "--repo",
                     str(repo),
@@ -874,7 +873,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "reconcile",
                     "--repo",
                     str(repo),
@@ -905,7 +904,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             (repo / "dirty.txt").write_text("uncommitted\n")
 
             result = subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER"],
                 text=True,
                 capture_output=True,
             )
@@ -919,7 +918,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             (repo / "dirty.txt").write_text("uncommitted\n")
 
             result = subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--allow-dirty"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--allow-dirty"],
                 text=True,
                 capture_output=True,
             )
@@ -931,7 +930,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
             result = subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "NONEXISTENT"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "NONEXISTENT"],
                 text=True,
                 capture_output=True,
             )
@@ -944,25 +943,25 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
             # Reconcile first to mark RUNNER complete (uses the same approach used by F5c)
             subprocess.run(
-                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--repair-summary", "fixture"],
+                [*BIN, "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--repair-summary", "fixture"],
                 text=True, capture_output=True, check=True,
             )
             # Confirm RUNNER is complete
             status_pre = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                 text=True, capture_output=True, check=True,
             )
             self.assertEqual(json.loads(status_pre.stdout)["phases"]["RUNNER"], "complete")
 
             # Reopen
             result = subprocess.run(
-                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "spurious completion at fixture SHA"],
+                [*BIN, "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "spurious completion at fixture SHA"],
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             # Phase should be back to planned
             status_post = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                 text=True, capture_output=True, check=True,
             )
             self.assertEqual(json.loads(status_post.stdout)["phases"]["RUNNER"], "planned")
@@ -981,7 +980,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
             # RUNNER starts as unplanned — cannot reopen
             result = subprocess.run(
-                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
+                [*BIN, "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 2)
@@ -1000,18 +999,18 @@ class PhaseLoopCliTest(unittest.TestCase):
             # Land a blocked-execute event for RUNNER
             append_event(repo, provenanced_event(repo, roadmap, "RUNNER", "blocked", action="execute"))
             status_pre = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                 text=True, capture_output=True, check=True,
             )
             self.assertEqual(json.loads(status_pre.stdout)["phases"]["RUNNER"], "blocked")
 
             result = subprocess.run(
-                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "blocker resolved (e.g. SSO refreshed)"],
+                [*BIN, "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "blocker resolved (e.g. SSO refreshed)"],
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             status_post = subprocess.run(
-                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                [*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                 text=True, capture_output=True, check=True,
             )
             self.assertEqual(json.loads(status_post.stdout)["phases"]["RUNNER"], "planned")
@@ -1047,7 +1046,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             (repo / "dirty.txt").write_text("modified-after-commit\n")
 
             result = subprocess.run(
-                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
+                [*BIN, "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 2)
@@ -1059,7 +1058,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             roadmap = repo / "specs" / "phase-plans-v1.md"
             # Missing --reason argparse rejection
             result = subprocess.run(
-                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER"],
+                [*BIN, "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER"],
                 text=True, capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -1086,7 +1085,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             write_state(repo, provenanced_state(repo, roadmap, {"RUNNER": "planned"}))
             append_event(repo, provenanced_event(repo, roadmap, "RUNNER", "planned"))
 
-            result = subprocess.run([str(BIN), "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
+            result = subprocess.run([*BIN, "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
             data = json.loads(result.stdout)
             self.assertEqual(data["event_count"], 1)
             self.assertEqual(data["legacy_count"], 0)
@@ -1113,7 +1112,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             write_state(repo, snapshot)
 
             result = subprocess.run(
-                [str(BIN), "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                [*BIN, "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -1132,7 +1131,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "monitor",
                     "--repo",
                     str(repo),
@@ -1167,7 +1166,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             )
 
             handoff = subprocess.run(
-                [str(BIN), "handoff", "--repo", str(greenfield.repo), "--roadmap", str(greenfield.roadmap), "--json"],
+                [*BIN, "handoff", "--repo", str(greenfield.repo), "--roadmap", str(greenfield.roadmap), "--json"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -1184,7 +1183,7 @@ class PhaseLoopCliTest(unittest.TestCase):
                 provenanced_event(code_index.repo, code_index.roadmap, code_index.execute_phase, "blocked", action="plan"),
             )
             state = subprocess.run(
-                [str(BIN), "state", "--repo", str(code_index.repo), "--roadmap", str(code_index.roadmap), "--json"],
+                [*BIN, "state", "--repo", str(code_index.repo), "--roadmap", str(code_index.roadmap), "--json"],
                 text=True,
                 capture_output=True,
                 check=True,
@@ -1212,7 +1211,7 @@ class PhaseLoopCliTest(unittest.TestCase):
                     artifact=plan,
                 )
                 state = subprocess.run(
-                    [str(BIN), "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                    [*BIN, "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
                     text=True,
                     capture_output=True,
                     check=True,
@@ -1231,7 +1230,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             handoff = repo / ".phase-loop" / "tui-handoff.md"
             handoff.write_text("# handoff\n")
 
-            result = subprocess.run([str(BIN), "archive-state", "--repo", str(repo), "--reason", "fixture", "--json"], text=True, capture_output=True, check=True)
+            result = subprocess.run([*BIN, "archive-state", "--repo", str(repo), "--reason", "fixture", "--json"], text=True, capture_output=True, check=True)
             data = json.loads(result.stdout)
             self.assertTrue(data["archived"])
             self.assertEqual(len(data["moved"]), 3)
@@ -1249,7 +1248,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo", str(repo),
@@ -1273,7 +1272,7 @@ class PhaseLoopCliTest(unittest.TestCase):
             
             result = subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo", str(repo),
@@ -1296,7 +1295,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo", str(repo),
@@ -1325,7 +1324,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "RUNNER",
                     "--repo", str(repo),
@@ -1350,7 +1349,7 @@ class PhaseLoopCliTest(unittest.TestCase):
 
             subprocess.run(
                 [
-                    str(BIN),
+                    *BIN,
                     "execute",
                     "NON_EXISTENT_PHASE",
                     "--repo", str(repo),

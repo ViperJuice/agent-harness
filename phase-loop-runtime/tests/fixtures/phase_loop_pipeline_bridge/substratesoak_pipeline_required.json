@@ -1,0 +1,83 @@
+{
+  "artifacts": {
+    "artifact_paths": {
+      "terminal": ".phase-loop/runs/substratesoak/pipeline-required-terminal-summary.json"
+    },
+    "changed_paths": [
+      "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+    ],
+    "evidence_refs": [
+      {
+        "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/substratesoak_pipeline_required.json",
+        "sha256": "1313131313131313131313131313131313131313131313131313131313131313"
+      }
+    ],
+    "plan_path": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation": {
+    "artifact": "plans/phase-plan-v41-SUBSTRATESOAK.md",
+    "artifact_state": "tracked",
+    "blocker_class": "none",
+    "blocker_summary": "none",
+    "human_required": false,
+    "next_command": "codex-plan-phase specs/phase-plans-v41.md NEXT",
+    "next_effort_hint": "medium",
+    "next_model_hint": "plan",
+    "next_skill": "codex-plan-phase",
+    "required_human_inputs": [],
+    "status": "complete",
+    "verification_status": "passed"
+  },
+  "blocker": {
+    "access_attempts": [],
+    "human_required": false,
+    "required_human_inputs": []
+  },
+  "phase": "SUBSTRATESOAK",
+  "schema": "phase_loop_closeout.v1",
+  "source_bundle": {
+    "path": ".pipeline/artifacts/substratesoak-source-bundle.json",
+    "phase_id": "pipeline.phase.substratesoak",
+    "pipeline_mode": "pipeline_required",
+    "protected_sources": [
+      {
+        "category": "specs",
+        "path": ".pipeline/specs/active/phase-plans-v25.md",
+        "role": "active_canonical_spec",
+        "sha256": "1414141414141414141414141414141414141414141414141414141414141414"
+      },
+      {
+        "category": "specs",
+        "path": "packages/pipeline-runtime/test/fixtures/phase-loop-bridge/substratesoak_pipeline_required.json",
+        "role": "managed_mirror_file",
+        "sha256": "1515151515151515151515151515151515151515151515151515151515151515"
+      },
+      {
+        "category": "definition_files",
+        "path": "specs/.pipeline-mirror.json",
+        "role": "mirror_manifest",
+        "sha256": "1616161616161616161616161616161616161616161616161616161616161616"
+      }
+    ],
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "source_truth_impact": {
+    "canonical_refresh_reason_codes": [],
+    "canonical_refresh_recommended": false,
+    "changed_path_boundaries": [
+      {
+        "category": "tests",
+        "path": "vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py"
+      }
+    ],
+    "redaction_posture": "metadata_only"
+  },
+  "terminal_status": "complete",
+  "verification": {
+    "commands": [
+      "PYTHONPATH=vendor/phase-loop-runtime/src python -m pytest vendor/phase-loop-runtime/tests/test_phase_loop_pipeline_bridge.py -k substratesoak"
+    ],
+    "status": "passed"
+  }
+}

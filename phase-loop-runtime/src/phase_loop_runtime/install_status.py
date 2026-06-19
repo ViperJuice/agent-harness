@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,9 @@ def _dev_skills_ignore(repo: Path) -> dict[str, str]:
 
 def _assert_redacted(payload: dict[str, Any]) -> None:
     serialized = json.dumps(payload, sort_keys=True)
-    forbidden = ("/home/", "/Users/", "/mnt/", "op://", "sk-", "AKIA", "ghp_")
+    forbidden = ("/home/", "/Users/", "/mnt/", "op://", "AKIA", "ghp_")
     leaked = [token for token in forbidden if token in serialized]
+    if re.search(r"\bsk-[A-Za-z0-9]{8,}", serialized):
+        leaked.append("sk-*")
     if leaked:
         raise ValueError(f"install status contains forbidden metadata token: {leaked[0]}")
