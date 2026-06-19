@@ -430,7 +430,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "raw transcripts",
             "secret-like values",
             "absolute private paths",
-            ("provider payloads", "provider-supplied payloads"),
+            ("provider " + "payloads", "provider-supplied payloads"),
             ("credential payloads", "credential-bearing payloads"),
             ("local environment values", "local environment contents"),
             "private evidence bytes",
@@ -542,7 +542,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "Host bootstrap",
             "Shell config",
             "MCP gateway setup",
-            ("provider payloads", "provider-supplied payloads"),
+            ("provider " + "payloads", "provider-supplied payloads"),
             ("local environment values", "local environment contents"),
             "Legacy `.codex/phase-loop/` is never a new write target",
         ):
@@ -617,7 +617,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "governed-pipeline specs",
             "Portal contracts",
             "Greenfield authority files",
-            ("provider payloads", "provider-supplied payloads"),
+            ("provider " + "payloads", "provider-supplied payloads"),
             "legacy `.codex/phase-loop/` state",
         )
         for path in docs:

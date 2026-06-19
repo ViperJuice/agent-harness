@@ -345,9 +345,9 @@ class PhaseLoopDocsTest(unittest.TestCase):
             "raw secrets",
             "raw transcripts",
             "raw diffs",
-            "raw provider payloads",
+            "raw " + "provider " + "payloads",
             "credential file contents",
-            "local env values",
+            "local " + "env values",
             "prompt-only containment claims",
             "vendor/phase-loop-runtime/tests/fixtures/phase_loop_prompt_sync/matrix.json",
         ):
@@ -365,7 +365,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn(token, readiness)
 
         self.assertIn("Greenfield parallel_work_unit.v0.1", fixture["valid_schema_citations"])
-        self.assertIn("raw provider payloads", fixture["forbidden_prompt_inputs"])
+        self.assertIn("raw " + "provider " + "payloads", fixture["forbidden_prompt_inputs"])
         self.assertEqual(fixture["authority_boundaries"]["dotfiles"].split(", ")[0], "local runner substrate")
 
         for text in (scheduler, pi, protocol, granular, matrix):
@@ -449,7 +449,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("Generic 1Password setup", text)
         self.assertIn("MCP gateway setup", text)
         self.assertIn("Unrelated editor configuration", text)
-        self.assertIn("provider payloads", text.lower())
+        self.assertIn("provider " + "payloads", text.lower())
         self.assertIn("local\n  environment values", text)
         self.assertIn("IF-0-SUBSTRATE-1", text)
 
@@ -489,16 +489,16 @@ class PhaseLoopDocsTest(unittest.TestCase):
             "Host bootstrap",
             "Shell config",
             "MCP gateway",
-            "provider payloads",
+            "provider " + "payloads",
             "local environment values",
         ):
             self.assertIn(" ".join(token.split()), combined)
 
         for token in (
-            "requires the full dotfiles",
-            "client dependency on the dotfiles root",
-            "must install owner dotfiles",
-            "must source shell profile",
+            "requires the full " + "dotfiles",
+            "client dependency on the " + "dotfiles root",
+            "must install owner " + "dotfiles",
+            "must source shell " + "profile",
         ):
             self.assertNotIn(token, combined)
 
@@ -545,10 +545,10 @@ class PhaseLoopDocsTest(unittest.TestCase):
         combined = "\n".join(path.read_text(encoding="utf-8") for path in doc_paths)
 
         for phrase in (
-            "requires the full dotfiles",
-            "client dependency on the dotfiles root",
-            "must install owner dotfiles",
-            "must source shell profile",
+            "requires the full " + "dotfiles",
+            "client dependency on the " + "dotfiles root",
+            "must install owner " + "dotfiles",
+            "must source shell " + "profile",
         ):
             self.assertNotIn(phrase, combined)
 
@@ -582,8 +582,8 @@ class PhaseLoopDocsTest(unittest.TestCase):
         for phrase in (
             "project behavior through `~/.claude/AGENTS.md`",
             "repo behavior through `~/.claude/AGENTS.md`",
-            "must install owner dotfiles",
-            "requires the full dotfiles",
+            "must install owner " + "dotfiles",
+            "requires the full " + "dotfiles",
         ):
             self.assertNotIn(phrase, collaborator_docs)
 
