@@ -113,5 +113,31 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
         self.assertIn("backward-compatible `codex-phase-loop`", doc)
         self.assertIn("same parser", doc)
 
+    def test_runtime_boundary_cites_substrate_without_dotfiles_root_dependency(self):
+        doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        flat = " ".join(doc.split())
+        for token in (
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "IF-0-SUBSTRATE-1",
+            "canonical `.phase-loop/**` state",
+            "without governed-pipeline",
+            "without governed-pipeline, `.pipeline/**`, Portal, Greenfield, a source bundle, credentials, Host bootstrap",
+            "MCP gateway setup",
+            "provider payloads",
+            "local environment values",
+            "Governed Pipeline owns adoption",
+            "source-bundle emission",
+            "closeout ingest",
+            "Portal projection",
+        ):
+            self.assertIn(token, flat)
+        for token in (
+            "requires the full dotfiles",
+            "client dependency on the dotfiles root",
+            "must install owner dotfiles",
+            "must source shell profile",
+        ):
+            self.assertNotIn(token, flat)
+
 if __name__ == "__main__":
     unittest.main()

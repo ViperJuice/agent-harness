@@ -475,8 +475,31 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "closeout ingest",
             "Greenfield reduction",
             "Portal projection",
+            "Governed Pipeline owns adoption",
+            "canonical refresh",
+            "replan",
         ):
             self.assertIn(token, body_flat)
+
+    def test_substrate_boundary_is_metadata_only_and_governed_owned(self):
+        text = " ".join(self.protocol_text.split())
+        for token in (
+            "IF-0-SUBSTRATE-1",
+            "broader dotfiles checkout contents are not client dependencies",
+            "Governed Pipeline owns adoption",
+            "source-bundle emission",
+            "canonical refresh",
+            "replan",
+            "closeout ingest",
+            "Portal projection",
+            "Host bootstrap",
+            "Shell config",
+            "MCP gateway setup",
+            "provider payloads",
+            "local environment values",
+            "Legacy `.codex/phase-loop/` is never a new write target",
+        ):
+            self.assertIn(token, text)
 
     def test_execution_policy_selector_contract_rejects_reduce_verify_actions(self):
         body = self.protocol_text

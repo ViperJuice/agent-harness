@@ -9,6 +9,10 @@ details stay in harness-local runtime docs.
 Harness-specific path ownership for the dotfiles-hosted substrate is recorded
 in `docs/phase-loop/harness-substrate-manifest.md`; this protocol remains the
 schema and artifact contract.
+IF-0-SUBSTRATE-1 limits downstream substrate citations to runtime code, CLI
+wrappers, bridge skills, shared runner skills, protocol docs, fixtures, tests,
+scripts, and canonical `.phase-loop/**` state; broader dotfiles checkout
+contents are not client dependencies.
 Harness workflow skill naming is recorded in
 `docs/phase-loop/harness-skill-matrix.md`; that matrix freezes the
 `<harness>-<workflow>` contract, Pi Agent role-style exceptions, direct route
@@ -359,12 +363,16 @@ bundle bytes. Protected-source entries must cite one of
 `PIPELINE_PROTECTED_SOURCE_CATEGORIES`, and protected-source files must exist
 with matching SHA-256 hashes.
 
+Governed Pipeline owns adoption, source-bundle emission, canonical refresh,
+replan, closeout ingest, Greenfield reduction, and Portal projection.
 Governed-pipeline owns canonical source-truth refresh, source-bundle emission,
 protected-source freshness, scheduling, closeout ingest, Greenfield reduction,
 and Portal projection. Dotfiles consumes those inputs and emits redacted
 metadata; it does not infer authority over governed-pipeline, Portal,
 Greenfield, `.pipeline/**`, private evidence, raw data, credentials, or
-provider payloads.
+provider payloads. Host bootstrap, Shell config, SSH setup, MCP gateway setup,
+generic 1Password setup, raw evidence, credential payloads, and local
+environment values are outside the protocol substrate.
 Governed-pipeline also owns canonical spec adoption, archive creation, managed
 mirror refresh, source-truth reconciliation, canonical refresh, replan, and
 preflight block decisions. Dotfiles may echo validated adoption role metadata
@@ -2123,6 +2131,8 @@ For this roadmap family, `.phase-loop/` is the canonical durable runtime path
 for state, ledger, handoff, and observed-run artifacts. Existing
 `.codex/phase-loop/` artifacts remain a legacy read fallback so active repos are
 not stranded during migration. New writes use `.phase-loop/`.
+Legacy `.codex/phase-loop/` is never a new write target for closeout,
+delegation, source-bundle, or runner evidence artifacts.
 
 `phase-loop init [--repo <path>] [--dry-run]` initializes the repo-local
 handoff storage expected by workflow skills. It idempotently adds
@@ -2173,6 +2183,10 @@ location is `packages/pipeline-runtime/test/fixtures/phase-loop-bridge/`, and
 mirror updates, closeout ingest, canonical refresh, replan, and preflight block
 decisions are governed-pipeline-owned work. Dotfiles must not edit the
 governed-pipeline mirror path from this repository.
+Fixture and closeout examples remain metadata-only: they do not authorize raw
+evidence reads, credential payloads, provider payloads, local environment
+values, `.pipeline/**` writes, Portal writes, Greenfield writes, or broad
+dotfiles root dependencies.
 
 ### Available Scenarios
 

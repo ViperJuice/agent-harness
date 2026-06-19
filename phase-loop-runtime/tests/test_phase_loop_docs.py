@@ -428,6 +428,9 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("Generic 1Password setup", text)
         self.assertIn("MCP gateway setup", text)
         self.assertIn("Unrelated editor configuration", text)
+        self.assertIn("provider payloads", text)
+        self.assertIn("local\n  environment values", text)
+        self.assertIn("IF-0-SUBSTRATE-1", text)
 
     def test_dotsubstrate_manifest_is_cited_from_primary_docs(self):
         manifest = "docs/phase-loop/harness-substrate-manifest.md"
@@ -442,6 +445,41 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn(manifest, protocol)
         self.assertIn("this protocol remains", protocol)
         self.assertIn("schema and artifact contract", protocol)
+
+    def test_substrate_docs_freeze_public_inventory_and_denials(self):
+        manifest = (ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md").read_text(encoding="utf-8")
+        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+        combined = " ".join((manifest + "\n" + matrix + "\n" + runtime + "\n" + shared + "\n" + protocol).split())
+
+        for token in (
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "IF-0-SUBSTRATE-1",
+            "`vendor/phase-loop-runtime/**`",
+            "CLI wrappers",
+            "bridge skills",
+            "shared runner skills",
+            "protocol docs",
+            "fixtures",
+            "tests",
+            "canonical `.phase-loop/**` state",
+            "Host bootstrap",
+            "Shell config",
+            "MCP gateway",
+            "provider payloads",
+            "local environment values",
+        ):
+            self.assertIn(" ".join(token.split()), combined)
+
+        for token in (
+            "requires the full dotfiles",
+            "client dependency on the dotfiles root",
+            "must install owner dotfiles",
+            "must source shell profile",
+        ):
+            self.assertNotIn(token, combined)
 
     def test_dfskillgovsoak_docs_define_release_gate_boundary(self):
         runbook_path = ROOT / "docs" / "phase-loop" / "dfskillgovsoak.md"
