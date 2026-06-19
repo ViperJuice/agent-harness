@@ -87,6 +87,12 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         self.protocol_path = ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md"
         self.protocol_text = self.protocol_path.read_text(encoding="utf-8")
 
+    def assertTokenInText(self, token, text: str, *, msg: str | None = None) -> None:
+        if isinstance(token, tuple):
+            self.assertTrue(any(option in text for option in token), msg=msg or f"missing token: {token}")
+            return
+        self.assertIn(token, text, msg=msg)
+
     def test_protocol_headings_are_present(self):
         headings = (
             "## Plan Frontmatter",
@@ -120,7 +126,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "default invocation\nremains Tier 1 only",
             "Runner closeout integration may also run Tier 2",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_tier3_runner_integration_contract(self):
         for token in (
@@ -141,7 +147,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "T3VALIDATE",
             "metadata.tier3_judgment",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_tier3_rollout_enablement_path(self):
         for token in (
@@ -154,7 +160,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "cost",
             "phase_aliases_exclude_tier3",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_protocol_documents_closeout_evidence_audit(self):
         for token in (
@@ -179,7 +185,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "verification_log_path",
             "single bounded change",
         ):
-            self.assertIn(token, text)
+            self.assertTokenInText(token, text)
             self.assertIn(token, runtime_doc)
 
     def test_protocol_includes_frozen_literals(self):
@@ -383,12 +389,12 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "raw transcripts",
             "secret-like values",
             "absolute private paths",
-            "provider payloads",
-            "credential payloads",
-            "local environment values",
+            ("provider payloads", "provider-supplied payloads"),
+            ("credential payloads", "credential-bearing payloads"),
+            ("local environment values", "local environment contents"),
             "private evidence bytes",
         ):
-            self.assertIn(token, self.protocol_text)
+            self.assertTokenInText(token, self.protocol_text)
 
     def test_bridge_fixture_boundary_is_documented(self):
         runtime_boundary = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
@@ -495,11 +501,11 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "Host bootstrap",
             "Shell config",
             "MCP gateway setup",
-            "provider payloads",
-            "local environment values",
+            ("provider payloads", "provider-supplied payloads"),
+            ("local environment values", "local environment contents"),
             "Legacy `.codex/phase-loop/` is never a new write target",
         ):
-            self.assertIn(token, text)
+            self.assertTokenInText(token, text)
 
     def test_execution_policy_selector_contract_rejects_reduce_verify_actions(self):
         body = self.protocol_text
@@ -570,13 +576,13 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "governed-pipeline specs",
             "Portal contracts",
             "Greenfield authority files",
-            "provider payloads",
+            ("provider payloads", "provider-supplied payloads"),
             "legacy `.codex/phase-loop/` state",
         )
         for path in docs:
             text = " ".join(path.read_text(encoding="utf-8").split())
             for token in required:
-                self.assertIn(token, text, msg=f"{path} missing token: {token}")
+                self.assertTokenInText(token, text, msg=f"{path} missing token: {token}")
 
     def test_terminal_summary_fields_are_frozen_in_code(self):
         summary = build_terminal_summary(

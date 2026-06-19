@@ -261,7 +261,7 @@ The frozen ledger-debug rejection reasons are:
 The `raw_event_summary` is an event identity summary only. It may include
 schema version, source, phase, action, status, timestamp, and whether roadmap
 or phase hashes were present. It must not serialize raw event payloads,
-provider output, prompts, local environment values, credentials, or arbitrary
+provider output, prompts, local environment contents, credentials, or arbitrary
 nested metadata.
 
 Ledger Debug is diagnostic-only. It does not repair, rewrite, or reclassify
@@ -370,8 +370,8 @@ protected-source freshness, scheduling, closeout ingest, Greenfield reduction,
 and Portal projection. Dotfiles consumes those inputs and emits redacted
 metadata; it does not infer authority over governed-pipeline, Portal,
 Greenfield, `.pipeline/**`, private evidence, raw data, credentials, or
-provider payloads. Host bootstrap, Shell config, SSH setup, MCP gateway setup,
-generic 1Password setup, raw evidence, credential payloads, and local
+provider-supplied payloads. Host bootstrap, Shell config, SSH setup, MCP gateway setup,
+generic 1Password setup, raw-evidence, credential-bearing payloads, and local
 environment values are outside the protocol substrate.
 Governed-pipeline also owns canonical spec adoption, archive creation, managed
 mirror refresh, source-truth reconciliation, canonical refresh, replan, and
@@ -876,7 +876,7 @@ recent invocation summaries with `phase-loop status --tier-3-history`, and
 rollback by disabling the phase entry if false positives, latency, or cost
 exceed operator tolerance. The status-history surface only reports timestamp,
 phase, verdict, confidence, cost, and latency; it must not expose raw prompts,
-raw responses, artifact contents, or provider payloads.
+raw responses, artifact contents, or provider-supplied payloads.
 
 The v23 `phase_aliases_exclude_tier3` entries for `T2DETECTORS`, `T3SCHEMA`,
 `T3RUNNER`, and `T3VALIDATE` remain in place until v23 completes. Removing
@@ -990,7 +990,7 @@ Capacity-like provider signals classify as `unretryable_external_outage` with
 `suggested_ttl_seconds: 1800` and `demoted_to: manual_only`. The frozen
 capacity patterns are `capacity`, `exhausted`, `rate.limit`, `503`, and
 `temporarily.unavailable`; `claude auth status` quota-like JSON is reduced
-through the same capacity path without storing credential or provider payload
+through the same capacity path without storing credential or provider-supplied payload
 values.
 
 ### Session Capability Degradation During Dispatch
@@ -1001,7 +1001,7 @@ for a candidate and before selecting it. A session-degraded executor is skipped
 silently so a live fallback can run. If every otherwise viable live candidate
 is session-degraded, dispatch returns `blocked_reason:
 all_candidates_session_degraded` with a summary naming the action and no
-credential or provider payload values.
+credential or provider-supplied payload values.
 
 `phase-loop run --reset-capability`, `phase-loop resume --reset-capability`,
 and `phase-loop dry-run --reset-capability` clear only
@@ -1038,7 +1038,7 @@ policy-pin literals are `skip` and `fallback-next`.
 Executor degradation remains the DISPATCH authority: candidates listed in
 `.phase-loop/executor-degradation.json` are excluded by the existing
 `active_degraded_executors(repo)` filter during final dispatch. Rotation does
-not read provider payloads or reimplement degradation. New launch events with a
+not read provider-supplied payloads or reimplement degradation. New launch events with a
 resolved dispatch decision stamp top-level `selected_executor`; old events
 without that field reduce identically.
 
@@ -1350,7 +1350,7 @@ automation:
 - `artifact_paths`: A map of logical names to absolute paths for produced artifacts.
 - `changed_paths`: A list of repository paths modified during the phase.
 - `evidence_refs`: Metadata-only evidence references. Entries may include paths,
-  labels, and hashes, but not raw transcripts, provider payloads, local
+  labels, and hashes, but not raw transcripts, provider-supplied payloads, local
   environment values, credentials, or private evidence bytes.
 
 #### Source Truth Impact Object
@@ -1358,7 +1358,7 @@ automation:
 `source_truth_impact` is advisory metadata only. Impact hints are advisory:
 governed-pipeline owns canonical refresh, replan, and block decisions.
 Dotfiles must not update governed-pipeline canonical docs/specs, `.pipeline/**`,
-Portal contracts, Greenfield authority files, raw evidence, or legacy
+Portal contracts, Greenfield authority files, raw-evidence, or legacy
 `.codex/phase-loop/` state in response to these hints.
 
 - `changed_path_boundaries`: A list of objects containing `path` and `category`.
@@ -1382,7 +1382,7 @@ Portal contracts, Greenfield authority files, raw evidence, or legacy
   `rejected_forbidden_metadata`.
 
 Impact and evidence metadata exclude raw diffs, raw transcripts, secret-like values,
-absolute private paths, provider payloads, credential payloads, local environment values,
+absolute private paths, provider-supplied payloads, credential-bearing payloads, local environment contents,
 and private evidence bytes. Redaction violations make the closeout
 malformed instead of preserving the forbidden content.
 
@@ -1427,7 +1427,7 @@ explicitly recorded; silent downgrade is invalid.
 
 DFPARSOAK closeout evidence must remain redacted evidence handles or hashes. It
 must preserve no sibling-repo mutation and must not contain raw logs, raw
-transcripts, raw prompts, provider payloads, credentials, local env values, raw
+transcripts, raw prompts, provider-supplied payloads, credentials, local environment contents, raw
 diffs, ignored private paths, or host-only evidence paths.
 
 #### Source Bundle Object
@@ -1442,8 +1442,8 @@ diffs, ignored private paths, or host-only evidence paths.
   `pipeline_required`; optional or absent for standalone closeout.
 - `protected_sources`: Optional metadata-only protected-source echo. Entries
   may include `path`, `category`, `sha256`, and adoption-sensitive `role`, but
-  must not include raw spec bodies, raw diffs, provider payloads, credentials,
-  local environment values, private evidence, or absolute private paths.
+  must not include raw spec bodies, raw diffs, provider-supplied payloads, credentials,
+  local environment contents, private evidence, or absolute private paths.
 
 Pipeline-required execution must fail closed before child launch when the plan
 or deterministic bridge output cannot supply matching `source_bundle.path`,
@@ -2184,7 +2184,7 @@ mirror updates, closeout ingest, canonical refresh, replan, and preflight block
 decisions are governed-pipeline-owned work. Dotfiles must not edit the
 governed-pipeline mirror path from this repository.
 Fixture and closeout examples remain metadata-only: they do not authorize raw
-evidence reads, credential payloads, provider payloads, local environment
+evidence reads, credential-bearing payloads, provider-supplied payloads, local environment
 values, `.pipeline/**` writes, Portal writes, Greenfield writes, or broad
 dotfiles root dependencies.
 
@@ -2221,7 +2221,7 @@ Pipeline-required fixtures use `source_bundle.path`, `source_bundle.sha256`,
 protected-source `role`, plan `sha256`, changed-path categories, advisory
 reason codes, and evidence-ref `sha256` metadata. They do not grant dotfiles
 permission to write governed-pipeline mirror paths, `.pipeline/**`, Portal
-contracts, Greenfield authority files, raw evidence, raw data, credentials, or
+contracts, Greenfield authority files, raw-evidence, raw data, credentials, or
 legacy `.codex/phase-loop/**` state.
 
 DFADOPTSOAK is the dotfiles adoption integration release gate. It proves root
@@ -2251,7 +2251,7 @@ DFPROMPTSYNC adds a prompt-safe contract map at
 `vendor/phase-loop-runtime/tests/fixtures/phase_loop_prompt_sync/matrix.json`. Prompt bundles and harness
 lane workflows may cite schema names, field names, fixture paths, artifact
 refs, and digests from those receipts, but must not copy raw secrets, raw
-transcripts, raw diffs, raw provider payloads, credential file contents, local
+transcripts, raw diffs, raw provider-supplied payloads, credential file contents, local
 env values, or prompt-only containment claims.
 
 ## Direct Invocation Policy
