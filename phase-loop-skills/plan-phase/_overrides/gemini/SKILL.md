@@ -166,6 +166,23 @@ out of contract:
 - `blocker_class`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, `sandbox_command_restriction`, `upstream_phase_unmet`, `contract_bug`, `gold_record_amendment`, `unretryable_external_outage`, `stuck_loop`
 
 
+
+## Spec Closeout Plan
+
+Generated phase plans must include a machine-readable section:
+
+```markdown
+## Spec Closeout Plan
+- schema: `spec_delta_closeout.v1`
+- decision: `<one of no_spec_delta, roadmap_amendment, canonical_spec_update, governed_pipeline_refresh, mirror_cutover_required, dotfiles_skill_source_update, human_source_judgment_required>`
+- target surfaces: `<repo-relative paths or globs>`
+- evidence paths: `<repo-relative metadata-only artifacts>`
+- redaction posture: `metadata_only`
+- downstream handling: `<none, roadmap amendment, Governed Pipeline refresh, mirror cutover, or human source judgment>`
+```
+
+Validate that the decision literal is in vocabulary, `target surfaces` and `evidence paths` are present, and `redaction posture` is `metadata_only`. Missing, malformed, or out-of-vocabulary spec-closeout sections are repairable `contract_bug` blockers unless the plan explicitly requires `human_source_judgment_required`. This section must preserve the allowed `## Execution Policy` selector vocabulary and must not invent new Dispatch Hints selectors. Reducer and verification lanes keep the existing `work-unit=phase_reducer` and `work-unit=phase_verify` policy literals.
+
 ## Verification Contract
 
 Generated plans must contain machine-checkable verification commands and an effective `automation.suite_command`; phase plans must validate those commands through IF-0-VC-2 before they are handoff-ready. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before downstream plans rely on it.

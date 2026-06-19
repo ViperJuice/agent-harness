@@ -16,6 +16,7 @@ every issue at once):
         # <anything>
         ## Context
         ## Interface Freeze Gates
+        ## Spec Closeout Plan
         ## Lane Index & Dependencies
         ## Lanes
         ## Execution Notes
@@ -41,6 +42,9 @@ every issue at once):
 
   (F) Every `Interfaces consumed` entry either appears in some upstream
       lane's `Interfaces provided` or is tagged "(pre-existing)".
+
+  (I) `Spec Closeout Plan` declares `spec_delta_closeout.v1`, a valid decision,
+      target surfaces, evidence paths, and `metadata_only` redaction.
 
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
@@ -628,6 +632,36 @@ def _check_h_eager_reexport(src: str) -> Findings:
     return out
 
 
+_SPEC_DELTA_DECISIONS = {
+    "no_spec_delta",
+    "roadmap_amendment",
+    "canonical_spec_update",
+    "governed_pipeline_refresh",
+    "mirror_cutover_required",
+    "dotfiles_skill_source_update",
+    "human_source_judgment_required",
+}
+
+
+def _check_i_spec_closeout_plan(src: str) -> Findings:
+    out: Findings = []
+    body = _extract_section(src, "Spec Closeout Plan")
+    if not body.strip():
+        return ["(I) missing required `## Spec Closeout Plan` section"]
+    for token in ("spec_delta_closeout.v1", "target surfaces", "evidence paths", "metadata_only"):
+        if token not in body:
+            out.append(f"(I) Spec Closeout Plan missing `{token}`")
+    decision_match = re.search(r"(?im)^\s*-\s*decision\s*:\s*`?([a-z_]+)`?\s*$", body)
+    if not decision_match:
+        out.append("(I) Spec Closeout Plan missing `decision: <literal>`")
+    elif decision_match.group(1) not in _SPEC_DELTA_DECISIONS:
+        allowed = ", ".join(sorted(_SPEC_DELTA_DECISIONS))
+        out.append(
+            f"(I) invalid Spec Closeout Plan decision `{decision_match.group(1)}`; allowed: {allowed}"
+        )
+    return out
+
+
 def _normalize_interface(sym: str) -> str:
     """Strip backticks, parens, and leading/trailing whitespace. Drop annotations like '(pre-existing)'."""
     s = sym.strip().strip("`").strip()
@@ -696,6 +730,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_f_interfaces_trace(lane_sections_parsed, lane_sections_raw))
     findings.extend(_check_g_grep_paired_with_tests(src))
     findings.extend(_check_h_eager_reexport(src))
+    findings.extend(_check_i_spec_closeout_plan(src))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

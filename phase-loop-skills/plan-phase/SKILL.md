@@ -122,7 +122,7 @@ permission to read ignored/private/raw inputs or write adjacent outputs; the
 active plan and source bundle explicitly own the exact path or glob before any
 such read or write is allowed. Do not infer write permission to `.pipeline/**`,
 governed-pipeline specs, Portal contracts, Greenfield authority files, raw
-data, raw evidence, provider payloads, credentials, or legacy `.codex/phase-loop/` state
+data, raw evidence, provider-supplied payloads, credentials, or legacy `.codex/phase-loop/` state
 from broad roadmap context. PLANBUNDLE owns actual source-bundle consumption,
 bundle freshness checks, and frontmatter population; PIPECONTRACT only freezes
 the wording and field names.
@@ -237,6 +237,23 @@ reducer or verification work units, use a lane selector with
 `work-unit=phase_reducer` or `work-unit=phase_verify`; do not invent action
 selectors such as `reduce` or `verify`.
 
+
+
+## Spec Closeout Plan
+
+Generated phase plans must include a machine-readable section:
+
+```markdown
+## Spec Closeout Plan
+- schema: `spec_delta_closeout.v1`
+- decision: `<one of no_spec_delta, roadmap_amendment, canonical_spec_update, governed_pipeline_refresh, mirror_cutover_required, dotfiles_skill_source_update, human_source_judgment_required>`
+- target surfaces: `<repo-relative paths or globs>`
+- evidence paths: `<repo-relative metadata-only artifacts>`
+- redaction posture: `metadata_only`
+- downstream handling: `<none, roadmap amendment, Governed Pipeline refresh, mirror cutover, or human source judgment>`
+```
+
+Validate that the decision literal is in vocabulary, `target surfaces` and `evidence paths` are present, and `redaction posture` is `metadata_only`. Missing, malformed, or out-of-vocabulary spec-closeout sections are repairable `contract_bug` blockers unless the plan explicitly requires `human_source_judgment_required`. This section must preserve the allowed `## Execution Policy` selector vocabulary and must not invent new Dispatch Hints selectors. Reducer and verification lanes keep the existing `work-unit=phase_reducer` and `work-unit=phase_verify` policy literals.
 
 ## Verification Contract
 

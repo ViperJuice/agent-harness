@@ -139,6 +139,13 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 **Produces**
 - IF-0-P2A-1
 
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `<literal>`
+- target surfaces: `<repo-relative paths or globs>`
+- evidence paths: `<repo-relative metadata-only artifacts>`
+- redaction posture: `metadata_only`
+
 ---
 
 <... additional phases following the same template ...>

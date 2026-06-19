@@ -116,6 +116,11 @@ Use this shape so `<harness>-plan-phase` can parse it:
 ```
 
 
+
+## Spec Delta Policy
+
+Every roadmap phase must declare its expected `spec_delta_closeout.v1` policy. Add a phase-local `**Spec closeout policy**` block that names `schema: spec_delta_closeout.v1`, the expected decision (`no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`), target surfaces, evidence paths, `redaction_posture: metadata_only`, and any non-human `blocker_class=contract_bug` routing for missing or malformed evidence. Use `no_spec_delta` for phases that do not change reusable specs, `dotfiles_skill_source_update` for dotfiles-owned skill/source updates, and downstream routing decisions such as `governed_pipeline_refresh` or `mirror_cutover_required` only as metadata-only deferrals, not as write authorization.
+
 ## Verification Contract
 
 Roadmap phases must set the expectation that downstream plans include machine-checkable verification commands and an effective `automation.suite_command`. If a phase depends on operational evidence that cannot be machine-checked directly, name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before any downstream plan treats it as a gate verdict.
