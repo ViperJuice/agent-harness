@@ -552,6 +552,41 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertNotIn(phrase, combined)
 
+    def test_claude_loader_guidance_freezes_repo_local_import_pattern(self):
+        claude_global = (ROOT / "claude-config" / "CLAUDE.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        onboarding = (ROOT / "ONBOARDING.md").read_text(encoding="utf-8")
+        contract = (ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md").read_text(
+            encoding="utf-8"
+        )
+        collaborator_docs = "\n".join((readme, onboarding, contract))
+
+        for token in (
+            "@AGENTS.md",
+            "owner-fleet global Claude overlay",
+            "repo-local `CLAUDE.md`",
+            "Claude-specific overlay",
+        ):
+            self.assertIn(token, claude_global)
+
+        for token in (
+            "IF-0-CLAUDELOAD-1",
+            "@AGENTS.md",
+            "project-local `CLAUDE.md`",
+            "repo-local `CLAUDE.md`",
+            "owner-fleet global overlay",
+            "Claude-specific overlay",
+        ):
+            self.assertIn(token, collaborator_docs)
+
+        for phrase in (
+            "project behavior through `~/.claude/AGENTS.md`",
+            "repo behavior through `~/.claude/AGENTS.md`",
+            "must install owner dotfiles",
+            "requires the full dotfiles",
+        ):
+            self.assertNotIn(phrase, collaborator_docs)
+
     def test_dfskillgovsoak_docs_define_release_gate_boundary(self):
         runbook_path = ROOT / "docs" / "phase-loop" / "dfskillgovsoak.md"
         bridge_readme_path = FIXTURES / "phase_loop_pipeline_bridge" / "README.md"
