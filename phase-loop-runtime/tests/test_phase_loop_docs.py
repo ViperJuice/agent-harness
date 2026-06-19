@@ -449,7 +449,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("Generic 1Password setup", text)
         self.assertIn("MCP gateway setup", text)
         self.assertIn("Unrelated editor configuration", text)
-        self.assertIn("provider payloads", text)
+        self.assertIn("provider payloads", text.lower())
         self.assertIn("local\n  environment values", text)
         self.assertIn("IF-0-SUBSTRATE-1", text)
 

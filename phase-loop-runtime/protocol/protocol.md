@@ -76,6 +76,52 @@ Plans without this metadata, or with metadata that no longer matches the
 selected roadmap, are stale for autonomous execution and must route back
 through planning instead of execution.
 
+## Spec Delta Closeout
+
+`spec_delta_closeout.v1` is the metadata-only decision record used when a phase
+may change reusable harness specs, runtime contracts, roadmap/plan templates, or
+workflow skills. Roadmap builders name the expected policy for each phase,
+phase plans copy that policy into a machine-readable `Spec Closeout Plan`,
+execute-phase closeouts choose exactly one decision, and phase-loop handoffs
+preserve the same decision for downstream routing.
+
+Required fields:
+
+- `schema`: `spec_delta_closeout.v1`
+- `decision`: one of `no_spec_delta`, `roadmap_amendment`,
+  `canonical_spec_update`, `governed_pipeline_refresh`,
+  `mirror_cutover_required`, `dotfiles_skill_source_update`, or
+  `human_source_judgment_required`
+- `target_surfaces`: repo-relative paths or globs describing the spec surfaces
+  affected or intentionally deferred
+- `evidence_paths`: repo-relative metadata evidence, such as a phase plan,
+  lane closeout, verification log, or runner artifact
+- `redaction_posture`: `metadata_only`
+- `blocker_class`: optional frozen blocker class when the decision cannot be
+  completed automatically
+
+The frozen target-surface vocabulary for dotfiles-hosted harness spec work is
+`shared/phase-loop/protocol.md`, `vendor/phase-loop-runtime/protocol/protocol.md`,
+`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`,
+`codex-config/skills/**`, `claude-config/claude-skills/**`,
+`gemini-config/skills/**`, `opencode-config/skills/**`,
+`vendor/phase-loop-skills/**`, and `vendor/phase-loop-runtime/tests/**`.
+
+`metadata_only` allows repo-relative paths, hashes, phase aliases, IF gates,
+decision literals, artifact names, and redacted diagnostics. It forbids raw
+specs, raw patch bodies, credentials, provider-supplied payloads, local environment values, and
+inferred reads from ignored/private/raw evidence sources. Standalone dotfiles
+phase-loop runs may emit `no_spec_delta` or `dotfiles_skill_source_update`
+without Governed Pipeline, `.pipeline/**`, Portal contracts, ReGenesis files,
+credentials, PMCP, owner shell setup, or sibling repo writes. Decisions that
+require Governed Pipeline ingest, mirror cutover, or human source judgment are
+metadata-only downstream routing signals, not dotfiles write authorization.
+
+Missing or malformed spec-delta closeout evidence is a repairable automation
+blocker with `blocker_class=contract_bug` unless the phase explicitly chooses
+`human_source_judgment_required`, in which case the closeout must name the
+non-secret human input required.
+
 ## Plan-Doc-Current Heuristic
 
 When a phase has been reopened to `planned`, the runner checks the current plan
@@ -1381,7 +1427,7 @@ Portal contracts, Greenfield authority files, raw-evidence, or legacy
 - `redaction_posture`: One of `metadata_only` or
   `rejected_forbidden_metadata`.
 
-Impact and evidence metadata exclude raw diffs, raw transcripts, secret-like values,
+Impact and evidence metadata exclude raw patch bodies, raw transcripts, secret-like values,
 absolute private paths, provider-supplied payloads, credential-bearing payloads, local environment contents,
 and private evidence bytes. Redaction violations make the closeout
 malformed instead of preserving the forbidden content.
@@ -1442,7 +1488,7 @@ diffs, ignored private paths, or host-only evidence paths.
   `pipeline_required`; optional or absent for standalone closeout.
 - `protected_sources`: Optional metadata-only protected-source echo. Entries
   may include `path`, `category`, `sha256`, and adoption-sensitive `role`, but
-  must not include raw spec bodies, raw diffs, provider-supplied payloads, credentials,
+  must not include raw specification bodies, raw patch bodies, provider-supplied payloads, credentials,
   local environment contents, private evidence, or absolute private paths.
 
 Pipeline-required execution must fail closed before child launch when the plan
@@ -2251,7 +2297,7 @@ DFPROMPTSYNC adds a prompt-safe contract map at
 `vendor/phase-loop-runtime/tests/fixtures/phase_loop_prompt_sync/matrix.json`. Prompt bundles and harness
 lane workflows may cite schema names, field names, fixture paths, artifact
 refs, and digests from those receipts, but must not copy raw secrets, raw
-transcripts, raw diffs, raw provider-supplied payloads, credential file contents, local
+transcripts, raw patch bodies, raw provider-supplied payloads, credential file contents, local
 env values, or prompt-only containment claims.
 
 ## Direct Invocation Policy

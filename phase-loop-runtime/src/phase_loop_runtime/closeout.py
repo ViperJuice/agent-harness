@@ -13,12 +13,15 @@ from .models import (
     PIPELINE_PROTECTED_SOURCE_CATEGORIES,
     PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES,
     PIPELINE_PROTECTED_SOURCE_ROLES,
+    SPEC_DELTA_CLOSEOUT_SCHEMA,
+    SPEC_DELTA_DECISIONS,
     DirtyPathClassification,
     PhaseLoopArtifacts,
     PhaseLoopAutomation,
     PhaseLoopBlocker,
     PhaseLoopCloseout,
     PhaseLoopSourceBundle,
+    SpecDeltaCloseout,
     PhaseLoopVerification,
     PhasePlanLane,
     PhaseSourceBundle,
@@ -89,6 +92,7 @@ def build_phase_loop_closeout(
     artifact_paths: Mapping[str, str] | None = None,
     evidence_refs: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]] = (),
     work_unit_closeout: WorkUnitCloseout | Mapping[str, Any] | None = None,
+    spec_delta_closeout: Mapping[str, Any] | SpecDeltaCloseout | None = None,
 ) -> dict[str, Any]:
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
@@ -195,6 +199,7 @@ def build_phase_loop_closeout(
         blocker=blkr,
         source_bundle=sb,
         source_truth_impact=source_truth_impact,
+        spec_delta_closeout=_spec_delta_closeout(spec_delta_closeout, terminal, normalized_automation),
     )
 
     payload = closeout.to_json()
@@ -210,6 +215,33 @@ def build_phase_loop_closeout(
         payload["work_unit"] = _work_unit_fields(work_unit_closeout)
         payload["lane"] = _lane_closeout_fields(work_unit_closeout)
     return _clean(payload)
+
+
+def _spec_delta_closeout(
+    explicit: Mapping[str, Any] | SpecDeltaCloseout | None,
+    terminal: Mapping[str, Any],
+    automation: Mapping[str, Any],
+) -> SpecDeltaCloseout | None:
+    value = explicit or terminal.get("spec_delta_closeout") or automation.get("spec_delta_closeout")
+    if value is None:
+        return None
+    if isinstance(value, SpecDeltaCloseout):
+        return value
+    data = dict(value)
+    schema = data.get("schema") or SPEC_DELTA_CLOSEOUT_SCHEMA
+    if schema != SPEC_DELTA_CLOSEOUT_SCHEMA:
+        raise ValueError(f"invalid spec delta closeout schema: {schema}")
+    decision = str(data.get("decision") or "")
+    if decision not in SPEC_DELTA_DECISIONS:
+        raise ValueError(f"invalid spec delta decision: {decision}")
+    return SpecDeltaCloseout(
+        schema=schema,
+        decision=decision,
+        target_surfaces=tuple(str(item) for item in data.get("target_surfaces") or ()),
+        evidence_paths=tuple(str(item) for item in data.get("evidence_paths") or ()),
+        redaction_posture=str(data.get("redaction_posture") or "metadata_only"),
+        blocker_class=data.get("blocker_class"),
+    )
 
 
 def _apply_verification_evidence_gate(

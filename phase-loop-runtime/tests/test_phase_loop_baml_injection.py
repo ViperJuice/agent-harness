@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+from phase_loop_runtime.baml_modular import build_baml_request, parse_baml_response
+from phase_loop_runtime.models import BLOCKER_CLASSES, PHASE_STATUSES
 from phase_loop_runtime.injection import build_lane_prompt_bundle, build_prompt_bundle
 from phase_loop_runtime.models import HarnessLaneAssignment
 
@@ -48,6 +50,29 @@ class PhaseLoopBamlInjectionTest(unittest.TestCase):
         self.assertIn("EmitPhaseCloseout", context)
         self.assertIn("Do not spawn peer harnesses directly.", context)
         self.assertNotIn("Required shared automation closeout fields:", context)
+
+    def test_baml_closeout_literals_align_with_runtime_models(self):
+        prompt = build_baml_request(
+            "EmitPhaseCloseout",
+            {
+                "phase_alias": "SPECGATE",
+                "plan_produces": ["IF-0-SPECGATE-1"],
+                "plan_owned_files": [],
+                "closeout_commit_sha": None,
+            },
+        ).prompt
+        for literal in PHASE_STATUSES:
+            self.assertIn(literal, prompt)
+        self.assertIn("dry_run is an event-level execution mode", prompt)
+        for literal in BLOCKER_CLASSES:
+            self.assertIn(literal, prompt)
+
+    def test_baml_closeout_rejects_dry_run_terminal_status(self):
+        with self.assertRaises(Exception):
+            parse_baml_response(
+                "EmitPhaseCloseout",
+                '{"terminal_status":"dry_run","verification_status":"not_run","dirty_paths":[],"produced_if_gates":[],"next_action":null,"blocker_class":null,"blocker_summary":null,"human_required":null,"required_human_inputs":[]}',
+            )
 
 
 if __name__ == "__main__":

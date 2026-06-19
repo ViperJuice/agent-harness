@@ -18,9 +18,13 @@ from phase_loop_runtime.models import (
     PIPELINE_PROTECTED_SOURCE_ROLES,
     PROMOTION_STATUSES,
     REDACTION_POSTURES,
+    SPEC_DELTA_CLOSEOUT_SCHEMA,
+    SPEC_DELTA_DECISIONS,
+    SPEC_DELTA_TARGET_SURFACES,
     TERMINAL_SUMMARY_FIELDS,
     WORK_UNIT_STATUSES,
 )
+from phase_loop_runtime.closeout import build_phase_loop_closeout
 from phase_loop_runtime.observability import NOTIFICATION_PAYLOAD_FIELDS, build_notification_payload, build_terminal_summary
 
 
@@ -208,6 +212,43 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         for literal in ("live-supported", "proof-blocked", "experimental", "manual-only"):
             self.assertIn(f"`{literal}`", self.protocol_text)
 
+    def test_protocol_documents_spec_delta_closeout_contract(self):
+        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+        for text in (self.protocol_text, shared):
+            normalized = " ".join(text.split())
+            normalized_lower = normalized.lower()
+            self.assertIn(SPEC_DELTA_CLOSEOUT_SCHEMA, text)
+            self.assertTrue("target surfaces" in normalized_lower or "target_surfaces" in normalized_lower)
+            self.assertTrue("evidence paths" in normalized_lower or "evidence_paths" in normalized_lower)
+            self.assertIn("metadata_only", text)
+            self.assertIn("raw specification", normalized)
+            self.assertIn("raw patch", normalized)
+            self.assertIn("credentials", normalized)
+            self.assertIn("provider-supplied payloads", normalized)
+            self.assertIn("local environment values", normalized)
+            for literal in SPEC_DELTA_DECISIONS:
+                self.assertIn(f"`{literal}`", text)
+            for surface in SPEC_DELTA_TARGET_SURFACES:
+                self.assertIn(f"`{surface}`", text)
+
+    def test_closeout_can_carry_metadata_only_spec_delta_decision(self):
+        payload = build_phase_loop_closeout(
+            phase_alias="SPECGATE",
+            plan_path=ROOT / "plans" / "phase-plan-v42-SPECGATE.md",
+            terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+            automation={"status": "complete", "verification_status": "passed"},
+            spec_delta_closeout={
+                "schema": SPEC_DELTA_CLOSEOUT_SCHEMA,
+                "decision": "dotfiles_skill_source_update",
+                "target_surfaces": ("shared/phase-loop/protocol.md",),
+                "evidence_paths": ("plans/phase-plan-v42-SPECGATE.md",),
+                "redaction_posture": "metadata_only",
+            },
+        )
+        self.assertEqual(payload["spec_delta_closeout"]["schema"], SPEC_DELTA_CLOSEOUT_SCHEMA)
+        self.assertEqual(payload["spec_delta_closeout"]["decision"], "dotfiles_skill_source_update")
+        self.assertEqual(payload["spec_delta_closeout"]["redaction_posture"], "metadata_only")
+
     def test_protocol_documents_plan_doc_current_heuristic(self):
         for token in (
             "Plan-Doc-Current Heuristic",
@@ -384,8 +425,8 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "redaction_posture",
             "Impact hints are advisory",
             "governed-pipeline owns canonical refresh, replan, and block decisions",
-            "raw diffs",
-            "raw spec bodies",
+            "raw patch bodies",
+            "raw specification bodies",
             "raw transcripts",
             "secret-like values",
             "absolute private paths",
