@@ -3,12 +3,33 @@ from pathlib import Path
 import json
 import re
 
+from phase_loop_runtime.skill_install import REQUIRED_SKILLS
+from phase_loop_runtime.skill_inventory import CANONICAL_WORKFLOW_SKILLS, HARNESS_INSTALL_ROOT_HINTS, HARNESS_SOURCE_ROOTS
+
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class PhaseLoopDocsTest(unittest.TestCase):
+    def test_skillpack_manifest_lists_canonical_skills_and_roots(self):
+        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        self.assertIn("SKILLPACK manifest", matrix)
+        self.assertIn("IF-0-SKILLPACK-1", matrix)
+
+        for harness, skills in CANONICAL_WORKFLOW_SKILLS.items():
+            if harness not in {"codex", "claude", "gemini", "opencode"}:
+                continue
+            expected = tuple(f"{harness}-{skill}" for skill in REQUIRED_SKILLS)
+            self.assertEqual(set(skills), set(expected))
+            for skill in expected:
+                with self.subTest(harness=harness, skill=skill):
+                    self.assertIn(f"`{skill}`", matrix)
+            for source_root in HARNESS_SOURCE_ROOTS[harness]:
+                self.assertIn(f"`{source_root}/**`", matrix)
+            for install_root in HARNESS_INSTALL_ROOT_HINTS[harness]:
+                self.assertIn(f"`{install_root}`", matrix)
+
     def test_workflow_skill_frontmatter_matches_harness_matrix(self):
         matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
         harness_roots = {

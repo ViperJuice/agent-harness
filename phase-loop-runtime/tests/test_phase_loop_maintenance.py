@@ -11,6 +11,7 @@ from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.maintenance import MaintenanceOptions, SyncSkillsOptions, collect_reflection_inventory, sync_bridge_skills
 from phase_loop_runtime.runner import run_loop
 from phase_loop_runtime.skill_inventory import (
+    CANONICAL_WORKFLOW_SKILLS,
     classify_skill_like_directories,
     inspect_vestigial_workflow_candidates,
     inspect_workflow_skill_inventory,
@@ -33,6 +34,27 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             self.assertIn("vestigial_workflow_candidates", summary)
             self.assertIn("skill_classifications", summary)
             self.assertEqual(summary["changed"], [])
+
+    def test_sync_skills_check_audits_workflow_pack_without_mutating_roots(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            install_root = Path(td) / "codex-home" / ".codex" / "skills"
+            install_root.mkdir(parents=True)
+
+            with patch("phase_loop_runtime.skill_inventory.discover_installed_skill_roots", return_value=(str(install_root),)):
+                summary = sync_bridge_skills(repo, SyncSkillsOptions(harnesses=("codex", "claude")))
+
+            self.assertFalse(summary["blocked"])
+            self.assertEqual(summary["changed"], [])
+            workflow_names = {
+                record["harness_target"]: []
+                for record in summary["workflow_sources"]
+            }
+            for record in summary["workflow_sources"]:
+                workflow_names[record["harness_target"]].append(record["skill_name"])
+            self.assertEqual(tuple(workflow_names["codex"]), CANONICAL_WORKFLOW_SKILLS["codex"])
+            self.assertEqual(tuple(workflow_names["claude"]), CANONICAL_WORKFLOW_SKILLS["claude"])
+            self.assertFalse(any(install_root.iterdir()))
 
     def test_workflow_source_resolution_uses_only_canonical_roots(self):
         repo = ROOT
@@ -149,6 +171,8 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             self.assertFalse((install_root / "plan-phase").exists())
             self.assertTrue((install_root / "claude-phase-loop").is_symlink())
             self.assertEqual(summary["changed"][0]["skill_name"], "claude-phase-loop")
+            self.assertFalse((install_root / "claude-plan-phase").exists())
+            self.assertFalse((install_root / "claude-execute-detailed").exists())
 
     def test_bootstrap_skips_vestigial_workflows_but_keeps_canonical_roots(self):
         bootstrap = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")

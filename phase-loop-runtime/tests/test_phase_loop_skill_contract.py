@@ -1,4 +1,5 @@
 import hashlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -125,6 +126,25 @@ class PhaseLoopSkillContractTest(unittest.TestCase):
             self.assert_file_contains(harness["plan"], plan_tokens)
             self.assert_file_contains(harness["execute"], execute_tokens)
             self.assert_file_contains(harness["bridge"], bridge_tokens)
+
+    def test_workflow_skills_preserve_standalone_mode_without_mandatory_downstream_systems(self):
+        roots = (
+            ROOT / "vendor" / "phase-loop-skills",
+            ROOT / "codex-config" / "skills",
+            ROOT / "claude-config" / "claude-skills",
+            ROOT / "gemini-config" / "skills",
+            ROOT / "opencode-config" / "skills",
+        )
+        forbidden = re.compile(
+            r"must use Governed Pipeline|requires Governed Pipeline|must use Portal|requires Portal|"
+            r"must use Greenfield|requires Greenfield|must use \.pipeline|requires \.pipeline|"
+            r"must provide a source bundle|requires a source bundle|must install owner dotfiles|"
+            r"must source shell profile"
+        )
+        for root in roots:
+            for path in sorted(root.glob("*/SKILL.md")):
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertIsNone(forbidden.search(path.read_text(encoding="utf-8")))
 
     def test_codex_plan_phase_names_planbundle_frontmatter_rules(self):
         path = ROOT / "codex-config" / "skills" / "codex-plan-phase" / "SKILL.md"

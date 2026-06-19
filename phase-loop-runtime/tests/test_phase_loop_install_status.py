@@ -33,6 +33,20 @@ class PhaseLoopInstallStatusTest(unittest.TestCase):
             self.assertEqual(payload["baml_closeout_schema"]["status"], "available")
             self.assertIn(payload["dev_skills_ignore"]["gitignore_entry"], {"present", "missing"})
 
+    def test_install_status_reports_codex_and_non_codex_missing_packs_without_private_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            skill_root = Path(td) / "skills"
+
+            with patch.dict("os.environ", {"PHASE_LOOP_SKILL_BUNDLE": str(skill_root)}, clear=False):
+                payload = build_install_status(repo, harnesses=("codex", "claude"))
+
+            self.assertEqual(tuple(record["harness"] for record in payload["harnesses"]), ("codex", "claude"))
+            self.assertTrue(all(record["skill_parity"] == "missing" for record in payload["harnesses"]))
+            self.assertTrue(all(record["missing_skill_count"] == len(REQUIRED_SKILLS) for record in payload["harnesses"]))
+            serialized = json.dumps(payload, sort_keys=True)
+            self.assertNotIn(str(skill_root), serialized)
+
     def test_install_status_redacts_private_paths(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
