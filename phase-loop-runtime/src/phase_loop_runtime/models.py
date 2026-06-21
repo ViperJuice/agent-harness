@@ -53,6 +53,10 @@ WORK_UNIT_METRIC_SCHEMA_VERSION = "work_unit_metric.v1"
 NORMALIZED_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 UNSUPPORTED_POLICY_BEHAVIORS = ("block", "fallback", "inherit_default")
 CLOSEOUT_MODES = ("manual", "commit", "push")
+# v45 IF-0-FOUND-1: cross-phase scheduler surface. "off"/"serialized" preserve
+# today's one-phase-at-a-time behavior; "concurrent" dispatches the full ready
+# wave. Wiring into the runner main-loop lands in v45 Phase 3 (SCHED).
+PHASE_SCHEDULER_MODES = ("off", "serialized", "concurrent")
 # Closeout-exception vocabulary (roadmap v40 PROTO freeze). GATE/BREAKGLASS import
 # these; they do not redefine them. Sensitivity classes drive the graduated gate:
 # SAFE classes may auto-pass as a recorded soft exception; UNSAFE classes require an

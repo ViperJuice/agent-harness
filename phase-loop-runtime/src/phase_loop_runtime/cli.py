@@ -16,7 +16,7 @@ from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PipelinePlanMetadata, StateSnapshot, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, utc_now
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -53,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
     )
     parser.add_argument("--full-phase", action="store_true", help="Count --max-phases as complete plan-plus-execute phase cycles.")
+    parser.add_argument(
+        "--phase-scheduler",
+        dest="phase_scheduler_mode",
+        choices=PHASE_SCHEDULER_MODES,
+        default="off",
+        help="Cross-phase scheduling mode (v45): 'off'/'serialized' dispatch one ready phase at a time; 'concurrent' dispatches the full ready wave.",
+    )
     parser.add_argument("--no-deprecation-hints", action="store_true", help="Suppress legacy --max-phases action-count hints.")
     parser.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
     parser.add_argument("--model")

@@ -23,6 +23,8 @@ from .models import (
     ExecutionPolicyDocument,
     ExecutionPolicyParseError,
     ExecutionPolicyRule,
+    LaneIRDiagnostic,
+    PHASE_SCHEDULER_MODES,
     PHASE_SOURCE_BUNDLE_SCHEMA,
     PHASE_STATUSES,
     PhaseSourceBundle,
@@ -1638,6 +1640,110 @@ def parse_plan_ownership(repo: Path, roadmap: Path, plan: Path | None) -> PlanOw
         valid=not errors,
         errors=tuple(errors),
     )
+
+
+# --- v45 FOUND: cross-phase scheduling, ownership, and reconciliation ----------
+# Frozen contracts for runner hardening (IF-0-FOUND-1..4). These are pure
+# functions plus the no-op reconcile hook; the runner main-loop wiring that
+# consumes select_ready_phase_wave lands in v45 Phase 3 (SCHED).
+
+
+def phase_owned_files(repo: Path, roadmap: Path, alias: str) -> tuple[str, ...]:
+    """IF-0-FOUND-2. Owned-file patterns a phase declares across its plan's
+    writer lanes. Returns ``()`` when the phase is unplanned (no plan artifact)
+    or genuinely owns nothing — the same empty-owned condition that makes a
+    verified plan ``is_control_only``. Ownership is sourced from the resolved
+    plan artifact via :func:`parse_plan_ownership`; roadmaps carry no lane
+    ownership, so an unplanned phase is correctly empty-owned here."""
+    plan = find_plan_artifact(repo, alias, roadmap)
+    return parse_plan_ownership(repo, roadmap, plan).owned_patterns
+
+
+def compute_ready_phases(
+    roadmap: Path,
+    classifications: dict[str, str],
+    completed: set[str],
+) -> tuple[str, ...]:
+    """IF-0-FOUND-3. Roadmap phases whose ``**Depends on**`` aliases are all in
+    ``completed`` and whose own status in ``classifications`` is neither
+    ``complete`` nor ``blocked``. Order follows the roadmap's phase order."""
+    from .roadmap_lint import _extract_phases
+
+    try:
+        text = roadmap.read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    ready: list[str] = []
+    for phase in _extract_phases(text):
+        if classifications.get(phase.alias) in {"complete", "blocked"}:
+            continue
+        if all(dependency in completed for dependency in phase.depends_on):
+            ready.append(phase.alias)
+    return tuple(ready)
+
+
+def select_ready_phase_wave(
+    waves: tuple[tuple[str, ...], ...],
+    classifications: dict[str, str],
+    mode: str,
+) -> tuple[str, ...]:
+    """IF-0-FOUND-1. Given precomputed topological ``waves`` of phase aliases,
+    return the aliases to dispatch next, skipping any already ``complete`` or
+    ``blocked``. ``off``/``serialized`` return at most one alias (today's
+    one-phase-at-a-time behavior); ``concurrent`` returns the full ready wave.
+    Selects from the first wave that still has ready phases."""
+    for wave in waves:
+        ready = tuple(
+            alias
+            for alias in wave
+            if classifications.get(alias) not in {"complete", "blocked"}
+        )
+        if not ready:
+            continue
+        return ready if mode == "concurrent" else ready[:1]
+    return ()
+
+
+def validate_concurrent_phase_ownership(
+    repo: Path,
+    roadmap: Path,
+    aliases: tuple[str, ...],
+) -> tuple[LaneIRDiagnostic, ...]:
+    """IF-0-FOUND-2. Phase-level analog of
+    ``lane_scheduler.validate_concurrent_lane_ownership``: emit an
+    ``overlapping_write_ownership`` diagnostic for any pair of phases in
+    ``aliases`` whose declared owned files overlap, which would make them unsafe
+    to execute concurrently."""
+    owned = {alias: phase_owned_files(repo, roadmap, alias) for alias in aliases}
+    diagnostics: list[LaneIRDiagnostic] = []
+    ordered = list(aliases)
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1 :]:
+            if _lane_patterns_overlap(owned[left], owned[right]):
+                diagnostics.append(
+                    LaneIRDiagnostic(
+                        kind="overlapping_write_ownership",
+                        lane_id=right,
+                        message=(
+                            f"phases {left} and {right} cannot run concurrently "
+                            "with overlapping owned files"
+                        ),
+                        details={"left": left, "right": right},
+                    )
+                )
+    return tuple(diagnostics)
+
+
+def reconcile_against_git_reality(
+    repo: Path,
+    roadmap: Path,
+    classifications: dict[str, str],
+) -> dict[str, str]:
+    """IF-0-FOUND-4. Reality-reconcile hook. Ships as an identity/no-op in
+    FOUND; v45 Phase 2C (RECONCILE, IF-0-RECONCILE-1) replaces the body to
+    promote a phase to ``complete`` when a merged plan artifact / closeout
+    commit carrying its plan SHA is present in git history."""
+    return dict(classifications)
 
 
 def classify_phase_team_eligibility(repo: Path, roadmap: Path, plan: Path | None) -> PhaseTeamEligibility:
