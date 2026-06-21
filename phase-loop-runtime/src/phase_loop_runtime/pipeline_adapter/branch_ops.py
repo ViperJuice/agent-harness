@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from .flag import branchgov_enabled
 from .markers import detect_pipeline_mode
+
+
+@dataclass(frozen=True)
+class BranchDecision:
+    """Outcome of a pipeline-branch governance decision (issue #44, IF-0-BRANCH-1).
+
+    ``diverged`` is True when the runner switched away from the operator's
+    current branch to the ``consiliency/pipeline/<version>`` convention branch —
+    the silent-divergence condition #44 makes visible.
+    """
+
+    original_branch: str
+    target_branch: str
+    action: str  # "stay" | "checkout" | "create"
+    diverged: bool
 
 
 # Stable prefix of the BranchGov default-branch refusal message. Shared so
@@ -25,11 +42,12 @@ class PipelineDefaultBranchRefusalError(PipelineBranchInvariantError):
         super().__init__(message, blocker_class="branch_sync_conflict")
 
 
-def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch: str) -> str:
+def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch: str) -> BranchDecision:
     repo = Path(repo_root)
     pipeline_branch = f"consiliency/pipeline/{roadmap_version}"
     if not _branchgov_active(repo):
-        return _current_branch(repo)
+        current = _current_branch(repo)
+        return BranchDecision(current, current, "stay", False)
 
     current = _current_branch(repo)
     if current == default_branch and _dirty_status(repo):
@@ -45,6 +63,20 @@ def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch
             blocker_class="branch_sync_conflict",
         )
 
+    # Already on the convention branch: no divergence; just stay current.
+    if current == pipeline_branch:
+        rebase = _git(repo, "rebase", base_ref)
+        if rebase.returncode != 0:
+            raise PipelineBranchInvariantError(
+                f"Pipeline branch {pipeline_branch} could not rebase onto {base_ref}.",
+                blocker_class="merge_conflict",
+            )
+        return BranchDecision(current, pipeline_branch, "stay", False)
+
+    # #44: the runner is about to switch the operator's working tree from
+    # `current` to the convention branch. Surface it loudly instead of silently.
+    _warn_branch_divergence(current, pipeline_branch, roadmap_version)
+
     if _local_branch_exists(repo, pipeline_branch):
         checkout = _git(repo, "checkout", pipeline_branch)
         if checkout.returncode != 0:
@@ -58,14 +90,24 @@ def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch
                 f"Pipeline branch {pipeline_branch} could not rebase onto {base_ref}.",
                 blocker_class="merge_conflict",
             )
-    else:
-        created = _git(repo, "checkout", "-b", pipeline_branch, base_ref)
-        if created.returncode != 0:
-            raise PipelineBranchInvariantError(
-                f"Unable to create pipeline branch {pipeline_branch} from {base_ref}: {_stderr_excerpt(created)}",
-                blocker_class="branch_sync_conflict",
-            )
-    return pipeline_branch
+        return BranchDecision(current, pipeline_branch, "checkout", True)
+
+    created = _git(repo, "checkout", "-b", pipeline_branch, base_ref)
+    if created.returncode != 0:
+        raise PipelineBranchInvariantError(
+            f"Unable to create pipeline branch {pipeline_branch} from {base_ref}: {_stderr_excerpt(created)}",
+            blocker_class="branch_sync_conflict",
+        )
+    return BranchDecision(current, pipeline_branch, "create", True)
+
+
+def _warn_branch_divergence(current: str, target: str, roadmap_version: str) -> None:
+    sys.stderr.write(
+        f"phase-loop: switching from '{current}' to convention branch '{target}' "
+        f"(roadmap {roadmap_version}) per branch governance; files present only on "
+        f"'{current}' (e.g. a roadmap/plan not yet on '{target}') will not be "
+        f"visible after the switch.\n"
+    )
 
 
 def refuse_default_branch_commit(repo_root: Path, default_branch: str) -> None:

@@ -298,16 +298,19 @@ def _pipeline_branch_blocker_from_error(exc: Exception) -> dict[str, object]:
     }
 
 
-def _ensure_pipeline_branch_before_dispatch(repo: Path, roadmap: Path) -> dict[str, object] | None:
+def _ensure_pipeline_branch_before_dispatch(repo: Path, roadmap: Path):
+    """Returns (blocker_or_None, BranchDecision_or_None). #44: the BranchDecision
+    surfaces a silent switch to the convention branch so the caller can emit a
+    coordinator.branch_switched event on divergence."""
     if not _pipeline_branchgov_active(repo):
-        return None
+        return None, None
     from .pipeline_adapter.branch_ops import ensure_pipeline_branch
 
     try:
-        ensure_pipeline_branch(repo, _roadmap_version(roadmap), _default_branch(repo))
+        decision = ensure_pipeline_branch(repo, _roadmap_version(roadmap), _default_branch(repo))
     except Exception as exc:
-        return _pipeline_branch_blocker_from_error(exc)
-    return None
+        return _pipeline_branch_blocker_from_error(exc), None
+    return None, decision
 
 
 def _refuse_pipeline_default_branch_commit(repo: Path) -> dict[str, object] | None:
@@ -1203,7 +1206,26 @@ def run_loop(
             plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             stale_pipeline_plan = _stale_pipeline_plan_candidate(repo, roadmap, alias) if plan is None else None
             if not dry_run and status in {"planned", "executed"}:
-                branch_blocker = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+                branch_blocker, branch_decision = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+                if branch_decision is not None and branch_decision.diverged:
+                    # #44: make the convention-branch switch visible (was silent).
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action="coordinator.branch_switched",
+                        status=classifications.get(alias, "unknown"),
+                        selection=selection,
+                        metadata={
+                            "original_branch": branch_decision.original_branch,
+                            "target_branch": branch_decision.target_branch,
+                            # `branch_action` (not `action`) to avoid colliding with the
+                            # event's own action field ("coordinator.branch_switched").
+                            "branch_action": branch_decision.action,
+                            "diverged": True,
+                            "roadmap_version": _roadmap_version(roadmap),
+                        },
+                    )
                 if branch_blocker is not None:
                     classifications[alias] = "blocked"
                     append_event(

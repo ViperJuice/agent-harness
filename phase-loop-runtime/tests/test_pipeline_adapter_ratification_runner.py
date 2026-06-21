@@ -48,7 +48,7 @@ def test_runner_emits_ratification_when_enabled_pipeline_reaches_gate(tmp_path, 
 
     with (
         patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
-        patch("phase_loop_runtime.runner._ensure_pipeline_branch_before_dispatch", return_value=None),
+        patch("phase_loop_runtime.runner._ensure_pipeline_branch_before_dispatch", return_value=(None, None)),
         patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch),
     ):
         run_loop(repo, roadmap, phase="RUNNER")
