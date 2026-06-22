@@ -107,21 +107,29 @@ def write_phase_state(repo: Path, roadmap: Path, phases: dict[str, str]) -> None
 
 
 def isolated_home_env(home_dir: Path, base_env: dict | None = None) -> dict:
-    """Build a subprocess env with HOME overridden but PYTHONPATH preserving user-site.
+    """Build a subprocess env with HOME overridden but user-site still discoverable.
 
-    Required for tests that shell out to `phase-loop` after swapping HOME — without
-    this, the pip-installed phase_loop_runtime package (in user-site, HOME-derived)
-    becomes invisible to the subprocess.
+    Tests that shell out to `phase-loop` after swapping HOME would otherwise lose
+    the pip-installed phase_loop_runtime package: user-site is HOME-derived
+    (``$HOME/.local/lib/pythonX.Y/site-packages``), so the swapped HOME points the
+    subprocess at an empty user-site.
+
+    Fix: set PYTHONUSERBASE to the REAL user base (captured before the swap) so the
+    subprocess's OWN interpreter resolves its OWN version-matched user-site. This is
+    robust when the test runner's Python differs from the installed CLI's Python
+    (e.g. a 3.10 test harness shelling out to a 3.12-installed `phase-loop` console
+    script). The previous approach — prepending the *runner's*
+    ``site.getusersitepackages()`` onto PYTHONPATH — injected a wrong-ABI 3.10
+    user-site ahead of the 3.12 CLI's own, shadowing pydantic_core and breaking the
+    import with ``No module named 'pydantic_core._pydantic_core'``.
     """
     import site
     env = dict(base_env if base_env is not None else os.environ)
+    user_base = site.getuserbase()  # real ~/.local, derived from the current HOME
     env["HOME"] = str(home_dir)
-    user_site = site.getusersitepackages()
-    if user_site:
-        existing = env.get("PYTHONPATH", "").split(os.pathsep) if env.get("PYTHONPATH") else []
-        if user_site not in existing:
-            existing.insert(0, user_site)
-        env["PYTHONPATH"] = os.pathsep.join(existing)
+    if user_base:
+        env["PYTHONUSERBASE"] = user_base
+        env.pop("PYTHONNOUSERSITE", None)  # keep user-site enabled in the subprocess
     return env
 
 
