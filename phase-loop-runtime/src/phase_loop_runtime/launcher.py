@@ -46,6 +46,10 @@ CLAUDE_PLUGIN_DIR_PLACEHOLDER = "__PHASE_LOOP_CLAUDE_PLUGIN_DIR__"
 CLAUDE_SETTINGS_PLACEHOLDER = "__PHASE_LOOP_CLAUDE_SETTINGS__"
 CLAUDE_AGENTS_PLACEHOLDER = "__PHASE_LOOP_CLAUDE_AGENTS__"
 CLAUDE_MCP_CONFIG_PLACEHOLDER = "__PHASE_LOOP_CLAUDE_MCP_CONFIG__"
+# Build-time sentinel for the Codex `--output-schema` path. The real file is
+# materialized at LAUNCH time inside launch_with_spec's try/finally (see #63), so
+# build-without-launch never creates a temp file and there is nothing to leak.
+CODEX_OUTPUT_SCHEMA_PLACEHOLDER = "__PHASE_LOOP_CODEX_OUTPUT_SCHEMA__"
 CLAUDE_ADAPTER_ALLOWED_TOOLS = "Bash,Read,Edit,MultiEdit,Write,Glob,Grep,LS"
 CLAUDE_ADAPTER_DISALLOWED_TOOLS = (
     "Agent,TaskCreate,TaskUpdate,TaskList,TeamCreate,TeamDelete,SendMessage,"
@@ -109,6 +113,10 @@ class LaunchSpec:
     claude_sidecar_url: str | None = None
     claude_channel_session_id: str | None = None
     cleanup_paths: tuple[str, ...] = ()
+    # Codex closeout schema carried for LAUNCH-time materialization (#63). The
+    # command holds CODEX_OUTPUT_SCHEMA_PLACEHOLDER until launch substitutes a
+    # run-scoped path. Never serialized raw (would dump the schema body).
+    codex_output_schema: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -293,8 +301,10 @@ def build_codex_command(
     if json_output:
         command.append("--json")
     if closeout_schema is not None:
-        schema_path = _write_temp_schema(closeout_schema)
-        command.extend(["--output-schema", str(schema_path)])
+        # Defer materialization to launch time (#63): emit a placeholder here; the
+        # real run-scoped file is written + substituted in _resolve_command_context
+        # and cleaned in launch_with_spec's finally. No temp is created at build.
+        command.extend(["--output-schema", CODEX_OUTPUT_SCHEMA_PLACEHOLDER])
     command.append(prompt)
     return command
 
@@ -643,7 +653,11 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            cleanup_paths=_schema_cleanup_paths(command),
+            # No build-time temp to clean (#63): the command holds a placeholder;
+            # the real path is materialized + cleaned at launch from the resolved
+            # command. cleanup_paths stays empty here.
+            cleanup_paths=(),
+            codex_output_schema=closeout_schema,
         )
     if request.executor == "claude":
         delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
@@ -1320,7 +1334,12 @@ def launch_with_spec(
             cwd=spec.wrapped_cwd,
         )
     finally:
-        cleanup_evidence = _cleanup_paths(spec.cleanup_paths)
+        # Clean from the RESOLVED command so the launch-time materialized codex
+        # schema path (run-scoped or fallback) is removed here (#63), alongside any
+        # build-time cleanup paths. Build-without-launch never reaches this.
+        cleanup_evidence = _cleanup_paths(
+            tuple(dict.fromkeys((*spec.cleanup_paths, *_schema_cleanup_paths(command))))
+        )
     if cleanup_evidence:
         result = replace(
             result,
@@ -1937,7 +1956,46 @@ def _extract_opencode_json_lines(raw: str) -> str:
     return ""
 
 
+def _materialize_codex_schema(schema: dict[str, Any], log_path: Path | None) -> str:
+    """Write the Codex closeout schema at LAUNCH time (#63).
+
+    Mirrors `_phase_loop_context_path`: when a run-scoped `log_path` exists, write
+    next to the run log (NOT global /tmp) so a SIGKILL leak stays inside the
+    reclaimed run/worktree dir. Without a log dir, fall back to a temp file — but
+    that path is only reached inside `launch_with_spec`'s try/finally, which cleans
+    it, so build-without-launch never creates anything.
+    """
+
+    if log_path is not None:
+        target = log_path.parent / "codex-output-schema.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(schema, sort_keys=True) + "\n", encoding="utf-8")
+        return str(target)
+    return str(_write_temp_schema(schema))
+
+
+def _drop_arg_pair(command: list[str], flag: str) -> list[str]:
+    resolved: list[str] = []
+    skip = False
+    for part in command:
+        if skip:
+            skip = False
+            continue
+        if part == flag:
+            skip = True
+            continue
+        resolved.append(part)
+    return resolved
+
+
 def _resolve_command_context(spec: LaunchSpec, log_path: Path | None) -> list[str]:
+    if spec.executor == "codex" and CODEX_OUTPUT_SCHEMA_PLACEHOLDER in " ".join(spec.command):
+        if spec.codex_output_schema is None:
+            # Inconsistent (placeholder without a schema): never hand codex a
+            # literal placeholder — drop the --output-schema pair.
+            return _drop_arg_pair(spec.command, "--output-schema")
+        schema_path = _materialize_codex_schema(spec.codex_output_schema, log_path)
+        return [part.replace(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, schema_path) for part in spec.command]
     if spec.executor == "claude" and any(
         placeholder in " ".join(spec.command)
         for placeholder in (

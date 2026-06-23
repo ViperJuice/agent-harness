@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime.baml_modular import export_function_schema
-from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
+from phase_loop_runtime.launcher import CODEX_OUTPUT_SCHEMA_PLACEHOLDER, build_launch_request, build_launch_spec
 from phase_loop_runtime.models import CLOSEOUT_SCHEMA
 from phase_loop_runtime.profiles import resolve_profile_for_executor
 from phase_loop_runtime.prompts import build_prompt
@@ -41,11 +41,10 @@ class PhaseLoopSchemaFlowTest(unittest.TestCase):
         for action in ("execute", "repair", "review"):
             with self.subTest(action=action, executor="codex"):
                 spec = self._spec("codex", action)
-                schema_path = Path(spec.command[spec.command.index("--output-schema") + 1])
-                try:
-                    self.assertEqual(_schema_hash(json.loads(schema_path.read_text(encoding="utf-8"))), expected_hash)
-                finally:
-                    schema_path.unlink(missing_ok=True)
+                # #63: codex schema is carried on the spec for launch-time
+                # materialization; the build command holds a placeholder.
+                self.assertEqual(spec.command[spec.command.index("--output-schema") + 1], CODEX_OUTPUT_SCHEMA_PLACEHOLDER)
+                self.assertEqual(_schema_hash(spec.codex_output_schema), expected_hash)
 
             with self.subTest(action=action, executor="claude"):
                 spec = self._spec("claude", action)

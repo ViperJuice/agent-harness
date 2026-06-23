@@ -12,6 +12,7 @@ from phase_loop_runtime.launcher import (
     CLAUDE_ADAPTER_ALLOWED_TOOLS,
     CLAUDE_ADAPTER_DISALLOWED_TOOLS,
     CLAUDE_CONTEXT_PLACEHOLDER,
+    CODEX_OUTPUT_SCHEMA_PLACEHOLDER,
     LaunchResult,
     build_codex_command,
     build_launch_request,
@@ -154,6 +155,107 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         ):
             self.assertIn(token, prompt)
 
+    def _codex_schema_request(self):
+        selection = resolve_profile("execute")
+        bundle = build_prompt(
+            "execute",
+            Path("/repo/specs/phase-plans-v1.md"),
+            phase="ADAPTER",
+            plan=Path("/repo/plans/phase-plan-v1-ADAPTER.md"),
+        )
+        return build_launch_request(
+            executor="codex",
+            action="execute",
+            repo=Path("/repo"),
+            roadmap=Path("/repo/specs/phase-plans-v1.md"),
+            phase="ADAPTER",
+            plan=Path("/repo/plans/phase-plan-v1-ADAPTER.md"),
+            model_selection=selection,
+            prompt_bundle=bundle,
+            json_output=True,
+            bypass_approvals=False,
+        )
+
+    def _tmp_schema_files(self):
+        import glob
+
+        return set(glob.glob(str(Path(tempfile.gettempdir()) / "*-phase-loop-closeout-schema.json")))
+
+    def test_codex_build_without_launch_creates_no_tmp_schema(self):
+        # #63 vector 2: building a Codex spec (with closeout schema) but never
+        # launching it must NOT create a /tmp schema file. Pre-fix this fails
+        # because build_codex_command materializes the temp at build time.
+        before = self._tmp_schema_files()
+        spec = build_launch_spec(self._codex_schema_request())
+        after = self._tmp_schema_files()
+        self.assertEqual(after - before, set(), "build leaked a /tmp schema file")
+        self.assertIn("--output-schema", spec.command)
+        # The build command carries a placeholder, not a real materialized path.
+        idx = spec.command.index("--output-schema")
+        self.assertEqual(spec.command[idx + 1], CODEX_OUTPUT_SCHEMA_PLACEHOLDER)
+        self.assertIsNotNone(spec.codex_output_schema)
+        self.assertEqual(spec.cleanup_paths, ())
+
+    def test_codex_launch_materializes_schema_run_scoped_and_cleans_it(self):
+        # #63 vector 1 mitigation: at launch the schema is materialized under the
+        # run-scoped log dir (not global /tmp) and cleaned in the finally.
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "run" / "agent.log"
+            captured = {}
+            real_launch = None
+
+            def fake_launch(command, **kwargs):
+                captured["command"] = list(command)
+                idx = command.index("--output-schema")
+                schema_path = Path(command[idx + 1])
+                captured["schema_path"] = schema_path
+                captured["existed_during_launch"] = schema_path.exists()
+                from phase_loop_runtime.launcher import LaunchResult
+
+                return LaunchResult(command=list(command), returncode=0, output="")
+
+            spec = build_launch_spec(self._codex_schema_request())
+            before = self._tmp_schema_files()
+            with patch("phase_loop_runtime.launcher.launch", side_effect=fake_launch):
+                launch_with_spec(spec, dry_run=True, log_path=log_path)
+
+            schema_path = captured["schema_path"]
+            self.assertEqual(schema_path.parent, log_path.parent, "schema not run-scoped")
+            # Run-scoped, not a bare global-temp file (the test's run dir may itself
+            # live under TMPDIR, so check the parent, not a substring).
+            self.assertNotEqual(schema_path.parent, Path(tempfile.gettempdir()))
+            self.assertTrue(captured["existed_during_launch"], "schema missing during launch")
+            self.assertFalse(schema_path.exists(), "schema not cleaned in finally")
+            self.assertEqual(self._tmp_schema_files() - before, set())
+
+    def test_codex_launch_without_log_path_leaves_no_tmp_leak(self):
+        # #63: with no run log dir the fallback temp is still cleaned in finally.
+        def fake_launch(command, **kwargs):
+            from phase_loop_runtime.launcher import LaunchResult
+
+            return LaunchResult(command=list(command), returncode=0, output="")
+
+        spec = build_launch_spec(self._codex_schema_request())
+        before = self._tmp_schema_files()
+        with patch("phase_loop_runtime.launcher.launch", side_effect=fake_launch):
+            launch_with_spec(spec, dry_run=True, log_path=None)
+        self.assertEqual(self._tmp_schema_files() - before, set(), "fallback leaked a /tmp schema")
+
+    def test_resolve_command_context_drops_output_schema_when_no_schema(self):
+        # Defensive branch (#63): if a codex command somehow carries the schema
+        # placeholder without a schema on the spec, never hand codex a literal
+        # placeholder — the --output-schema pair is dropped entirely.
+        from dataclasses import replace as _dc_replace
+        from phase_loop_runtime.launcher import _resolve_command_context
+
+        spec = build_launch_spec(self._codex_schema_request())
+        self.assertIn(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, spec.command)
+        spec = _dc_replace(spec, codex_output_schema=None)
+        resolved = _resolve_command_context(spec, None)
+        self.assertNotIn("--output-schema", resolved)
+        self.assertNotIn(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, resolved)
+        self.assertEqual(resolved[-1], spec.command[-1])  # prompt preserved
+
     def test_codex_output_reduction_uses_agent_messages(self):
         selection = resolve_profile("execute")
         request = build_launch_request(
@@ -222,8 +324,11 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.terminal_summary_artifact, "terminal-summary.json")
         self.assertIn("--output-schema", spec.command)
         self.assertEqual(spec.command[-1], bundle.render_prompt())
-        self.assertEqual(len(spec.cleanup_paths), 1)
-        Path(spec.cleanup_paths[0]).unlink(missing_ok=True)
+        # #63: the schema is materialized at LAUNCH time, not build — the build
+        # command carries a placeholder and records no temp path to clean.
+        self.assertEqual(spec.command[spec.command.index("--output-schema") + 1], CODEX_OUTPUT_SCHEMA_PLACEHOLDER)
+        self.assertEqual(spec.cleanup_paths, ())
+        self.assertIsNotNone(spec.codex_output_schema)
         self.assertIn("<prompt redacted sha256=", spec.to_json()["command"][-1])
 
     def test_launch_spec_preserves_harness_lane_assignment_metadata(self):
