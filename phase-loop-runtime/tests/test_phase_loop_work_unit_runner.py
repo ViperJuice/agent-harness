@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.models import CommandAdapterConfig, HarnessLaneAssignment, WorkUnitCloseout, WorkUnitIdentity, WorkUnitState
@@ -78,6 +79,42 @@ class PhaseLoopWorkUnitRunnerTest(unittest.TestCase):
             self.assertEqual(launched["spec"]["harness_lane_assignment"]["metadata"]["wave_id"], "wave-001")
             self.assertEqual(reduced.status, "complete")
             assert_metadata_only_evidence_refs(self, assignment.metadata["redacted_evidence_refs"])
+
+    def test_harness_lane_blocks_cleanly_when_claude_spec_unavailable(self):
+        # DFCHROUTE regression: a real (non-dry-run) harness-lane launch with an
+        # UNAVAILABLE Claude spec (channel route + no session, post-flip) must return
+        # a clean blocked terminal summary, NOT raise the opaque
+        # ValueError("live launch requested for unavailable executor").
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, body=_lane_plan_body())
+            assignment = HarnessLaneAssignment(
+                phase="RUNNER",
+                lane_id="SL-0",
+                work_unit_kind="lane_execute",
+                prompt_kind="implementation",
+                owned_files=("producer.py",),
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                    "PHASE_LOOP_CHANNEL_SESSION_ID": "",
+                    "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID": "",
+                },
+                clear=False,
+            ):
+                launched = launch_harness_lane_work_unit(
+                    repo=repo,
+                    roadmap=roadmap,
+                    plan=plan,
+                    assignment=assignment,
+                    executor="claude",
+                    dry_run=False,
+                )
+            self.assertEqual(launched["terminal_summary"]["terminal_status"], "blocked")
+            self.assertIsNone(launched["result"])
 
     def test_select_next_work_unit_skips_completed_dependencies(self):
         with tempfile.TemporaryDirectory() as td:

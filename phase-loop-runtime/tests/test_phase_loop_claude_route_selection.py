@@ -43,37 +43,89 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(resolve_claude_route("claude-channel").route, "claude_channel")
         self.assertEqual(resolve_claude_route("agent_view").route, "claude_agent_view")
         self.assertEqual(resolve_claude_route("print").route, "claude_print")
-        self.assertEqual(resolve_claude_route("", env={}).route, "claude_print")
+        # DFCHROUTE: empty/unset non-CI route now defaults to Channel (was print).
+        self.assertEqual(resolve_claude_route("", env={}).route, "claude_channel")
         self.assertEqual(resolve_claude_route("tui").error, "unsupported Claude route `tui`")
 
-    def test_route_default_contract_if_0_dfchdefault_1(self):
-        # IF-0-DFCHDEFAULT-1 — freeze the Claude route-default contract surface.
-        # DFCHDEFAULT documents the target and pins the CURRENT resolver; the
-        # unset->channel FLIP lands later in DFCHROUTE, so unset is pinned to the
-        # pre-flip claude_print baseline here (NOT asserted as channel yet).
+    def test_route_default_contract_post_flip(self):
+        # IF-0-DFCHDEFAULT-1 + IF-0-DFCHROUTE-1 — the route-default contract AFTER the
+        # DFCHROUTE flip: unset interactive route -> Channel; CI must select a route
+        # explicitly (blocks otherwise); explicit print is billing-sensitive
+        # compatibility; invalid blocks. (Pre-flip this pinned unset->claude_print;
+        # DFCHROUTE inverts it to the v47-validated Channel default.)
         unset = resolve_claude_route(None, env={})
-        self.assertEqual(unset.route, "claude_print")
-        self.assertEqual(unset.reason, "default_print_compatibility")
+        self.assertEqual(unset.route, "claude_channel")
+        self.assertEqual(unset.reason, "default_channel")
         self.assertIsNone(unset.error)
-        # CI / one-shot scripts must select a route explicitly; an unset route gives
-        # them the same baseline and never silently selects Channel mid-migration.
+        # CI without an explicit route BLOCKS (actionable error) — never a silent
+        # billing-sensitive print default.
         ci_unset = resolve_claude_route(None, env={"CI": "true"})
-        self.assertEqual(ci_unset.route, "claude_print")
-        self.assertEqual(ci_unset.reason, "default_print_compatibility")
-        # Explicit print is a deliberate, billing-sensitive compatibility selection,
-        # never a fallback from a Channel failure (distinct reason from unset).
+        self.assertEqual(ci_unset.reason, "ci_requires_explicit_route")
+        self.assertIsNotNone(ci_unset.error)
+        self.assertIn("explicit", ci_unset.error.lower())
+        # Explicit print: deliberate billing-sensitive compatibility, distinct reason
+        # from the default, and it RECORDS a billing-sensitive warning.
         explicit_print = resolve_claude_route("print", env={})
         self.assertEqual(explicit_print.route, "claude_print")
         self.assertEqual(explicit_print.reason, "explicit_print_compatibility")
         self.assertNotEqual(explicit_print.reason, unset.reason)
-        # Invalid routes carry an error and reason `invalid_route` (the launch path
-        # blocks on it) — not a silent successful print.
+        self.assertTrue(explicit_print.warnings)
+        self.assertTrue(any("billing" in w.lower() for w in explicit_print.warnings))
+        # Invalid routes carry an error + reason `invalid_route` — not a silent print.
         invalid = resolve_claude_route("tui", env={})
         self.assertIsNotNone(invalid.error)
         self.assertEqual(invalid.reason, "invalid_route")
         # Explicit Channel and Agent View resolve to their own routes.
         self.assertEqual(resolve_claude_route("channel", env={}).route, "claude_channel")
         self.assertEqual(resolve_claude_route("agent_view", env={}).route, "claude_agent_view")
+
+    def test_dfchroute_unset_defaults_to_channel_and_clean_blocks_without_session(self):
+        # IF-0-DFCHROUTE-1 composition: an unset non-CI route resolves to Channel,
+        # and with no session reduces to the DFCHPREFLIGHT clean block — never a
+        # claude -p run. (The recoverable failure mode on a non-ready machine.)
+        clear = {
+            "PHASE_LOOP_CLAUDE_ROUTE": "",
+            "CI": "",
+            "PHASE_LOOP_CHANNEL_SESSION_ID": "",
+            "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID": "",
+        }
+        with patch.dict(os.environ, clear, clear=False):
+            spec = build_launch_spec(self._request(Path("/tmp/repo")))
+        self.assertFalse(spec.available)
+        self.assertEqual(spec.claude_route, "claude_channel")
+        self.assertEqual(spec.claude_route_reason, "default_channel")
+        for tok in ("-p", "--print", "--bare", "--output-format"):
+            self.assertNotIn(tok, spec.command)
+
+    def test_dfchroute_ci_unset_blocks_without_print_command(self):
+        # IF-0-DFCHROUTE-1: CI + unset route blocks with an actionable message and
+        # builds NO claude -p command.
+        with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "", "CI": "true"}, clear=False):
+            spec = build_launch_spec(self._request(Path("/tmp/repo")))
+        self.assertFalse(spec.available)
+        for tok in ("-p", "--print", "--bare", "--output-format"):
+            self.assertNotIn(tok, spec.command)
+        self.assertIn("explicit", (spec.reason or "").lower())
+
+    def test_dfchroute_channel_and_agent_view_specs_have_no_print_tokens(self):
+        # IF-0-DFCHROUTE-1 / criterion 5: Channel and Agent View specs never contain
+        # -p / --print / --bare.
+        with patch.dict(
+            os.environ,
+            {
+                "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+                "PHASE_LOOP_CLAUDE_CHANNEL_URL": "http://127.0.0.1:8765",
+            },
+            clear=False,
+        ):
+            channel = build_launch_spec(self._request(Path("/tmp/repo")))
+        with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "agent_view"}, clear=False):
+            agent_view = build_launch_spec(self._request(Path("/tmp/repo")))
+        for spec in (channel, agent_view):
+            self.assertTrue(spec.available)
+            for tok in ("-p", "--print", "--bare"):
+                self.assertNotIn(tok, spec.command)
 
     def test_print_route_keeps_existing_claude_print_command(self):
         with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "print"}, clear=False):
@@ -110,6 +162,16 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(spec.claude_channel_session_id, "session-route")
         self.assertEqual(spec.command[:2], ["claude-channel", "send"])
         self.assertNotIn("-p", spec.command)
+
+    def test_print_spec_records_billing_warning(self):
+        # IF-0-DFCHROUTE-1: explicit print must RECORD a billing-sensitive warning
+        # that reaches the launch spec (and thus the launch event), not just live on
+        # the route selection. (Guards against the warning being dead code.)
+        with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "print"}, clear=False):
+            spec = build_launch_spec(self._request(Path("/tmp/repo")))
+        self.assertTrue(spec.claude_route_warnings)
+        self.assertTrue(any("billing" in w.lower() for w in spec.claude_route_warnings))
+        self.assertTrue(spec.to_json()["claude_route_warnings"])
 
     def test_channel_preflight_prereqs_block_without_print_command(self):
         # IF-0-DFCHPREFLIGHT-1: each missing/blocked Channel prerequisite reduces to

@@ -113,6 +113,9 @@ class LaunchSpec:
     phase_team_eligibility: PhaseTeamEligibility | None = None
     claude_route: str | None = None
     claude_route_reason: str | None = None
+    # DFCHROUTE: billing-sensitive (and other) route warnings recorded on the spec
+    # so they reach the launch event metadata (e.g. the explicit-print billing alert).
+    claude_route_warnings: tuple[str, ...] = ()
     claude_sidecar_url: str | None = None
     claude_channel_session_id: str | None = None
     cleanup_paths: tuple[str, ...] = ()
@@ -157,6 +160,7 @@ class LaunchSpec:
             "phase_team_eligibility": self.phase_team_eligibility.to_json() if self.phase_team_eligibility else None,
             "claude_route": self.claude_route,
             "claude_route_reason": self.claude_route_reason,
+            "claude_route_warnings": list(self.claude_route_warnings),
             "claude_sidecar_url": self.claude_sidecar_url,
             "claude_channel_session_id": self.claude_channel_session_id,
             "cleanup_paths": list(self.cleanup_paths),
@@ -365,13 +369,50 @@ class ClaudeRouteSelection:
     sidecar_url: str | None = None
     session_id: str | None = None
     error: str | None = None
+    warnings: tuple[str, ...] = ()
+
+
+# DFCHROUTE (IF-0-DFCHROUTE-1): claude_print is an explicit, billing-sensitive
+# compatibility route — never an automatic fallback. Selecting it records this.
+CLAUDE_PRINT_BILLING_WARNING = (
+    "claude_print is a billing-sensitive compatibility route: it runs `claude -p` "
+    "and spends API/usage credit. It is an explicit operator/CI selection, not a "
+    "fallback from Channel or Agent View failure."
+)
+
+
+def _claude_route_is_ci(environment) -> bool:
+    """True in a CI/non-interactive context. Per the route-default contract, CI
+    must select a route explicitly rather than inherit the interactive Channel
+    default. Matches the `CI` env-var convention (e.g. GitHub Actions `CI=true`)."""
+    value = environment.get("CI")
+    return value is not None and str(value).strip().lower() not in {"", "0", "false", "no"}
 
 
 def resolve_claude_route(value: str | None = None, *, env: dict[str, str] | None = None) -> ClaudeRouteSelection:
     environment = env if env is not None else os.environ
     raw_value = value if value is not None else environment.get("PHASE_LOOP_CLAUDE_ROUTE")
     if raw_value is None or not str(raw_value).strip():
-        return ClaudeRouteSelection(route="claude_print", reason="default_print_compatibility")
+        # DFCHROUTE: the default flip. An unset interactive route defaults to
+        # Channel (the v47-validated default); a CI/script context must select a
+        # route explicitly and blocks otherwise — never a silent billing-sensitive
+        # print default.
+        if _claude_route_is_ci(environment):
+            return ClaudeRouteSelection(
+                route="claude_channel",
+                reason="ci_requires_explicit_route",
+                error=(
+                    "CI/script context requires an explicit PHASE_LOOP_CLAUDE_ROUTE "
+                    "(channel, agent_view, or print); refusing to default to a "
+                    "billing-sensitive print route."
+                ),
+            )
+        return ClaudeRouteSelection(
+            route="claude_channel",
+            reason="default_channel",
+            sidecar_url=environment.get(CLAUDE_CHANNEL_SIDECAR_URL_ENV, DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL),
+            session_id=environment.get(CLAUDE_CHANNEL_SESSION_ID_ENV) or environment.get(CLAUDE_CHANNEL_SESSION_ID_ALT_ENV),
+        )
     normalized = re.sub(r"[-\s]+", "_", str(raw_value).strip().lower())
     route = CLAUDE_ROUTE_ALIASES.get(normalized)
     if route is None:
@@ -385,7 +426,11 @@ def resolve_claude_route(value: str | None = None, *, env: dict[str, str] | None
         )
     if route == "claude_agent_view":
         return ClaudeRouteSelection(route=route, reason="explicit_agent_view")
-    return ClaudeRouteSelection(route=route, reason="explicit_print_compatibility")
+    return ClaudeRouteSelection(
+        route=route,
+        reason="explicit_print_compatibility",
+        warnings=(CLAUDE_PRINT_BILLING_WARNING,),
+    )
 
 
 def _write_temp_schema(schema: dict[str, Any]) -> Path:
@@ -677,11 +722,14 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             eligibility=eligibility,
         )
         route_error = route_selection.error
-        if route_selection.route == "claude_channel":
+        if route_error is None and route_selection.route == "claude_channel":
             # DFCHPREFLIGHT (IF-0-DFCHPREFLIGHT-1): a Channel route launch requires
             # a session id AND a loopback sidecar URL. Missing/blocked prerequisites
             # reduce to a metadata-only route blocker here (no claude -p built), not
             # a deferred failure at sidecar-client construction.
+            # Guard on `route_error is None` so a route-resolution error (e.g. the
+            # DFCHROUTE CI-requires-explicit-route block) is not overwritten by the
+            # more-specific channel prerequisite message.
             if not route_selection.session_id:
                 route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
             elif not is_loopback_http_url(route_selection.sidecar_url or ""):
@@ -879,6 +927,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
             claude_route_reason=route_selection.reason,
+            claude_route_warnings=route_selection.warnings,
             claude_sidecar_url=route_selection.sidecar_url,
             claude_channel_session_id=route_selection.session_id,
         )

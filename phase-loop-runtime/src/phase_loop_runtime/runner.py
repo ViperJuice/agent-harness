@@ -4656,6 +4656,32 @@ def launch_harness_lane_work_unit(
         policy={"executor": executor, "work_unit_kind": assignment.work_unit_kind, "harness_lane_assignment": assignment.to_json()},
         artifacts={key: str(value) for key, value in artifacts.items()},
     )
+    if not spec.available and not dry_run:
+        # DFCHROUTE: a non-available spec (e.g. an unset route resolving to Channel
+        # with no session on a non-ready host) must surface a clean blocked summary,
+        # not the opaque ValueError that launch_with_spec raises for unavailable specs.
+        blocker = {
+            "human_required": False,
+            "blocker_summary": spec.reason or "Claude launch spec is unavailable.",
+            "required_human_inputs": (),
+        }
+        blocked_summary = build_terminal_summary(
+            terminal_status="blocked",
+            terminal_blocker=blocker,
+            verification_status="blocked",
+            next_action=spec.reason
+            or "Resolve the launch prerequisite (e.g. set PHASE_LOOP_CLAUDE_ROUTE) before launching harness lane work.",
+            artifact_paths={key: str(value) for key, value in artifacts.items()},
+        )
+        write_terminal_summary(artifacts.get("terminal"), blocked_summary)
+        return {
+            "request": request.to_json(),
+            "spec": spec.to_json(),
+            "result": None,
+            "state": state.to_json(),
+            "terminal_summary": blocked_summary,
+            "artifacts": {key: str(value) for key, value in artifacts.items()},
+        }
     result = launch_with_spec(spec, dry_run=dry_run, log_path=artifacts.get("log"))
     terminal_summary = build_terminal_summary(
         terminal_status="complete" if dry_run else "executing",
