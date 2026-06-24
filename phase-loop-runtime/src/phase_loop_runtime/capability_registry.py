@@ -201,17 +201,27 @@ DEFAULT_CAPABILITY_REGISTRY = {
     "gemini": ExecutorCapabilityRecord(
         executor="gemini",
         supported_actions=("roadmap", "plan", "execute", "repair", "review"),
+        # v46 EXEC: agy (the gemini executor's CLI) has NO --output-format (the
+        # closeout is prompt-injected + text-parsed) and NO granular approval mode, so
+        # `structured_output` and `explicit_approval_controls` are dropped here.
         capabilities=(
             "live_launch",
             "dry_run",
             "skill_bundle_injection",
             "inline_instructions",
             "context_file_instructions",
-            "explicit_approval_controls",
-            "structured_output",
         ),
         strengths=("native skill ecosystem", "context-file friendly", "authenticated local CLI"),
-        limits=("requires local Gemini subscription auth",),
+        # v46 EXEC: the gemini executor now drives the Antigravity CLI (`agy`); the
+        # standalone gemini CLI was sunset. agy auth is a subscription OAuth token.
+        # NOTE: write actions auto-approve via --dangerously-skip-permissions
+        # (permissive-in-effect); `review` stays read-only. Flipping permission_posture
+        # to `permissive` (forcing explicit opt-in) is a follow-up product decision.
+        limits=(
+            "requires local Antigravity (agy) subscription auth",
+            "agy has no granular approval mode: write actions auto-approve, review is read-only",
+            "agy emits no structured JSON; closeout is prompt-injected and text-parsed",
+        ),
         injection_mode="context_file",
         permission_posture="explicit",
         subagent_posture="limited",
@@ -226,7 +236,7 @@ DEFAULT_CAPABILITY_REGISTRY = {
             "terminal-summary.json",
         ),
         auth_preflight_mode="metadata_only",
-        auth_preflight_probes=("gemini --version", "gemini --help"),
+        auth_preflight_probes=("agy --version", "agy --help"),
         timeout_posture="runner_managed",
         output_capture_format="terminal_summary",
         default_model_profiles={action: _ACTION_DEFAULT_PROFILES[action] for action in ("roadmap", "plan", "execute", "repair", "review")},

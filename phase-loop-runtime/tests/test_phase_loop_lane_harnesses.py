@@ -21,7 +21,7 @@ class PhaseLoopLaneHarnessesTest(unittest.TestCase):
             "pi": "pi-agent-watch",
             "claude": "claude",
             "codex": "codex",
-            "gemini": "gemini",
+            "gemini": "agy",  # v46 EXEC: the gemini executor drives the agy CLI
         }
         for executor, command_token in routes.items():
             with self.subTest(executor=executor):

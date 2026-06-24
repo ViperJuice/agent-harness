@@ -563,33 +563,47 @@ def build_gemini_command(
     *,
     action: str,
     context_file: str,
-    bypass_approvals: bool = False,
 ) -> list[str]:
-    command = [
-        "gemini",
+    # v46 EXEC (amended remove→rebuild): the gemini executor now drives the
+    # Antigravity CLI (`agy`) — the standalone gemini CLI was sunset
+    # (IneligibleTierError). agy runs headless with --add-dir (workspace). agy has no
+    # --output-format, so the closeout is injected into the prompt
+    # (_prompt_bundle_with_closeout_schema, which still targets "gemini") and parsed
+    # from agy's plain-text output — the same path opencode/pi use. A spike on agy
+    # 1.0.10 confirmed headless write + a parseable `automation:` closeout.
+    #
+    # Approval posture: agy has NO granular approval mode (and `--sandbox` still
+    # permits file writes), so write actions auto-approve with
+    # --dangerously-skip-permissions while `review` STAYS READ-ONLY by omitting it —
+    # an analysis-only review prompt needs no tool approvals, mirroring the
+    # gemini-cli-runner skill's read-only `agy -p`. (`bypass_approvals` is moot for
+    # agy's all-or-nothing model.)
+    command = ["agy", "--model", _gemini_cli_model(selection.model)]
+    if action != "review":
+        command.append("--dangerously-skip-permissions")
+    command += [
+        "--add-dir",
+        str(repo),
         "-p",
         (
             f"Read and follow the workflow instructions in `{context_file}` exactly. "
             "Use that file as the authoritative workflow bundle, do not try to read installed skill files outside the workspace, "
             "and emit the required shared automation closeout."
         ),
-        "--skip-trust",
-        "--approval-mode",
-        _gemini_approval_mode(action, bypass_approvals),
-        "--include-directories",
-        str(repo),
-        "--output-format",
-        "json",
     ]
-    command.extend(["--model", _gemini_cli_model(selection.model)])
     return command
 
 
 def _gemini_cli_model(model: str) -> str:
-    candidate = model.strip()
-    if candidate in {"auto", "pro"} or candidate.startswith("gemini-"):
-        return candidate
-    return "pro"
+    # Map the phase-loop routing aliases and legacy gemini ids (pro/auto/gemini-*) onto
+    # agy's default Pro model. Any OTHER value — a valid agy model name
+    # ("Gemini 3.5 Flash (...)", "Claude ...", "GPT-OSS ...") or an explicit operator
+    # override — passes through verbatim for agy to validate, rather than being
+    # silently coerced to the default.
+    candidate = (model or "").strip()
+    if candidate in {"", "auto", "pro"} or candidate.startswith("gemini-"):
+        return "Gemini 3.1 Pro (High)"
+    return candidate
 
 
 def build_opencode_command(
@@ -1004,7 +1018,6 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                 request.model_selection,
                 action=request.action,
                 context_file=GEMINI_CONTEXT_PLACEHOLDER,
-                bypass_approvals=request.bypass_approvals,
             ),
             prompt_bundle=prompt_bundle,
             injection_metadata=injection_metadata,
@@ -1920,16 +1933,6 @@ def _claude_permission_mode(action: str, bypass_approvals: bool) -> str:
     return "acceptEdits"
 
 
-def _gemini_approval_mode(action: str, bypass_approvals: bool) -> str:
-    if bypass_approvals:
-        return "yolo"
-    if action == "review":
-        return "plan"
-    if action in {"plan", "execute", "repair"}:
-        return "yolo"
-    return "auto_edit"
-
-
 def _parse_json_object(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
@@ -2166,17 +2169,20 @@ def _resolve_command_context(spec: LaunchSpec, log_path: Path | None) -> list[st
             )
         return resolved
     if spec.executor == "gemini" and GEMINI_CONTEXT_PLACEHOLDER in " ".join(spec.command):
-        repo_path = _command_repo_path(spec.command, "--include-directories")
+        repo_path = _command_repo_path(spec.command, "--add-dir")
         if repo_path is None:
             return spec.command
         context_path = _gemini_workspace_context_path(repo_path, log_path, spec.prompt_bundle.render_context())
         if context_path is None:
             return spec.command
         command = [part.replace(GEMINI_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
-        include_idx = command.index("--include-directories") + 1
         mirror_root = str(Path(context_path).parent)
-        if mirror_root not in command[include_idx]:
-            command[include_idx] = f"{command[include_idx]},{mirror_root}"
+        if mirror_root != str(repo_path) and mirror_root not in command:
+            # agy --add-dir is repeatable (one dir each), so add the context mirror dir
+            # as its own flag immediately before the positional `-p` prompt (always
+            # present in a built gemini/agy command) rather than comma-appending.
+            insert_at = command.index("-p")
+            command[insert_at:insert_at] = ["--add-dir", mirror_root]
         return command
     if spec.executor == "opencode" and OPENCODE_CONTEXT_PLACEHOLDER in " ".join(spec.command):
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())

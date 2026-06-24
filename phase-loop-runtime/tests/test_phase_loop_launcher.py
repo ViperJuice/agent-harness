@@ -1184,7 +1184,9 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertIn("--model", spec.command)
 
     def test_gemini_executor_builds_live_launch_spec(self):
-        selection = resolve_profile("plan")
+        # Use the gemini executor profile (model alias "pro" → agy "Gemini 3.1 Pro
+        # (High)"); a generic default like gpt-5.5 is no longer silently coerced.
+        selection = resolve_profile_for_executor(action="plan", executor="gemini")
         request = build_launch_request(
             executor="gemini",
             action="plan",
@@ -1204,15 +1206,44 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.live_proof_gate, "disposable_proof_recorded")
         self.assertEqual(spec.promotion_status, "live")
         self.assertEqual(spec.auth_preflight_mode, "metadata_only")
-        self.assertEqual(spec.auth_preflight_probes, ("gemini --version", "gemini --help"))
-        self.assertEqual(spec.command[:8], ["gemini", "-p", spec.command[2], "--skip-trust", "--approval-mode", "yolo", "--include-directories", "/repo"])
-        self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[2])
+        self.assertEqual(spec.auth_preflight_probes, ("agy --version", "agy --help"))
+        # v46 EXEC: the gemini executor drives agy (headless skip-permissions + add-dir).
+        self.assertEqual(
+            spec.command[:6],
+            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", "/repo"],
+        )
+        self.assertEqual(spec.command[6], "-p")
+        self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[-1])
+        self.assertNotIn("--output-format", spec.command)
+        self.assertNotIn("gemini", spec.command)
         self.assertIn("do not assume a tool named `run_shell_command` exists", spec.prompt_bundle.render_context())
         result = launch_with_spec(spec, dry_run=True, log_path=Path("/tmp/gemini/output.log"))
         self.assertTrue(result.dry_run)
         self.assertEqual(result.executor, "gemini")
         self.assertEqual(result.injection_mode, "context_file")
         self.assertEqual(result.expected_skill_pack, ("gemini-plan-phase",))
+
+    def test_gemini_executor_review_is_read_only_and_model_passthrough(self):
+        from phase_loop_runtime.launcher import _gemini_cli_model, build_gemini_command
+
+        # v46 EXEC CR (F1): review omits --dangerously-skip-permissions (read-only);
+        # write actions keep it. (agy has no granular approval mode.)
+        review = build_gemini_command(
+            Path("/repo"), resolve_profile_for_executor(action="review", executor="gemini"),
+            action="review", context_file="X",
+        )
+        execute = build_gemini_command(
+            Path("/repo"), resolve_profile_for_executor(action="execute", executor="gemini"),
+            action="execute", context_file="X",
+        )
+        self.assertNotIn("--dangerously-skip-permissions", review)
+        self.assertIn("--dangerously-skip-permissions", execute)
+        # v46 EXEC CR (F2): routing aliases map onto agy's default; a valid agy model
+        # name (or operator override) passes through verbatim, not silently coerced.
+        self.assertEqual(_gemini_cli_model("pro"), "Gemini 3.1 Pro (High)")
+        self.assertEqual(_gemini_cli_model("gemini-3.1-pro-preview"), "Gemini 3.1 Pro (High)")
+        self.assertEqual(_gemini_cli_model("Gemini 3.5 Flash (High)"), "Gemini 3.5 Flash (High)")
+        self.assertEqual(_gemini_cli_model("gpt-5-codex"), "gpt-5-codex")
 
     def test_opencode_executor_builds_live_launch_spec(self):
         selection = resolve_profile_for_executor(action="plan", executor="opencode")
@@ -1395,7 +1426,9 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         )
         spec = build_launch_spec(request)
         self.assertIn("--model", spec.command)
-        self.assertIn("gemini-3.1-pro-preview", spec.command)
+        # v46 EXEC: legacy gemini model ids map onto agy's fixed model list.
+        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
+        self.assertNotIn("gemini-3.1-pro-preview", spec.command)
 
     def test_gemini_executor_includes_default_planning_model_routing_alias(self):
         selection = resolve_profile_for_executor(action="plan", executor="gemini")
@@ -1414,7 +1447,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(request)
         self.assertEqual(spec.selected_model, "pro")
         self.assertIn("--model", spec.command)
-        self.assertIn("pro", spec.command)
+        # v46 EXEC: the "pro" routing alias maps onto agy's fixed model name.
+        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
 
     def test_gemini_executor_includes_default_execution_model_routing_alias(self):
         selection = resolve_profile_for_executor(action="execute", executor="gemini")
@@ -1439,7 +1473,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(request)
         self.assertEqual(spec.selected_model, "auto")
         self.assertIn("--model", spec.command)
-        self.assertIn("auto", spec.command)
+        # v46 EXEC: the "auto" routing alias maps onto agy's fixed model name.
+        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
 
     def test_gemini_output_reduction_handles_json_and_stream_json(self):
         selection = resolve_profile("execute")
