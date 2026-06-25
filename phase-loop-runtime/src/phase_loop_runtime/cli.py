@@ -229,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "export-schema"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -398,6 +398,24 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
             sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
             sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
+        if name == "export-schema":
+            sub.description = (
+                "Emit (or --check) the canonical phase-loop closeout schema derived from "
+                "PhaseLoopCloseout. Repo-independent; the bundled artifact is the parity "
+                "source consumers (gp) diff against."
+            )
+            sub.add_argument("--output", help="Path to write the emitted schema/field-list. Defaults to stdout.")
+            sub.add_argument(
+                "--check",
+                metavar="PATH",
+                help="Compare a supplied artifact against the in-package canonical schema; exit non-zero on any divergence.",
+            )
+            sub.add_argument(
+                "--format",
+                choices=("json-schema", "field-list"),
+                default="json-schema",
+                help="Output format: a declared JSON-Schema (default) or the flat field-list gp consumes.",
+            )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -434,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "version":
         print(f"phase-loop {__version__}")
         return 0
+    if command == "export-schema":
+        return _export_schema_command(args=args)
     if command == "validate-roadmap":
         from . import roadmap_lint
 
@@ -1626,6 +1646,37 @@ def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bo
     else:
         print(render_text(result))
     return 0 if result.is_clean() else 5
+
+
+def _export_schema_command(*, args: argparse.Namespace) -> int:
+    """Emit or --check the canonical closeout schema. Repo-independent."""
+    from . import schema_export
+
+    check_path = getattr(args, "check", None)
+    if check_path:
+        diffs = schema_export.check(Path(check_path))
+        if diffs:
+            print(f"export-schema --check FAILED: {check_path}", file=sys.stderr)
+            for diff in diffs:
+                print(f"  - {diff}", file=sys.stderr)
+            return 1
+        print(f"export-schema --check OK: {check_path}")
+        return 0
+
+    fmt = getattr(args, "format", "json-schema")
+    if fmt == "field-list":
+        payload = schema_export.build_field_list()
+    else:
+        payload = schema_export.build_schema()
+    rendered = schema_export.render(payload)
+
+    output = getattr(args, "output", None)
+    if output:
+        # utf-8 + explicit "\n" so the emitted artifact is byte-stable cross-platform.
+        Path(output).write_text(rendered, encoding="utf-8", newline="\n")
+    else:
+        sys.stdout.write(rendered)
+    return 0
 
 
 def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) -> int:

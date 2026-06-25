@@ -378,16 +378,12 @@ def phase_loop_closeout_diagnostic(payload: Mapping[str, Any] | None) -> dict[st
         if field in payload:
             return {"kind": "malformed_closeout", "message": f"native v1 closeout contains deprecated root field {field}"}
 
-    for field in (
-        "phase",
-        "terminal_status",
-        "automation",
-        "artifacts",
-        "verification",
-        "blocker",
-        "source_bundle",
-        "source_truth_impact",
-    ):
+    # Single source of truth: the export-schema generator owns the canonical
+    # required-nested-field set, so the schema artifact and this validator can
+    # never drift apart (SCHEMA SL-1 / CR #4).
+    from .schema_export import required_closeout_fields
+
+    for field in required_closeout_fields():
         if field not in payload or payload.get(field) is None:
             return {"kind": "malformed_closeout", "message": f"closeout payload is missing nested field {field}"}
 

@@ -1,0 +1,327 @@
+{
+  "$comment": "GENERATED from phase_loop_runtime.models.PhaseLoopCloseout by `phase-loop export-schema`. Do not hand-edit; regenerate instead.",
+  "$id": "phase_loop_closeout.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_paths": {
+          "type": "object"
+        },
+        "changed_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "plan_path": {
+          "type": "string"
+        },
+        "plan_sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_paths",
+        "changed_paths",
+        "evidence_refs",
+        "plan_path",
+        "plan_sha256"
+      ],
+      "type": "object"
+    },
+    "automation": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blocker_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blocker_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "human_required": {
+          "type": "boolean"
+        },
+        "next_command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_effort_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_model_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_skill": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required_human_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        },
+        "verification_status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "human_required",
+        "required_human_inputs",
+        "status",
+        "verification_status"
+      ],
+      "type": "object"
+    },
+    "blocker": {
+      "additionalProperties": false,
+      "properties": {
+        "access_attempts": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "blocker_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blocker_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "human_required": {
+          "type": "boolean"
+        },
+        "required_human_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "access_attempts",
+        "human_required",
+        "required_human_inputs"
+      ],
+      "type": "object"
+    },
+    "phase": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "phase_loop_closeout.v1",
+      "type": "string"
+    },
+    "source_bundle": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_mode": {
+          "type": "string"
+        },
+        "protected_sources": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pipeline_mode",
+        "protected_sources"
+      ],
+      "type": "object"
+    },
+    "source_truth_impact": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_refresh_reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "canonical_refresh_recommended": {
+          "type": "boolean"
+        },
+        "changed_path_boundaries": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "redaction_posture": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_refresh_reason_codes",
+        "canonical_refresh_recommended",
+        "changed_path_boundaries",
+        "redaction_posture"
+      ],
+      "type": "object"
+    },
+    "spec_delta_closeout": {
+      "additionalProperties": false,
+      "properties": {
+        "blocker_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "type": "string"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redaction_posture": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "target_surfaces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision",
+        "evidence_paths",
+        "redaction_posture",
+        "schema",
+        "target_surfaces"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "terminal_status": {
+      "enum": [
+        "blocked",
+        "complete",
+        "failed_verification",
+        "human_required",
+        "stale_input"
+      ],
+      "type": "string"
+    },
+    "verification": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_reported_verification_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "results": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commands",
+        "results",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "artifacts",
+    "automation",
+    "blocker",
+    "phase",
+    "schema",
+    "source_bundle",
+    "source_truth_impact",
+    "terminal_status",
+    "verification"
+  ],
+  "title": "phase_loop_closeout",
+  "type": "object"
+}

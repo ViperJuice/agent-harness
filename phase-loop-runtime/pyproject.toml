@@ -44,7 +44,7 @@ where = ["src"]
 # route_policy/fixtures ships the frozen cross-language route-selection contract
 # (ROUTESPEC) the same way so gp #25 can pull + validate it from the wheel.
 [tool.setuptools.package-data]
-phase_loop_runtime = ["py.typed", "baml_src/*.baml", "route_policy/fixtures/*.json"]
+phase_loop_runtime = ["py.typed", "baml_src/*.baml", "route_policy/fixtures/*.json", "schemas/*.json"]
 
 [tool.setuptools.data-files]
 "share/phase-loop-runtime/protocol" = ["protocol/protocol.md"]
