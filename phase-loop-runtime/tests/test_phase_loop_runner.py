@@ -102,6 +102,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                 "v44",
                 "main",
                 base_ref="origin/consiliency/pipeline/v42",
+                base_already_fetched=False,
             )
 
     def test_pipeline_branch_governance_uses_base_version_for_suffix_roadmap(self):
@@ -124,6 +125,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                 "v44",
                 "main",
                 base_ref=None,
+                base_already_fetched=False,
             )
 
     def test_pipeline_branch_governance_uses_current_pipeline_upstream_base(self):
@@ -169,6 +171,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                 "v44",
                 "main",
                 base_ref="origin/consiliency/pipeline/v44",
+                base_already_fetched=False,
             )
 
     def test_repair_context_and_prompt_include_previous_phase_owned_paths(self):

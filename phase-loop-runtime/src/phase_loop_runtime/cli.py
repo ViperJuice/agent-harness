@@ -165,11 +165,33 @@ def build_parser_with_profile(opt_in: str) -> argparse.ArgumentParser:
             os.environ["PHASE_LOOP_PROFILE_PLUGINS"] = previous
 
 
+def _branchgov_parent_parser() -> argparse.ArgumentParser:
+    """Shared parent carrying --allow-branchgov (issue #83). Used by BOTH the
+    top-level parser and the run/resume/dry-run subparsers via `parents=[...]`
+    with `default=argparse.SUPPRESS`, so the flag works in either position
+    (`phase-loop --allow-branchgov run` AND `phase-loop run --allow-branchgov`)
+    without a subparser default clobbering a value set before the subcommand."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--allow-branchgov",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Issue #83 opt-in: switch to the convention branch even when it would orphan a "
+            "locally-committed roadmap (exports PHASE_LOOP_BRANCHGOV_ENABLE=true). Without it, "
+            "the runtime refuses cleanly (branch_sync_conflict) rather than crashing."
+        ),
+    )
+    return parent
+
+
 def build_parser() -> argparse.ArgumentParser:
+    branchgov_parent = _branchgov_parent_parser()
     parser = argparse.ArgumentParser(
         prog="phase-loop",
         description="Neutral phase-loop runner. codex-phase-loop remains a Codex bridge alias.",
         allow_abbrev=False,
+        parents=[branchgov_parent],
     )
     parser.add_argument("--version", action="version", version=f"phase-loop {__version__}")
     parser.add_argument("--repo", default=".")
@@ -230,7 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
     for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "export-schema"):
-        sub = subparsers.add_parser(name)
+        # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
+        # the flag works after the subcommand too (the top-level parser owns the
+        # before-subcommand position); SUPPRESS keeps neither default clobbering.
+        sub_parents = [branchgov_parent] if name in {"run", "resume", "dry-run"} else []
+        sub = subparsers.add_parser(name, parents=sub_parents)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
             sub.add_argument("--bundle", help="Path to a phase-source-bundle.v1 artifact.")
@@ -426,6 +452,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    # Issue #83: --allow-branchgov opts into the convention-branch switch even when
+    # it would orphan a locally-committed roadmap, by exporting the explicit
+    # override the runtime preflight reads (flag.branchgov_override_explicit). Scope
+    # the env mutation to this invocation (restore the prior value) so it does not
+    # leak process-globally — the override applies for THIS run, not the process.
+    if getattr(args, "allow_branchgov", False):
+        _previous_branchgov = os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE")
+        os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = "true"
+        try:
+            return _main(parser, args, command)
+        finally:
+            if _previous_branchgov is None:
+                os.environ.pop("PHASE_LOOP_BRANCHGOV_ENABLE", None)
+            else:
+                os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = _previous_branchgov
+    return _main(parser, args, command)
+
+
+def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> int:
     allow_cross_phase_dirty_reason = getattr(args, "allow_cross_phase_dirty", None)
     if allow_cross_phase_dirty_reason is not None:
         allow_cross_phase_dirty_reason = str(allow_cross_phase_dirty_reason).strip()

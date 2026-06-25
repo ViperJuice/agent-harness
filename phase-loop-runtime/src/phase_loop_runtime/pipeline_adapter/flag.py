@@ -7,6 +7,20 @@ def branchgov_enabled() -> bool:
     return os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE") != "false"
 
 
+def branchgov_override_explicit() -> bool:
+    """True only when branch governance is EXPLICITLY opted into (issue #83).
+
+    Distinct from ``branchgov_enabled()`` (which is True for both the unset
+    default and ``"true"``). The default-on case is exactly the bug surface: a
+    locally-committed roadmap on the operator's branch would be orphaned by the
+    convention-branch switch. The orphan-refusal preflight must therefore key on
+    this *explicit* signal — set by ``--allow-branchgov`` (which exports
+    ``PHASE_LOOP_BRANCHGOV_ENABLE=true``) — so the unset default still refuses
+    and only a deliberate ``"true"`` (or ``--allow-branchgov``) switches anyway.
+    """
+    return os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE") == "true"
+
+
 def trust_executor_evidence_enabled() -> bool:
     return os.environ.get("PHASE_LOOP_TRUST_EXECUTOR_EVIDENCE") != "false"
 

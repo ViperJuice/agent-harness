@@ -189,6 +189,12 @@ except Exception:  # pragma: no cover - exercised only in stripped runtimes
     yaml = None
 
 
+# Issue #83: stable prefix of the post-switch roadmap-orphan blocker summary (the
+# fail-safe when --allow-branchgov switches over a genuine orphan). Distinct from
+# the pre-switch preflight refusal (REFUSE_ROADMAP_ORPHAN_PREFIX in branch_ops).
+ROADMAP_ORPHAN_AFTER_SWITCH_PREFIX = "Roadmap missing after branch-governance switch:"
+
+
 class RotationState:
     def __init__(self, executors: tuple[str, ...], *, mode: str = "phase", on_policy_pin: str = "skip") -> None:
         if mode not in {"phase", "work_unit"}:
@@ -365,25 +371,203 @@ def _pipeline_branch_blocker_from_error(exc: Exception) -> dict[str, object]:
     }
 
 
-def _ensure_pipeline_branch_before_dispatch(repo: Path, roadmap: Path):
+def _ensure_pipeline_branch_before_dispatch(
+    repo: Path,
+    roadmap: Path,
+    *,
+    base_ref: str | None = None,
+    base_already_fetched: bool = False,
+):
     """Returns (blocker_or_None, BranchDecision_or_None). #44: the BranchDecision
     surfaces a silent switch to the convention branch so the caller can emit a
-    coordinator.branch_switched event on divergence."""
+    coordinator.branch_switched event on divergence. #83: the caller resolves +
+    fetches the shared base once and passes it through so this and the orphan
+    preflight evaluate the SAME fetched base (no double git work)."""
     if not _pipeline_branchgov_active(repo):
         return None, None
     from .pipeline_adapter.branch_ops import ensure_pipeline_branch
 
     roadmap_version = _roadmap_version(roadmap)
+    if base_ref is None:
+        base_ref = _branchgov_base_ref(repo, roadmap_version)
     try:
         decision = ensure_pipeline_branch(
             repo,
             roadmap_version,
             _default_branch(repo),
-            base_ref=os.environ.get("PHASE_LOOP_BASE_REF") or _current_pipeline_branch_upstream(repo, roadmap_version),
+            base_ref=base_ref,
+            base_already_fetched=base_already_fetched,
         )
     except Exception as exc:
         return _pipeline_branch_blocker_from_error(exc), None
     return None, decision
+
+
+def _branchgov_base_ref(repo: Path, roadmap_version: str) -> str | None:
+    """Base ref the convention-branch switch would cut from (pre-resolution).
+    Mirrors the `ensure_pipeline_branch` call so the orphan preflight predicts the
+    SAME switch; `None` means fall back to `origin/<default>`."""
+    return os.environ.get("PHASE_LOOP_BASE_REF") or _current_pipeline_branch_upstream(repo, roadmap_version)
+
+
+def _branchgov_resolve_and_fetch_base(repo: Path, roadmap: Path) -> str:
+    """Issue #83: resolve the base ref the branchgov switch would cut from, fetch
+    it ONCE, and return the resolved ref so both the orphan preflight and
+    `ensure_pipeline_branch` evaluate the same FETCHED base (the false-positive
+    fix + no duplicated fetch). Fetch failure is swallowed (matching
+    `_fetch_base_ref`) so update-ref-only fixtures and offline runs still work."""
+    from .pipeline_adapter.branch_ops import _fetch_base_ref
+
+    default_branch = _default_branch(repo)
+    base_ref = _branchgov_base_ref(repo, _roadmap_version(roadmap)) or f"origin/{default_branch}"
+    _fetch_base_ref(repo, base_ref, default_branch)
+    return base_ref
+
+
+def _branchgov_orphan_blocker_before_dispatch(
+    repo: Path,
+    roadmap: Path,
+    *,
+    base_ref: str | None = None,
+    base_already_fetched: bool = False,
+) -> dict[str, object] | None:
+    """Issue #83: consult the orphan preflight BEFORE the convention-branch
+    switch. Returns a clean `branch_sync_conflict` blocker (human_required True)
+    when the switch would orphan a locally-committed roadmap, or None when the
+    run is safe/governed or the operator opted in via `--allow-branchgov`
+    (explicit PHASE_LOOP_BRANCHGOV_ENABLE=true). The opt-in lets the existing
+    switch + `coordinator.branch_switched` event proceed unchanged (#44).
+
+    The caller passes the shared resolved+fetched base so the predicate evaluates
+    the same FETCHED base as the switch (no stale false-positive, no double work)."""
+    if not _pipeline_branchgov_active(repo):
+        return None
+    from .pipeline_adapter.branch_ops import roadmap_orphaned_by_branchgov
+    from .pipeline_adapter.flag import branchgov_override_explicit
+
+    if branchgov_override_explicit():
+        return None
+
+    roadmap_version = _roadmap_version(roadmap)
+    summary = roadmap_orphaned_by_branchgov(
+        repo,
+        roadmap,
+        roadmap_version,
+        _default_branch(repo),
+        base_ref=base_ref if base_ref is not None else _branchgov_base_ref(repo, roadmap_version),
+        base_already_fetched=base_already_fetched,
+    )
+    if summary is None:
+        return None
+    return _branchgov_orphan_blocker(summary)
+
+
+def _branchgov_orphan_blocker(summary: str) -> dict[str, object]:
+    return {
+        "human_required": True,
+        "blocker_class": "branch_sync_conflict",
+        "blocker_summary": summary,
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+
+
+def _emit_branchgov_blocked_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    action: str,
+    selection,
+    blocker: dict[str, object],
+    provenance: dict[str, object],
+    next_action: str,
+    preflight: str | None = None,
+) -> None:
+    """Emit a `blocked` pipeline-branch-governance closeout. Factored from the
+    three near-identical branchgov blocked emissions (orphan preflight, the
+    ensure_pipeline_branch blocker, and the #83 post-switch orphan guard).
+
+    Takes a pre-captured `provenance` (#83 / Landmine B): after a branchgov switch
+    the roadmap file may be gone, so `event_provenance(roadmap, phase)` would
+    itself crash `FileNotFoundError` on emission. The caller captures provenance
+    BEFORE the switch (roadmap still present) and threads it through here."""
+    governance: dict[str, object] = {
+        "status": "blocked",
+        "roadmap_version": _roadmap_version(roadmap),
+        "default_branch": _default_branch(repo),
+    }
+    if preflight is not None:
+        governance["preflight"] = preflight
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action=action,
+            status="blocked",
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            blocker=blocker,
+            metadata={
+                "pipeline_branch_governance": governance,
+                "terminal_summary": build_terminal_summary(
+                    terminal_status="blocked",
+                    terminal_blocker=blocker,
+                    verification_status="blocked",
+                    next_action=next_action,
+                ),
+            },
+            **provenance,
+        ),
+    )
+
+
+def _branchgov_roadmap_missing_after_switch(
+    repo: Path, roadmap: Path, *, restore_branch: str | None = None
+) -> dict[str, object] | None:
+    """Issue #83 post-switch guard: after a branchgov switch (e.g. via the
+    `--allow-branchgov` override on a genuine orphan), the roadmap file may no
+    longer exist on the convention branch. Return a clean `branch_sync_conflict`
+    blocker instead of letting the downstream roadmap read crash
+    `FileNotFoundError` (the original #83 failure, reachable via the documented
+    escape hatch).
+
+    Restore the working tree to ``restore_branch`` (the operator's original
+    branch) so the roadmap reappears: the run fails cleanly AND we don't strand
+    the operator on a roadmap-less convention branch (and the downstream summary
+    reconcile can still read the roadmap). If the restore itself fails we STILL
+    return a clean blocker (never crash) and say so in the summary — the roadmap
+    stays gone, so the downstream reconcile would otherwise re-raise the exact
+    FileNotFoundError this guard exists to prevent."""
+    if Path(roadmap).is_file():
+        return None
+    restored = False
+    if restore_branch:
+        from .pipeline_adapter.branch_ops import _git as _branch_git
+
+        restored = _branch_git(repo, "checkout", restore_branch).returncode == 0
+    if restored:
+        tail = (
+            "the working tree has been restored to the original branch. Push the roadmap to "
+            "the base and re-run, or run without --allow-branchgov so the preflight refuses "
+            "before switching."
+        )
+    else:
+        tail = (
+            f"the working tree could NOT be restored to '{restore_branch}' — check out that "
+            "branch (or one carrying the roadmap) before re-running. Push the roadmap to the "
+            "base, or run without --allow-branchgov so the preflight refuses before switching."
+        )
+    return _branchgov_orphan_blocker(
+        f"{ROADMAP_ORPHAN_AFTER_SWITCH_PREFIX} {roadmap}. The branch-governance switch to the "
+        f"convention branch removed the roadmap from the working tree (it was not on the "
+        f"pipeline-branch base); {tail}"
+    )
 
 
 def _current_pipeline_branch_upstream(repo: Path, roadmap_version: str) -> str | None:
@@ -1290,9 +1474,48 @@ def run_loop(
             plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             stale_pipeline_plan = _stale_pipeline_plan_candidate(repo, roadmap, alias) if plan is None else None
             if not dry_run and status in {"planned", "executed"}:
-                branch_blocker, branch_decision = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+                # #83: capture provenance BEFORE any branchgov switch — after the
+                # switch the roadmap file may be gone, so recomputing it (here or
+                # in any blocked/branch_switched emission) would crash
+                # FileNotFoundError. Resolve + FETCH the shared base ONCE so the
+                # orphan preflight and ensure_pipeline_branch evaluate the same
+                # fetched base (no stale false-positive, no double git work).
+                branchgov_provenance = event_provenance(roadmap, alias)
+                branchgov_base_ref = (
+                    _branchgov_resolve_and_fetch_base(repo, roadmap)
+                    if _pipeline_branchgov_active(repo)
+                    else None
+                )
+                # Consult the orphan preflight BEFORE switching — refuse cleanly
+                # rather than switch + crash when the convention-branch switch
+                # would orphan a locally-committed roadmap (no override).
+                # Governed/opted-in runs fall through to the switch below.
+                orphan_blocker = _branchgov_orphan_blocker_before_dispatch(
+                    repo, roadmap, base_ref=branchgov_base_ref, base_already_fetched=True
+                )
+                if orphan_blocker is not None:
+                    classifications[alias] = "blocked"
+                    _emit_branchgov_blocked_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action=action,
+                        selection=selection,
+                        blocker=orphan_blocker,
+                        provenance=branchgov_provenance,
+                        preflight="roadmap_orphan",
+                        next_action=(
+                            "Push the roadmap to the pipeline-branch base, or pass "
+                            "--allow-branchgov to switch anyway, before dispatch."
+                        ),
+                    )
+                    return (_DispatchOutcome("break", None), None)
+                branch_blocker, branch_decision = _ensure_pipeline_branch_before_dispatch(
+                    repo, roadmap, base_ref=branchgov_base_ref, base_already_fetched=True
+                )
                 if branch_decision is not None and branch_decision.diverged:
                     # #44: make the convention-branch switch visible (was silent).
+                    # Reuse the pre-switch provenance — the roadmap may be gone now.
                     _append_coordinator_event(
                         repo=repo,
                         roadmap=roadmap,
@@ -1309,38 +1532,43 @@ def run_loop(
                             "diverged": True,
                             "roadmap_version": _roadmap_version(roadmap),
                         },
+                        provenance=branchgov_provenance,
                     )
-                if branch_blocker is not None:
-                    classifications[alias] = "blocked"
-                    append_event(
-                        repo,
-                        LoopEvent(
-                            timestamp=utc_now(),
-                            repo=str(repo),
-                            roadmap=str(roadmap),
+                    # #83 fail-safe: if the switch (e.g. via --allow-branchgov over
+                    # a genuine orphan) removed the roadmap, refuse cleanly here
+                    # instead of letting the downstream roadmap read crash.
+                    post_switch_blocker = _branchgov_roadmap_missing_after_switch(
+                        repo, roadmap, restore_branch=branch_decision.original_branch
+                    )
+                    if post_switch_blocker is not None:
+                        classifications[alias] = "blocked"
+                        _emit_branchgov_blocked_event(
+                            repo=repo,
+                            roadmap=roadmap,
                             phase=alias,
                             action=action,
-                            status="blocked",
-                            model=selection.model,
-                            reasoning_effort=selection.effort,
-                            source=selection.source,
-                            override_reason=selection.override_reason,
-                            blocker=branch_blocker,
-                            metadata={
-                                "pipeline_branch_governance": {
-                                    "status": "blocked",
-                                    "roadmap_version": _roadmap_version(roadmap),
-                                    "default_branch": _default_branch(repo),
-                                },
-                                "terminal_summary": build_terminal_summary(
-                                    terminal_status="blocked",
-                                    terminal_blocker=branch_blocker,
-                                    verification_status="blocked",
-                                    next_action="Resolve the pipeline branch governance blocker before dispatch.",
-                                ),
-                            },
-                            **event_provenance(roadmap, alias),
-                        ),
+                            selection=selection,
+                            blocker=post_switch_blocker,
+                            provenance=branchgov_provenance,
+                            preflight="roadmap_orphan_after_switch",
+                            next_action=(
+                                "Push the roadmap to the pipeline-branch base and re-run, "
+                                "or run without --allow-branchgov so the preflight refuses "
+                                "before switching."
+                            ),
+                        )
+                        return (_DispatchOutcome("break", None), None)
+                if branch_blocker is not None:
+                    classifications[alias] = "blocked"
+                    _emit_branchgov_blocked_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action=action,
+                        selection=selection,
+                        blocker=branch_blocker,
+                        provenance=branchgov_provenance,
+                        next_action="Resolve the pipeline branch governance blocker before dispatch.",
                     )
                     return (_DispatchOutcome("break", None), None)
             if (status in {"planned", "executed"} or explicit_product_action in {"execute", "review"}) and stale_pipeline_plan is not None:
@@ -5034,7 +5262,13 @@ def _append_coordinator_event(
     status: str,
     selection,
     metadata: dict[str, object],
+    provenance: dict[str, object] | None = None,
 ) -> None:
+    # #83: callers that emit AFTER a branchgov switch (e.g. branch_switched) pass
+    # a provenance captured before the switch — the roadmap file may be gone, so
+    # recomputing event_provenance here would crash FileNotFoundError.
+    if provenance is None:
+        provenance = event_provenance(roadmap, phase)
     append_event(
         repo,
         LoopEvent(
@@ -5049,7 +5283,7 @@ def _append_coordinator_event(
             source=selection.source,
             override_reason=selection.override_reason,
             metadata={"coordinator": metadata},
-            **event_provenance(roadmap, phase),
+            **provenance,
         ),
     )
 

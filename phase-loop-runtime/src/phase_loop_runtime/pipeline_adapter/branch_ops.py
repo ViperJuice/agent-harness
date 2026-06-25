@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .flag import branchgov_enabled
+from .flag import branchgov_enabled, branchgov_override_explicit
 from .markers import detect_pipeline_mode
 
 
@@ -29,6 +29,13 @@ class BranchDecision:
 # without copying the literal string (the suffix interpolates the branch name).
 REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX = "Refusing git commit on default branch"
 
+# Stable prefix of the BranchGov roadmap-orphan refusal (issue #83). The runner
+# consults `roadmap_orphaned_by_branchgov` BEFORE switching and builds the
+# `branch_sync_conflict` blocker from this summary; shared so downstream
+# precondition-cleared logic can recognise the variant without copying the
+# interpolated suffix (which names the branch and roadmap path).
+REFUSE_ROADMAP_ORPHAN_PREFIX = "Refusing branch-governance switch that would orphan roadmap"
+
 
 class PipelineBranchInvariantError(RuntimeError):
     def __init__(self, message: str, *, blocker_class: str = "contract_bug") -> None:
@@ -48,6 +55,7 @@ def ensure_pipeline_branch(
     default_branch: str,
     *,
     base_ref: str | None = None,
+    base_already_fetched: bool = False,
 ) -> BranchDecision:
     repo = Path(repo_root)
     pipeline_branch = f"consiliency/pipeline/{roadmap_version}"
@@ -62,7 +70,11 @@ def ensure_pipeline_branch(
         )
 
     base_ref = base_ref or f"origin/{default_branch}"
-    _fetch_base_ref(repo, base_ref, default_branch)
+    # #83: the runner may have already fetched the base once and shared it with
+    # the orphan preflight (so both evaluate the SAME fetched base). Skip the
+    # redundant fetch in that case; default preserves the standalone behaviour.
+    if not base_already_fetched:
+        _fetch_base_ref(repo, base_ref, default_branch)
     if not _ref_exists(repo, base_ref):
         raise PipelineBranchInvariantError(
             f"Pipeline branch base ref {base_ref} is unavailable.",
@@ -105,6 +117,95 @@ def ensure_pipeline_branch(
             blocker_class="branch_sync_conflict",
         )
     return BranchDecision(current, pipeline_branch, "create", True)
+
+
+def roadmap_orphaned_by_branchgov(
+    repo_root: Path,
+    roadmap: Path,
+    roadmap_version: str,
+    default_branch: str,
+    *,
+    base_ref: str | None = None,
+    base_already_fetched: bool = False,
+) -> str | None:
+    """Issue #83 preflight: would a branch-governance switch orphan the roadmap?
+
+    Returns a human-actionable summary string when ALL of the following hold,
+    and ``None`` otherwise (the switch is safe / governed):
+
+      * the switch would DIVERGE — the operator is on a non-convention branch so
+        `ensure_pipeline_branch` would `checkout`/`create` the convention branch
+        (mirrors the #44 divergence condition), AND
+      * the roadmap artifact is committed on the current branch (tracked at HEAD)
+        but is NOT reachable from the pipeline-branch base (absent at
+        ``base_ref``) — i.e. the very file the switch would make vanish, which is
+        what crashes the executor with ``FileNotFoundError`` mid-run.
+
+    The base is evaluated AFTER fetching it, matching `ensure_pipeline_branch`:
+    otherwise a stale local ``refs/remotes/origin/<default>`` would
+    FALSE-POSITIVE-refuse a roadmap that is in fact pushed and on-base. When the
+    runner has already fetched the shared base, pass ``base_already_fetched=True``
+    to avoid a redundant fetch (the caller gates branchgov-active, so this
+    predicate does not re-check it).
+
+    Behaviour-preserving for genuinely governed runs: if the roadmap is present
+    at the FETCHED base (pushed / on-base) the predicate returns ``None`` and the
+    caller proceeds with the existing switch + ``coordinator.branch_switched``.
+    """
+    repo = Path(repo_root)
+
+    pipeline_branch = f"consiliency/pipeline/{roadmap_version}"
+    current = _current_branch(repo)
+    # No divergence when already on the convention branch (the switch is a no-op
+    # "stay"), or on the default branch (handled by the dirty-default refusal).
+    if current == pipeline_branch:
+        return None
+
+    base_ref = base_ref or f"origin/{default_branch}"
+    # Evaluate the FETCHED base (the false-positive fix). Skip the fetch when the
+    # runner already did it and shared the base with us.
+    if not base_already_fetched:
+        _fetch_base_ref(repo, base_ref, default_branch)
+    if not _ref_exists(repo, base_ref):
+        # Base unavailability is surfaced by ensure_pipeline_branch itself; don't
+        # second-guess it here.
+        return None
+
+    rel = _roadmap_relpath(repo, roadmap)
+    if rel is None:
+        return None
+    # Roadmap must be committed on the current branch (tracked at HEAD) — an
+    # uncommitted/untracked roadmap is a different failure mode, not an orphan.
+    if not _path_tracked_at(repo, "HEAD", rel):
+        return None
+    # Safe (governed) when the same roadmap is reachable from the (fetched) base:
+    # the switch keeps the file visible.
+    if _path_tracked_at(repo, base_ref, rel):
+        return None
+
+    return (
+        f"{REFUSE_ROADMAP_ORPHAN_PREFIX} '{rel}'. Branch governance would switch from "
+        f"'{current}' to convention branch '{pipeline_branch}' cut from '{base_ref}', but "
+        f"the roadmap is committed only on '{current}' and is not reachable from "
+        f"'{base_ref}' — the switch would make it vanish and crash the run. Push the "
+        f"roadmap to '{base_ref}' (or land it on the base) to fix this; or, to switch "
+        f"anyway, pass --allow-branchgov (PHASE_LOOP_BRANCHGOV_ENABLE=true) — the run "
+        f"then fails cleanly (branch_sync_conflict) if the roadmap still isn't on the base."
+    )
+
+
+def _roadmap_relpath(repo: Path, roadmap: Path) -> str | None:
+    """POSIX repo-relative pathspec for the roadmap, or None if outside the repo."""
+    try:
+        rel = Path(roadmap).resolve().relative_to(Path(repo).resolve())
+    except (ValueError, OSError):
+        return None
+    return rel.as_posix()
+
+
+def _path_tracked_at(repo: Path, ref: str, relpath: str) -> bool:
+    """True when ``relpath`` is a tracked object at ``ref`` (predicts the FileNotFound)."""
+    return _git(repo, "cat-file", "-e", f"{ref}:{relpath}").returncode == 0
 
 
 def _warn_branch_divergence(current: str, target: str, roadmap_version: str) -> None:
