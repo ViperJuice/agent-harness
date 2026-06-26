@@ -17,7 +17,7 @@ agent-harness/install-agent-harness.sh --harness claude
 curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
 ```
 
-Pin a specific release for the whole team with `--ref v0.1.2`.
+Pin a specific release for the whole team with `--ref v0.1.3`.
 
 **Prereqs:** git, and your harness CLI already installed (Claude Code / Codex / Gemini /
 OpenCode). The installer brings everything else (it installs `uv` if you don't have it).

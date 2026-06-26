@@ -12,14 +12,14 @@
 #   ./install-agent-harness.sh [--harness claude|codex|gemini|opencode] [--ref vX.Y.Z]
 # Env overrides:
 #   AGENT_HARNESS_REPO   (default https://github.com/ViperJuice/agent-harness)
-#   AGENT_HARNESS_REF    (default v0.1.2 — the first standalone-green release)
+#   AGENT_HARNESS_REF    (default v0.1.3 — the first standalone-green release)
 #   AGENT_HARNESS_HARNESS (default claude)
 #   AGENT_HARNESS_HOME   (persistent clone dir; default ~/.local/share/agent-harness)
 #   AGENT_HARNESS_SKILL_DEST (override the harness skill root)
 set -euo pipefail
 
 REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
-REF="${AGENT_HARNESS_REF:-v0.1.2}"
+REF="${AGENT_HARNESS_REF:-v0.1.3}"
 HARNESS="${AGENT_HARNESS_HARNESS:-claude}"
 HOME_DIR="${AGENT_HARNESS_HOME:-$HOME/.local/share/agent-harness}"
 

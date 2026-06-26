@@ -19,9 +19,9 @@ To install just this runtime package directly (e.g. as a pinned dependency):
 
 ```sh
 # isolated tool install:
-uv tool install "git+https://github.com/ViperJuice/agent-harness@v0.1.2#subdirectory=phase-loop-runtime"
+uv tool install "git+https://github.com/ViperJuice/agent-harness@v0.1.3#subdirectory=phase-loop-runtime"
 # …or into the current environment:
-pip install "git+https://github.com/ViperJuice/agent-harness@v0.1.2#subdirectory=phase-loop-runtime"
+pip install "git+https://github.com/ViperJuice/agent-harness@v0.1.3#subdirectory=phase-loop-runtime"
 ```
 
 This exposes two console scripts — `phase-loop` and `codex-phase-loop` — both calling
