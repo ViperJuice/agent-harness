@@ -4,16 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"
-version = "0.1.0"
-description = "Vendored phase-loop runtime and CLI for dotfiles phase workflows"
+version = "0.1.2"
+description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+authors = [{ name = "ViperJuice" }]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ViperJuice/agent-harness"
+Repository = "https://github.com/ViperJuice/agent-harness"
+Issues = "https://github.com/ViperJuice/agent-harness/issues"
 
 [project.scripts]
 phase-loop = "phase_loop_runtime.cli:main"
