@@ -1,0 +1,32 @@
+# agent-harness
+
+The harness-neutral **phase-loop** orchestration runtime + cross-harness workflow
+skills, extracted from a private fleet repo into a public, Apache-2.0 package.
+
+- **`phase-loop-runtime/`** — the orchestration engine + CLIs (`phase-loop`,
+  `codex-phase-loop`). Deterministic; it dispatches each roadmap phase to a child
+  executor (codex / claude / gemini / opencode / pi) — it isn't tied to one harness.
+- **`phase-loop-skills/`** — the workflow skill bundle (phase-roadmap-builder,
+  plan/execute-phase, plan/execute-detailed, skill-improvement-planner, skill-editor,
+  phase-loop) with per-harness overrides for claude / codex / gemini / opencode.
+
+## Install
+
+Cross-OS (macOS / Linux), no tailnet / 1Password / Homebrew / dotfiles clone:
+
+```sh
+git clone https://github.com/ViperJuice/agent-harness
+agent-harness/install-agent-harness.sh --harness claude   # or codex|gemini|opencode
+
+# …or the one-liner:
+curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
+```
+
+This installs the pinned `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) and the
+harness workflow skills into your harness skill root (`~/.claude/skills`,
+`~/.codex/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`). `--ref vX.Y.Z`
+pins a release (default: the latest stable). Re-run to update.
+
+## License
+
+Apache-2.0 (see `LICENSE` / `NOTICE`).
