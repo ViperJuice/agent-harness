@@ -13,6 +13,14 @@ from phase_loop_runtime.build_bundle import ACTIVE_HARNESSES, DEFAULT_SOURCES, b
 from phase_loop_runtime.cli import build_parser, main
 from phase_loop_runtime.skill_install import REQUIRED_SKILLS
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _skill_text(harness: str, bare: str, extra: str = "") -> str:
     title = harness.capitalize()

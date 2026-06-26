@@ -11,6 +11,14 @@ from phase_loop_test_utils import build_fake_automation_output, commit_fixture_p
 
 PLANNER_COMMANDS = ("codex-plan-phase", "claude-plan-phase", "gemini-plan-phase", "opencode-plan-phase")
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopPlannerRedispatchWhenPlanCurrentTest(unittest.TestCase):
     def test_phase_loop_planner_redispatch_when_plan_current(self):

@@ -42,6 +42,14 @@ PHASE_EXECUTE_SKILLS = (
     ("opencode-execute-phase", ROOT / "opencode-config/skills/opencode-execute-phase/SKILL.md"),
 )
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class SkillPlanManifestWriteTest(unittest.TestCase):
     def test_all_canonical_detailed_skills_have_stable_marker(self):

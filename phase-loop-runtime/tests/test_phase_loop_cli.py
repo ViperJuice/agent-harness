@@ -28,6 +28,14 @@ from phase_loop_runtime.verification_evidence import run_verification
 BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
 CODEX_ALIAS_BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopCliTest(unittest.TestCase):
     def test_status_surfaces_not_run_ratio_warning(self):

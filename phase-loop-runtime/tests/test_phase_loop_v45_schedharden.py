@@ -38,6 +38,14 @@ from phase_loop_test_utils import build_fake_automation_output, commit_fixture_p
 
 MIDDLE_DIRTY = ("EXTRACT", "IMPORT")
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _phase_from_spec(spec) -> str:
     match = re.search(r"phase-plan-v1-([A-Z_]+)\.md", spec.prompt_bundle.render_prompt())

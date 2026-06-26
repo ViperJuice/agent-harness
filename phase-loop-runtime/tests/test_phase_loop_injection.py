@@ -3,6 +3,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from _dotfiles_tree import dotfiles_tree_present
+
+# TESTDECOUPLE SL-1: this file reads dotfiles fleet paths (absent in the
+# extracted agent-harness layout). Skip at MODULE level before any such read so
+# collection does not error standalone; the marker keeps it deselected by
+# `pytest -m "not dotfiles_integration"` and the conftest run-time hook.
+if not dotfiles_tree_present():
+    pytest.skip("requires dotfiles tree", allow_module_level=True)
+
+pytestmark = pytest.mark.dotfiles_integration
+
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.injection import (
     CLAUDE_CONTEXT_MAX_CHARS,

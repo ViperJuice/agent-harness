@@ -11,6 +11,14 @@ from phase_loop_runtime.observability import build_terminal_summary
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.runner import run_loop
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _append_phase_owned_dirty_event(
     repo: Path,

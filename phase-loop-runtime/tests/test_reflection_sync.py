@@ -18,10 +18,10 @@ REFLECTION = """\
 - Repo: 159800550286
 - Branch: divorce-discovery-fix
 - Commit: a1b2c3d
-- Artifact: <HOME-REDACTED>/projects/divorce/plans/phase-plan-v2-FOO.md
+- Artifact: /home/someuser/projects/divorce/plans/phase-plan-v2-FOO.md
 
 ## What worked
-- The plan resolver under <HOST-PATH-REDACTED>/code/dotfiles/scripts/x.py was clear.
+- The plan resolver under /mnt/buildvol/code/dotfiles/scripts/x.py was clear.
 - Wrote handoff to ~/.claude/skills/claude-plan-phase/handoffs cleanly.
 
 ## Improvements to SKILL.md
@@ -71,7 +71,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_body_paths_collapsed_username_stripped(self):
         out = rs.redact_reflection_text(REFLECTION, machine="m1")
-        self.assertNotIn("<HOME-REDACTED>", out)
+        self.assertNotIn("/home/someuser", out)
         self.assertNotIn("/home/jenner", out)
         self.assertNotIn("secretco", out)
         # generic, instructive tails survive
@@ -88,8 +88,8 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("Artifact: none", out)
 
     def test_provenance_header_added(self):
-        out = rs.redact_reflection_text("# r\n", machine="<fleet-host>")
-        self.assertTrue(out.startswith("<!-- reflection-sync: redacted; machine=<fleet-host> -->"))
+        out = rs.redact_reflection_text("# r\n", machine="testhost")
+        self.assertTrue(out.startswith("<!-- reflection-sync: redacted; machine=testhost -->"))
 
 
 class ExportTests(unittest.TestCase):
@@ -116,13 +116,13 @@ class ExportTests(unittest.TestCase):
             os.environ["PHASE_LOOP_SKILL_BUNDLE"] = str(bundle)
             try:
                 written = rs.export_reflections(
-                    repo, dest, machine="<fleet-host>", harnesses=("claude",)
+                    repo, dest, machine="testhost", harnesses=("claude",)
                 )
             finally:
                 del os.environ["PHASE_LOOP_SKILL_BUNDLE"]
 
             self.assertEqual(len(written), 1)
-            expected = dest / "claude-plan-phase" / "159800550286" / "main" / "<fleet-host>" / "run1.md"
+            expected = dest / "claude-plan-phase" / "159800550286" / "main" / "testhost" / "run1.md"
             self.assertTrue(expected.exists())
             content = expected.read_text(encoding="utf-8")
             self.assertNotIn("divorce-discovery-fix", content)
@@ -144,7 +144,7 @@ class ExportTests(unittest.TestCase):
             os.environ["PHASE_LOOP_SKILL_BUNDLE"] = str(bundle)
             try:
                 written = rs.export_reflections(
-                    repo, dest, machine="<fleet-host>", harnesses=("claude",)
+                    repo, dest, machine="testhost", harnesses=("claude",)
                 )
             finally:
                 del os.environ["PHASE_LOOP_SKILL_BUNDLE"]

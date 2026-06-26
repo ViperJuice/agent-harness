@@ -14,6 +14,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 try:  # py3.11+ stdlib; fall back to the vendored backport name on 3.10
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised on 3.10

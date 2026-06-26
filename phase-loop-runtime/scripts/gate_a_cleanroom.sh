@@ -115,6 +115,54 @@ make_rundir "$RUNDIR_PRESENT"
 echo "-- config: profile plugin registered (fleet install) --"
 run_probe "$RUNDIR_PRESENT" present
 
+# --- Full standalone test suite (TESTDECOUPLE) -------------------------------
+# After the import/execute/bridge smoke, run the FULL runtime test suite against
+# the INSTALLED wheel with no dotfiles tree reachable. The tests/ tree is copied
+# under $WORK (whose parents are not a dotfiles checkout), so any test that still
+# resolves `parents[3]` overshoots to a marker-less dir and the dotfiles tree
+# detector reports absent. `-m "not dotfiles_integration"` deselects the
+# integration bucket (which legitimately needs the fleet skill-source/profile
+# overlay); the module-level skip guards keep import-time fleet readers from
+# erroring collection. The gate FAILS on any non-integration failure.
+#
+# Skippable via PHASE_LOOP_SKIP_GATE_A_SUITE=1 for the rare host without pytest
+# (recorded, not silent) — the smoke above still runs.
+if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
+  echo "-- full standalone suite: SKIPPED (PHASE_LOOP_SKIP_GATE_A_SUITE=1) --"
+else
+  echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
+  env -u PYTHONPATH "$PY" -m pip install --quiet pytest >/dev/null
+  SUITE_TREE="$WORK/standalone/phase-loop-runtime"
+  mkdir -p "$SUITE_TREE"
+  cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
+  # Sanity: the copied tree's parents[3] must NOT be a dotfiles checkout.
+  if env -i "$PY" - "$SUITE_TREE/tests" <<'PYEOF'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1], "x").resolve().parents[3]
+present = (root / "claude-config").is_dir() and (root / "bootstrap.sh").is_file()
+sys.exit(1 if present else 0)
+PYEOF
+  then
+    :
+  else
+    echo "GATE-A FAIL: standalone suite tree resolves a dotfiles checkout at parents[3] -- not a clean room" >&2
+    exit 1
+  fi
+  # Clean env: empty HOME, user-site disabled, only the tests dir + the installed
+  # wheel on the path. No PYTHONPATH to a source tree (would shadow the wheel).
+  if ! env -i \
+      HOME="$CLEAN_HOME" \
+      PATH="$VENV/bin:/usr/bin:/bin" \
+      PYTHONNOUSERSITE=1 \
+      PYTHONPATH="$SUITE_TREE/tests" \
+      "$PY" -m pytest "$SUITE_TREE/tests" -q -p no:cacheprovider -m "not dotfiles_integration"; then
+    echo "GATE-A FAIL: standalone test suite is not green (see failures above)" >&2
+    exit 1
+  fi
+  echo "-- full standalone suite: GREEN --"
+fi
+
 # --- Config 1 (the seam): strip the group from the venv -> commands ABSENT ----
 # Prove the seam against the ARTIFACT: removing the profile_commands group from the
 # installed entry_points.txt makes the dotfiles commands disappear (env unset alone

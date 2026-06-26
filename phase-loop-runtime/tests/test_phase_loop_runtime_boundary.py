@@ -4,6 +4,14 @@ import subprocess
 import tempfile
 import sys
 
+import pytest
+
+# TESTDECOUPLE (runtime-core): runtime-boundary.md is the runtime's OWN contract
+# doc, bundled as _contract_docs package-data and resolved via importlib.resources,
+# so the boundary tests run standalone. Only the pyproject-reading test stays
+# integration (pyproject is never package-data).
+from _contract_docs import contract_doc_text
+
 ROOT = Path(__file__).resolve().parents[3]
 
 class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
@@ -43,7 +51,7 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
     def test_public_modules_match_runtime_boundary_doc(self):
         import phase_loop_runtime
 
-        doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        doc = contract_doc_text("phase-loop", "runtime-boundary.md")
         documented = {
             line.split("`")[1].removeprefix("phase_loop_runtime.")
             for line in doc.splitlines()
@@ -106,13 +114,15 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
         self.assertIn("Neutral phase-loop runner", result.stdout)
         self.assertIn("codex-phase-loop remains a Codex bridge alias", result.stdout)
 
+    # TESTDECOUPLE: integration — reads vendor/.../pyproject.toml (never package-data).
+    @pytest.mark.dotfiles_integration
     def test_pyproject_console_scripts_share_cli_main(self):
         pyproject = (ROOT / "vendor" / "phase-loop-runtime" / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('phase-loop = "phase_loop_runtime.cli:main"', pyproject)
         self.assertIn('codex-phase-loop = "phase_loop_runtime.cli:main"', pyproject)
 
     def test_runtime_boundary_locks_future_extraction_identity(self):
-        doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        doc = contract_doc_text("phase-loop", "runtime-boundary.md")
         self.assertIn("vendored package `phase-loop-runtime`", doc)
         self.assertIn("Python import package `phase_loop_runtime`", doc)
         self.assertIn("neutral `phase-loop` command", doc)
@@ -120,7 +130,7 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
         self.assertIn("same parser", doc)
 
     def test_runtime_boundary_cites_substrate_without_dotfiles_root_dependency(self):
-        doc = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        doc = contract_doc_text("phase-loop", "runtime-boundary.md")
         flat = " ".join(doc.split())
         for token in (
             "docs/phase-loop/harness-substrate-manifest.md",

@@ -1,0 +1,13 @@
+{
+  "phase": "DOCSYNC",
+  "commands": [
+    {"name": "python3 -m unittest tests.test_docsync", "exit_code": 0, "duration_ms": 1384},
+    {"name": "rg -n \"DOCSYNC\" docs specs", "exit_code": 0, "duration_ms": 91},
+    {"name": "git diff --check -- docs/spec.md tests/test_docsync.py", "exit_code": 0, "duration_ms": 43}
+  ],
+  "changed_files": [
+    {"path": "docs/spec.md", "bytes": 4281},
+    {"path": "tests/test_docsync.py", "bytes": 3197}
+  ],
+  "scores": [0.74, 0.81, 0.93, 0.88, 0.79]
+}

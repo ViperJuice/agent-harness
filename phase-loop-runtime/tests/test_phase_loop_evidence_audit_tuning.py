@@ -20,8 +20,17 @@ from phase_loop_runtime.evidence_audit import (
 )
 
 
+import pytest
+
+# TESTDECOUPLE (runtime-core): the evidence-audit calibration fixtures are the
+# runtime's OWN test fixtures; they ship as _test_fixtures package-data and resolve
+# via importlib.resources, so the detector tests run standalone. FIXTURE_ROOT is the
+# bundled tree. Only test_calibration_dry_run (runs the dotfiles-tree
+# tests/calibrate_tier3.py via cwd=ROOT) stays integration.
+from _contract_docs import fixture_path
+
 ROOT = Path(__file__).resolve().parents[3]
-FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "evidence-audit-calibration"
+FIXTURE_ROOT = fixture_path("evidence-audit-calibration")
 
 
 def _init_git_repo(repo: Path) -> None:
@@ -33,6 +42,14 @@ def _init_git_repo(repo: Path) -> None:
 
 
 class EvidenceAuditDetectorTuningTest(unittest.TestCase):
+    # TESTDECOUPLE: integration — resolves the known-real fixtures' path-shaped
+    # strings (e.g. "vendor/phase-loop-runtime/src/.../emit_phase_closeout.baml")
+    # against the repo root ROOT. The assertion (no missing refs) only holds when
+    # those paths exist under a real dotfiles checkout; standalone ROOT overshoots
+    # to a marker-less dir and they correctly flag as missing. The detector's
+    # behavior under a real tree is the load-bearing thing under test, so this stays
+    # in-tree. (The sibling fixture detectors below run standalone from package-data.)
+    @pytest.mark.dotfiles_integration
     def test_strict_missing_references_rejects_known_real_path_shaped_strings(self):
         known_real = FIXTURE_ROOT / "known-real"
         json_files = sorted(known_real.rglob("*.json"))
@@ -131,6 +148,9 @@ class EvidenceAuditDetectorTuningTest(unittest.TestCase):
         self.assertIn("--full-tree-loose", stdout.getvalue())
         self.assertIn("--full-tree", stdout.getvalue())
 
+    # TESTDECOUPLE: integration — runs the dotfiles-tree script tests/calibrate_tier3.py
+    # with cwd=ROOT (the dotfiles checkout root); that script is not part of the package.
+    @pytest.mark.dotfiles_integration
     def test_calibration_dry_run_remains_offline_compatible(self):
         result = subprocess.run(
             ["python3", "tests/calibrate_tier3.py", "--dry-run"],

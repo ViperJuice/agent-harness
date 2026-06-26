@@ -5,6 +5,18 @@ from pathlib import Path
 from phase_loop_runtime.claude_channel_sidecar import ChannelSidecar
 
 
+import pytest
+from _dotfiles_tree import dotfiles_tree_present
+
+# TESTDECOUPLE SL-1: this file reads dotfiles fleet paths (absent in the
+# extracted agent-harness layout). Skip at MODULE level before any such read so
+# collection does not error standalone; the marker keeps it deselected by
+# `pytest -m "not dotfiles_integration"` and the conftest run-time hook.
+if not dotfiles_tree_present():
+    pytest.skip("requires dotfiles tree", allow_module_level=True)
+
+pytestmark = pytest.mark.dotfiles_integration
+
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN = ROOT / "claude-config" / "plugins" / "phase-loop-channel" / "channel" / "phase_loop_channel.ts"
 NOTIFY = ROOT / "claude-config" / "notify.sh"

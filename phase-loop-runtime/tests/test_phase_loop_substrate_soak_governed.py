@@ -1,12 +1,9 @@
-from pathlib import Path
+from _contract_docs import contract_doc_text
 
 
-ROOT = Path(__file__).resolve().parents[3]
-DOC = ROOT / "docs" / "phase-loop" / "substrate-soak-governed-pipeline.md"
-
-
+# TESTDECOUPLE SL-2 (runtime-core): resolve from package-data, not parents[3]/docs.
 def _doc() -> str:
-    return DOC.read_text(encoding="utf-8")
+    return contract_doc_text("phase-loop", "substrate-soak-governed-pipeline.md")
 
 
 def test_governed_pipeline_receipt_cites_local_fixture_matrix_and_ownership():

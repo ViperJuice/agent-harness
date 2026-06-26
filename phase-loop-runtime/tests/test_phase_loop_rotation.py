@@ -28,6 +28,14 @@ AUTOMATION_COMPLETE = (
     "  artifact_state: none\n"
 )
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _complete_launch(spec, dry_run=False, log_path=None, heartbeat_path=None, **kwargs):
     return LaunchResult(

@@ -1,0 +1,16 @@
+{
+  "fixture_id": "borderline-provider-timeout",
+  "category": "borderline",
+  "expected_verdict_class": "uncertain",
+  "expected_confidence": 0.25,
+  "expected_artifact_characteristics": "Ambiguous provider behavior where the wrapper should preserve uncertainty instead of asserting fake.",
+  "sample_artifact_paths": ["timeout-note.txt"],
+  "rationale": "Timeouts should produce uncertain fallback metadata, not hard classifications.",
+  "tier2_signal_summary": {
+    "kind": "calibration_borderline",
+    "signals": ["provider timeout", "no parsed judgment", "operator review"]
+  },
+  "estimated_input_tokens": 600,
+  "estimated_output_tokens": 190,
+  "estimated_cost_usd": 0.0062
+}

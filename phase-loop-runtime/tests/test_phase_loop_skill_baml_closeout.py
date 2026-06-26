@@ -42,6 +42,14 @@ SKILL_PATHS = tuple(
     for name in names
 )
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopSkillBamlCloseoutTest(unittest.TestCase):
     def test_exact_skill_set_references_baml_closeout_schema(self):

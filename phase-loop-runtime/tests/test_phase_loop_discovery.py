@@ -41,6 +41,14 @@ from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import make_repo, write_phase_plan
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopDiscoveryTest(unittest.TestCase):
     def test_previous_phase_owned_dirty_paths_uses_latest_same_phase_evidence(self):

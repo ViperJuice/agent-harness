@@ -1,10 +1,12 @@
 import unittest
-from pathlib import Path
+from importlib.resources import files
 
-
-ROOT = Path(__file__).resolve().parents[3]
-BAML_SOURCE = ROOT / "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml"
-BAML_SRC_DIR = ROOT / "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src"
+# TESTDECOUPLE (runtime-core): baml_src ships as package-data inside the wheel
+# (pyproject [tool.setuptools.package-data]). Resolve it via importlib.resources —
+# anchored on the installed/importable package — so this contract test runs
+# standalone in the extracted agent-harness layout, not via parents[3]/vendor.
+BAML_SRC_DIR = files("phase_loop_runtime") / "baml_src"
+BAML_SOURCE = BAML_SRC_DIR / "emit_phase_closeout.baml"
 
 
 class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):

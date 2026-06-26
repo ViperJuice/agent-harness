@@ -1,0 +1,263 @@
+[
+  {
+    "name": "unset_interactive_defaults_to_channel",
+    "description": "Unset route in a non-CI (interactive) context defaults to Channel — the v47-validated default, never a silent billing-sensitive print.",
+    "inputs": { "value": null, "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "default_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "empty_string_interactive_defaults_to_channel",
+    "description": "An explicitly empty/blank route string is treated as unset and defaults to Channel in an interactive context.",
+    "inputs": { "value": "", "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "default_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "unset_ci_blocks_requires_explicit_route",
+    "description": "Unset route in a CI/script context BLOCKS with an actionable error — CI must select a route explicitly rather than inherit the interactive Channel default. Blocked route carries no billing posture and (being a block) no sidecar_url/session_id.",
+    "inputs": { "value": null, "env_vars": { "CI": "true" } },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "ci_requires_explicit_route",
+      "billing_posture": "unknown",
+      "fallback_posture": "blocked",
+      "sidecar_url": null,
+      "session_id": null,
+      "error_contains": "explicit"
+    }
+  },
+  {
+    "name": "whitespace_only_route_ci_blocks_requires_explicit_route",
+    "description": "A whitespace-only route string is treated as unset; under CI it BLOCKS with ci_requires_explicit_route (not a Channel default). Covers the strip()-then-empty branch under CI that a TS port could diverge on.",
+    "inputs": { "value": "   ", "env_vars": { "CI": "true" } },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "ci_requires_explicit_route",
+      "billing_posture": "unknown",
+      "fallback_posture": "blocked",
+      "sidecar_url": null,
+      "session_id": null,
+      "error_contains": "explicit"
+    }
+  },
+  {
+    "name": "ci_false_is_interactive_defaults_to_channel",
+    "description": "CI set to a falsey literal (false) is not a CI context: unset route still defaults to Channel.",
+    "inputs": { "value": null, "env_vars": { "CI": "false" } },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "default_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_channel_normalizes_to_claude_channel",
+    "description": "The `channel` alias normalizes to the claude_channel route (explicit selection).",
+    "inputs": { "value": "channel", "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "explicit_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_claude_channel_canonical",
+    "description": "The canonical `claude_channel` literal resolves to claude_channel.",
+    "inputs": { "value": "claude_channel", "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "explicit_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_claude_dash_channel_normalizes",
+    "description": "Hyphen/space separators normalize to underscores: `claude-channel` -> claude_channel.",
+    "inputs": { "value": "claude-channel", "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "explicit_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_channel_uppercase_normalizes",
+    "description": "Case is normalized: `CHANNEL` -> claude_channel.",
+    "inputs": { "value": "CHANNEL", "env_vars": {} },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "explicit_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "channel_selection_carries_session_id_and_url_override",
+    "description": "Selection OUTPUT (not build_launch_spec preflight): explicit channel populates session_id from PHASE_LOOP_CHANNEL_SESSION_ID and sidecar_url from the PHASE_LOOP_CLAUDE_CHANNEL_URL override (not the default loopback). Both env paths in one case.",
+    "inputs": {
+      "value": "channel",
+      "env_vars": {
+        "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+        "PHASE_LOOP_CLAUDE_CHANNEL_URL": "http://127.0.0.1:9999"
+      }
+    },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "explicit_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:9999",
+      "session_id": "s1",
+      "error": null
+    }
+  },
+  {
+    "name": "alias_agent_view_normalizes",
+    "description": "The `agent_view` alias normalizes to the claude_agent_view route. Agent View carries no channel sidecar_url/session_id.",
+    "inputs": { "value": "agent_view", "env_vars": {} },
+    "expected": {
+      "route": "claude_agent_view",
+      "reason": "explicit_agent_view",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": null,
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_claude_agent_view_canonical",
+    "description": "The canonical `claude_agent_view` literal resolves to claude_agent_view.",
+    "inputs": { "value": "claude_agent_view", "env_vars": {} },
+    "expected": {
+      "route": "claude_agent_view",
+      "reason": "explicit_agent_view",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": null,
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "alias_print_normalizes_with_billing_warning",
+    "description": "The `print` alias normalizes to claude_print — a billing-sensitive compatibility route. It is explicit operator/CI selection, records a billing warning, and is explicit_compatibility (never an automatic fallback). No channel sidecar_url/session_id.",
+    "inputs": { "value": "print", "env_vars": {} },
+    "expected": {
+      "route": "claude_print",
+      "reason": "explicit_print_compatibility",
+      "billing_posture": "usage_credit",
+      "fallback_posture": "explicit_compatibility",
+      "sidecar_url": null,
+      "session_id": null,
+      "warning_contains": "billing",
+      "error": null
+    }
+  },
+  {
+    "name": "alias_claude_print_canonical",
+    "description": "The canonical `claude_print` literal resolves to claude_print with the same billing-sensitive posture and warning.",
+    "inputs": { "value": "claude_print", "env_vars": {} },
+    "expected": {
+      "route": "claude_print",
+      "reason": "explicit_print_compatibility",
+      "billing_posture": "usage_credit",
+      "fallback_posture": "explicit_compatibility",
+      "sidecar_url": null,
+      "session_id": null,
+      "warning_contains": "billing",
+      "error": null
+    }
+  },
+  {
+    "name": "invalid_alias_blocks_with_invalid_route",
+    "description": "An unsupported route literal BLOCKS with reason invalid_route and an error — never a silent print fallback. The nominal route attribute is claude_print but the blocked posture carries no billing spend and no sidecar_url/session_id.",
+    "inputs": { "value": "tui", "env_vars": {} },
+    "expected": {
+      "route": "claude_print",
+      "reason": "invalid_route",
+      "billing_posture": "unknown",
+      "fallback_posture": "blocked",
+      "sidecar_url": null,
+      "session_id": null,
+      "error_contains": "unsupported Claude route"
+    }
+  },
+  {
+    "name": "explicit_arg_overrides_env_print_over_channel",
+    "description": "Precedence: an explicit arg outranks PHASE_LOOP_CLAUDE_ROUTE. Arg=print wins over env=channel.",
+    "inputs": { "value": "print", "env_vars": { "PHASE_LOOP_CLAUDE_ROUTE": "channel" } },
+    "expected": {
+      "route": "claude_print",
+      "reason": "explicit_print_compatibility",
+      "billing_posture": "usage_credit",
+      "fallback_posture": "explicit_compatibility",
+      "sidecar_url": null,
+      "session_id": null,
+      "warning_contains": "billing",
+      "error": null
+    }
+  },
+  {
+    "name": "env_route_used_when_no_explicit_arg",
+    "description": "Precedence: with no explicit arg, PHASE_LOOP_CLAUDE_ROUTE is consulted. env=agent_view resolves to claude_agent_view.",
+    "inputs": { "value": null, "env_vars": { "PHASE_LOOP_CLAUDE_ROUTE": "agent_view" } },
+    "expected": {
+      "route": "claude_agent_view",
+      "reason": "explicit_agent_view",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": null,
+      "session_id": null,
+      "error": null
+    }
+  },
+  {
+    "name": "env_unset_with_other_env_present_defaults_to_channel",
+    "description": "Precedence: a blank PHASE_LOOP_CLAUDE_ROUTE env with no arg falls through to the interactive default (Channel), not an error, when not in CI.",
+    "inputs": { "value": null, "env_vars": { "PHASE_LOOP_CLAUDE_ROUTE": "" } },
+    "expected": {
+      "route": "claude_channel",
+      "reason": "default_channel",
+      "billing_posture": "subscription_included",
+      "fallback_posture": "none",
+      "sidecar_url": "http://127.0.0.1:8765",
+      "session_id": null,
+      "error": null
+    }
+  }
+]

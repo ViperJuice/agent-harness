@@ -15,7 +15,18 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # when the package is pip-installed elsewhere (parents[4] of the installed
 # location is not helpful). Must run before any phase_loop_runtime import below
 # so the skill_inventory module-level constant captures the right root.
-os.environ.setdefault("PHASE_LOOP_RUNNER_REPO_ROOT", str(ROOT))
+#
+# TESTDECOUPLE SL-0/SL-2: this helper is imported by BOTH buckets. Standalone
+# (extracted agent-harness, no dotfiles tree) `parents[3]` overshoots to a
+# non-dotfiles dir, so pinning PHASE_LOOP_RUNNER_REPO_ROOT to it would point the
+# skill-source resolver at a bogus root. Only pin when a real dotfiles tree is
+# reachable; integration tests that actually need the root carry the SL-1 guard
+# and never run standalone, while core tests that import this helper don't read
+# the fleet root at all.
+from _dotfiles_tree import dotfiles_tree_present  # noqa: E402
+
+if dotfiles_tree_present():
+    os.environ.setdefault("PHASE_LOOP_RUNNER_REPO_ROOT", str(ROOT))
 
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.models import DelegationBudget, DelegationRequest

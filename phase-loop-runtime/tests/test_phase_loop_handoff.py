@@ -18,6 +18,14 @@ from phase_loop_runtime.models import WorkUnitIdentity, WorkUnitState
 from phase_loop_smoke_utils import append_manual_import_event, isolated_codex_home, write_skill_handoff
 from phase_loop_test_utils import make_completed_roadmap_fixture, make_regenesis_amendment_fixture, make_repo, write_phase_plan
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopHandoffTest(unittest.TestCase):
     def test_handoff_surfaces_not_run_ratio_warning(self):

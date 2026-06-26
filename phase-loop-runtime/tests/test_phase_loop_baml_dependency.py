@@ -1,10 +1,16 @@
 import unittest
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
 class PhaseLoopBamlDependencyTest(unittest.TestCase):
+    # TESTDECOUPLE: integration — reads vendor/phase-loop-runtime/pyproject.toml,
+    # which is NEVER package-data (no repoint can make it standalone). This is the
+    # source-tree PACKAGING contract; it legitimately runs only in-tree.
+    @pytest.mark.dotfiles_integration
     def test_pyproject_declares_baml_runtime_and_packaged_source(self):
         # DECOUPLE SL-0: baml_src now ships as package-data inside the package
         # (resolved via importlib.resources), NOT via [tool.setuptools.data-files]

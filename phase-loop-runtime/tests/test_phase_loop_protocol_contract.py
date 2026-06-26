@@ -2,6 +2,15 @@ import re
 import unittest
 from pathlib import Path
 
+import pytest
+
+# TESTDECOUPLE (runtime-core): protocol.md and the harness-substrate/runtime-boundary/
+# capability-matrix/granular-execution-policy/spec-discovery/verification-evidence docs
+# are the runtime's OWN contract docs, bundled as _contract_docs package-data and
+# resolved via importlib.resources, so these contract assertions run standalone. Only
+# test_dftruthsoak_preflight (reads plans/ + specs/ roadmap docs) stays integration.
+from _contract_docs import contract_doc_text
+
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.models import (
     BLOCKER_CLASSES,
@@ -30,14 +39,14 @@ from phase_loop_runtime.observability import NOTIFICATION_PAYLOAD_FIELDS, build_
 
 class PhaseLoopProtocolContractTest(unittest.TestCase):
     def test_protocol_documents_baml_closeout_schema_and_strict_transition(self):
-        text = (ROOT / "vendor/phase-loop-runtime/protocol/protocol.md").read_text(encoding="utf-8")
+        text = contract_doc_text("phase-loop", "protocol.md")
         self.assertIn("## BAML Closeout Schema", text)
         self.assertIn("### Strict Mode Transition", text)
         self.assertIn("EmitPhaseCloseout", text)
         self.assertIn("parse_baml_response", text)
 
     def test_lane_ir_contract_is_documented(self):
-        text = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+        text = contract_doc_text("phase-loop", "protocol.md")
         for expected in (
             "PhasePlanIR",
             "PhasePlanLane",
@@ -88,8 +97,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             self.assertIn(expected, text)
 
     def setUp(self) -> None:
-        self.protocol_path = ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md"
-        self.protocol_text = self.protocol_path.read_text(encoding="utf-8")
+        self.protocol_text = contract_doc_text("phase-loop", "protocol.md")
 
     def assertTokenInText(self, token, text: str, *, msg: str | None = None) -> None:
         if isinstance(token, tuple):
@@ -180,7 +188,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
 
     def test_protocol_documents_hotfix_lane_contract(self):
         text = self.protocol_text
-        runtime_doc = (ROOT / "docs" / "runtime" / "verification-evidence-contract.md").read_text(encoding="utf-8")
+        runtime_doc = contract_doc_text("runtime", "verification-evidence-contract.md")
         for token in (
             "phase-loop hotfix",
             "work_unit: hotfix",
@@ -213,7 +221,7 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             self.assertIn(f"`{literal}`", self.protocol_text)
 
     def test_protocol_documents_spec_delta_closeout_contract(self):
-        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+        shared = contract_doc_text("phase-loop", "protocol.md")
         for text in (self.protocol_text, shared):
             normalized = " ".join(text.split())
             normalized_lower = normalized.lower()
@@ -438,9 +446,9 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             self.assertTokenInText(token, self.protocol_text)
 
     def test_bridge_fixture_boundary_is_documented(self):
-        runtime_boundary = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
-        substrate_manifest = (ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md").read_text(encoding="utf-8")
-        spec_discovery = (ROOT / "docs" / "phase-loop" / "spec-discovery-roots.md").read_text(encoding="utf-8")
+        runtime_boundary = contract_doc_text("phase-loop", "runtime-boundary.md")
+        substrate_manifest = contract_doc_text("phase-loop", "harness-substrate-manifest.md")
+        spec_discovery = contract_doc_text("phase-loop", "spec-discovery-roots.md")
         fixture_readme = (Path(__file__).resolve().parent / "fixtures" / "phase_loop_pipeline_bridge" / "README.md").read_text(encoding="utf-8")
         for text in (self.protocol_text, runtime_boundary, substrate_manifest, fixture_readme):
             for token in (
@@ -575,10 +583,13 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, body)
 
+    # TESTDECOUPLE: integration — reads plans/phase-plan-v14-DFTRUTHSOAK.md and
+    # specs/phase-plans-v14.md (fleet roadmap docs, not runtime-contract docs).
+    @pytest.mark.dotfiles_integration
     def test_dftruthsoak_preflight_contract_is_documented(self):
         plan_text = (ROOT / "plans" / "phase-plan-v14-DFTRUTHSOAK.md").read_text(encoding="utf-8")
         roadmap_text = (ROOT / "specs" / "phase-plans-v14.md").read_text(encoding="utf-8")
-        runtime_boundary = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        runtime_boundary = contract_doc_text("phase-loop", "runtime-boundary.md")
         runtime_flat = " ".join(runtime_boundary.split())
         for text in (plan_text, roadmap_text):
             self.assertIn("DFSKILLGUARD", text)
@@ -602,10 +613,10 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
 
     def test_skill_prompt_guardrails_are_documented(self):
         docs = (
-            ROOT / "docs" / "phase-loop" / "runtime-boundary.md",
-            ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md",
-            ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md",
-            ROOT / "docs" / "phase-loop" / "granular-execution-policy.md",
+            ("phase-loop", "runtime-boundary.md"),
+            ("phase-loop", "harness-substrate-manifest.md"),
+            ("phase-loop", "harness-capability-matrix.md"),
+            ("phase-loop", "granular-execution-policy.md"),
         )
         required = (
             "standalone dotfiles",
@@ -620,10 +631,10 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             ("provider " + "payloads", "provider-supplied payloads"),
             "legacy `.codex/phase-loop/` state",
         )
-        for path in docs:
-            text = " ".join(path.read_text(encoding="utf-8").split())
+        for parts in docs:
+            text = " ".join(contract_doc_text(*parts).split())
             for token in required:
-                self.assertTokenInText(token, text, msg=f"{path} missing token: {token}")
+                self.assertTokenInText(token, text, msg=f"{parts} missing token: {token}")
 
     def test_terminal_summary_fields_are_frozen_in_code(self):
         summary = build_terminal_summary(

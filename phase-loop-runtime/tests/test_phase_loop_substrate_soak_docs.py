@@ -1,17 +1,15 @@
-from pathlib import Path
+from _contract_docs import contract_doc_text
 
 
-ROOT = Path(__file__).resolve().parents[3]
-REGENESIS = ROOT / "docs" / "phase-loop" / "substrate-soak-regenesis.md"
-REPORT = ROOT / "docs" / "phase-loop" / "substrate-soak-report.md"
-
-
+# TESTDECOUPLE SL-2 (runtime-core): resolve the runtime's OWN contract docs from
+# package-data via importlib.resources, not parents[3]/docs, so this test passes
+# standalone in the extracted agent-harness layout.
 def _regenesis() -> str:
-    return REGENESIS.read_text(encoding="utf-8")
+    return contract_doc_text("phase-loop", "substrate-soak-regenesis.md")
 
 
 def _report() -> str:
-    return REPORT.read_text(encoding="utf-8")
+    return contract_doc_text("phase-loop", "substrate-soak-report.md")
 
 
 def test_regenesis_support_doc_cites_only_supported_surfaces():

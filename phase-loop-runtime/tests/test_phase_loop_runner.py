@@ -60,6 +60,14 @@ from phase_loop_test_utils import (
 )
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _migration_wave_body() -> str:
     return (

@@ -32,6 +32,7 @@ codex-phase-loop = "phase_loop_runtime.cli:main"
 dotfiles = "phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands"
 
 [project.entry-points."phase_loop_runtime.skill_sources"]
+dotfiles = "phase_loop_runtime.skill_sources_plugin:register_skill_sources"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -43,8 +44,30 @@ where = ["src"]
 # wheel and resolves via importlib.resources regardless of installer (DECOUPLE SL-0).
 # route_policy/fixtures ships the frozen cross-language route-selection contract
 # (ROUTESPEC) the same way so gp #25 can pull + validate it from the wheel.
+# _contract_docs / _test_fixtures bundle the runtime's OWN contract docs/fixtures
+# (TESTDECOUPLE SL-2) so the runtime-core tests resolve them via importlib.resources
+# and pass standalone in the extracted agent-harness layout. They are kept in
+# lockstep with the canonical dotfiles sources by scripts/sync_runtime_package_data.py
+# (a drift guard test asserts byte-identity).
 [tool.setuptools.package-data]
-phase_loop_runtime = ["py.typed", "baml_src/*.baml", "route_policy/fixtures/*.json", "schemas/*.json"]
+phase_loop_runtime = [
+    "py.typed",
+    "baml_src/*.baml",
+    "route_policy/fixtures/*.json",
+    "schemas/*.json",
+    "_contract_docs/**",
+    "_test_fixtures/**",
+]
+
+# TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests
+# (which read fleet paths only present inside a dotfiles checkout) carry it and
+# SKIP standalone; conftest.py's pytest_collection_modifyitems applies the skip
+# when no dotfiles tree is reachable. The agent-harness CI runs
+# `pytest -m "not dotfiles_integration"`.
+[tool.pytest.ini_options]
+markers = [
+    "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
+]
 
 [tool.setuptools.data-files]
 "share/phase-loop-runtime/protocol" = ["protocol/protocol.md"]

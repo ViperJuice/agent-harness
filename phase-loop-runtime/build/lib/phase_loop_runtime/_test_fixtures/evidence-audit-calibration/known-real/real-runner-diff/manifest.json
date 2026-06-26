@@ -1,0 +1,16 @@
+{
+  "fixture_id": "real-runner-diff",
+  "category": "known-real",
+  "expected_verdict_class": "real",
+  "expected_confidence": 0.92,
+  "expected_artifact_characteristics": "Legitimate closeout evidence with varied file sizes, specific command output, and non-uniform timing and count values.",
+  "sample_artifact_paths": ["evidence.json", "summary.txt"],
+  "rationale": "Represents a normal runner closeout with distinct artifacts and concrete verification details.",
+  "tier2_signal_summary": {
+    "kind": "calibration_known_real",
+    "signals": ["varied command durations", "specific filenames", "non-uniform counts"]
+  },
+  "estimated_input_tokens": 780,
+  "estimated_output_tokens": 220,
+  "estimated_cost_usd": 0.0081
+}

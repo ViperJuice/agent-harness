@@ -8,6 +8,14 @@ from phase_loop_runtime.reconcile import reconcile
 from phase_loop_runtime.runner import run_loop
 from phase_loop_smoke_utils import BIN, append_phase_event, make_completed_roadmap_smoke_fixture, make_two_phase_repo
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopSmokeExhaustionTest(unittest.TestCase):
     def test_clean_fixture_status_and_dry_run_create_local_ledger(self):

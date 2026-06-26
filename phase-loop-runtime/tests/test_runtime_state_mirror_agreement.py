@@ -18,6 +18,14 @@ MIRRORS = (
     "opencode-config/shared/runtime-state.md",
 )
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class RuntimeStateMirrorAgreementTest(unittest.TestCase):
     def test_each_mirror_carries_closeout_exception_vocabulary(self):

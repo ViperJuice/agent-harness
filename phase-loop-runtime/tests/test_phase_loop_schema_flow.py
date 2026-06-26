@@ -9,6 +9,14 @@ from phase_loop_runtime.models import CLOSEOUT_SCHEMA
 from phase_loop_runtime.profiles import resolve_profile_for_executor
 from phase_loop_runtime.prompts import build_prompt
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _schema_hash(schema: dict) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

@@ -1,0 +1,1 @@
+Ledger sample contains metadata-only event summaries with no raw model payloads.

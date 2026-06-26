@@ -7,12 +7,14 @@ in the canonical protocol.
 """
 
 from dataclasses import fields
-from pathlib import Path
 import unittest
 
 import phase_loop_runtime.models as m
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# TESTDECOUPLE (runtime-core): the canonical protocol.md is the runtime's OWN
+# contract doc; it ships as _contract_docs package-data and resolves via
+# importlib.resources, so this vocabulary-freeze test runs standalone.
+from _contract_docs import contract_doc_text
 
 
 class CloseoutExceptionVocabTest(unittest.TestCase):
@@ -66,10 +68,13 @@ class CloseoutExceptionVocabTest(unittest.TestCase):
         self.assertIn("operator_override_missing_reason", m.BLOCKER_CLASSES)
 
     def test_protocol_states_deny_by_default(self):
-        canonical = (REPO_ROOT / "vendor/phase-loop-runtime/protocol/protocol.md").read_text()
-        pointer = (REPO_ROOT / "shared/phase-loop/protocol.md").read_text()
-        for text in (canonical, pointer):
-            self.assertIn("closeout exception", text.lower())
+        # The canonical protocol.md and its shared pointer are byte-identical (the
+        # data-files copy is generated from shared/phase-loop/protocol.md); the
+        # bundled _contract_docs copy is that same content. This asserts CONTENT
+        # presence (not cross-copy drift), so resolving the single bundled copy is
+        # equivalent and runs standalone.
+        canonical = contract_doc_text("phase-loop", "protocol.md")
+        self.assertIn("closeout exception", canonical.lower())
         # Deny-by-default: an unmatched path is UNSAFE. Stated in the canonical doc.
         lowered = canonical.lower()
         self.assertIn("deny-by-default", lowered)

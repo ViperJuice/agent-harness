@@ -13,6 +13,14 @@ from phase_loop_runtime.install_status import build_install_status, summarize_in
 from phase_loop_runtime.skill_install import REQUIRED_SKILLS
 from phase_loop_test_utils import make_repo
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopInstallStatusTest(unittest.TestCase):
     def test_install_status_reports_harness_parity_and_schema_metadata(self):

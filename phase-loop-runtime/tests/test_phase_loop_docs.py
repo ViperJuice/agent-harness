@@ -3,9 +3,19 @@ from pathlib import Path
 import json
 import re
 
+from phase_loop_runtime.build_bundle import DEFAULT_SOURCES
 from phase_loop_runtime.skill_install import REQUIRED_SKILLS
-from phase_loop_runtime.skill_inventory import CANONICAL_WORKFLOW_SKILLS, HARNESS_INSTALL_ROOT_HINTS, HARNESS_SOURCE_ROOTS
+from phase_loop_runtime.skill_inventory import CANONICAL_WORKFLOW_SKILLS, HARNESS_INSTALL_ROOT_HINTS
 
+
+import pytest
+
+# TESTDECOUPLE: the docs/phase-loop/* matrices this file checks are the runtime's OWN
+# contract docs (bundled as _contract_docs package-data, resolved via importlib.resources);
+# functions reading ONLY those run standalone. Functions reading fleet content
+# (bootstrap.sh, README.md, *-config skill packs, *-config/shared/runtime-state.md,
+# docs/phase-loop-*-tool-bag.md, the shared/ protocol stub) stay integration.
+from _contract_docs import contract_doc_text
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -13,7 +23,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 class PhaseLoopDocsTest(unittest.TestCase):
     def test_skillpack_manifest_lists_canonical_skills_and_roots(self):
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
         self.assertIn("SKILLPACK manifest", matrix)
         self.assertIn("IF-0-SKILLPACK-1", matrix)
 
@@ -25,13 +35,18 @@ class PhaseLoopDocsTest(unittest.TestCase):
             for skill in expected:
                 with self.subTest(harness=harness, skill=skill):
                     self.assertIn(f"`{skill}`", matrix)
-            for source_root in HARNESS_SOURCE_ROOTS[harness]:
-                self.assertIn(f"`{source_root}/**`", matrix)
+            # DISENTANGLE SL-2: the per-harness overlay source roots no longer live
+            # in skill_inventory.HARNESS_SOURCE_ROOTS (now empty); they are owned by
+            # the dotfiles overlay and single-sourced from build_bundle.DEFAULT_SOURCES.
+            # Re-source the docs-matrix assertion from there so it stays live (the old
+            # HARNESS_SOURCE_ROOTS loop would now iterate nothing -- a vacuous pass).
+            self.assertIn(f"`{DEFAULT_SOURCES[harness]}/**`", matrix)
             for install_root in HARNESS_INSTALL_ROOT_HINTS[harness]:
                 self.assertIn(f"`{install_root}`", matrix)
 
+    @pytest.mark.dotfiles_integration
     def test_workflow_skill_frontmatter_matches_harness_matrix(self):
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
         harness_roots = {
             "codex": ROOT / "codex-config" / "skills",
             "claude": ROOT / "claude-config" / "claude-skills",
@@ -58,13 +73,14 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn(f"name: {name}", text.splitlines()[:4])
 
     def test_skill_matrix_preserves_direct_route_compatibility(self):
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
 
         self.assertIn("Direct Codex, direct Gemini, and direct OpenCode launcher routes remain", matrix)
         self.assertIn("compatibility-supported", matrix)
         self.assertIn("Claude Code execution continues to use the first-party non-interactive\n`claude -p` path", matrix)
         self.assertNotIn("Pi-backed aliases", matrix)
 
+    @pytest.mark.dotfiles_integration
     def test_readme_presents_neutral_command_as_generic_surface(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("`phase-loop` is the generic command", text)
@@ -79,12 +95,28 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("Governed-pipeline v7 does not wait for extraction", text)
         self.assertIn("PI loop-control docs live at `docs/phase-loop/pi-loop-control.md`", text)
 
+    @pytest.mark.dotfiles_integration
     def test_bootstrap_preserves_neutral_command_and_codex_alias(self):
         text = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
         self.assertIn("codex-phase-loop", text)
         self.assertIn("phase-loop", text)
         self.assertIn("separate backward-compatible entrypoints over the same parser", text)
 
+    @pytest.mark.dotfiles_integration
+    def test_bootstrap_exports_skill_source_overlay_optin(self):
+        # EXTRACTSKILLS CR #1b window-closure: dotfiles exports the skill-source plugin
+        # opt-in (operator-override-wins) so the phase_loop_runtime.skill_sources seam is
+        # live in the user's shell even before a fresh editable reinstall regenerates the
+        # dist-info entry point. The runtime itself must NEVER set this var.
+        text = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+        self.assertIn("PHASE_LOOP_ENV", text)
+        self.assertIn(
+            'export PHASE_LOOP_SKILL_SOURCE_PLUGINS="${PHASE_LOOP_SKILL_SOURCE_PLUGINS:-'
+            'phase_loop_runtime.skill_sources_plugin:register_skill_sources}"',
+            text,
+        )
+
+    @pytest.mark.dotfiles_integration
     def test_neutralize_docs_define_skills_bundle_contract(self):
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         readme = (ROOT / "vendor" / "phase-loop-runtime" / "README.md").read_text(encoding="utf-8")
@@ -113,8 +145,8 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertNotIn("write handoffs under harness home skill roots", text)
 
     def test_runnerpack_docs_freeze_package_boundary(self):
-        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
-        extraction = (ROOT / "docs" / "phase-loop" / "extraction-readiness.md").read_text(encoding="utf-8")
+        runtime = contract_doc_text("phase-loop", "runtime-boundary.md")
+        extraction = contract_doc_text("phase-loop", "extraction-readiness.md")
 
         self.assertIn("`version`: Print the installed phase-loop version", runtime)
         self.assertIn("`phase_loop_runtime.runtime_paths`", runtime)
@@ -139,6 +171,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("backward-compatible\n  `codex-phase-loop` alias", extraction)
         self.assertIn("does not create a submodule, move code, or rewrite bootstrap", extraction)
 
+    @pytest.mark.dotfiles_integration
     def test_toolbags_distinguish_neutral_runner_from_codex_alias(self):
         supervisor = (ROOT / "docs" / "phase-loop-supervisor-tool-bag.md").read_text(encoding="utf-8")
         runner = (ROOT / "docs" / "phase-loop-runner-tool-bag.md").read_text(encoding="utf-8")
@@ -151,12 +184,13 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("phase_loop_state", inventory)
 
     def test_pi_loop_control_doc_states_decoupling_contract(self):
-        text = (ROOT / "docs" / "phase-loop" / "pi-loop-control.md").read_text(encoding="utf-8")
+        text = contract_doc_text("phase-loop", "pi-loop-control.md")
         self.assertIn("PI does not own the state machine", text)
         self.assertIn("`.phase-loop/`: canonical runtime artifact root", text)
         self.assertIn("`.codex/phase-loop/`: legacy compatibility root", text)
         self.assertIn("The PI package calls `phase-loop`, not `codex-phase-loop`.", text)
 
+    @pytest.mark.dotfiles_integration
     def test_native_contracts_are_documented_at_canonical_protocol_path(self):
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
@@ -176,6 +210,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("IF-Gate Tier 1 Validation", shared)
         self.assertIn("`phase-loop init`", shared)
 
+    @pytest.mark.dotfiles_integration
     def test_runnergate_verification_evidence_contract_is_documented(self):
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
 
@@ -189,6 +224,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertIn(token, protocol)
 
+    @pytest.mark.dotfiles_integration
     def test_adoption_bundle_lifecycle_docs_freeze_refresh_contract(self):
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
 
@@ -202,10 +238,11 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertIn(token, protocol)
 
+    @pytest.mark.dotfiles_integration
     def test_profiledoc_docs_freeze_granular_policy_contract(self):
         guide = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        pi = (ROOT / "docs" / "phase-loop" / "pi-loop-control.md").read_text(encoding="utf-8")
+        pi = contract_doc_text("phase-loop", "pi-loop-control.md")
         matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")
 
         self.assertIn("high -> medium -> high", guide)
@@ -237,9 +274,10 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("fallback reason", guide)
         self.assertIn("API-key command adapters unless policy explicitly selects `executor=command`", guide)
 
+    @pytest.mark.dotfiles_integration
     def test_legacy_skill_cleanup_doc_freezes_cleanup_classifications(self):
         cleanup = (ROOT / "docs" / "phase-loop" / "legacy-skill-cleanup.md").read_text(encoding="utf-8")
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
 
         for token in (
             "canonical",
@@ -258,13 +296,14 @@ class PhaseLoopDocsTest(unittest.TestCase):
 
         self.assertIn("docs/phase-loop/legacy-skill-cleanup.md", matrix)
 
+    @pytest.mark.dotfiles_integration
     def test_migrateloop_docs_freeze_lane_scheduler_operator_contract(self):
         guide_path = ROOT / "docs" / "phase-loop" / "lane-scheduler.md"
         self.assertTrue(guide_path.exists())
         guide = guide_path.read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         policy = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
-        pi = (ROOT / "docs" / "phase-loop" / "pi-loop-control.md").read_text(encoding="utf-8")
+        pi = contract_doc_text("phase-loop", "pi-loop-control.md")
 
         self.assertIn("coarse phase execution", guide)
         self.assertIn("`.phase-loop/metrics.jsonl`", guide)
@@ -285,12 +324,13 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("generic `command` adapters remain non-default", guide)
         self.assertIn("docs/phase-loop/dffakesmoke-substrate-receipt.md", guide)
 
+    @pytest.mark.dotfiles_integration
     def test_dffakesmoke_receipt_names_pipeline_consumable_fields(self):
         receipt_path = ROOT / "docs" / "phase-loop" / "dffakesmoke-substrate-receipt.md"
         self.assertTrue(receipt_path.exists())
         receipt = receipt_path.read_text(encoding="utf-8")
         scheduler = (ROOT / "docs" / "phase-loop" / "lane-scheduler.md").read_text(encoding="utf-8")
-        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        runtime = contract_doc_text("phase-loop", "runtime-boundary.md")
         matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
 
@@ -316,6 +356,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         for text in (scheduler, runtime, matrix, protocol):
             self.assertIn("docs/phase-loop/dffakesmoke-substrate-receipt.md", text)
 
+    @pytest.mark.dotfiles_integration
     def test_dfpromptsync_docs_define_prompt_safe_contract(self):
         contract_path = ROOT / "docs" / "phase-loop" / "dfpromptsync-contract-map.md"
         readiness_path = ROOT / "docs" / "phase-loop" / "dfpromptsync-readiness.md"
@@ -328,7 +369,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         readiness = readiness_path.read_text(encoding="utf-8")
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         scheduler = (ROOT / "docs" / "phase-loop" / "lane-scheduler.md").read_text(encoding="utf-8")
-        pi = (ROOT / "docs" / "phase-loop" / "pi-loop-control.md").read_text(encoding="utf-8")
+        pi = contract_doc_text("phase-loop", "pi-loop-control.md")
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         granular = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
         matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")
@@ -371,6 +412,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         for text in (scheduler, pi, protocol, granular, matrix):
             self.assertIn("docs/phase-loop/dfpromptsync-contract-map.md", text)
 
+    @pytest.mark.dotfiles_integration
     def test_dfparsoak_docs_define_integrated_soak_receipt_and_runbook(self):
         source_map = ROOT / "docs" / "phase-loop" / "dfparsoak-source-map.md"
         receipt_path = ROOT / "docs" / "phase-loop" / "dfparsoak-receipt.md"
@@ -385,12 +427,12 @@ class PhaseLoopDocsTest(unittest.TestCase):
         receipt = receipt_path.read_text(encoding="utf-8")
         runbook = runbook_path.read_text(encoding="utf-8")
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        runtime = contract_doc_text("phase-loop", "runtime-boundary.md")
         scheduler = (ROOT / "docs" / "phase-loop" / "lane-scheduler.md").read_text(encoding="utf-8")
         matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         granular = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
-        pi = (ROOT / "docs" / "phase-loop" / "pi-loop-control.md").read_text(encoding="utf-8")
+        pi = contract_doc_text("phase-loop", "pi-loop-control.md")
 
         for token in (
             "docs/phase-loop/dffakesmoke-substrate-receipt.md",
@@ -429,6 +471,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn("docs/phase-loop/dfparsoak-receipt.md", text)
             self.assertIn("docs/phase-loop/dfparsoak-runbook.md", text)
 
+    @pytest.mark.dotfiles_integration
     def test_dotsubstrate_manifest_defines_harness_path_boundary(self):
         manifest_path = ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md"
         self.assertTrue(manifest_path.exists())
@@ -453,11 +496,12 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("local\n  environment values", text)
         self.assertIn("IF-0-SUBSTRATE-1", text)
 
+    @pytest.mark.dotfiles_integration
     def test_dotsubstrate_manifest_is_cited_from_primary_docs(self):
         manifest = "docs/phase-loop/harness-substrate-manifest.md"
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
-        extraction = (ROOT / "docs" / "phase-loop" / "extraction-readiness.md").read_text(encoding="utf-8")
+        runtime = contract_doc_text("phase-loop", "runtime-boundary.md")
+        extraction = contract_doc_text("phase-loop", "extraction-readiness.md")
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
 
         self.assertIn(manifest, readme)
@@ -467,10 +511,11 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("this protocol remains", protocol)
         self.assertIn("schema and artifact contract", protocol)
 
+    @pytest.mark.dotfiles_integration
     def test_substrate_docs_freeze_public_inventory_and_denials(self):
         manifest = (ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md").read_text(encoding="utf-8")
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
-        runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
+        runtime = contract_doc_text("phase-loop", "runtime-boundary.md")
         shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
         protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         combined = " ".join((manifest + "\n" + matrix + "\n" + runtime + "\n" + shared + "\n" + protocol).split())
@@ -502,6 +547,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertNotIn(token, combined)
 
+    @pytest.mark.dotfiles_integration
     def test_instruction_scope_contract_classifies_required_surfaces(self):
         contract_path = ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md"
         self.assertTrue(contract_path.exists())
@@ -535,6 +581,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertIn(token, text)
 
+    @pytest.mark.dotfiles_integration
     def test_instruction_scope_reusable_docs_reject_owner_global_dependency_language(self):
         doc_paths = (
             ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md",
@@ -552,6 +599,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertNotIn(phrase, combined)
 
+    @pytest.mark.dotfiles_integration
     def test_claude_loader_guidance_freezes_repo_local_import_pattern(self):
         claude_global = (ROOT / "claude-config" / "CLAUDE.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -587,6 +635,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertNotIn(phrase, collaborator_docs)
 
+    @pytest.mark.dotfiles_integration
     def test_dfskillgovsoak_docs_define_release_gate_boundary(self):
         runbook_path = ROOT / "docs" / "phase-loop" / "dfskillgovsoak.md"
         bridge_readme_path = FIXTURES / "phase_loop_pipeline_bridge" / "README.md"
@@ -594,7 +643,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
 
         runbook = runbook_path.read_text(encoding="utf-8")
         bridge_readme = bridge_readme_path.read_text(encoding="utf-8")
-        matrix = (ROOT / "docs" / "phase-loop" / "harness-skill-matrix.md").read_text(encoding="utf-8")
+        matrix = contract_doc_text("phase-loop", "harness-skill-matrix.md")
         manifest = (ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md").read_text(encoding="utf-8")
 
         for token in (
@@ -638,6 +687,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn("docs/phase-loop/dfskillgovsoak.md", text)
             self.assertIn("optional live", text)
 
+    @pytest.mark.dotfiles_integration
     def test_dfsmoke_docs_define_claude_route_policy(self):
         runbook = (ROOT / "docs" / "phase-loop" / "claude-channel-operator-runbook.md").read_text(encoding="utf-8")
         matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")

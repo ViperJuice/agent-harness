@@ -511,7 +511,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             ),
             (
                 "host absolute path",
-                [dict(upstreams[0], path="<HOME-REDACTED>/code/greenfield/receipt.json"), upstreams[1]],
+                [dict(upstreams[0], path="/home/someuser/code/greenfield/receipt.json"), upstreams[1]],
                 "upstream receipt path must be repo-relative",
             ),
             (

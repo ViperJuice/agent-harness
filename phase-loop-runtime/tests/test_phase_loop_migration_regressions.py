@@ -26,6 +26,14 @@ from phase_loop_test_utils import (
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "phase_loop_migration"
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopMigrationRegressionsTest(unittest.TestCase):
     def test_observed_case_fixtures_are_named_and_typed(self):

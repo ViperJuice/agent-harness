@@ -1,0 +1,2 @@
+The provider request timed out after the audit wrapper sent a bounded sample.
+This is operationally ambiguous and should remain uncertain.

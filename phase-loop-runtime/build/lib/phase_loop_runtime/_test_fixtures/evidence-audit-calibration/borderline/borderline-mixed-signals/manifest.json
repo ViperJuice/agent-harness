@@ -1,0 +1,16 @@
+{
+  "fixture_id": "borderline-mixed-signals",
+  "category": "borderline",
+  "expected_verdict_class": "uncertain",
+  "expected_confidence": 0.56,
+  "expected_artifact_characteristics": "Ambiguous evidence with one suspicious metric but concrete command and file details.",
+  "sample_artifact_paths": ["mixed.json", "commands.txt"],
+  "rationale": "Mixed real and suspicious signals should support threshold tuning.",
+  "tier2_signal_summary": {
+    "kind": "calibration_borderline",
+    "signals": ["one low-variance metric", "specific commands", "distinct files"]
+  },
+  "estimated_input_tokens": 730,
+  "estimated_output_tokens": 215,
+  "estimated_cost_usd": 0.0075
+}

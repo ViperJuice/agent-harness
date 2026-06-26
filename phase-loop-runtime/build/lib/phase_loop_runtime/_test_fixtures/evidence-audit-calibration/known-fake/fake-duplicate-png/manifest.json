@@ -1,0 +1,16 @@
+{
+  "fixture_id": "fake-duplicate-png",
+  "category": "known-fake",
+  "expected_verdict_class": "fake",
+  "expected_confidence": 0.96,
+  "expected_artifact_characteristics": "Suspicious evidence where multiple claimed screenshots share identical placeholder bytes.",
+  "sample_artifact_paths": ["shot-a.txt", "shot-b.txt", "shot-c.txt"],
+  "rationale": "Covers the obvious duplicate-artifact fake evidence pattern.",
+  "tier2_signal_summary": {
+    "kind": "calibration_known_fake",
+    "signals": ["duplicate artifact content", "claimed distinct screenshots", "same byte length"]
+  },
+  "estimated_input_tokens": 680,
+  "estimated_output_tokens": 210,
+  "estimated_cost_usd": 0.0072
+}

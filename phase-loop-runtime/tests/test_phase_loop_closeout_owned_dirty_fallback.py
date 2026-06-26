@@ -87,7 +87,7 @@ PARTIAL_PLAN = """# PARTIAL
 
 
 def test_closeout_partial_classify_commits_owned_subset_and_blocks_on_unowned_remainder(tmp_path):
-    # OWNFIX #36-item1: reproduced from the real ai-stack-v2 INVENTORY run, where the
+    # OWNFIX #36-item1: reproduced from the real <fleet-stack> INVENTORY run, where the
     # executor emitted empty phase_owned_dirty_paths and one of N dirty paths
     # (a test the plan under-enumerated) was unowned. The old all-or-nothing fallback
     # blocked ALL verified-owned paths. The fix: auto-classify and commit the owned

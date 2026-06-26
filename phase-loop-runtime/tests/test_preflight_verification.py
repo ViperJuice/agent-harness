@@ -24,6 +24,14 @@ from phase_loop_runtime.verification_evidence import (
 )
 from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PreflightVerificationTest(unittest.TestCase):
     def test_suite_command_prefers_plan_frontmatter_and_ignores_body_automation(self):

@@ -13,8 +13,16 @@ from phase_loop_runtime.baml_modular import export_function_schema, parse_baml_r
 from phase_loop_runtime.cli import main
 
 
+import pytest
+from importlib.resources import files
+
+# TESTDECOUPLE: baml_src ships as package-data and resolves via importlib.resources
+# (runtime-core); the schema-dialect test below runs standalone. The other tests
+# read fleet content (the specs/ roadmap, docs/c4 mermaid sources, or the whole
+# dotfiles tree via generate_adoption_bundle) and stay integration.
+BAML_SRC = files("phase_loop_runtime") / "baml_src"
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BAML_SRC = REPO_ROOT / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src"
 C4_DIR = REPO_ROOT / "docs" / "c4"
 ROADMAP = REPO_ROOT / "specs" / "phase-plans-v22.md"
 FORBIDDEN_SCHEMA_KEYS = {"allOf", "anyOf", "oneOf", "not", "if", "then", "uniqueItems"}
@@ -51,6 +59,7 @@ def _baml_class_names(path: Path) -> list[str]:
 
 
 class PhaseLoopV22PrinciplesTest(unittest.TestCase):
+    @pytest.mark.dotfiles_integration  # TESTDECOUPLE: reads fleet roadmap/c4/adoption tree
     def test_standalone_status_does_not_require_governed_pipeline_configuration(self):
         stdout = io.StringIO()
         with patch.dict(os.environ, _standalone_env(), clear=True), redirect_stdout(stdout):
@@ -71,6 +80,7 @@ class PhaseLoopV22PrinciplesTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["pipeline_mode"], "standalone")
 
+    @pytest.mark.dotfiles_integration  # TESTDECOUPLE: reads fleet roadmap/c4/adoption tree
     def test_no_html_or_rendered_mermaid_assets_are_source_outputs(self):
         html_outputs = [
             path.relative_to(REPO_ROOT).as_posix()
@@ -102,6 +112,7 @@ class PhaseLoopV22PrinciplesTest(unittest.TestCase):
                 for node in _walk_schema(schema):
                     self.assertTrue(FORBIDDEN_SCHEMA_KEYS.isdisjoint(node))
 
+    @pytest.mark.dotfiles_integration  # TESTDECOUPLE: reads fleet roadmap/c4/adoption tree
     def test_runtime_projection_output_is_schema_valid_and_redacted(self):
         stdout = io.StringIO()
         with patch.dict(os.environ, _standalone_env(), clear=True), redirect_stdout(stdout):
@@ -126,6 +137,7 @@ class PhaseLoopV22PrinciplesTest(unittest.TestCase):
         for token in FORBIDDEN_RUNTIME_TOKENS:
             self.assertNotIn(token, serialized)
 
+    @pytest.mark.dotfiles_integration  # TESTDECOUPLE: reads fleet roadmap/c4/adoption tree
     def test_adoption_bundle_generation_is_byte_deterministic(self):
         left = generate_adoption_bundle(REPO_ROOT, generated_at="2026-05-22T00:00:00Z")
         right = generate_adoption_bundle(REPO_ROOT, generated_at="2026-05-22T00:00:00Z")

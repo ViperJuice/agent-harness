@@ -21,6 +21,14 @@ from phase_loop_runtime.prompts import build_prompt
 
 JSON_CLOSEOUT_SCHEMA = json.loads(json.dumps(CLOSEOUT_SCHEMA))
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopNativeFlagsTest(unittest.TestCase):
     def test_codex_command_uses_output_schema_placeholder_without_build_time_temp(self):

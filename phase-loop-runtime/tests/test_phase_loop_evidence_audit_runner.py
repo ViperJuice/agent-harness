@@ -20,6 +20,14 @@ from phase_loop_runtime.launcher import AuthPreflightResult, LaunchResult
 from phase_loop_runtime.runner import run_loop
 from phase_loop_test_utils import ROOT, make_repo, write_phase_plan
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _write_config(repo: Path, text: str) -> None:
     config = repo / ".phase-loop" / "evidence-audit.yaml"

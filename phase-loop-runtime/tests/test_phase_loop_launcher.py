@@ -27,6 +27,14 @@ from phase_loop_runtime.profiles import resolve_profile, resolve_profile_for_exe
 from phase_loop_runtime.prompts import build_prompt
 from phase_loop_test_utils import make_repo, write_phase_plan
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopLauncherTest(unittest.TestCase):
     def test_profile_overrides_record_reason(self):

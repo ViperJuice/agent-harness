@@ -20,6 +20,14 @@ from pathlib import Path
 PKG_ROOT = Path(__file__).resolve().parents[1]
 GATE_SCRIPT = PKG_ROOT / "scripts" / "gate_a_cleanroom.sh"
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 def _have(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
@@ -66,6 +74,13 @@ class GateAWheelIsolationTest(unittest.TestCase):
         # both configs must have run: fleet-install (present) and the seam (absent)
         self.assertIn("GATE-A PROBE OK (present)", result.stdout)
         self.assertIn("GATE-A PROBE OK (absent)", result.stdout)
+        # TESTDECOUPLE: the gate now runs the FULL standalone suite (not just the
+        # import/execute/bridge smoke) against the installed wheel with no dotfiles
+        # tree reachable. Assert it ran and was green, unless explicitly opted out.
+        if os.environ.get("PHASE_LOOP_SKIP_GATE_A_SUITE") == "1":
+            self.assertIn("full standalone suite: SKIPPED", result.stdout)
+        else:
+            self.assertIn("full standalone suite: GREEN", result.stdout)
 
 
 if __name__ == "__main__":

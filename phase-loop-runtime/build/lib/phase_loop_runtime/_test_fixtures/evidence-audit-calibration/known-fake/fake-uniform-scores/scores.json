@@ -1,0 +1,4 @@
+{
+  "similarity": [0.999999, 0.999999, 0.999999, 0.999999, 0.999999, 0.999999],
+  "routes": ["home", "settings", "reports", "admin", "profile", "billing"]
+}

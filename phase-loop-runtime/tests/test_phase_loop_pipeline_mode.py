@@ -9,6 +9,14 @@ from phase_loop_runtime.events import read_events
 from phase_loop_runtime.runner import run_loop, status_snapshot
 from phase_loop_test_utils import make_repo, write_phase_plan
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopPipelineModeTest(unittest.TestCase):
     def test_parser_accepts_pipeline_mode_on_runtime_commands(self):

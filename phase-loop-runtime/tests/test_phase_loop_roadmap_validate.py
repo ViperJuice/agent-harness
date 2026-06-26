@@ -19,6 +19,14 @@ from phase_loop_runtime.provenance import (
     validate_roadmap_phase_headings,
 )
 
+import pytest
+
+# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
+# runtime execute path, which resolves the dotfiles skill-source / profile overlay
+# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
+# conftest hook skips it when no dotfiles tree is reachable.
+pytestmark = pytest.mark.dotfiles_integration
+
 
 class PhaseLoopRoadmapValidateTest(unittest.TestCase):
     def test_validator_accepts_integer_and_decimal_phase_headings(self):
