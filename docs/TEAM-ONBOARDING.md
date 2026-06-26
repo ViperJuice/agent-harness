@@ -11,7 +11,7 @@ Cross-platform (macOS / Linux). Replace `claude` with `codex`, `gemini`, or `ope
 ```sh
 # clone-then-run (you can read the script first):
 git clone https://github.com/ViperJuice/agent-harness
-agent-harness/install-agent-harness.sh --harness claude
+agent-harness/install-agent-harness.sh --harness all   # all four harnesses (or claude|codex|gemini|opencode)
 
 # …or the one-liner:
 curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
