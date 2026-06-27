@@ -297,6 +297,18 @@ utilities, and patterns worth reusing.>
 - **Parallel-by-default.** Step 2 launches all Explore teammates in a single message.
 - **Name every teammate.** Set `name:` on every `Agent` call.
 
+## Model & effort tiering
+
+The runtime resolves one heavy model per executor, so **reasoning effort is the
+cost dial** (ladder, cheapest first: `minimal` < `low` < `medium` < `high` <
+`xhigh` < `max`). Don't default a bounded change to the registry's action
+ceiling. Size the effort to *this* change: a mechanical edit, config bump, or
+docs-only change is usually `low`/`minimal`; reserve `high`+ for subtle logic,
+concurrency, or security-sensitive code. Record the choice as an optional
+`## Execution Policy` line the runtime parses, e.g. `- execute: effort=low,
+reason=single-function mechanical change`. Operator `--model`/`--effort` always
+overrides, so this never blocks a human from forcing a tier.
+
 ## Reference files
 
 - `assets/review_prompt.md` — used by `--review-external` to critique the plan via Gemini + Codex.

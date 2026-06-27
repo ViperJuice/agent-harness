@@ -65,6 +65,49 @@ phase-plan policy, roadmap policy, `Dispatch Hints`, then registry defaults;
 silent downgrade is forbidden unless explicit fallback or default inheritance
 is recorded.
 
+## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
+
+The runtime resolves one heavy model per executor (`codex` → `gpt-5.5`,
+`claude` → `claude-opus-4-8`), so **reasoning effort is the primary cost dial.**
+The normalized effort ladder, cheapest first, is:
+
+`minimal` < `low` < `medium` < `high` < `xhigh` < `max`
+
+Registry action defaults today are blunt — `plan`/`roadmap`/`review` = `high`,
+`execute`/`repair` = `medium` — applied uniformly regardless of how hard the
+lane actually is. As the planner you have the complexity signal the runtime
+lacks; use it:
+
+- **Default each lane to the cheapest effort you believe will succeed**, not the
+  action default. A mechanical edit, a config bump, a docs-sweep lane, or a
+  rename rarely needs more than `low`/`minimal`.
+- **Escalate only with a stated reason.** Subtle concurrency, cross-module
+  refactors, security-sensitive logic, or ambiguous specs justify `high`/`xhigh`;
+  record *why* in the rule's `reason=`.
+- Express the choice in an `## Execution Policy` section the runtime parses
+  (selector = `default`, an action, or a lane alias):
+
+```
+## Execution Policy
+- default: effort=low, reason=most lanes are mechanical this phase
+- execute: effort=medium
+- SL-3: effort=high, reason=constant-time comparison is subtly wrong-prone
+- SL-7: effort=minimal, reason=docs sweep only
+```
+
+Two hard syntax rules the parser enforces (a malformed line fails the whole
+section, not just that line):
+
+- **Lane selectors are the numeric lane id** (`SL-3`, `P2A` → use `lane <name>:`
+  for non-numeric names). `SL-DOCS`-style names are rejected; write `SL-7` or
+  `lane SL-DOCS: …`.
+- **No commas inside a `reason=` value** — the comma separates assignments, so
+  `reason=docs sweep, no logic` breaks parsing. Keep reasons comma-free.
+
+Operator `--model`/`--effort` and CLI overrides still win, so this never blocks
+a human from forcing a tier. The goal is to stop paying `high` for a one-line
+change by default.
+
 ## Planner Literal Validation
 
 Before writing a plan document to the project path, validate the complete draft
