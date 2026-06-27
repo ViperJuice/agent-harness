@@ -151,6 +151,45 @@
       ],
       "type": "object"
     },
+    "doc_delta_closeout": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "type": "string"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "justification": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "type": "string"
+        },
+        "target_surfaces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision",
+        "evidence_paths",
+        "schema",
+        "target_surfaces"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
     "phase": {
       "type": "string"
     },

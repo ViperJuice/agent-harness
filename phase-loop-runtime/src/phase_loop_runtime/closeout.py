@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .closeout_validation import verification_enforcement_mode
+from .closeout_validators import (
+    CloseoutContext,
+    apply_review_findings,
+    run_closeout_validators,
+)
 from .models import (
     PIPELINE_CLOSEOUT_OUTCOMES,
     PIPELINE_CLOSEOUT_SCHEMA,
@@ -113,6 +118,36 @@ def build_phase_loop_closeout(
         normalized_automation = evidence_update["automation"]
         blocker_data = evidence_update["blocker"]
         verification_results = evidence_update["results"]
+
+    # Pluggable review gates (rigor-v1 P1). With zero validators registered this
+    # is a no-op; gates default to `warn` (record + continue) and never set
+    # human_required. See closeout_validators for the severity model.
+    review_findings = run_closeout_validators(
+        CloseoutContext(
+            phase_alias=phase_alias,
+            plan_path=str(plan_path),
+            terminal=terminal,
+            automation=normalized_automation,
+            blocker=blocker_data,
+            changed_paths=tuple(
+                changed_paths
+                or terminal.get("dirty_paths")
+                or terminal.get("phase_owned_dirty_paths")
+                or ()
+            ),
+        )
+    )
+    if review_findings:
+        review_update = apply_review_findings(
+            findings=review_findings,
+            terminal=terminal,
+            automation=normalized_automation,
+            blocker=blocker_data,
+        )
+        terminal = review_update["terminal"]
+        normalized_automation = review_update["automation"]
+        blocker_data = review_update["blocker"]
+        verification_results = list(verification_results) + review_update["results"]
     metadata = plan_metadata or (pipeline_diagnostic.metadata if pipeline_diagnostic else None)
 
     source_bundle_path = source_bundle.path if source_bundle else (metadata.source_bundle if metadata else None)

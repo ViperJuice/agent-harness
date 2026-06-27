@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import fnmatch
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 PHASE_STATUSES = (
@@ -125,6 +126,7 @@ BLOCKER_CLASSES = (
     "operator_override_missing_reason",
     "concurrent_dispatch",
     "verification_evidence_missing",
+    "review_gate_block",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (
@@ -257,6 +259,54 @@ SPEC_DELTA_TARGET_SURFACES = (
     "opencode-config/skills/**",
     "vendor/phase-loop-skills/**",
     "vendor/phase-loop-runtime/tests/**",
+)
+
+# --- rigor-v1 P1: shared review-gate contracts -----------------------------
+# One canonical term for a phase's definition of done, replacing the fragmented
+# "Acceptance criteria" / "Exit criteria" vocabulary across skills/validators.
+DEFINITION_OF_DONE_TERM = "acceptance_criteria"
+
+# doc_delta_closeout.v1 — code↔doc currency decision, mirroring spec_delta.
+DOC_DELTA_CLOSEOUT_SCHEMA = "doc_delta_closeout.v1"
+DOC_DELTA_DECISIONS = (
+    "no_doc_delta",          # public surface unchanged, or change needs no docs
+    "docs_updated",          # docs updated to match the change
+    "docs_follow_up_filed",  # tracked for a later phase
+)
+
+# Globs whose change implies a user-visible public surface that docs may track.
+PUBLIC_SURFACE_GLOBS = (
+    "**/cli.py",
+    "**/*.proto",
+    "**/openapi*.json",
+    "**/openapi*.yaml",
+    "**/*.openapi.*",
+    "**/schema*.json",
+    "README.md",
+    "CHANGELOG.md",
+    "**/_contract_docs/**",
+)
+
+# Verification-evidence policy: OFF by default (warn-only) to preserve autonomy;
+# opt-in promotes a missing-evidence finding to `block`. Declining evidence when
+# opted in records one of these typed reason codes.
+VERIFICATION_EVIDENCE_REQUIRED_DEFAULT = False
+VERIFICATION_EVIDENCE_OPT_OUT_REASONS = (
+    "no_executable_verification",
+    "verification_deferred_to_later_phase",
+    "operator_attested_manual",
+)
+
+# UI/visual surfaces: a change here means a screenshot/visual check is *expected*
+# (absence is a `warn` finding by default).
+UI_GLOBS = (
+    "**/*.tsx",
+    "**/*.jsx",
+    "**/*.vue",
+    "**/*.svelte",
+    "**/*.css",
+    "**/*.scss",
+    "**/components/**",
 )
 
 TERMINAL_SUMMARY_FIELDS = (
@@ -846,6 +896,62 @@ class SpecDeltaCloseout:
         return clean_dict(asdict(self))
 
 
+def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
+    """True if any path matches any glob (POSIX, case-sensitive)."""
+    pats = tuple(globs)
+    for raw in paths:
+        path = str(raw).strip()
+        if not path:
+            continue
+        for pattern in pats:
+            if fnmatch.fnmatchcase(path, pattern):
+                return True
+            # `**/x` should also match a top-level `x`.
+            if pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]):
+                return True
+    return False
+
+
+def public_surface_touched(changed_paths: Iterable[str]) -> bool:
+    """True if a changed path looks like a user-visible public surface (rigor-v1 P1/P2)."""
+    return _glob_touched(changed_paths, PUBLIC_SURFACE_GLOBS)
+
+
+def ui_change_detected(changed_paths: Iterable[str]) -> bool:
+    """True if a changed path is a UI/visual surface (rigor-v1 P1/P6)."""
+    return _glob_touched(changed_paths, UI_GLOBS)
+
+
+@dataclass(frozen=True)
+class DocDeltaCloseout:
+    """doc_delta_closeout.v1 — records the code↔doc currency decision for a phase."""
+
+    decision: str
+    target_surfaces: tuple[str, ...] = ()
+    evidence_paths: tuple[str, ...] = ()
+    justification: str | None = None
+    schema: str = DOC_DELTA_CLOSEOUT_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != DOC_DELTA_CLOSEOUT_SCHEMA:
+            raise ValueError(f"invalid doc delta closeout schema: {self.schema}")
+        require_literal(self.decision, DOC_DELTA_DECISIONS, "doc delta decision")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
+@dataclass(frozen=True)
+class VisualEvidence:
+    """Screenshot/artifact evidence that a UI change was visually verified (rigor-v1 P1/P6)."""
+
+    artifact_paths: tuple[str, ...] = ()
+    observed: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+
 @dataclass(frozen=True)
 class PhaseLoopCloseout:
     phase: str
@@ -857,6 +963,7 @@ class PhaseLoopCloseout:
     source_bundle: PhaseLoopSourceBundle
     source_truth_impact: SourceTruthImpact | None = None
     spec_delta_closeout: SpecDeltaCloseout | None = None
+    doc_delta_closeout: DocDeltaCloseout | None = None
     schema: str = PIPELINE_CLOSEOUT_SCHEMA
 
     def __post_init__(self) -> None:
@@ -877,6 +984,7 @@ class PhaseLoopCloseout:
                 "source_bundle": self.source_bundle.to_json(),
                 "source_truth_impact": self.source_truth_impact.to_json() if self.source_truth_impact else None,
                 "spec_delta_closeout": self.spec_delta_closeout.to_json() if self.spec_delta_closeout else None,
+                "doc_delta_closeout": self.doc_delta_closeout.to_json() if self.doc_delta_closeout else None,
             }
         )
 

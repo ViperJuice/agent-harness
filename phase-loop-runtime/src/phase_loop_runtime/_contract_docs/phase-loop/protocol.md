@@ -1845,6 +1845,16 @@ The blocker taxonomy is frozen to these literals:
 - `merge_conflict`
 - `operator_override_missing_reason`
 - `concurrent_dispatch`
+- `review_gate_block`
+
+`review_gate_block` is the non-human blocker raised by a pluggable closeout
+review validator (doc-delta, verification-evidence, visual-evidence, …) when
+the `PHASE_LOOP_REVIEW` control is dialed to `block`. Review gates default to
+`PHASE_LOOP_REVIEW=warn` (record a finding to the closeout and continue — the
+autonomous loop is never stalled), so this blocker appears only under explicit
+opt-in. It never sets `human_required`; the finding's `code`/`reason` name an
+agent-recoverable fix (update docs, attach a verification log or screenshot, or
+record a justified opt-out).
 
 `stuck_loop` fires when a phase has been ping-ponging in
 `(action=run, status=executing)` past the runner's iteration cap
