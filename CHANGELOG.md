@@ -32,6 +32,10 @@ stalls.
 - **Mode-aware handoff**: the `/clear` recommendation is interactive-TUI-only;
   autonomous runs rely on the written handoff + fresh runner process, or a
   dispatched subagent.
+- **Run-end findings summary**: at the end of a (bounded) run the runner emits an
+  aggregated, de-duplicated summary of the review findings to stderr, so a human
+  reviewing between `--max-phases` batches sees them without the loop ever
+  stalling.
 
 ## v0.1.2
 
