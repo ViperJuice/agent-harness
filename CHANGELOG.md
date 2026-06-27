@@ -4,6 +4,35 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased — planning & execution rigor (rigor-v1)
+
+Adds autonomy-first review gates and planner guidance. **Default behavior is
+unchanged**: every new gate runs at `warn` severity (records a finding to the
+closeout and the loop continues); gates block only when an operator opts in via
+`PHASE_LOOP_REVIEW=block`, and **no new gate ever sets `human_required`**. Human
+review cadence is meant to come from bounded runs (`--max-phases`), not in-loop
+stalls.
+
+- **Pluggable closeout-validator hook** (`closeout_validators.py`): the single
+  seam review gates register through, with a `warn`/`block` severity model and
+  the `PHASE_LOOP_REVIEW` control (default `warn`). `closeout.py` stays
+  single-writer.
+- **Doc-delta gate**: a public-surface change (CLI/schema/contract docs/README/
+  CHANGELOG) with no recorded `doc_delta_decision` raises a finding.
+- **Verification-evidence gate**: closes the generic-phase hole — a phase
+  reporting `passed` with no evidence artifact (and no typed opt-out reason)
+  raises a finding. The legacy `RG`/`--verification-log` hard gate is unchanged.
+- **Visual-evidence gate**: a UI/visual change (`*.tsx/jsx/vue/svelte/css`,
+  `components/**`) with no `visual_evidence_path` raises a finding.
+- **New blocker class** `review_gate_block` (non-human, agent-recoverable).
+- **Planner guidance**: model/effort tiering (right-size each lane, escalate
+  with a reason via the `## Execution Policy` section); `validate_plan_doc.py`
+  gains WARN checks for a terminal docs lane, non-testable acceptance criteria,
+  and missing browser/screenshot steps on UI plans.
+- **Mode-aware handoff**: the `/clear` recommendation is interactive-TUI-only;
+  autonomous runs rely on the written handoff + fresh runner process, or a
+  dispatched subagent.
+
 ## v0.1.2
 
 Packaging and documentation polish — no runtime behavior change.

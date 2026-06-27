@@ -82,7 +82,7 @@ List changed paths, tests run, failures, blockers, and any assumptions.
 
 ## Reference
 
-For copy-ready variants, read `references/subagent-briefs.md`.
+For copy-ready variants, read `references/task-templates.md`.
 
 ## Runtime State
 

@@ -27,6 +27,23 @@ harness workflow skills into your harness skill root (`~/.claude/skills`,
 `~/.codex/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`). `--ref vX.Y.Z`
 pins a release (default: the latest stable). Re-run to update.
 
+## Autonomy & review gates
+
+The runner is built to drive phases **unattended**. Closeout review gates
+(doc-delta, verification-evidence, visual-evidence) default to recording a
+finding and continuing — they never stall a run or require a human. Dial
+strictness with `PHASE_LOOP_REVIEW`:
+
+- `warn` (default) — record findings to the closeout, the loop continues.
+- `block` — a finding refuses `complete` (with an agent-recoverable, non-human
+  blocker; the agent fixes it by updating docs, attaching a verification log or
+  screenshot, or recording a justified opt-out).
+- `off` — skip the gates entirely.
+
+For periodic human review, bound the run (`--max-phases N`) and read the findings
+summary between runs rather than blocking mid-loop. See `CHANGELOG.md` (rigor-v1)
+for the full list of gates.
+
 ## License
 
 Apache-2.0 (see `LICENSE` / `NOTICE`).
