@@ -1,3 +1,0 @@
-baml-py<0.223,>=0.222
-pydantic<3,>=2
-PyYAML<7,>=6

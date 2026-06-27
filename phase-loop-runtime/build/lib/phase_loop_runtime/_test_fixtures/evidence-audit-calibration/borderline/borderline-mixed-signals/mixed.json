@@ -1,5 +1,0 @@
-{
-  "scores": [0.870, 0.871, 0.869, 0.872],
-  "changed_files": ["src/a.py", "tests/test_a.py"],
-  "commands": ["python3 -m unittest tests.test_a", "git diff --check -- src/a.py tests/test_a.py"]
-}

@@ -1,6 +1,0 @@
-{
-  "phase": "PRIVATECHECK",
-  "verification_status": "passed",
-  "evidence_refs": ["redacted-metadata:artifact-present", "redacted-metadata:hash-present"],
-  "raw_payload_available": false
-}

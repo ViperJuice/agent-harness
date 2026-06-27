@@ -1,9 +1,0 @@
-[console_scripts]
-codex-phase-loop = phase_loop_runtime.cli:main
-phase-loop = phase_loop_runtime.cli:main
-
-[phase_loop_runtime.profile_commands]
-dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands
-
-[phase_loop_runtime.skill_sources]
-dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources

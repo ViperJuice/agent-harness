@@ -1,2 +1,0 @@
-The evidence is plausible and detailed, but confidence is deliberately below
-the default 0.85 threshold for calibration tuning.

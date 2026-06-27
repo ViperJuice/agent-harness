@@ -1,0 +1,7 @@
+# Python build artifacts — never commit these (a stale build/ shadowed the version)
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/

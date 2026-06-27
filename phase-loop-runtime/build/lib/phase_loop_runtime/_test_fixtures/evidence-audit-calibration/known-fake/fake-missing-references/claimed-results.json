@@ -1,5 +1,0 @@
-{
-  "screenshots": ["evidence/home.png", "evidence/settings.png", "evidence/reports.png"],
-  "status": "passed",
-  "note": "The cited image files are not present in this fixture bundle."
-}

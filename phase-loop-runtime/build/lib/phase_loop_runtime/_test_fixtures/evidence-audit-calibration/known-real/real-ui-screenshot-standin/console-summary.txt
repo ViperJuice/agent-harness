@@ -1,2 +1,0 @@
-Viewport 390x844 rendered the status table without overlap. Console had one
-expected info log and no warnings or errors.

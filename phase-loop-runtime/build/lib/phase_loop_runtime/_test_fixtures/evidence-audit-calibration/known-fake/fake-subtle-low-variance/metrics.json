@@ -1,9 +1,0 @@
-{
-  "screens": [
-    {"name": "one", "score": 0.9821},
-    {"name": "two", "score": 0.9822},
-    {"name": "three", "score": 0.9820},
-    {"name": "four", "score": 0.9823},
-    {"name": "five", "score": 0.9821}
-  ]
-}

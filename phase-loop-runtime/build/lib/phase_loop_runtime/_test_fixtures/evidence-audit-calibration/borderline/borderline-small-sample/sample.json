@@ -1,7 +1,0 @@
-{
-  "checks": [
-    {"name": "home", "similarity": 0.91},
-    {"name": "settings", "similarity": 0.89}
-  ],
-  "note": "Only two samples were captured."
-}

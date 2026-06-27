@@ -1,3 +1,0 @@
-{"timestamp":"2026-05-22T10:00:01Z","phase":"ALPHA","action":"phase_plan","status":"planned","metadata":{"artifact":"plans/phase-plan-alpha.md"}}
-{"timestamp":"2026-05-22T10:07:42Z","phase":"ALPHA","action":"phase_execute","status":"complete","metadata":{"verification_status":"passed"}}
-{"timestamp":"2026-05-22T10:12:06Z","phase":"BETA","action":"phase_plan","status":"planned","metadata":{"artifact":"plans/phase-plan-beta.md"}}

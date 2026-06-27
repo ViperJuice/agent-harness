@@ -1,9 +1,0 @@
-{
-  "scenarios": [
-    {"name": "empty-history", "status": "passed", "duration_ms": 38},
-    {"name": "single-tier3-event", "status": "passed", "duration_ms": 72},
-    {"name": "json-history", "status": "passed", "duration_ms": 65},
-    {"name": "redaction-check", "status": "passed", "duration_ms": 84}
-  ],
-  "coverage": [0.61, 0.77, 0.83, 0.92]
-}

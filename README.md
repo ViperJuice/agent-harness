@@ -16,7 +16,7 @@ Cross-OS (macOS / Linux), no tailnet / 1Password / Homebrew / dotfiles clone:
 
 ```sh
 git clone https://github.com/ViperJuice/agent-harness
-agent-harness/install-agent-harness.sh --harness claude   # or codex|gemini|opencode
+agent-harness/install-agent-harness.sh --harness all   # claude + codex + gemini + opencode (or pick one: claude|codex|gemini|opencode)
 
 # …or the one-liner:
 curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude

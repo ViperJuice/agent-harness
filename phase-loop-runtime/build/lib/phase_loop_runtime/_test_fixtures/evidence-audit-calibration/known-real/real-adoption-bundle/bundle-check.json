@@ -1,8 +1,0 @@
-{
-  "generated_at": "2026-05-22T00:00:00Z",
-  "schema_refs": [
-    {"source_path": "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml", "digest": "sha256:2e7b4d36d80a4cf3a1b39d6dbe61e42cf4761c2cc4f2e8b4db02f1844f12b64e"},
-    {"source_path": "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/evaluate_suspected_fake_evidence.baml", "digest": "sha256:6a7a07c2d517fe4c4029436d89e0e4a9c8379d0bb0a15d9f60d648a61d8c5b32"}
-  ],
-  "verification": {"fixture_matches_generator": true, "stable_json_bytes": true}
-}

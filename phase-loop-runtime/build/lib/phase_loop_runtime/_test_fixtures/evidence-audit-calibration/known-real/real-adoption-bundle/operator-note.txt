@@ -1,2 +1,0 @@
-The committed fixture was regenerated with the existing timestamp and compared
-byte-for-byte against stable_json_bytes.

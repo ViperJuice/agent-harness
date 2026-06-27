@@ -9,17 +9,18 @@
 # pulling everything from the public agent-harness repo.
 #
 # Usage:
-#   ./install-agent-harness.sh [--harness claude|codex|gemini|opencode] [--ref vX.Y.Z]
+#   ./install-agent-harness.sh [--harness claude|codex|gemini|opencode|all] [--ref vX.Y.Z]
+#   (--harness all installs the skills for EVERY harness; the runtime is shared.)
 # Env overrides:
 #   AGENT_HARNESS_REPO   (default https://github.com/ViperJuice/agent-harness)
-#   AGENT_HARNESS_REF    (default v0.1.2 — the first standalone-green release)
-#   AGENT_HARNESS_HARNESS (default claude)
+#   AGENT_HARNESS_REF    (default v0.1.3)
+#   AGENT_HARNESS_HARNESS (default claude; use "all" for every harness)
 #   AGENT_HARNESS_HOME   (persistent clone dir; default ~/.local/share/agent-harness)
 #   AGENT_HARNESS_SKILL_DEST (override the harness skill root)
 set -euo pipefail
 
 REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
-REF="${AGENT_HARNESS_REF:-v0.1.2}"
+REF="${AGENT_HARNESS_REF:-v0.1.3}"
 HARNESS="${AGENT_HARNESS_HARNESS:-claude}"
 HOME_DIR="${AGENT_HARNESS_HOME:-$HOME/.local/share/agent-harness}"
 
@@ -32,15 +33,26 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Resolve the harness list: "all" => every supported harness (the runtime is shared;
+# only the skills are per-harness, installed into each harness's own skill root).
+if [ "$HARNESS" = all ]; then
+    HARNESSES="claude codex gemini opencode"
+else
+    HARNESSES="$HARNESS"
+fi
+
 # Per-harness default skill root (the documented user-local roots).
-case "$HARNESS" in
-    claude)   DEST_DEFAULT="$HOME/.claude/skills" ;;
-    codex)    DEST_DEFAULT="$HOME/.codex/skills" ;;
-    gemini)   DEST_DEFAULT="$HOME/.gemini/skills" ;;
-    opencode) DEST_DEFAULT="$HOME/.config/opencode/skills" ;;
-    *) echo "unknown --harness: $HARNESS (claude|codex|gemini|opencode)" >&2; exit 2 ;;
-esac
-DEST="${AGENT_HARNESS_SKILL_DEST:-$DEST_DEFAULT}"
+skill_dest() {
+    case "$1" in
+        claude)   printf '%s\n' "$HOME/.claude/skills" ;;
+        codex)    printf '%s\n' "$HOME/.codex/skills" ;;
+        gemini)   printf '%s\n' "$HOME/.gemini/skills" ;;
+        opencode) printf '%s\n' "$HOME/.config/opencode/skills" ;;
+        *) echo "unknown --harness: $1 (claude|codex|gemini|opencode|all)" >&2; return 2 ;;
+    esac
+}
+# Validate every requested harness up front.
+for _h in $HARNESSES; do skill_dest "$_h" >/dev/null || exit 2; done
 
 say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 
@@ -59,10 +71,10 @@ hash -r 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"
 phase-loop --version
 
-# --- 3) workflow skills for $HARNESS, from the public bundle ---------------
+# --- 3) workflow skills for each harness, from the public bundle -----------
 # Persistent clone (NOT a temp dir) so the --symlink skill links never dangle,
 # and so `git -C "$HOME_DIR" pull` + re-run is the update path.
-say "[3/3] installing ${HARNESS} workflow skills → ${DEST}…"
+say "[3/3] installing workflow skills (${HARNESSES}) from ${REF}…"
 if [ -d "$HOME_DIR/.git" ]; then
     git -C "$HOME_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 || true
     git -C "$HOME_DIR" checkout -q "$REF" 2>/dev/null || git -C "$HOME_DIR" checkout -q "FETCH_HEAD"
@@ -70,12 +82,21 @@ else
     rm -rf "$HOME_DIR"; mkdir -p "$(dirname "$HOME_DIR")"
     git clone --depth 1 --branch "$REF" "$REPO" "$HOME_DIR"
 fi
-mkdir -p "$DEST"
-phase-loop --repo "$HOME_DIR" install --harness "$HARNESS" \
-    --source "$HOME_DIR/phase-loop-skills" --destination "$DEST" --symlink --apply
+for _h in $HARNESSES; do
+    # An explicit AGENT_HARNESS_SKILL_DEST override is only honored for a single harness.
+    if [ "$HARNESS" != all ] && [ -n "${AGENT_HARNESS_SKILL_DEST:-}" ]; then
+        _dest="$AGENT_HARNESS_SKILL_DEST"
+    else
+        _dest="$(skill_dest "$_h")"
+    fi
+    mkdir -p "$_dest"
+    phase-loop --repo "$HOME_DIR" install --harness "$_h" \
+        --source "$HOME_DIR/phase-loop-skills" --destination "$_dest" --symlink --apply
+    echo "  ✓ ${_h} skills → ${_dest}"
+done
 
-say "Done — phase-loop CLI + ${HARNESS} skills installed from public agent-harness ${REF}."
+say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF}."
 echo "  runtime : $(command -v phase-loop)  ($(phase-loop --version 2>/dev/null))"
-echo "  skills  : ${DEST} (symlinked to ${HOME_DIR}/phase-loop-skills)"
+echo "  bundle  : ${HOME_DIR}/phase-loop-skills"
 echo "  update  : re-run this script (it fetches ${REF} and re-applies)."
 echo "No fleet / 1Password / tailnet / dotfiles clone required."
