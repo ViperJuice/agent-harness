@@ -13,14 +13,14 @@
 #   (--harness all installs the skills for EVERY harness; the runtime is shared.)
 # Env overrides:
 #   AGENT_HARNESS_REPO   (default https://github.com/ViperJuice/agent-harness)
-#   AGENT_HARNESS_REF    (default v0.1.3)
+#   AGENT_HARNESS_REF    (default v0.1.4)
 #   AGENT_HARNESS_HARNESS (default claude; use "all" for every harness)
 #   AGENT_HARNESS_HOME   (persistent clone dir; default ~/.local/share/agent-harness)
 #   AGENT_HARNESS_SKILL_DEST (override the harness skill root)
 set -euo pipefail
 
 REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
-REF="${AGENT_HARNESS_REF:-v0.1.3}"
+REF="${AGENT_HARNESS_REF:-v0.1.4}"
 HARNESS="${AGENT_HARNESS_HARNESS:-claude}"
 HOME_DIR="${AGENT_HARNESS_HOME:-$HOME/.local/share/agent-harness}"
 
