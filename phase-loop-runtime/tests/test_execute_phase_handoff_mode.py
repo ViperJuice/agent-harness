@@ -13,6 +13,19 @@ import re
 import unittest
 from pathlib import Path
 
+import pytest
+
+from _dotfiles_tree import skills_bundle_present
+
+# TESTDECOUPLE (#9): this reads the workflow-skill source under the sibling
+# phase-loop-skills/ bundle, absent in the standalone-from-wheel clean-room. Guard at module
+# level — the read happens in setUpClass, before marker-based collection skips would apply.
+if not skills_bundle_present():
+    pytest.skip(
+        "requires the sibling phase-loop-skills bundle (absent in the standalone-from-wheel clean-room)",
+        allow_module_level=True,
+    )
+
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / "phase-loop-skills" / "execute-phase" / "_overrides" / "claude" / "SKILL.md"
 
