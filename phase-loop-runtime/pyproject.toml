@@ -63,6 +63,9 @@ where = ["src"]
 # and pass standalone in the extracted agent-harness layout. They are kept in
 # lockstep with the canonical dotfiles sources by scripts/sync_runtime_package_data.py
 # (a drift guard test asserts byte-identity).
+# skills_bundle ships the assembled neutral workflow skills (per-harness, overlays
+# folded) so a pinned `pip install` resolves `run`/`dry-run` skill packs without a
+# dotfiles overlay (#12). Generated, not hand-edited: scripts/sync_skills_bundle.py.
 [tool.setuptools.package-data]
 phase_loop_runtime = [
     "py.typed",
@@ -71,6 +74,7 @@ phase_loop_runtime = [
     "schemas/*.json",
     "_contract_docs/**",
     "_test_fixtures/**",
+    "skills_bundle/**",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests

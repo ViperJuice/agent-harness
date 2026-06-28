@@ -55,12 +55,24 @@ def main() -> None:
     runner_root = skill_inventory._runner_repo_root()
     if runner_root is not None:
         assert_not_under_dotfiles("_runner_repo_root()", runner_root)
-    # With no PHASE_LOOP_RUNNER_REPO_ROOT and no skill_sources plugin, resolution
-    # must yield nothing rather than a dotfiles path.
-    resolved_skill = skill_inventory.resolve_source_skill_dir(
-        Path(os.environ["GATE_A_RUNDIR"]), "claude", "claude-phase-loop"
-    )
-    assert_not_under_dotfiles("resolve_source_skill_dir", resolved_skill)
+    # #12: a pinned install ships the assembled skill bundle inside the package, so
+    # resolution must now yield a real dir UNDER site-packages (never None, never
+    # dotfiles) for the core workflow skills — `run`/`dry-run` depend on it.
+    rundir_for_skills = Path(os.environ["GATE_A_RUNDIR"])
+    for skill in (
+        "claude-phase-roadmap-builder",
+        "claude-plan-phase",
+        "claude-execute-phase",
+        "claude-phase-loop",
+    ):
+        resolved_skill = skill_inventory.resolve_source_skill_dir(rundir_for_skills, "claude", skill)
+        assert_not_under_dotfiles("resolve_source_skill_dir", resolved_skill)
+        if resolved_skill is None:
+            fail(f"resolve_source_skill_dir returned None for {skill!r} (packaged skills_bundle not shipping?)")
+        if "site-packages" not in str(resolved_skill):
+            fail(f"resolve_source_skill_dir({skill!r}) not under site-packages: {resolved_skill}")
+        if not (Path(resolved_skill) / "SKILL.md").is_file():
+            fail(f"resolved skill dir {resolved_skill} has no SKILL.md")
 
     # --- manifest path: explicit-root, repo-relative ------------------------
     from phase_loop_runtime import plan_manifest
