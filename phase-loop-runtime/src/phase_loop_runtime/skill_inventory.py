@@ -337,6 +337,25 @@ def discover_installed_skill_roots(harness_target: str) -> tuple[str, ...]:
     return tuple(roots)
 
 
+@functools.lru_cache(maxsize=1)
+def _packaged_skills_bundle_dir() -> Path | None:
+    """The assembled neutral skill bundle shipped as package-data in the wheel (#12).
+
+    Absolute, install-location-anchored via ``importlib.resources``, so a pinned
+    ``pip install`` resolves the workflow skills without a dotfiles overlay. The
+    bundle is flat: ``skills_bundle/<harness>-<skill>/`` (e.g.
+    ``claude-phase-roadmap-builder``), exactly the ``skill_name`` resolution joins.
+    Returns ``None`` when the bundle is not packaged (e.g. an older wheel).
+    """
+    try:
+        import importlib.resources
+
+        bundle = Path(str(importlib.resources.files("phase_loop_runtime"))) / "skills_bundle"
+    except Exception:
+        return None
+    return bundle if bundle.is_dir() else None
+
+
 def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -> Path | None:
     plugin_roots = dict(iter_skill_source_roots()).get(harness_target, ())
     builtin_roots = HARNESS_SOURCE_ROOTS.get(harness_target, ())
@@ -351,6 +370,15 @@ def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -
             candidate = runner_root / root / skill_name
             if candidate.is_dir():
                 return candidate.resolve()
+    # Final fallback: the bundle shipped inside the package (#12). Tried LAST, so a
+    # dotfiles overlay / configured plugin root (matched against `repo`/runner-root
+    # above) still wins for a dev checkout; a pinned install with neither resolves
+    # the packaged bundle by absolute path instead of raising.
+    packaged = _packaged_skills_bundle_dir()
+    if packaged is not None:
+        candidate = packaged / skill_name
+        if candidate.is_dir():
+            return candidate.resolve()
     return None
 
 

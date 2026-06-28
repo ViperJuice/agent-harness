@@ -27,6 +27,12 @@ harness workflow skills into your harness skill root (`~/.claude/skills`,
 `~/.codex/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`). `--ref vX.Y.Z`
 pins a release (default: the latest stable). Re-run to update.
 
+A plain `pip install "git+…/agent-harness@<tag>#subdirectory=phase-loop-runtime"`
+also works out of the box: the assembled workflow skill bundle ships **inside** the
+wheel, so `phase-loop run`/`dry-run` resolve their skill packs with no dotfiles
+checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you set one, must
+return **absolute** roots.)
+
 ## Autonomy & review gates
 
 The runner is built to drive phases **unattended**. Closeout review gates

@@ -66,10 +66,13 @@ def _resolve_pack_skill_dirs(
         raise SkillBundleResolutionError(
             f"no skill sources resolved for {harness_target} bundle "
             f"(expected {len(expected_skill_pack)}: {', '.join(expected_skill_pack)}). "
-            "The phase_loop_runtime.skill_sources entry-point is not registered for "
-            "this runtime -- re-run bootstrap (./bootstrap.sh) or "
-            "`pip install -e vendor/phase-loop-runtime` so the dotfiles skill-source "
-            "overlay is live, or set PHASE_LOOP_SKILL_SOURCE_PLUGINS for a source-mode run."
+            "A normal pinned `pip install` ships the assembled skill bundle inside the "
+            "package and resolves it automatically; if you are seeing this, the packaged "
+            "`phase_loop_runtime/skills_bundle/` is missing (regenerate via "
+            "`scripts/sync_skills_bundle.py` and reinstall). For a dotfiles dev checkout, "
+            "re-run bootstrap so the skill-source overlay is live. To point at a custom "
+            "source, set PHASE_LOOP_SKILL_SOURCE_PLUGINS to a provider returning "
+            "**absolute** roots (cwd-relative roots do not resolve outside their repo)."
         )
     return resolved
 
