@@ -45,6 +45,26 @@ Details:
   and unit-tested; full live threading into the executor fix-apply cycle is
   follow-up work. The autonomous default path is a proven no-op.
 
+## v0.1.5
+
+Closeout convergence fixes — both resolve infinite re-dispatch loops at the source.
+
+- **#5:** build-regenerated **gitignored** artifacts are no longer classified as un-owned
+  spillover. In `_classify_dirty_paths`, a path matching a gitignore pattern
+  (`git check-ignore --no-index`, which matches even *tracked* paths) is excluded from the
+  `unowned` set, so it can't trigger `dirty_worktree_conflict` -> an endless repair loop. It is
+  NOT dropped from the dirty set: a gitignored path the plan OWNS still classifies as
+  phase-owned and commits normally (no data loss); a genuinely-unowned non-ignored path still blocks.
+- **#6:** a phase whose verified work is **already on the base branch** (nothing staged to
+  commit) finalizes as a no-op (`closeout_action=noop_already_committed`, `closeout_commit=HEAD`)
+  and advances, instead of `git commit` exiting non-zero, being mistaken for a commit failure and
+  re-dispatching forever. Gated strictly on `terminal_status == "complete"` (== verification
+  passed) so a blocked/failed/non-verified phase is never finalized; checked before the
+  default-branch commit guard (a no-op commits nothing).
+
+(The deterministic-blocker loop-breaker and a `reconcile --to-status complete` escape hatch
+from the fix plans remain optional follow-ups — the above resolves both loops directly.)
+
 ## v0.1.4 — planning & execution rigor (rigor-v1)
 
 Adds autonomy-first review gates and planner guidance. **Default behavior is

@@ -48,3 +48,18 @@ def dotfiles_root() -> Path | None:
 def dotfiles_tree_present() -> bool:
     """True iff a dotfiles fleet tree is reachable above this package."""
     return dotfiles_root() is not None
+
+
+@functools.lru_cache(maxsize=1)
+def skills_bundle_present() -> bool:
+    """True iff the sibling ``phase-loop-skills/`` bundle is reachable beside the runtime.
+
+    Tests that read the workflow-skill *source* (``phase-loop-skills/**/SKILL.md``) run in
+    the agent-harness monorepo, where the bundle sits beside ``phase-loop-runtime/``, but must
+    SKIP in the standalone-from-wheel clean-room (``gate_a_cleanroom.sh``), which isolates only
+    ``phase-loop-runtime/`` — so the bundle is absent. This is the same cross-component
+    decoupling the dotfiles guard enforces, keyed on the skills sibling instead of a dotfiles
+    tree (the skills bundle IS present in the extracted agent-harness layout; a dotfiles tree
+    is not, so ``dotfiles_tree_present()`` is the wrong gate for these). Cached like the others.
+    """
+    return (Path(__file__).resolve().parents[2] / "phase-loop-skills").is_dir()

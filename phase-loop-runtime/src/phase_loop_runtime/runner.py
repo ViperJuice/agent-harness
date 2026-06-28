@@ -6903,6 +6903,39 @@ def _phase_status_literal(value: object) -> str | None:
     return text if text in PHASE_STATUSES else None
 
 
+def _gitignored_paths(repo: Path, paths: list[str]) -> set[str]:
+    """Return the subset of *paths* that git considers ignored.
+
+    A regenerated gitignored artifact (deterministic codegen output, build caches)
+    is declared-disposable, not tracked-work spillover, so it must never enter the
+    closeout dirty set or block a start gate (issue #5: such paths were classified
+    ``unowned`` -> ``dirty_worktree_conflict`` -> an infinite repair loop, because each
+    repair turn re-ran the build and regenerated the same ignored output). ``git status
+    --porcelain`` already excludes *untracked* ignored files, but a path that is tracked
+    yet matches an ignore pattern still surfaces; ``git check-ignore`` catches both.
+    """
+    if not paths:
+        return set()
+    try:
+        # --no-index: match against the ignore patterns regardless of whether a path
+        # is currently tracked. Without it, check-ignore never reports a *tracked* file
+        # as ignored — but the #5 case is exactly a tracked-then-ignored generated path
+        # that the build regenerates, so it must be matched by pattern.
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "--no-index", "--stdin"],
+            input="\n".join(paths),
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return set()
+    # check-ignore exit codes: 0 = at least one path matched, 1 = none matched,
+    # >=128 = a real error (e.g. not a git repo) — only trust stdout on 0/1.
+    if proc.returncode >= 128:
+        return set()
+    return {line.strip().strip('"') for line in proc.stdout.splitlines() if line.strip()}
+
+
 def _dirty_paths(repo: Path) -> list[str]:
     try:
         status = subprocess.check_output(
@@ -7050,10 +7083,21 @@ def _classify_dirty_paths(
         and path not in previous_phase_owned_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
+    # Issue #5: a path matching a gitignore pattern is the client repo's declared-disposable
+    # output (a codegen/build artifact the verification step regenerates). It must not count as
+    # un-owned spillover -> dirty_worktree_conflict, which the next repair turn would re-trigger
+    # by re-running the build (an infinite loop). It is NOT dropped from the dirty set: a
+    # gitignored path the plan OWNS still classifies as phase-owned and commits normally below,
+    # so no legitimately-owned work is lost. (`--no-index` so even *tracked*-then-ignored
+    # regenerated files are matched.)
+    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
     unowned = [
         path
         for path in post_launch_dirty_paths
-        if path not in phase_owned_set and path not in previous_phase_owned_set and path not in expected_sibling_set
+        if path not in phase_owned_set
+        and path not in previous_phase_owned_set
+        and path not in expected_sibling_set
+        and path not in gitignored
     ]
     runtime_relaxation = _runtime_relaxation_evidence(
         ownership.owned_patterns,
@@ -7087,6 +7131,7 @@ def _classify_dirty_paths(
         "expected_sibling_dirty_paths": expected_sibling_dirty,
         "expected_sibling_dirty": bool(expected_sibling_dirty),
         "unowned_dirty_paths": unowned,
+        "gitignored_dirty_paths": sorted(p for p in post_launch_dirty_paths if p in gitignored),
         "pre_existing_dirty_paths": pre_existing,
         "phase_owned_dirty": (ownership.valid or control_only_dirty) and closeout_safe_dirty,
         "ownership_errors": [] if control_only_dirty else list(ownership.errors),
@@ -7430,6 +7475,26 @@ def _perform_phase_closeout(
                 returncode=add_result.returncode,
                 stderr=add_result.stderr or add_result.stdout,
             )
+        elif terminal_status == "complete" and _closeout_nothing_staged(repo):
+            # Issue #6: the phase's verified work is already on the base branch (committed
+            # out-of-band, e.g. via a merged PR), so nothing is staged. `git commit` would
+            # exit non-zero and be mistaken for a commit failure, leaving the phase
+            # un-finalized and re-dispatched forever. Finalize as a no-op — the verified work
+            # is present; advance the phase, pinning closeout_summary to THIS phase via HEAD.
+            # Checked BEFORE the default-branch guard: a no-op commits nothing, so that guard
+            # (which only refuses real commits to the pipeline default branch) does not apply.
+            # Gated strictly on terminal_status == "complete" (== verification_status "passed"
+            # per the derivation at the top of this function) so a blocked / failed / not-yet-
+            # verified phase is never silently finalized as complete.
+            commit = _git_output(repo, "rev-parse", "HEAD")
+            status = "complete"
+            metadata["closeout"]["verification_status"] = "passed"
+            metadata["closeout"].update(
+                {
+                    "closeout_action": "noop_already_committed",
+                    "closeout_commit": commit,
+                }
+            )
         else:
             guard_blocker = _refuse_pipeline_default_branch_commit(repo)
             if guard_blocker is not None:
@@ -7712,6 +7777,16 @@ def _run_git_closeout(repo: Path, *args: str, input_text: str | None = None) -> 
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def _closeout_nothing_staged(repo: Path) -> bool:
+    """True when there is nothing staged to commit (the index matches HEAD).
+
+    Used by closeout to distinguish "the phase's verified work is already on the base
+    branch" (a successful no-op finalize, issue #6) from a real commit failure. `git
+    diff --cached --quiet` exits 0 when there are no staged changes, 1 when there are.
+    """
+    return _run_git_closeout(repo, "diff", "--cached", "--quiet").returncode == 0
 
 
 def _commit_failure_closeout(

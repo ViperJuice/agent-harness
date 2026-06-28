@@ -35,12 +35,25 @@ jobs:
         working-directory: phase-loop-runtime
         run: python -m pytest -m "not dotfiles_integration"
 
-  # NOTE: a `cleanroom` job running scripts/gate_a_cleanroom.sh (wheel build +
-  # isolated-venv install + full standalone suite) is intentionally NOT wired up
-  # yet. As of v0.1.4 the rigor-v1 tests (test_execute_phase_handoff_mode.py and
-  # the doc-lane tests) read phase-loop-skills/**/SKILL.md from the SIBLING
-  # package, which breaks the TESTDECOUPLE standalone-from-wheel invariant the
-  # clean-room enforces (FileNotFoundError on the skills path). The from-source
-  # pytest matrix above already covers the runtime tests. Re-add the clean-room
-  # job once those tests are marked integration or resolve skills via package-data.
-  # Tracked in the agent-harness issue tracker.
+  cleanroom:
+    name: clean-room (standalone-from-wheel, Gate A)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build + pytest
+        run: python -m pip install build pytest
+
+      - name: Gate A — standalone-from-wheel clean room
+        # Builds the wheel, installs it into an isolated venv, and runs the FULL
+        # standalone suite (TESTDECOUPLE). Skills-bundle tests skip when the sibling
+        # phase-loop-skills/ is absent (#9); the runtime must resolve only under
+        # site-packages, never a dotfiles checkout.
+        working-directory: phase-loop-runtime
+        run: bash scripts/gate_a_cleanroom.sh
