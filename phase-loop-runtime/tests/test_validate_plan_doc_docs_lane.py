@@ -4,6 +4,18 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
+from _dotfiles_tree import skills_bundle_present
+
+# TESTDECOUPLE (#9): loads a script from the sibling phase-loop-skills/ bundle, absent in the
+# standalone-from-wheel clean-room. Guard at module level (the script is loaded at import time).
+if not skills_bundle_present():
+    pytest.skip(
+        "requires the sibling phase-loop-skills bundle (absent in the standalone-from-wheel clean-room)",
+        allow_module_level=True,
+    )
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "phase-loop-skills" / "plan-phase" / "scripts" / "validate_plan_doc.py"
 
