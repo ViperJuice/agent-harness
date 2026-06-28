@@ -4,6 +4,22 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased
+
+Closeout convergence fixes — both resolve infinite re-dispatch loops at the source.
+
+- **#5:** build-regenerated **gitignored** artifacts no longer enter the closeout dirty
+  set. A path matching a gitignore pattern (`git check-ignore --no-index`, which matches
+  even *tracked* paths) is dropped in `_dirty_paths`, so a regenerated codegen output can't
+  be classified `unowned` -> `dirty_worktree_conflict` -> an endless repair loop.
+- **#6:** a phase whose verified work is **already on the base branch** (nothing staged to
+  commit) now finalizes as a no-op (`closeout_action=noop_already_committed`,
+  `closeout_commit=HEAD`) and advances, instead of `git commit` exiting non-zero, being
+  mistaken for a commit failure, and re-dispatching forever.
+
+(The deterministic-blocker loop-breaker and a `reconcile --to-status complete` escape hatch
+from the fix plans remain optional follow-ups — the above resolves both loops directly.)
+
 ## v0.1.4 — planning & execution rigor (rigor-v1)
 
 Adds autonomy-first review gates and planner guidance. **Default behavior is
