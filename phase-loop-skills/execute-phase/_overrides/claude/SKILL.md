@@ -113,6 +113,15 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | strong    | <harness>-sonnet-4-6  | contract-authoring (IF-freeze), schema/migration, algorithmic |
 | fast      | <harness>-haiku-4-5   | mechanical wiring, small components against frozen types      |
 
+These map to the runtime `model_class` axis: planner = frontier, implementer =
+strong, worker = fast. The shipped `model_policy` dispatches **implementation at
+the implementer class**; on repeated failure the escalation ladder steps the
+class up (implementer → planner) before, in **governed** `run_mode` only,
+invoking the advisor panel. The default `run_mode` is `autonomous` — no panel,
+no `human_required`; every governed escalation terminal is a non-human
+`review_gate_block` surfaced in the run-end summary, never a synchronous human
+wait.
+
 ## Inputs
 
 | Arg | Required | Meaning |

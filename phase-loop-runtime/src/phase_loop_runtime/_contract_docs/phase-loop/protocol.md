@@ -669,6 +669,31 @@ The bypass is limited to this STARTGATE check: it does not mark verification
 passed, perform recovery, auto-commit output, or bypass dirty-worktree,
 Pipeline, access, repair, executor-policy, or launch blockers.
 
+## Model Routing & Run Mode
+
+Model selection has two orthogonal axes (model-routing-v1).
+
+`model_policy` (*what model*): a `model_class` role — `planner`, `implementer`,
+or `worker` — resolves to a concrete model per executor. An execution-policy
+rule may carry `model_class`; resolution composes registry defaults → shipped
+`model_policy` → plan `## Execution Policy` → CLI override (lowest to highest
+precedence). A checkout with no `model_policy` and no `model_class` resolves
+model and effort exactly as the registry defaults (the empty-policy back-compat
+contract). Requesting an effort a provider does not support raises unless the
+rule opts into the provider `effort_map` fallback; the shipped policy does so for
+its `max`-effort planning actions. `worker` never authors a final patch
+(`execute`/`repair`), and an executor whose ceiling is below `max` (e.g. gemini)
+is never selected as the max-effort planner of record.
+
+`run_mode` (*how governed*): `autonomous` (default) or `governed` (opt-in).
+Autonomous invokes no advisor panel and adds no `human_required`. Governed adds a
+plan-stage and pre-merge panel gate that reuses the `review_finding`
+`block`/`nit` severity vocabulary on a seam separate from the closeout validator
+registry; the reviewer pool is vendor-disjoint from the author (degrading to an
+advisory autonomous-warn rather than a same-vendor self-review), the review loop
+is bounded, and every escalation terminal is a non-human `review_gate_block`
+surfaced in the run-end summary — never a synchronous human wait.
+
 ## Reconcile Command
 
 `phase-loop reconcile` has two distinct modes.

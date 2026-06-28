@@ -128,6 +128,26 @@ def resolve_model_class(executor: str, model_class: str) -> str | None:
     return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
 
 
+# Actions that author a final patch. The `worker` class (bounded, high-volume
+# subtasks) must never own these — enforced as a routing invariant (P5).
+PATCH_AUTHORING_ACTIONS: tuple[str, ...] = ("execute", "repair")
+
+
+def max_effort_planner_eligible(executor: str) -> bool:
+    """True iff `executor`'s planner-class model can actually run at `max` effort.
+
+    The "planner of record" for a max-effort planning action must deliver max
+    reasoning. Gemini ceilings at `high` (its `effort_map` clamps `max -> high`),
+    so it is NOT eligible as the max-effort planner of record — it serves as a
+    panel member instead, never the authoritative planner. This is the
+    dispatch-selection guard the effort clamp alone does not provide: the clamp
+    keeps gemini from *running* at max, but only this guard keeps it from being
+    *selected* as the max-effort planner.
+    """
+    capability = provider_policy_capabilities().get(executor)
+    return bool(capability and "max" in capability.supported_efforts)
+
+
 # The repo's SHIPPED model_policy. THIS repo's default: planning at max,
 # implementation at the implementer model. `clamp=True` resolves a sub-max
 # provider's `max` request to its ceiling via the provider effort_map fallback

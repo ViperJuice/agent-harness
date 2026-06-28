@@ -108,6 +108,19 @@ Operator `--model`/`--effort` and CLI overrides still win, so this never blocks
 a human from forcing a tier. The goal is to stop paying `high` for a one-line
 change by default.
 
+**Model class (vendor-agnostic role).** Alongside effort, a rule may set a
+`model_class` — `planner` / `implementer` / `worker` — which resolves to a
+concrete model per executor. The shipped `model_policy` already routes planning
+to the planner class at `max` and implementation to the implementer class, so
+you rarely set this by hand; reach for it when a specific lane wants a cheaper
+worker-class model for a bounded, schema-checked subtask. The `worker` class
+must never author a final patch, and an executor that can't run at `max` (e.g.
+gemini) is never the max-effort planner of record.
+
+**Run mode is separate.** `model_policy` (what model) is independent of
+`run_mode` (autonomous default vs opt-in governed review). Planning a phase does
+not enable the governed panel; that is an operator opt-in.
+
 ## Planner Literal Validation
 
 Before writing a plan document to the project path, validate the complete draft

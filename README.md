@@ -44,6 +44,22 @@ For periodic human review, bound the run (`--max-phases N`) and read the finding
 summary between runs rather than blocking mid-loop. See `CHANGELOG.md` (rigor-v1)
 for the full list of gates.
 
+## Model routing (two axes)
+
+Model selection has two independent axes:
+
+- **`model_policy`** — *what model*. A `model_class` role layer
+  (`planner`/`implementer`/`worker`) resolves to a concrete model per executor.
+  This repo ships a default (planning at `max` effort, implementation at the
+  implementer model); a checkout with no policy keeps the legacy resolution.
+- **`run_mode`** — *how governed*. `autonomous` (default) runs unattended with no
+  panel; `governed` (opt-in) adds a 3-harness advisor-panel review at planning
+  and pre-merge, bounded, with a non-human escalation terminal.
+
+"Autonomous default" means the **run_mode**, not the absence of a policy — the
+tiered `model_policy` is on by default; the panel is what's opt-in. See
+`CHANGELOG.md` (model-routing-v1).
+
 ## License
 
 Apache-2.0 (see `LICENSE` / `NOTICE`).

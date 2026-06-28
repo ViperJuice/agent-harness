@@ -4,6 +4,39 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased — model routing & governed review (model-routing-v1)
+
+Tiered model selection + an opt-in governed review mode. **Two orthogonal axes,
+kept separate** — and the autonomous default is unchanged:
+
+- **`model_policy`** (*what model*): a vendor-agnostic `model_class` role layer
+  (`planner`/`implementer`/`worker`) resolved to a concrete model per executor
+  (claude → opus/sonnet/haiku; codex → gpt-5.5/5.4/5.4-mini; gemini →
+  pro/flash/flash-lite). This repo ships a default policy — planning at `max`
+  effort, implementation at the implementer class. A checkout with **no**
+  `model_policy` resolves model + effort byte-for-byte as before (the
+  empty-policy back-compat path).
+- **`run_mode`** (*how governed*): `autonomous` (default) vs `governed`
+  (opt-in). Autonomous invokes **no** panel and adds no `human_required`;
+  governed adds a 3-harness advisor-panel gate at planning + pre-merge with a
+  bounded review loop and a non-human escalation terminal.
+
+Details:
+- **Effort clamp**: requesting `max` for a sub-max provider (gemini ceilings at
+  `high`) *raises* unless the policy opts into the provider `effort_map`
+  fallback — the shipped policy does, so `(plan, gemini)@max → high`.
+- **Selection guard**: gemini/pi are never the max-effort *planner of record*
+  (they can't run at `max`); enforced at dispatch selection, not only the clamp.
+- **Governed gate** reuses the rigor-v1 `ReviewFinding` severity vocabulary but
+  runs on a separate plan-stage seam (not the closeout registry) and
+  short-circuits before any panel spawns in autonomous mode.
+- **Route logging**: each dispatch records `model_class`/`concrete_model`/
+  `effort`/`route_reason` (metadata-only) to the ledger; governed panel verdicts
+  surface in the run-end summary.
+- *Note*: the governed pre-merge loop's logic, ladder, and rendering are wired
+  and unit-tested; full live threading into the executor fix-apply cycle is
+  follow-up work. The autonomous default path is a proven no-op.
+
 ## v0.1.4 — planning & execution rigor (rigor-v1)
 
 Adds autonomy-first review gates and planner guidance. **Default behavior is
