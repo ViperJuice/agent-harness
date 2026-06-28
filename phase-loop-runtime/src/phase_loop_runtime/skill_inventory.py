@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from .runtime_resources import packaged_resource_dir
+
 _LOGGER = logging.getLogger("phase_loop_runtime.skill_inventory")
 
 
@@ -347,13 +349,25 @@ def _packaged_skills_bundle_dir() -> Path | None:
     ``claude-phase-roadmap-builder``), exactly the ``skill_name`` resolution joins.
     Returns ``None`` when the bundle is not packaged (e.g. an older wheel).
     """
-    try:
-        import importlib.resources
+    return packaged_resource_dir("skills_bundle")
 
-        bundle = Path(str(importlib.resources.files("phase_loop_runtime"))) / "skills_bundle"
-    except Exception:
-        return None
-    return bundle if bundle.is_dir() else None
+
+@functools.lru_cache(maxsize=1)
+def _canonical_skill_source_present() -> bool:
+    """True in a dev/fleet *source* checkout — when the canonical ``phase-loop-skills/``
+    source tree is reachable beside the installed package.
+
+    Used to gate the packaged-bundle fallback (#12 CR): in a source checkout an empty
+    skill resolution means "the overlay/plugin wasn't bootstrapped" — a real error that
+    must fail loud (so the dev re-runs bootstrap and edits take effect), NOT something to
+    paper over with the committed `skills_bundle/` (which would inject stale skills). In a
+    pinned `pip install` there is no sibling source, so the packaged bundle is the
+    legitimate resolution. Covers both the agent-harness layout (`<root>/phase-loop-skills/`)
+    and the dotfiles-vendored layout (`vendor/phase-loop-skills/`); `site-packages` has
+    neither.
+    """
+    here = Path(__file__).resolve()
+    return any((parent / "phase-loop-skills").is_dir() for parent in here.parents)
 
 
 def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -> Path | None:
@@ -370,15 +384,17 @@ def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -
             candidate = runner_root / root / skill_name
             if candidate.is_dir():
                 return candidate.resolve()
-    # Final fallback: the bundle shipped inside the package (#12). Tried LAST, so a
-    # dotfiles overlay / configured plugin root (matched against `repo`/runner-root
-    # above) still wins for a dev checkout; a pinned install with neither resolves
-    # the packaged bundle by absolute path instead of raising.
-    packaged = _packaged_skills_bundle_dir()
-    if packaged is not None:
-        candidate = packaged / skill_name
-        if candidate.is_dir():
-            return candidate.resolve()
+    # Final fallback: the bundle shipped inside the package (#12). A genuine LAST resort,
+    # gated so it fires ONLY in a pinned install (no canonical source reachable). In a
+    # dev/fleet source checkout the overlay/plugin roots above are the real source; an
+    # empty resolution there must fail loud (re-run bootstrap), not silently serve the
+    # committed bundle. So we suppress the fallback when `phase-loop-skills/` is present.
+    if not _canonical_skill_source_present():
+        packaged = _packaged_skills_bundle_dir()
+        if packaged is not None:
+            candidate = packaged / skill_name
+            if candidate.is_dir():
+                return candidate.resolve()
     return None
 
 

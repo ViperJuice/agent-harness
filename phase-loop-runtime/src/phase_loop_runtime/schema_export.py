@@ -230,9 +230,13 @@ def render(schema: dict[str, Any]) -> str:
 
 def _resource_path() -> Path:
     """Resolve the bundled artifact via importlib.resources (wheel-safe)."""
-    packaged = Path(str(importlib.resources.files("phase_loop_runtime"))) / SCHEMA_RESOURCE
-    if packaged.is_file():
-        return packaged
+    from .runtime_resources import package_root
+
+    root = package_root()
+    if root is not None:
+        packaged = root / SCHEMA_RESOURCE
+        if packaged.is_file():
+            return packaged
     # Editable/source-layout fallback (same dir importlib.resources resolves once
     # installed from a wheel).
     fallback = Path(__file__).resolve().parent / SCHEMA_RESOURCE

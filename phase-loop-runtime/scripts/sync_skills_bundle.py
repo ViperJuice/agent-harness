@@ -33,14 +33,22 @@ def main() -> int:
     if not SRC_SKILLS.is_dir():
         print(f"source skills bundle not found: {SRC_SKILLS}", file=sys.stderr)
         return 1
-    if DEST.exists():
-        shutil.rmtree(DEST)
-    DEST.mkdir(parents=True)
-    for harness in ACTIVE_HARNESSES:
-        install_skills(harness=harness, source=SRC_SKILLS, destination=DEST, mode="copy", apply=True)
+    assemble_bundle(SRC_SKILLS, DEST)
     dirs = sorted(p.name for p in DEST.iterdir() if p.is_dir())
     print(f"assembled {len(dirs)} skill dirs into {DEST.relative_to(_REPO_ROOT)}")
     return 0
+
+
+def assemble_bundle(source: Path, dest: Path) -> Path:
+    """Assemble the neutral ``source`` skills into ``dest/<harness>-<skill>/`` for every
+    active harness (overlay-folding via ``skill_install.install_skills``). Reusable so the
+    drift-guard test can regenerate into a temp dir and compare byte-identity (#12 CR)."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    for harness in ACTIVE_HARNESSES:
+        install_skills(harness=harness, source=source, destination=dest, mode="copy", apply=True)
+    return dest
 
 
 if __name__ == "__main__":

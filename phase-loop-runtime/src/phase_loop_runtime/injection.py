@@ -70,9 +70,9 @@ def _resolve_pack_skill_dirs(
             "package and resolves it automatically; if you are seeing this, the packaged "
             "`phase_loop_runtime/skills_bundle/` is missing (regenerate via "
             "`scripts/sync_skills_bundle.py` and reinstall). For a dotfiles dev checkout, "
-            "re-run bootstrap so the skill-source overlay is live. To point at a custom "
-            "source, set PHASE_LOOP_SKILL_SOURCE_PLUGINS to a provider returning "
-            "**absolute** roots (cwd-relative roots do not resolve outside their repo)."
+            "re-run bootstrap so the `phase_loop_runtime.skill_sources` overlay is live. To "
+            "point at a custom source, set PHASE_LOOP_SKILL_SOURCE_PLUGINS to a provider "
+            "returning **absolute** roots (cwd-relative roots do not resolve outside their repo)."
         )
     return resolved
 

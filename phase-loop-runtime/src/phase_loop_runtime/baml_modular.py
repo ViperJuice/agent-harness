@@ -237,14 +237,13 @@ def _baml_src_dir() -> Path:
     # wheel regardless of installer (DECOUPLE SL-0/SL-2). The legacy candidates
     # are kept as a fallback for editable/source layouts and the old data-files
     # share/ install, but resolution no longer depends on a repo-relative walk.
-    import importlib.resources
+    from .runtime_resources import package_root
 
-    try:
-        packaged = Path(str(importlib.resources.files("phase_loop_runtime"))) / "baml_src"
+    root = package_root()
+    if root is not None:
+        packaged = root / "baml_src"
         if (packaged / "emit_phase_closeout.baml").is_file():
             return packaged
-    except (ModuleNotFoundError, TypeError, FileNotFoundError):
-        pass
     candidates = [
         # In-package source/editable layout (the same dir importlib.resources
         # resolves once installed). The old repo-root vendor/.../baml_src candidate
