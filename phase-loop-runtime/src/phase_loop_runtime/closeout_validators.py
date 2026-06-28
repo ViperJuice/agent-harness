@@ -69,6 +69,10 @@ class CloseoutContext:
     automation: Mapping[str, Any] = field(default_factory=dict)
     blocker: Mapping[str, Any] = field(default_factory=dict)
     changed_paths: tuple[str, ...] = ()
+    # model-routing-v1 P2: the run_mode axis (autonomous default | governed).
+    # Carried so a validator can tell which mode it is in; governed-only review
+    # machinery lives in `governed_review`, never in this closeout registry.
+    run_mode: str = "autonomous"
 
 
 # A validator receives the context and returns zero or more findings.

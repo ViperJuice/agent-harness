@@ -164,6 +164,7 @@ from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
+from .governed_review import RUN_MODES
 from .reconcile import reconcile
 from .review_summary import summarize_run_review_findings
 from .release_guard import release_dispatch_blocker
@@ -1095,11 +1096,14 @@ def run_loop(
     phase_scheduler_mode: str = "off",
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
+    if run_mode not in RUN_MODES:
+        raise ValueError(f"invalid run mode: {run_mode}")
     # Baseline ledger length so the run-end review-findings summary reports only
     # events appended during THIS invocation, not the whole persisted ledger
     # across bounded `--max-phases` batches.

@@ -98,6 +98,7 @@ def build_phase_loop_closeout(
     evidence_refs: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]] = (),
     work_unit_closeout: WorkUnitCloseout | Mapping[str, Any] | None = None,
     spec_delta_closeout: Mapping[str, Any] | SpecDeltaCloseout | None = None,
+    run_mode: str = "autonomous",
 ) -> dict[str, Any]:
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
@@ -136,6 +137,7 @@ def build_phase_loop_closeout(
                 or terminal.get("previous_phase_owned_paths")
                 or ()
             ),
+            run_mode=run_mode,
         )
     )
     if review_findings:
