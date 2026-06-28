@@ -353,6 +353,9 @@ class ModelSelection:
     effort: str
     source: str = "default"
     override_reason: str | None = None
+    # model-routing-v1 P4: the resolved role (planner/implementer/worker) when a
+    # model_class policy chose the model; None on the legacy/empty-policy path.
+    model_class: str | None = None
 
     def __post_init__(self) -> None:
         require_literal(self.profile, MODEL_PROFILES, "model profile")
@@ -1565,6 +1568,8 @@ class ResolvedExecutionPolicy:
     effort_source: str = "registry defaults"
     fallback_source: str = "registry defaults"
     fallback_applied: bool = False
+    # model-routing-v1 P4: the role the winning policy requested, for route logs.
+    model_class: str | None = None
 
     def __post_init__(self) -> None:
         require_literal(self.action, PRODUCT_LOOP_ACTIONS, "execution policy action")

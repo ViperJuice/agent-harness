@@ -171,7 +171,8 @@ from .governed_premerge import (
     run_governed_premerge_loop,
 )
 from .reconcile import reconcile
-from .review_summary import summarize_run_review_findings
+from .review_summary import summarize_run, summarize_run_review_findings
+from .route_log import build_route_log
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -5358,7 +5359,8 @@ def _append_coordinator_event(
             reasoning_effort=selection.effort,
             source=selection.source,
             override_reason=selection.override_reason,
-            metadata={"coordinator": metadata},
+            # model-routing-v1 P4: metadata-only route record on the dispatch event.
+            metadata={"coordinator": metadata, "route": build_route_log(selection)},
             **provenance,
         ),
     )
@@ -7783,7 +7785,7 @@ def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
         events = read_events(repo)
         if since:
             events = events[since:]
-        summary = summarize_run_review_findings(events)
+        summary = summarize_run(events)  # review findings + governed panel verdicts
         if summary:
             print(summary, file=sys.stderr)
     except Exception:

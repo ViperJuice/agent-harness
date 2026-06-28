@@ -321,6 +321,7 @@ def resolve_execution_policy(
         effort_source=effort_source,
         fallback_source=fallback_source,
         fallback_applied=fallback_applied,
+        model_class=policy.model_class if policy else None,
     )
 
 
@@ -347,6 +348,7 @@ def resolve_model_selection_from_policy(
         effort=resolved_policy.effort,
         source=resolved_policy.execution_policy_source,
         override_reason=resolved_policy.execution_policy_override_reason,
+        model_class=resolved_policy.model_class,
     )
 
 
