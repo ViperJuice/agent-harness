@@ -91,8 +91,13 @@ OPENAI_IMPLEMENTER_MODEL = "gpt-5.4"
 OPENAI_WORKER_MODEL = "gpt-5.4-mini"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.4"
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.4-mini"
-GEMINI_IMPLEMENTER_MODEL = "flash"
-GEMINI_WORKER_MODEL = "flash-lite"
+# Gemini exposes only two built-in routing aliases the registry preserves for CLI
+# fallback: `pro` (planning/review) and `auto` (execution/repair). It has no
+# vetted distinct cheap-model alias, so implementer/worker route via `auto` (the
+# CLI auto-routes) rather than an invented, unvalidated `flash`/`flash-lite`
+# string that would bypass the alias guard and risk a dispatch-time failure.
+GEMINI_IMPLEMENTER_MODEL = GEMINI_AUTO_ROUTED_MODEL
+GEMINI_WORKER_MODEL = GEMINI_AUTO_ROUTED_MODEL
 
 CLASS_MODEL_OVERRIDES = {
     "claude": {
@@ -265,7 +270,7 @@ def resolve_execution_policy(
     lane: str | None = None,
 ) -> ResolvedExecutionPolicy:
     require_literal(action, tuple(ACTION_WORK_UNITS.keys()), "execution policy action")
-    policy, source = _first_policy(plan_policy, roadmap_policy, model_policy_rule)
+    policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     if _claude_model_needs_claude_executor(executor, model_selection.model, policy):
         executor = "claude"
     work_unit_kind = (
@@ -310,6 +315,22 @@ def resolve_execution_policy(
         policy_effort = operator_effort
         effort_source = "CLI/operator override"
         override_reason = "operator supplied --effort"
+
+    # model-routing-v1 guard (wired, not just asserted): an executor whose
+    # planner-class model cannot actually run at `max` (gemini/pi) must never be
+    # the max-effort planner of record. Force the clamp so its `max` request
+    # resolves to the provider ceiling instead of raising, regardless of whether
+    # the policy opted into a fallback. This makes the effort clamp + this guard
+    # jointly enforce the invariant at the dispatch-resolution boundary.
+    policy_model_class = policy.model_class if policy else None
+    if (
+        policy_model_class == "planner"
+        and policy_effort == "max"
+        and not max_effort_planner_eligible(policy_executor)
+    ):
+        unsupported_behavior = "fallback"
+        if not fallback:
+            fallback = "high"
 
     work_unit_policy = WorkUnitPolicy(
         work_unit_kind=work_unit_kind,
@@ -372,21 +393,52 @@ def resolve_model_selection_from_policy(
     )
 
 
-def _first_policy(
+def _merge_policies(
     plan_policy: ExecutionPolicyRule | None,
     roadmap_policy: ExecutionPolicyRule | None,
     model_policy_rule: ExecutionPolicyRule | None = None,
 ) -> tuple[ExecutionPolicyRule | None, str | None]:
-    # Precedence: plan > roadmap > model_policy > registry defaults. The shipped
-    # model_policy is the lowest-precedence policy; an explicit plan/roadmap
-    # Execution Policy section overrides it (model-routing-v1).
-    if plan_policy is not None:
-        return plan_policy, "phase-plan policy"
-    if roadmap_policy is not None:
-        return roadmap_policy, "roadmap policy"
-    if model_policy_rule is not None:
-        return model_policy_rule, "model_policy"
-    return None, None
+    # Precedence: plan > roadmap > model_policy > registry defaults — but LAYERED,
+    # not winner-take-all. A higher-precedence policy overrides only the fields it
+    # specifies; the rest fall through to the lower layer. This is the fix for the
+    # tiering-bypass bug: a plan policy that pins only `executor=`/`effort=` (no
+    # model/model_class) still inherits the shipped model_policy's `model_class`
+    # and its clamp, instead of silently reverting to the registry heavy model.
+    layers = [
+        (model_policy_rule, "model_policy"),
+        (roadmap_policy, "roadmap policy"),
+        (plan_policy, "phase-plan policy"),
+    ]
+    present = [(rule, src) for rule, src in layers if rule is not None]
+    if not present:
+        return None, None
+    top_rule, top_source = present[-1]
+    merged: dict[str, object] = {
+        "selector": top_rule.selector,
+        "action": top_rule.action,
+        "lane": top_rule.lane,
+        "executor": None,
+        "model": None,
+        "model_class": None,
+        "effort": None,
+        "work_unit_kind": None,
+        "unsupported_policy_behavior": "block",
+        "fallback": None,
+        "inherit_default": False,
+        "source": top_source,
+        "override_reason": None,
+    }
+    for rule, _src in present:  # low → high overlay
+        for field_name in ("executor", "model", "model_class", "effort",
+                           "work_unit_kind", "fallback", "override_reason", "action", "lane"):
+            value = getattr(rule, field_name)
+            if value is not None:
+                merged[field_name] = value
+        if rule.unsupported_policy_behavior and rule.unsupported_policy_behavior != "block":
+            merged["unsupported_policy_behavior"] = rule.unsupported_policy_behavior
+        if rule.inherit_default:
+            merged["inherit_default"] = True
+    return ExecutionPolicyRule(**merged), top_source
 
 
 def _resolve_policy_model(

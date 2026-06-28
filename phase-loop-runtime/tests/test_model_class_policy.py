@@ -33,7 +33,11 @@ class ModelClassResolutionTest(unittest.TestCase):
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-4-6")
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.4")
-        self.assertEqual(resolve_model_class("gemini", "worker"), "flash-lite")
+        # gemini has only `pro` (planning) + `auto` (execution routing alias); no
+        # vetted distinct cheap model, so implementer/worker route via `auto`.
+        self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
+        self.assertEqual(resolve_model_class("gemini", "implementer"), "auto")
+        self.assertEqual(resolve_model_class("gemini", "worker"), "auto")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 
     def test_model_class_field_validates(self):
@@ -96,6 +100,39 @@ class PrecedenceTest(unittest.TestCase):
         # plan ## Execution Policy > model_policy: explicit effort xhigh wins.
         plan_rule = ExecutionPolicyRule(selector="plan", action="plan", effort="xhigh", source="phase-plan policy")
         self.assertEqual(_resolve("plan", "codex", model_policy=True, plan_policy=plan_rule)[1], "xhigh")
+
+    def test_plan_policy_effort_only_inherits_shipped_model_class(self):
+        # CR fix: a plan Execution Policy pinning ONLY effort must still inherit
+        # the shipped model_policy's implementer class (layered merge), not revert
+        # to the registry heavy model.
+        plan = ExecutionPolicyRule(selector="execute", action="execute", effort="low", source="phase-plan policy")
+        model, effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
+        self.assertEqual(model, "claude-sonnet-4-6")  # implementer, from model_policy
+        self.assertEqual(effort, "low")               # plan's effort wins
+
+    def test_plan_policy_executor_only_inherits_shipped_model_class(self):
+        plan = ExecutionPolicyRule(selector="execute", action="execute", executor="claude", source="phase-plan policy")
+        model, _effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
+        self.assertEqual(model, "claude-sonnet-4-6")  # implementer still applied
+
+
+class MaxEffortPlannerGuardTest(unittest.TestCase):
+    def test_gemini_planner_max_clamps_via_guard_without_explicit_clamp(self):
+        # CR fix: planner@max on gemini (no explicit clamp policy) must not RAISE —
+        # the wired max-effort-planner guard forces the clamp to the ceiling.
+        plan = ExecutionPolicyRule(
+            selector="plan", action="plan", model_class="planner", effort="max", source="phase-plan policy"
+        )
+        model, effort = _resolve("plan", "gemini", plan_policy=plan)
+        self.assertEqual(effort, "high")  # clamped via the guard, not raised
+        self.assertEqual(model, "pro")    # gemini planner alias
+
+    def test_codex_planner_max_stays_max(self):
+        # codex IS max-eligible — the guard does not touch it.
+        plan = ExecutionPolicyRule(
+            selector="plan", action="plan", model_class="planner", effort="max", source="phase-plan policy"
+        )
+        self.assertEqual(_resolve("plan", "codex", plan_policy=plan)[1], "max")
 
 
 if __name__ == "__main__":

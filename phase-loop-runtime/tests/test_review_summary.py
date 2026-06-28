@@ -14,7 +14,7 @@ from phase_loop_runtime.closeout_validators import (
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.models import LoopEvent, utc_now
 from phase_loop_runtime.provenance import event_provenance
-from phase_loop_runtime.runner import _emit_review_findings_summary
+from phase_loop_runtime.runner import _emit_review_findings_summary, _governed_not_live_warning
 from phase_loop_runtime.review_summary import (
     collect_review_findings,
     render_review_findings_summary,
@@ -138,6 +138,18 @@ class ReviewSummaryTest(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 _emit_review_findings_summary(repo)
             self.assertEqual(err.getvalue(), "")
+
+
+class GovernedNotLiveWarningTest(unittest.TestCase):
+    # CR fix: governed run_mode is fail-loud (not a silent no-op) until v2 wires it.
+    def test_governed_warns(self):
+        msg = _governed_not_live_warning("governed")
+        self.assertIsNotNone(msg)
+        self.assertIn("not yet live", msg)
+        self.assertIn("AUTONOMOUSLY", msg)
+
+    def test_autonomous_is_silent(self):
+        self.assertIsNone(_governed_not_live_warning("autonomous"))
 
 
 if __name__ == "__main__":

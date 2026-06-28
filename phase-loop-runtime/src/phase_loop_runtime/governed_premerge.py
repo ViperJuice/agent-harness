@@ -21,7 +21,7 @@ here adds ``human_required`` and the autonomous path is a literal no-op.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .closeout_validators import ReviewFinding

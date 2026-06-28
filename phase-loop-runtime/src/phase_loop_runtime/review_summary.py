@@ -15,44 +15,52 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 
-def _walk_findings(obj: Any) -> Iterable[dict]:
+def _walk_kind(obj: Any, kind: str) -> Iterable[dict]:
+    """Recursively yield every dict in ``obj`` whose ``kind`` field matches."""
     if isinstance(obj, dict):
-        if obj.get("kind") == "review_finding":
+        if obj.get("kind") == kind:
             yield obj
         for value in obj.values():
-            yield from _walk_findings(value)
+            yield from _walk_kind(value, kind)
     elif isinstance(obj, (list, tuple)):
         for item in obj:
-            yield from _walk_findings(item)
+            yield from _walk_kind(item, kind)
 
 
-def collect_review_findings(events: Iterable[Any]) -> list[dict]:
-    """Extract de-duplicated review findings from ledger events, newest first.
-
-    Each returned finding is tagged with the ``phase`` of the event it was found
-    in. The same finding can appear in several events (the closeout is echoed
-    across records); dedup by (phase, code, reason, severity).
-    """
+def _collect_by_kind(events, kind, *, key, tag_phase):
+    """Shared collect-and-dedup skeleton: scan events for records of ``kind``,
+    dedup by ``key(record, event_phase)``. When ``tag_phase`` the returned record
+    is tagged with its event's ``phase`` (review findings); otherwise the record
+    is returned as-is (panel verdicts already carry their own ``phase``)."""
     out: list[dict] = []
     seen: set[tuple] = set()
     for event in events:
         if not isinstance(event, dict):
             continue
         phase = event.get("phase")
-        for finding in _walk_findings(event):
-            key = (
-                phase,
-                finding.get("code"),
-                finding.get("reason"),
-                finding.get("severity"),
-            )
-            if key in seen:
+        for record in _walk_kind(event, kind):
+            k = key(record, phase)
+            if k in seen:
                 continue
-            seen.add(key)
-            tagged = dict(finding)
-            tagged["phase"] = phase
-            out.append(tagged)
+            seen.add(k)
+            if tag_phase:
+                tagged = dict(record)
+                tagged["phase"] = phase
+                out.append(tagged)
+            else:
+                out.append(record)
     return out
+
+
+def collect_review_findings(events: Iterable[Any]) -> list[dict]:
+    """Extract de-duplicated review findings from ledger events, tagging each with
+    its event's ``phase``; dedup by (phase, code, reason, severity)."""
+    return _collect_by_kind(
+        events,
+        "review_finding",
+        key=lambda r, phase: (phase, r.get("code"), r.get("reason"), r.get("severity")),
+        tag_phase=True,
+    )
 
 
 def render_review_findings_summary(findings: list[dict]) -> str:
@@ -106,30 +114,15 @@ def panel_verdict_record(
 
 
 def collect_panel_verdicts(events: Iterable[Any]) -> list[dict]:
-    """Extract de-duplicated ``panel_verdict`` records from ledger events."""
-    out: list[dict] = []
-    seen: set[tuple] = set()
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        for record in _walk_panel_verdicts(event):
-            key = (record.get("phase"), record.get("outcome"), record.get("degraded"), record.get("rounds"))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(record)
-    return out
-
-
-def _walk_panel_verdicts(obj: Any) -> Iterable[dict]:
-    if isinstance(obj, dict):
-        if obj.get("kind") == "panel_verdict":
-            yield obj
-        for value in obj.values():
-            yield from _walk_panel_verdicts(value)
-    elif isinstance(obj, (list, tuple)):
-        for item in obj:
-            yield from _walk_panel_verdicts(item)
+    """Extract de-duplicated ``panel_verdict`` records from ledger events
+    (records already carry their own ``phase``); dedup by
+    (phase, outcome, degraded, rounds)."""
+    return _collect_by_kind(
+        events,
+        "panel_verdict",
+        key=lambda r, _phase: (r.get("phase"), r.get("outcome"), r.get("degraded"), r.get("rounds")),
+        tag_phase=False,
+    )
 
 
 def render_panel_verdicts_summary(verdicts: list[dict]) -> str:

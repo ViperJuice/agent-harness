@@ -19,7 +19,8 @@ rubber-stamping a same-vendor self-review as a pass.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
 from .closeout_validators import ReviewFinding
@@ -28,6 +29,31 @@ from .panel_invoker import PanelResult, available_panel_legs, invoke_panel
 RUN_MODES: tuple[str, ...] = ("autonomous", "governed")
 DEFAULT_RUN_MODE = "autonomous"
 RUN_MODE_ENV = "PHASE_LOOP_RUN_MODE"
+
+# The panel brief requires each leg to END with one of AGREE / PARTIALLY AGREE /
+# DISAGREE. Classify on that terminal verdict token, not a naive substring match
+# anywhere in the prose — "no blockers", "non-blocking nits", "no disagreements"
+# all contain BLOCK/DISAGREE yet are approvals (code-review finding, verified).
+_VERDICT_LINE_RE = re.compile(r"\b(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+
+
+def _leg_blocks(text: str) -> bool:
+    """True iff a usable leg's review signals a blocking concern.
+
+    Prefer the structured terminal verdict (the LAST AGREE/PARTIALLY AGREE/
+    DISAGREE token) — only a bare `DISAGREE` blocks. If the leg omitted the
+    structured verdict, fall back to a word-boundary `BLOCK`/`DISAGREE` that is
+    not immediately negated ("no ", "non-", "without ", "zero ").
+    """
+    matches = list(_VERDICT_LINE_RE.finditer(text))
+    if matches:
+        final = matches[-1].group(0).upper().split()
+        # "AGREE" / "PARTIALLY AGREE" => not a block; only a bare "DISAGREE" blocks.
+        return final == ["DISAGREE"]
+    # No structured verdict — be conservative but negation-aware.
+    return bool(re.search(r"(?<![A-Za-z-])(?<!no )(?<!non-)\bDISAGREE\b", text, re.IGNORECASE)) or bool(
+        re.search(r"(?<!no )(?<!non-)(?<!without )(?<!zero )\bBLOCK(?:ING|S|ED)?\b", text, re.IGNORECASE)
+    )
 
 # Executor → review "vendor" (for reviewer≠author disjointness). The panel legs
 # are themselves vendor-named (codex/gemini/claude).
@@ -88,8 +114,7 @@ def _findings_from_panel(panel: PanelResult) -> tuple[ReviewFinding, ...]:
                 severity="warn",
             ))
             continue
-        verdict = leg.text.upper()
-        if "DISAGREE" in verdict or "BLOCK" in verdict:
+        if _leg_blocks(leg.text):
             findings.append(ReviewFinding(
                 code="panel_block",
                 reason=f"panel leg {leg.leg} raised a blocking concern",

@@ -102,5 +102,20 @@ class ReviewerPoolTest(unittest.TestCase):
                             for f in result.findings))
 
 
+class VerdictClassifierTest(unittest.TestCase):
+    # CR fix: classify on the structured terminal verdict + negation-awareness,
+    # not a naive substring (an approving review mentioning "blockers" is NOT a block).
+    def test_approving_phrasings_do_not_block(self):
+        from phase_loop_runtime.governed_review import _leg_blocks
+        self.assertFalse(_leg_blocks("Solid. AGREE — no blockers."))
+        self.assertFalse(_leg_blocks("Some non-blocking nits only. PARTIALLY AGREE"))
+        self.assertFalse(_leg_blocks("I have no disagreements with this. AGREE"))
+
+    def test_real_block_verdicts_block(self):
+        from phase_loop_runtime.governed_review import _leg_blocks
+        self.assertTrue(_leg_blocks("The schema is unsafe. DISAGREE"))
+        self.assertTrue(_leg_blocks("BLOCK: the migration drops a column"))
+
+
 if __name__ == "__main__":
     unittest.main()

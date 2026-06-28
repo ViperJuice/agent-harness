@@ -11,11 +11,19 @@ kept separate** — and the autonomous default is unchanged:
 
 - **`model_policy`** (*what model*): a vendor-agnostic `model_class` role layer
   (`planner`/`implementer`/`worker`) resolved to a concrete model per executor
-  (claude → opus/sonnet/haiku; codex → gpt-5.5/5.4/5.4-mini; gemini →
-  pro/flash/flash-lite). This repo ships a default policy — planning at `max`
-  effort, implementation at the implementer class. A checkout with **no**
-  `model_policy` resolves model + effort byte-for-byte as before (the
-  empty-policy back-compat path).
+  (claude → opus/sonnet/haiku; codex → gpt-5.5/5.4/5.4-mini; gemini → `pro` for
+  planning and its built-in `auto` routing alias for implementer/worker —
+  gemini exposes no vetted distinct cheap model). This repo ships a default
+  policy — planning at `max` effort, implementation at the implementer class. A
+  checkout with **no** `model_policy` resolves model + effort byte-for-byte as
+  before (the empty-policy back-compat path).
+- **Behavior change for upgraders (deliberate):** with this repo's shipped
+  policy, default autonomous `execute`/`repair` now route to the *implementer*
+  model_class (e.g. claude → `claude-sonnet-4-6` at `medium`) rather than the
+  prior executor-default heavy model at `high`. This is the intended
+  implementation-by-implementer-class design; pin `--model`/`--effort` or a plan
+  `## Execution Policy` to override per run/phase. The empty-policy path is
+  unchanged.
 - **`run_mode`** (*how governed*): `autonomous` (default) vs `governed`
   (opt-in). Autonomous invokes **no** panel and adds no `human_required`;
   governed adds a 3-harness advisor-panel gate at planning + pre-merge with a

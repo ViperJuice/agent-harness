@@ -167,12 +167,11 @@ from .provenance import event_provenance, snapshot_provenance
 from .governed_review import RUN_MODES
 from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
-    next_escalation,
     run_governed_premerge_loop,
 )
 from .reconcile import reconcile
-from .review_summary import summarize_run, summarize_run_review_findings
-from .route_log import build_route_log
+from .review_summary import summarize_run
+from .route_log import build_route_log, with_route_log
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -1052,6 +1051,23 @@ def _start_gate_bypassed_event(
     )
 
 
+def _governed_not_live_warning(run_mode: str) -> str | None:
+    """Operator warning when governed mode is requested but not yet live.
+
+    The governed pre-merge/panel loop is built and unit-tested but NOT yet
+    threaded into the live executor cycle (model-routing-v2). Return a loud,
+    non-fatal warning so an operator is never misled into believing review
+    enforcement is active; return None for autonomous. Never adds human_required.
+    """
+    if run_mode == "governed":
+        return (
+            "phase-loop: WARNING — run_mode=governed is not yet live in the executor "
+            "cycle; this run proceeds AUTONOMOUSLY (no panel review, no gating). "
+            "Track model-routing-v2 for live governed mode."
+        )
+    return None
+
+
 def run_loop(
     repo: Path,
     roadmap: Path,
@@ -1110,6 +1126,10 @@ def run_loop(
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
     if run_mode not in RUN_MODES:
         raise ValueError(f"invalid run mode: {run_mode}")
+    _governed_warning = _governed_not_live_warning(run_mode)
+    if _governed_warning:
+        # Fail loud, not silent (see docs/research/model-routing-v2-integration.md).
+        print(_governed_warning, file=sys.stderr)
     # Baseline ledger length so the run-end review-findings summary reports only
     # events appended during THIS invocation, not the whole persisted ledger
     # across bounded `--max-phases` batches.
@@ -5359,8 +5379,16 @@ def _append_coordinator_event(
             reasoning_effort=selection.effort,
             source=selection.source,
             override_reason=selection.override_reason,
-            # model-routing-v1 P4: metadata-only route record on the dispatch event.
-            metadata={"coordinator": metadata, "route": build_route_log(selection)},
+            # model-routing-v1 P4: attach the metadata-only route record only once
+            # the selection is post-resolution (model_class set). Pre-resolution
+            # coordinator events would otherwise carry a null model_class — the
+            # headline field — exactly where the route record is meant to annotate
+            # the routed tier (code-review finding, verified).
+            metadata=(
+                with_route_log({"coordinator": metadata}, selection)
+                if getattr(selection, "model_class", None) is not None
+                else {"coordinator": metadata}
+            ),
             **provenance,
         ),
     )
