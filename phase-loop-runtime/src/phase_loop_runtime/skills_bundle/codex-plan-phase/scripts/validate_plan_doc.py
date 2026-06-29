@@ -777,16 +777,30 @@ _RELEASE_ARTIFACT_RE = re.compile(
 _RELEASE_DOC_SURFACE_RE = re.compile(r"README\.md|CHANGELOG|RELEASE", re.IGNORECASE)
 
 
-def _is_release_plan(src: str, lane_sections_parsed: Dict[str, dict]) -> bool:
+def _is_explicit_release_plan(src: str) -> bool:
+    """True only when the plan frontmatter *explicitly* declares a release.
+
+    This is the authoritative marker and the ONLY signal that escalates the
+    docs-coverage gap to an ERROR. The artifact-glob heuristic deliberately does
+    not satisfy it (an ordinary changelog/dep bump must not become an ERROR).
+    """
     fm = _parse_frontmatter_block(src)
     if str(fm.get("phase_loop_mutation", "")).strip().lower() == "release_dispatch":
         return True
-    if str(fm.get("phase_type", "")).strip().lower() in (
+    return str(fm.get("phase_type", "")).strip().lower() in (
         "release",
         "package",
         "roadmap_completion",
         "roadmap-completion",
-    ):
+    )
+
+
+def _is_release_plan(src: str, lane_sections_parsed: Dict[str, dict]) -> bool:
+    """Release/package *shape* — explicit frontmatter OR a lane owning a release
+    artifact. Governs whether the docs-coverage check fires at all; the
+    explicit-vs-heuristic distinction (ERROR vs WARN) is made by callers via
+    :func:`_is_explicit_release_plan`."""
+    if _is_explicit_release_plan(src):
         return True
     for parsed in lane_sections_parsed.values():
         for glob in parsed.get("owned_globs", []):
@@ -826,17 +840,24 @@ def _check_m_release_docs_coverage(
     """issue #18: release/package phases must own public-doc surfaces and the
     docs reducer must depend on every producer lane.
 
-    For release/package phases this is an ERROR (the issue asks for a blocker);
-    for ordinary phases the same coverage gap is recorded as a WARN to preserve
-    autonomy-first. Skips entirely when the phase is neither (no docs lane is a
-    separate concern handled by check (J)).
+    For phases that **explicitly** declare a release (frontmatter
+    ``phase_loop_mutation: release_dispatch`` / a release ``phase_type``) this is
+    an ERROR (the issue asks for a blocker). For a heuristic-only release shape
+    (a lane owns a release artifact but the plan carries no explicit release
+    frontmatter) — and for ordinary phases — the same coverage gap is recorded
+    as a WARN to preserve autonomy-first: an ordinary changelog/dep bump must
+    not be escalated to a blocking ERROR. Skips entirely when the phase is
+    neither (no docs lane is a separate concern handled by check (J)).
     """
     release = _is_release_plan(src, lane_sections_parsed)
+    explicit = _is_explicit_release_plan(src)
     docs_ids = _docs_lane_ids(lanes, lane_sections_parsed)
     if not docs_ids:
-        # check (J) already covers a wholly-missing docs lane; for release phases
-        # restate it as an error here.
-        if release:
+        # check (J) already covers a wholly-missing docs lane; for explicit
+        # release phases restate it as an error here. A heuristic-only release
+        # shape stays inert here (its gap is WARN-tier, handled below only when a
+        # docs lane exists).
+        if explicit:
             return [
                 "(M) release/package phase has no docs lane that owns README/"
                 "CHANGELOG/release-notes — add a terminal docs lane owning the "
@@ -844,7 +865,7 @@ def _check_m_release_docs_coverage(
             ]
         return []
 
-    tag = "" if release else "WARN: "
+    tag = "" if explicit else "WARN: "
     out: Findings = []
 
     # 1) The docs lane(s) must own at least one public-doc surface, OR the plan

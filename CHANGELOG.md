@@ -17,16 +17,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     their contents for stale placeholders (`recovery commit pending`, `TBD`, …). For
     **release/package phases only** it blocks `complete` as a hard gate — modeled on the
     verification-evidence gate, governed by its own `PHASE_LOOP_DOCS_FRESHNESS`
-    (`hard` default | `warn` | `off`), independent of `PHASE_LOOP_REVIEW`. Ordinary
-    phases are unaffected (status `skipped`). The closeout now always carries
-    `docs_freshness: passed|skipped|blocked` + a `docs_freshness_detail` evidence record,
-    so a clean worktree alone cannot imply docs are current. Fuzzy signals (stale
+    (`hard` default | `warn` | `off`), independent of `PHASE_LOOP_REVIEW`. The hard
+    block is **opt-in via explicit release frontmatter** (`phase_loop_mutation:
+    release_dispatch` or a release `phase_type`): only an explicitly-declared release
+    phase can be `blocked`. A heuristic-only release shape (the artifact-glob match on
+    e.g. `CHANGELOG.md`/`**/pyproject.toml` with no release frontmatter) still scans and
+    records evidence, but block-severity hits are **downgraded to warn** and can never
+    halt the run — so an ordinary changelog/dep bump on a feature phase is never
+    fleet-halted. Ordinary phases with no artifact match are unaffected (status
+    `skipped`). The closeout now always carries `docs_freshness: passed|skipped|blocked`
+    + a `docs_freshness_detail` evidence record (including an `explicit_release` flag), so
+    a clean worktree alone cannot imply docs are current. Fuzzy signals (stale
     package-count claims, "skeleton") are warn-tier; an inline `<!-- freshness-ok -->`
     marker suppresses a false positive.
   - **F2 — release docs-lane ownership** (`validate_plan_doc.py`): release/package phases
     must have a docs lane that **owns** `README`/`CHANGELOG`/release-notes (or records an
     explicit no-doc-change decision), and the docs reducer must **depend on every producer
-    lane**. ERROR for release phases, WARN for ordinary phases (autonomy-first preserved).
+    lane**. ERROR only for **explicitly-declared** release phases (frontmatter); a
+    heuristic-only release shape and ordinary phases are WARN (autonomy-first preserved).
   - **F3 — widened `PUBLIC_SURFACE_GLOBS`** to cover package-level `**/README.md`,
     `CHANGELOG*`, and release-notes surfaces.
   - Deferred as follow-ups: F4 (post-dispatch evidence reducer that back-fills the

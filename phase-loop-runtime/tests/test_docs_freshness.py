@@ -7,6 +7,7 @@ from pathlib import Path
 from phase_loop_runtime.closeout import build_phase_loop_closeout
 from phase_loop_runtime.docs_freshness import (
     enumerate_public_docs,
+    is_explicit_release_phase,
     is_release_phase,
     scan_docs_freshness,
 )
@@ -73,6 +74,29 @@ class DocsFreshnessGateTest(unittest.TestCase):
         c = _complete_closeout(plan, self.repo, ["src/internal/helper.py"])
         self.assertEqual(c["terminal_status"], "complete")
         self.assertEqual(c["docs_freshness"], "skipped")
+
+    def test_ordinary_phase_changelog_bump_with_stale_token_does_not_block(self):
+        # REGRESSION (fleet-halt vector): an ORDINARY plan (no explicit release
+        # frontmatter) that bumps CHANGELOG.md (artifact-glob heuristic → scan
+        # runs) while a public doc still carries a stale `TBD` must NOT hard-block
+        # under the DEFAULT review env. The heuristic case caps at warn-tier.
+        self.assertIsNone(os.environ.get("PHASE_LOOP_REVIEW"))  # default env
+        plan = self._ordinary_plan()
+        (self.repo / "README.md").write_text(
+            "# proj\nRelease date: TBD\n", encoding="utf-8"
+        )
+        c = _complete_closeout(plan, self.repo, ["CHANGELOG.md"])
+        self.assertEqual(c["terminal_status"], "complete")
+        self.assertNotEqual(c["docs_freshness"], "blocked")
+        # The scan still ran (heuristic release) and recorded the stale token as
+        # warn-tier evidence — it is downgraded from block, never suppressed.
+        detail = c["docs_freshness_detail"]
+        self.assertFalse(detail["explicit_release"])
+        self.assertTrue(detail["is_release_phase"])
+        self.assertEqual(detail["blocking_hits"], [])
+        self.assertTrue(
+            any(h["token"] == "TBD" and h["severity"] == "warn" for h in detail["hits"])
+        )
 
     def test_clean_release_passes(self):
         plan = self._release_plan()
@@ -234,6 +258,19 @@ class ReleaseDetectionTest(unittest.TestCase):
 
     def test_ordinary_changed_paths_not_release(self):
         self.assertFalse(is_release_phase(changed_paths=["src/foo.py", "tests/test_foo.py"]))
+
+    def test_explicit_release_predicate_requires_frontmatter(self):
+        # The artifact-glob heuristic is NOT an explicit release — only
+        # frontmatter is. This is the signal that gates the hard block.
+        self.assertTrue(
+            is_explicit_release_phase({"phase_loop_mutation": "release_dispatch"})
+        )
+        self.assertTrue(is_explicit_release_phase({"phase_type": "package"}))
+        self.assertFalse(is_explicit_release_phase({"phase": "INT"}))
+        self.assertFalse(is_explicit_release_phase(None))
+        # Heuristic match is a release *shape* but not an *explicit* release.
+        self.assertTrue(is_release_phase(changed_paths=["CHANGELOG.md"]))
+        self.assertFalse(is_explicit_release_phase({}))
 
 
 class EnumerationTest(unittest.TestCase):

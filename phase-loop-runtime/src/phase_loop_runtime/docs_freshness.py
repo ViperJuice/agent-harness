@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -137,6 +137,31 @@ def _glob_match(path: str, patterns: Iterable[str]) -> bool:
     return False
 
 
+def is_explicit_release_phase(
+    plan_frontmatter: Mapping[str, Any] | None = None,
+) -> bool:
+    """True only when the plan *explicitly* declares itself a release phase.
+
+    This is the **authoritative** release marker — ``phase_loop_mutation:
+    release_dispatch`` (emitted by the plan-phase skill) or a release-shaped
+    ``phase_type``. It is the ONLY signal eligible to drive the **hard block**
+    in :func:`scan_docs_freshness`: hard-blocking an ordinary phase fleet-wide
+    on a stale token in any public doc is a worse failure than the bug it
+    catches, so the hard gate must be opt-in via frontmatter.
+
+    The artifact-glob heuristic (see :func:`is_release_phase`) deliberately
+    does NOT satisfy this predicate — it only governs whether the scan runs and
+    can emit warn-tier evidence.
+    """
+    if not plan_frontmatter:
+        return False
+    mutation = str(plan_frontmatter.get("phase_loop_mutation") or "").strip().lower()
+    if mutation == "release_dispatch":
+        return True
+    ptype = str(plan_frontmatter.get("phase_type") or "").strip().lower()
+    return ptype in ("release", "package", "roadmap_completion", "roadmap-completion")
+
+
 def is_release_phase(
     *,
     plan_frontmatter: Mapping[str, Any] | None = None,
@@ -144,7 +169,9 @@ def is_release_phase(
 ) -> bool:
     """True if this phase is release/package/roadmap-completion shaped.
 
-    Layered, default-safe signal:
+    Layered, default-safe signal used to decide **whether the freshness scan
+    runs at all** (not whether it may hard-block — see
+    :func:`is_explicit_release_phase` for that):
 
     1. Explicit: the plan frontmatter declares ``phase_loop_mutation:
        release_dispatch`` (the authoritative release marker the plan-phase skill
@@ -155,15 +182,12 @@ def is_release_phase(
        versions — and is distinct from keying *freshness* off changed paths
        (which this module deliberately does NOT do).
 
-    No signal → not a release phase → the gate is inert.
+    No signal → not a release phase → the gate is inert. A heuristic-only match
+    (no explicit frontmatter) lets the scan run and record **warn-tier**
+    evidence, but can NEVER produce a ``blocked`` status.
     """
-    if plan_frontmatter:
-        mutation = str(plan_frontmatter.get("phase_loop_mutation") or "").strip().lower()
-        if mutation == "release_dispatch":
-            return True
-        ptype = str(plan_frontmatter.get("phase_type") or "").strip().lower()
-        if ptype in ("release", "package", "roadmap_completion", "roadmap-completion"):
-            return True
+    if is_explicit_release_phase(plan_frontmatter):
+        return True
     return _glob_match_any(changed_paths, RELEASE_ARTIFACT_GLOBS)
 
 
@@ -343,12 +367,14 @@ def scan_docs_freshness(
     fm = dict(plan_frontmatter or {})
     if not fm and plan_path:
         fm = parse_plan_frontmatter(plan_path)
+    explicit = is_explicit_release_phase(fm)
     release = is_release_phase(plan_frontmatter=fm, changed_paths=changed_paths)
 
     base: dict[str, Any] = {
         "status": "skipped",
         "mode": mode,
         "is_release_phase": release,
+        "explicit_release": explicit,
         "surfaces_scanned": [],
         "hits": [],
         "blocking_hits": [],
@@ -377,16 +403,27 @@ def scan_docs_freshness(
                         excerpt=line.strip()[:200],
                     )
                 )
+    # The HARD block is opt-in via explicit release frontmatter. A heuristic-only
+    # release phase (artifact-glob match, no frontmatter) scans and records
+    # evidence, but block-severity hits are downgraded to warn so an ordinary
+    # changelog/dep bump can NEVER hard-block the fleet.
+    if not explicit:
+        hits = [
+            h if h.severity == "warn" else replace(h, severity="warn")
+            for h in hits
+        ]
     blocking = [h for h in hits if h.severity == "block"]
-    # In "warn" mode the gate records but never blocks.
-    if blocking and mode == "hard":
+    # In "warn" mode the gate records but never blocks. Only explicit-release
+    # phases in "hard" mode with a block-severity hit are blocked.
+    if blocking and mode == "hard" and explicit:
         status = "blocked"
     else:
         status = "passed"
     return {
         "status": status,
         "mode": mode,
-        "is_release_phase": True,
+        "is_release_phase": release,
+        "explicit_release": explicit,
         "surfaces_scanned": surfaces,
         "hits": [h.to_json() for h in hits],
         "blocking_hits": [h.to_json() for h in blocking],

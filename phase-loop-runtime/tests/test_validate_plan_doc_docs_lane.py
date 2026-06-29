@@ -177,13 +177,32 @@ class ReleaseDocsCoverageCheckTest(unittest.TestCase):
         self.assertTrue(findings)
         self.assertEqual([f for f in findings if "WARN" not in f], [])
 
-    def test_release_detected_via_owned_artifact_glob(self):
-        # No explicit frontmatter, but a lane owns package.json -> release.
+    def test_release_detected_via_owned_artifact_glob_is_warn_not_error(self):
+        # No explicit frontmatter, but a lane owns package.json -> release SHAPE.
+        # Without explicit release frontmatter the coverage gap must be WARN-tier,
+        # not an ERROR — an ordinary manifest/dep bump must not become a blocker.
         src = "---\nphase: REL\n---\n# plan\n"
         lanes = self._lanes(["SL-1"])
         parsed = {
             "SL-1": {"owned_globs": ["packages/x/package.json"]},
             "SL-2": {"owned_globs": ["plans/notes.md"]},  # no public doc
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        self.assertTrue(findings, "the coverage gap should still be reported")
+        self.assertEqual(
+            [f for f in findings if "WARN" not in f],
+            [],
+            "heuristic-only release shape must not produce an ERROR",
+        )
+
+    def test_explicit_release_docs_gap_is_error_even_when_changelog_only(self):
+        # An EXPLICIT release (frontmatter) with the same coverage gap stays an
+        # ERROR — the original FLEETRELEASERECOVERY catch is preserved.
+        src = self._release_frontmatter_src()
+        lanes = self._lanes(["SL-1"])
+        parsed = {
+            "SL-1": {"owned_globs": ["CHANGELOG.md"]},
+            "SL-2": {"owned_globs": ["plans/notes.md"]},  # owns no public-doc surface
         }
         findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
         self.assertTrue([f for f in findings if "WARN" not in f])
