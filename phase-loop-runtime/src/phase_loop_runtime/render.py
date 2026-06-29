@@ -177,6 +177,16 @@ def render_skill_sync_result(summary: dict[str, object], as_json: bool = False) 
     changed = summary.get("changed", [])
     if changed:
         lines.append(f"Repaired bridge skills: {len(changed)}")
+    unrepaired = summary.get("unrepaired", [])
+    if unrepaired:
+        lines.append(f"Could NOT repair {len(unrepaired)} bridge skill(s) — no skill source resolved:")
+        for record in unrepaired:
+            if not isinstance(record, dict):
+                continue
+            lines.append(
+                f"  unrepaired: {record.get('harness_target')}: {record.get('skill_name')} "
+                f"({record.get('reason', 'unknown')})"
+            )
     return "\n".join(lines)
 
 

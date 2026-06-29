@@ -93,6 +93,7 @@ def sync_bridge_skills(repo: Path, options: SyncSkillsOptions) -> dict[str, obje
     vestigial_records = [record.to_json() for record in inspect_vestigial_workflow_candidates(repo)]
     classification_records = [record.to_json() for record in classify_skill_like_directories(repo, options.harnesses)]
     changed: list[dict[str, str]] = []
+    unrepaired: list[dict[str, str]] = []
     if blocker:
         return {
             "mode": "apply" if options.apply else "check",
@@ -103,6 +104,7 @@ def sync_bridge_skills(repo: Path, options: SyncSkillsOptions) -> dict[str, obje
             "vestigial_workflow_candidates": vestigial_records,
             "skill_classifications": classification_records,
             "changed": changed,
+            "unrepaired": unrepaired,
             "blocked": True,
             "blocker": blocker.to_json(),
         }
@@ -113,6 +115,16 @@ def sync_bridge_skills(repo: Path, options: SyncSkillsOptions) -> dict[str, obje
             source_dir = record.get("source_dir")
             repair_target = record.get("repair_target")
             if not isinstance(source_dir, str) or not isinstance(repair_target, str):
+                # #14: never silently skip — record what could not be repaired so
+                # `--apply` cannot mimic `--check` with a clean exit 0.
+                unrepaired.append(
+                    {
+                        "harness_target": str(record.get("harness_target")),
+                        "skill_name": str(record.get("skill_name")),
+                        "parity_status": str(record.get("parity_status")),
+                        "reason": "no_source_resolved" if not isinstance(source_dir, str) else "no_repair_target",
+                    }
+                )
                 continue
             _repair_bridge_skill(Path(source_dir), Path(repair_target))
             changed.append(
@@ -134,6 +146,7 @@ def sync_bridge_skills(repo: Path, options: SyncSkillsOptions) -> dict[str, obje
         "vestigial_workflow_candidates": vestigial_records,
         "skill_classifications": classification_records,
         "changed": changed,
+        "unrepaired": unrepaired,
         "blocked": False,
         "blocker": None,
     }

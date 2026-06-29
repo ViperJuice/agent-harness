@@ -309,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
-            sub.add_argument("--source", default="vendor/phase-loop-skills")
+            sub.add_argument("--source", default="phase-loop-skills")
             sub.add_argument("--destination")
             sub.add_argument("--status", action="store_true")
             mode = sub.add_mutually_exclusive_group()
@@ -1031,7 +1031,25 @@ def _sync_skills_command(*, repo: Path, args: argparse.Namespace, as_json: bool)
     summary = sync_bridge_skills(repo, SyncSkillsOptions(harnesses=harnesses, apply=bool(args.apply)))
     print(render_skill_sync_result(summary, as_json=as_json))
     blocker = summary.get("blocker")
-    return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
+    if isinstance(blocker, dict) and blocker.get("blocker_class"):
+        return 1
+    # #14: `--apply` must never mimic `--check` with a silent exit 0. If it could
+    # not repair some bridge skills (no skill source resolved), fail loud.
+    unrepaired = summary.get("unrepaired") or []
+    if bool(args.apply) and isinstance(unrepaired, list) and unrepaired:
+        repaired_n = len(summary.get("changed") or [])
+        names = ", ".join(f"{u.get('harness_target')}:{u.get('skill_name')}" for u in unrepaired if isinstance(u, dict))
+        print(
+            f"sync-skills --apply: repaired {repaired_n}, could NOT repair {len(unrepaired)} "
+            f"(no skill source resolved): {names}. A normal pinned `pip install` ships the "
+            "assembled skill bundle and resolves it automatically. Otherwise re-run "
+            "`bootstrap.sh`, or `pip install -e ~/code/agent-harness/phase-loop-runtime`, or "
+            "set PHASE_LOOP_SKILL_SOURCE_PLUGINS together with PHASE_LOOP_RUNNER_REPO_ROOT "
+            "(the anchor for the built-in provider's relative roots).",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _build_bundle_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:

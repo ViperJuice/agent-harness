@@ -72,7 +72,9 @@ def _resolve_pack_skill_dirs(
             "`scripts/sync_skills_bundle.py` and reinstall). For a dotfiles dev checkout, "
             "re-run bootstrap so the `phase_loop_runtime.skill_sources` overlay is live. To "
             "point at a custom source, set PHASE_LOOP_SKILL_SOURCE_PLUGINS to a provider "
-            "returning **absolute** roots (cwd-relative roots do not resolve outside their repo)."
+            "returning **absolute** roots, or set PHASE_LOOP_RUNNER_REPO_ROOT to anchor the "
+            "built-in provider's cwd-relative roots (PHASE_LOOP_SKILL_SOURCE_PLUGINS alone is "
+            "insufficient when its roots are relative)."
         )
     return resolved
 
@@ -406,7 +408,7 @@ def _render_baml_closeout_instruction(
         marker = "\n\nPhase-loop closeout JSON schema description:\n"
         if marker in prompt:
             prompt = prompt[: prompt.index(marker)].rstrip()
-    return "EmitPhaseCloseout (`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
+    return "EmitPhaseCloseout (`phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
 
 
 def materialize_claude_plugin_bundle(*, repo: Path, run_root: Path, prompt_bundle: PromptBundle) -> dict[str, object]:

@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix (#14):** `phase-loop sync-skills --apply` silently no-oped — when a bridge skill's
+  source did not resolve it skipped the record, producing output identical to `--check`
+  with exit 0. It now reports the unrepaired skills and **exits non-zero** with actionable
+  remediation, so it can never falsely imply success. The repair source resolves from the
+  in-wheel `skills_bundle/` (via #12), so on a pinned install `--apply` actually repairs.
+  Also: dropped stale post-cutover `vendor/phase-loop-{skills,runtime}` paths in the
+  `build-bundle --source` default and the BAML-closeout prompt label, and the
+  `SkillBundleResolutionError` now names the `PHASE_LOOP_RUNNER_REPO_ROOT` anchor (setting
+  `PHASE_LOOP_SKILL_SOURCE_PLUGINS` alone is insufficient when its roots are relative).
 - **Fix (#12):** `phase-loop run`/`dry-run` failed with `SkillBundleResolutionError`
   in a pinned/pip install (no dotfiles checkout) — the wheel shipped no skills and the
   built-in source roots were dotfiles-repo-relative. The assembled neutral workflow
