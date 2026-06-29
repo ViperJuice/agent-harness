@@ -113,6 +113,22 @@ class RoutingInvariantsTest(unittest.TestCase):
         g = next_escalation(model_class="planner", failed_tests=2, run_mode="governed")
         self.assertEqual(g.action, "invoke_panel")
 
+    # P4 — the governed fix-round counter is independent of the runner's repair pivot.
+    def test_governed_fix_round_counter_independent_of_repair_pivot(self):
+        # The pre-merge loop bounds rounds by its OWN max_rounds (internal counter),
+        # never the runner's _recent_repeated_repair_failures executor-vendor pivot.
+        res = run_governed_premerge_loop(
+            artifact="b", author_executor="claude", run_mode="governed",
+            apply_fix=lambda rnd, cur, find: "b2",
+            available_legs=("codex", "gemini"),
+            invoke=lambda **kw: GateResult(ran=True, promoted=False, findings=(_BLOCK,)),
+            max_rounds=2,
+        )
+        self.assertEqual(res.rounds, 2)  # capped by its own max_rounds, not the pivot
+        import inspect
+        import phase_loop_runtime.governed_premerge as gp
+        self.assertNotIn("_recent_repeated_repair_failures", inspect.getsource(gp))
+
 
 if __name__ == "__main__":
     unittest.main()

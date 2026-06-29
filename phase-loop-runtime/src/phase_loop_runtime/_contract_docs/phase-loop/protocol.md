@@ -685,14 +685,25 @@ its `max`-effort planning actions. `worker` never authors a final patch
 (`execute`/`repair`), and an executor whose ceiling is below `max` (e.g. gemini)
 is never selected as the max-effort planner of record.
 
-`run_mode` (*how governed*): `autonomous` (default) or `governed` (opt-in).
-Autonomous invokes no advisor panel and adds no `human_required`. Governed adds a
-plan-stage and pre-merge panel gate that reuses the `review_finding`
-`block`/`nit` severity vocabulary on a seam separate from the closeout validator
-registry; the reviewer pool is vendor-disjoint from the author (degrading to an
-advisory autonomous-warn rather than a same-vendor self-review), the review loop
-is bounded, and every escalation terminal is a non-human `review_gate_block`
-surfaced in the run-end summary — never a synchronous human wait.
+`run_mode` (*how governed*): `autonomous` (default) or `governed` (opt-in, via
+`--governed` / `PHASE_LOOP_RUN_MODE=governed`). Autonomous invokes no advisor
+panel and adds no `human_required` — the panel is never spawned (the run-level
+guard short-circuits before any leg). Governed adds a plan-stage and pre-merge
+panel gate that reuses the `review_finding` `block`/`nit` severity vocabulary on
+a seam separate from the closeout validator registry; the reviewer pool is
+vendor-disjoint from the author (degrading to an advisory autonomous-warn rather
+than a same-vendor self-review), the review loop is bounded, and every
+escalation terminal is a non-human `review_gate_block` surfaced in the run-end
+summary — never a synchronous human wait.
+
+Governed mode is **live on the serial dispatch path** (model-routing-v2): the
+plan-stage gate runs on first-attempt plans (not repair re-plans), the pre-merge
+gate runs before the closeout commit on implementation closeouts only, and the
+panel spawns the codex + gemini subscription CLI legs fail-closed (the claude leg
+is `unavailable` pending a native-Agent path). Out of scope / remaining threads:
+concurrent-wave dispatch is **not** governed yet; and the `model_class`
+escalation decision is recorded on the dispatch metadata but not yet re-routed
+into live model selection.
 
 ## Reconcile Command
 

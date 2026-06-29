@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **model-routing-v2 — governed mode goes live (serial path).** The v1 governed-review
+  machinery (a tested island where `run_mode` reached `run_loop` but was never used) is now
+  wired into the live runner: `--governed` / `PHASE_LOOP_RUN_MODE=governed` surfaces the mode;
+  a plan-stage gate reviews first-attempt plans; a pre-merge gate runs before the closeout
+  commit on implementation closeouts and runs a bounded review→fix→re-review loop; the panel
+  spawns the **codex + gemini** subscription CLI legs fail-closed (claude leg `unavailable`
+  pending a native-Agent path); every governed terminal is a non-human `review_gate_block`
+  surfaced in the run-end summary. The **autonomous default is byte-identical** — an outer
+  `run_mode=="governed"` guard means it renders no bundle and spawns zero panel legs (asserted
+  at the run level). The panel reviews a *review bundle* (staged diff + acceptance criteria +
+  verification results + summary) staged to a file. Remaining threads (documented, not
+  overclaimed): the `model_class` escalation decision is recorded on dispatch metadata but not
+  yet re-routed into live model selection; concurrent-wave dispatch is not governed; the real
+  CLI spawn boundary (`_exec_leg`) can't run frontier models in CI so it's stubbed in tests.
 - **Fix (#14):** `phase-loop sync-skills --apply` silently no-oped — when a bridge skill's
   source did not resolve it skipped the record, producing output identical to `--check`
   with exit 0. It now reports the unrepaired skills and **exits non-zero** with actionable
