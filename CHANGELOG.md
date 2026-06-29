@@ -4,7 +4,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## Unreleased
+## v0.1.7
 
 - **Fix (#18 follow-up) — pipeline-independent `docs-audit` backstop.** v0.1.6's
   `docs_freshness` closeout gate is *path-keyed* (it fires in the closeout pipeline and
@@ -22,6 +22,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   on any un-evaluable input (unresolved base / git-diff error) rather than passing silently.
   The shipped v0.1.6 closeout gate and `release_guard` are untouched (this is purely additive;
   a single unified taxonomy is a later, separately-tested change). Decision-panel-reconciled.
+
+## v0.1.6
+
+Docs-freshness closeout gate (#18) + the model-routing & governed-review work and the
+#12/#14 packaging fixes that shipped under this tag (previously left under "Unreleased").
 
 - **Fix (#18):** A phase-loop release recovery could close **green** (clean tree, pushed
   `main`, release workflow passed) while its public docs stayed stale or absent — the
@@ -119,7 +124,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   falsely claims the entry-point is unregistered and notes that custom
   `PHASE_LOOP_SKILL_SOURCE_PLUGINS` providers must return absolute roots.
 
-## Unreleased — model routing & governed review (model-routing-v1)
+### model routing & governed review (model-routing-v1/v2)
 
 Tiered model selection + an opt-in governed review mode. **Two orthogonal axes,
 kept separate** — and the autonomous default is unchanged:
