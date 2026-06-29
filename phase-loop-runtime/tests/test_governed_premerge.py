@@ -101,11 +101,15 @@ class PremergeLoopTest(unittest.TestCase):
         self.assertEqual(r.terminal_blocker["blocker_class"], "review_gate_block")
         self.assertEqual(r.reason, "non_convergence")
 
-    def test_reviewers_offline_first_round_degrades_advisory(self):
+    def test_no_usable_reviewer_first_round_blocks_fail_closed(self):
+        # FAIL-CLOSED (advisor-panel reconciliation): a degraded result (no usable
+        # disjoint reviewer) is NOT an advisory pass in governed mode — the prior
+        # advisory-pass-before-any-block was a fail-open. It halts non-human.
         r = run_governed_premerge_loop(artifact="A", author_executor="claude", run_mode="governed",
                                        invoke=_scripted_invoke([_gate(degraded=True, reason="no_reviewers")]))
-        self.assertTrue(r.mergeable)       # don't block a governed run because reviewers are down
-        self.assertTrue(r.degraded)        # but recorded as not a real review
+        self.assertFalse(r.mergeable)
+        self.assertEqual(r.terminal_blocker["blocker_class"], "review_gate_block")
+        self.assertFalse(r.terminal_blocker["human_required"])
 
     def test_panel_lost_while_failing_is_non_human_terminal(self):
         r = run_governed_premerge_loop(
@@ -114,7 +118,7 @@ class PremergeLoopTest(unittest.TestCase):
             invoke=_scripted_invoke([_gate(promoted=False, block=True), _gate(degraded=True)]),
         )
         self.assertFalse(r.mergeable)
-        self.assertEqual(r.reason, "panel_unavailable_while_failing")
+        self.assertEqual(r.terminal_blocker["blocker_class"], "review_gate_block")
         self.assertFalse(r.terminal_blocker["human_required"])
 
 

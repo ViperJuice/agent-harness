@@ -6,6 +6,48 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **model-routing-v2 — governed mode goes live (serial path).** The v1 governed-review
+  machinery (a tested island where `run_mode` reached `run_loop` but was never used) is now
+  wired into the live runner: `--governed` / `PHASE_LOOP_RUN_MODE=governed` surfaces the mode;
+  a plan-stage gate reviews first-attempt plans; a pre-merge gate runs before the closeout
+  commit on implementation closeouts and runs a bounded review→fix→re-review loop; the panel
+  spawns the **codex + gemini** subscription CLI legs fail-closed (claude leg `unavailable`
+  pending a native-Agent path); every governed terminal is a non-human `review_gate_block`
+  surfaced in the run-end summary. The **autonomous default is byte-identical** — an outer
+  `run_mode=="governed"` guard means it renders no bundle and spawns zero panel legs (asserted
+  at the run level). The panel reviews a *review bundle* (staged diff + acceptance criteria +
+  verification results + summary) staged to a file. Remaining threads (documented, not
+  overclaimed): the `model_class` escalation decision is recorded on dispatch metadata but not
+  yet re-routed into live model selection; concurrent-wave dispatch is not governed; the real
+  CLI spawn boundary (`_exec_leg`) can't run frontier models in CI so it's stubbed in tests.
+- **Governed gate hardened (advisor-panel reconciliation).** A 3-model panel (Claude Opus +
+  Codex GPT-5.5 + Gemini 3.1 Pro, each verifying against the code) found the gate failing in
+  both directions and prescribed a structural fix, now landed:
+  - **Relocated** — the pre-merge gate now runs INSIDE `_perform_phase_closeout`, after
+    `git add` and before the commit, and reviews the EXACT staged index
+    (`git diff --cached`). "What the panel reviews" == "what gets committed" *by construction*,
+    which dissolves the prior bundle-vs-commit divergence, the untracked-new-files omission,
+    the fail-open `_is_untracked` probe, and the N+1 git subprocesses in one move (the parallel
+    `governed_bundle` path discovery is deleted; the renderer no longer writes into the repo).
+  - **Reviewer≠author derived correctly** — from the UNION of the dispatch events'
+    `selected_executor` (the `action='run'` event shape, not a filtered `execute`/`repair`),
+    excluding EVERY vendor that authored the phase (rotation/repair can have several); an
+    unknown author set fails closed.
+  - **Fail-closed verdicts** — a strict terminal-line contract (last line begins with
+    `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, tolerant of markdown bullet/blockquote/numbered
+    formatting); a *substantive* review with no conforming verdict is treated as a BLOCK (not
+    a non-gating warn), and no usable disjoint reviewer HOLDS the merge (`review_gate_block`)
+    instead of silently passing — the prior advisory-pass-on-degraded fail-open is gone. On a
+    block the staged index is reset, so a stray `git commit` can't land the rejected change.
+    The autonomous default stays byte-identical (the gate is a no-op off the governed path).
+  - **Governed mode is EXPERIMENTAL — known limitations (documented, fail-safe).** It may
+    over-block, but never silently passes unreviewed or self-reviewed code. With only the
+    **codex + gemini** legs live (the claude leg is deferred), a **multi-vendor** phase —
+    authored by codex *and* repaired by gemini — has no disjoint reviewer, so it is HELD with
+    an explicit reason (it cannot be independently reviewed until the claude leg lands), rather
+    than promoted. The `model_class` escalation decision is still recorded-not-yet-routed, and
+    the executor-driven `apply_fix` re-dispatch remains a thread; a governed block halts the
+    bounded run for the operator.
 - **Fix (#14):** `phase-loop sync-skills --apply` silently no-oped — when a bridge skill's
   source did not resolve it skipped the record, producing output identical to `--check`
   with exit 0. It now reports the unrepaired skills and **exits non-zero** with actionable

@@ -265,6 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
         _add_common_subparser_args(sub, name=name)
         if name in {"run", "resume", "dry-run"}:
             sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
+            sub.add_argument(
+                "--governed",
+                action="store_true",
+                help="Opt into governed mode: a bounded pre-merge panel review before each "
+                "implementation phase commits (model-routing-v2). Default is autonomous (no panel).",
+            )
             sub.add_argument("--force-replan", action="store_true")
             sub.add_argument("--no-dispatch-lock", action="store_true", help="Disable the per-roadmap dispatch lock for this run.")
             if parallel_dispatch_enabled():
@@ -760,6 +766,12 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     # `import phase_loop_runtime.cli` (used here only to carry skill-maintenance
     # options through to the run loop).
     from .maintenance import MaintenanceOptions
+    from .governed_review import resolve_run_mode
+
+    # model-routing-v2 P1: operator surfacing of run_mode. `--governed` (or
+    # PHASE_LOOP_RUN_MODE=governed) opts into governed pre-merge review; default
+    # is autonomous (no panel, byte-identical to today).
+    run_mode = "governed" if bool(getattr(args, "governed", False)) else resolve_run_mode()
 
     snapshot, results = run_loop(
         repo=repo,
@@ -809,6 +821,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         phase_scheduler_mode=effective_phase_scheduler_mode,
         allow_cross_phase_dirty_reason=allow_cross_phase_dirty_reason,
         allow_unowned_reason=allow_unowned_reason,
+        run_mode=run_mode,
         product_action_override=command if command in {"execute", "repair", "review"} else None,
         maintenance_options=MaintenanceOptions(
             min_reflections=getattr(args, "min_reflections", 2) or 2,

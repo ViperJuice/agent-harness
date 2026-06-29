@@ -88,7 +88,11 @@ class ReviewerPoolTest(unittest.TestCase):
         self.assertEqual(author_vendor_for_executor("pi"), "pi")
         self.assertEqual(author_vendor_for_executor("claude"), "claude")
 
-    def test_gate_degrades_to_autonomous_warn_not_pass(self):
+    def test_no_disjoint_reviewer_blocks_fail_closed(self):
+        # FAIL-CLOSED (advisor-panel reconciliation): when the only authed leg is the
+        # author's own vendor, governed mode HOLDS (non-human review_gate_block)
+        # rather than advisory-passing a review that never happened. No self-review
+        # is spawned, and the result is NOT a silent promote.
         invoke = Mock()
         result = governed_planning_gate(
             artifact="ART", author_executor="claude", run_mode="governed",
@@ -96,25 +100,32 @@ class ReviewerPoolTest(unittest.TestCase):
         )
         invoke.assert_not_called()            # no self-review spawned
         self.assertTrue(result.ran)
-        self.assertTrue(result.degraded)      # marked NOT a real review
+        self.assertFalse(result.promoted)     # held, not advisory-passed
+        self.assertFalse(result.degraded)
         self.assertEqual(result.reason, "author_vendor_only")
-        self.assertTrue(any(f.code == "governed_review_degraded" and f.severity == "warn"
-                            for f in result.findings))
+        self.assertTrue(any(f.severity == "block" for f in result.findings))
 
 
 class VerdictClassifierTest(unittest.TestCase):
-    # CR fix: classify on the structured terminal verdict + negation-awareness,
-    # not a naive substring (an approving review mentioning "blockers" is NOT a block).
+    # Advisor-panel reconciliation: a usable leg ENDS with a structured verdict;
+    # `_leg_blocks` is a pure read of that terminal verdict (only a leading
+    # DISAGREE blocks) — no substring/negation guessing.
     def test_approving_phrasings_do_not_block(self):
         from phase_loop_runtime.governed_review import _leg_blocks
-        self.assertFalse(_leg_blocks("Solid. AGREE — no blockers."))
-        self.assertFalse(_leg_blocks("Some non-blocking nits only. PARTIALLY AGREE"))
-        self.assertFalse(_leg_blocks("I have no disagreements with this. AGREE"))
+        self.assertFalse(_leg_blocks("Some real concern.\nAGREE"))
+        self.assertFalse(_leg_blocks("Minor nits only.\nPARTIALLY AGREE"))
+        # last line not a verdict → non-conforming → not a block here (caught
+        # upstream as `degraded`/unusable by _classify_leg).
+        self.assertFalse(_leg_blocks("I cannot AGREE or DISAGREE without more context"))
+        self.assertFalse(_leg_blocks("no blockers"))
 
     def test_real_block_verdicts_block(self):
         from phase_loop_runtime.governed_review import _leg_blocks
-        self.assertTrue(_leg_blocks("The schema is unsafe. DISAGREE"))
-        self.assertTrue(_leg_blocks("BLOCK: the migration drops a column"))
+        self.assertTrue(_leg_blocks("The schema is unsafe.\nDISAGREE"))
+        self.assertTrue(_leg_blocks("DISAGREE — the migration drops a column"))
+        # A "BLOCK:" line that is NOT a terminal verdict is non-conforming, not a
+        # block at this layer (fail-closed as unusable upstream, never a pass).
+        self.assertFalse(_leg_blocks("BLOCK: the migration drops a column"))
 
 
 if __name__ == "__main__":

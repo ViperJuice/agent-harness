@@ -69,13 +69,17 @@ class RoutingInvariantsTest(unittest.TestCase):
         self.assertIsNotNone(blocked.terminal_blocker)
         self.assertFalse(blocked.terminal_blocker["human_required"])
 
-    def test_governed_degrades_to_advisory_not_self_review(self):
+    def test_governed_no_disjoint_reviewer_blocks_not_self_review(self):
+        # FAIL-CLOSED (advisor-panel reconciliation): when only the author's own
+        # vendor is authed, governed mode HOLDS (block) rather than advisory-passing
+        # — and never spawns a same-vendor self-review.
         invoke = Mock()
         g = governed_planning_gate(
             artifact="A", author_executor="claude", run_mode="governed",
             available_legs=("claude",), invoke=invoke,  # only the author's vendor authed
         )
-        self.assertTrue(g.degraded and g.promoted)   # advisory pass, marked NOT a real review
+        self.assertFalse(g.promoted)                  # held, not advisory-passed
+        self.assertTrue(any(f.severity == "block" for f in g.findings))
         invoke.assert_not_called()                    # never a same-vendor self-review spawn
 
     # 4 — the reviewer pool is vendor-disjoint from the author.
@@ -112,6 +116,22 @@ class RoutingInvariantsTest(unittest.TestCase):
         # ... while governed escalates to the panel.
         g = next_escalation(model_class="planner", failed_tests=2, run_mode="governed")
         self.assertEqual(g.action, "invoke_panel")
+
+    # P4 — the governed fix-round counter is independent of the runner's repair pivot.
+    def test_governed_fix_round_counter_independent_of_repair_pivot(self):
+        # The pre-merge loop bounds rounds by its OWN max_rounds (internal counter),
+        # never the runner's _recent_repeated_repair_failures executor-vendor pivot.
+        res = run_governed_premerge_loop(
+            artifact="b", author_executor="claude", run_mode="governed",
+            apply_fix=lambda rnd, cur, find: "b2",
+            available_legs=("codex", "gemini"),
+            invoke=lambda **kw: GateResult(ran=True, promoted=False, findings=(_BLOCK,)),
+            max_rounds=2,
+        )
+        self.assertEqual(res.rounds, 2)  # capped by its own max_rounds, not the pivot
+        import inspect
+        import phase_loop_runtime.governed_premerge as gp
+        self.assertNotIn("_recent_repeated_repair_failures", inspect.getsource(gp))
 
 
 if __name__ == "__main__":

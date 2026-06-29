@@ -164,11 +164,18 @@ from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
-from .governed_review import RUN_MODES
+from .governed_review import (
+    RUN_MODES,
+    author_vendor_for_executor,
+    governed_planning_gate,
+)
 from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
+    next_escalation,
     run_governed_premerge_loop,
 )
+from .governed_bundle import render_governed_bundle, staged_index_diff
+from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
 from .review_summary import summarize_run
 from .route_log import build_route_log, with_route_log
@@ -1052,18 +1059,27 @@ def _start_gate_bypassed_event(
 
 
 def _governed_not_live_warning(run_mode: str) -> str | None:
-    """Operator warning when governed mode is requested but not yet live.
+    """Operator notice describing exactly how much governed enforcement is active.
 
-    The governed pre-merge/panel loop is built and unit-tested but NOT yet
-    threaded into the live executor cycle (model-routing-v2). Return a loud,
-    non-fatal warning so an operator is never misled into believing review
-    enforcement is active; return None for autonomous. Never adds human_required.
+    The planning gate and the pre-merge gate BOTH run live. The pre-merge gate
+    runs INSIDE the closeout — after `git add`, before the commit — and reviews
+    the EXACT staged index (`git diff --cached`), so the panel reviews precisely
+    what will be committed. It is FAIL-CLOSED (governed is the opt-in enforcement
+    mode): a genuine `block`, an unparseable verdict, or no reviewer disjoint from
+    the author's vendor(s) HOLDS the merge as a non-human `review_gate_block`
+    (never `human_required`; None for autonomous). One honest caveat remains: a
+    held phase is not auto-repaired — the findings-driven executor re-dispatch is
+    the documented remaining thread.
     """
     if run_mode == "governed":
         return (
-            "phase-loop: WARNING — run_mode=governed is not yet live in the executor "
-            "cycle; this run proceeds AUTONOMOUSLY (no panel review, no gating). "
-            "Track model-routing-v2 for live governed mode."
+            "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
+            "LIVE and FAIL-CLOSED. The pre-merge gate reviews the exact staged index "
+            "(git diff --cached) inside the closeout, before the commit, via the real "
+            "subscription panel (codex+gemini; claude leg deferred). A block, an "
+            "unparseable verdict, or no disjoint reviewer HOLDS the merge as a non-human "
+            "review_gate_block. Caveat: a held phase is not auto-repaired (the "
+            "findings-driven re-dispatch is the remaining thread). Track model-routing-v2."
         )
     return None
 
@@ -1857,6 +1873,11 @@ def run_loop(
                 return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
                 if closeout_mode != "manual":
+                    # model-routing-v2: the governed pre-merge gate now lives INSIDE
+                    # _perform_phase_closeout (after `git add`, before the commit), so it
+                    # reviews the exact staged index. Autonomous stays byte-identical via
+                    # the run_mode guard inside the gate. (Relocated from here, where the
+                    # commit set did not yet exist — advisor-panel reconciliation.)
                     classifications[alias], closeout_event = _perform_phase_closeout(
                         repo,
                         roadmap,
@@ -1866,6 +1887,7 @@ def run_loop(
                         action=action,
                         closeout_mode=closeout_mode,
                         allow_unowned_reason=allow_unowned_reason,
+                        run_mode=run_mode,
                     )
                     append_event(repo, closeout_event)
                     if phase:
@@ -1900,6 +1922,7 @@ def run_loop(
                             action=action,
                             closeout_mode=closeout_mode,
                             allow_unowned_reason=allow_unowned_reason,
+                            run_mode=run_mode,
                         )
                         append_event(repo, closeout_event)
                         if phase:
@@ -1977,6 +2000,17 @@ def run_loop(
                     latest_phase_status = _latest_phase_event_status(repo, alias)
                     if latest_phase_status != "planned":
                         launch_action = "execute"
+                        # model-routing-v2 P3: governed plan-stage gate, first
+                        # attempt only. Outer run_mode guard keeps the autonomous
+                        # default byte-identical (no panel probe, zero cost).
+                        if run_mode == "governed" and not _phase_already_dispatched(repo, alias):
+                            _pgate = _governed_planning_gate(
+                                repo, roadmap, alias, plan, snapshot, selection, action
+                            )
+                            if _pgate is not None:
+                                classifications[alias], _pgate_event = _pgate
+                                append_event(repo, _pgate_event)
+                                return (_DispatchOutcome("break", None), None)
                     elif not force_replan and is_plan_doc_current(repo, alias, plan, roadmap):
                         append_event(
                             repo,
@@ -2372,6 +2406,32 @@ def run_loop(
                     "blocker_class": snapshot.blocker_class,
                     "blocker_summary": snapshot.blocker_summary,
                 }
+                # model-routing-v2 P3: bind the model_class ladder ATOP the
+                # executor pivot. In governed mode a repeated repair failure
+                # consults next_escalation (implementer→planner; a failing planner
+                # routes to panel/terminal). Recorded on the pivot metadata so the
+                # decision is live and observable; the full model_class re-selection
+                # application is the documented remaining thread (next_escalation is
+                # a pure, unit-tested function). Uses its own failure count — the
+                # governed pre-merge loop's round bound is separate.
+                if run_mode == "governed":
+                    _esc = next_escalation(
+                        model_class=str(getattr(selection, "model_class", "") or "implementer"),
+                        patch_retries=_recent_repeated_repair_failures(
+                            repo, alias, dispatch_decision.selected_executor, snapshot
+                        ),
+                        run_mode="governed",
+                    )
+                    repair_loop_pivot["model_class_escalation"] = {
+                        # `applied: False` is load-bearing honesty: this records the
+                        # ladder's DECISION for observability, but the runner does not
+                        # yet re-select the model_class off it (the documented remaining
+                        # thread). A consumer must not read this as an applied switch.
+                        "applied": False,
+                        "action": _esc.action,
+                        "model_class": _esc.model_class,
+                        "reason": _esc.reason,
+                    }
                 if pivot_executor:
                     operator_dispatch_hints = DispatchHints(
                         preferred_executors=(pivot_executor,),
@@ -3841,6 +3901,7 @@ def run_loop(
                     action=action,
                     closeout_mode=closeout_mode,
                     allow_unowned_reason=allow_unowned_reason,
+                    run_mode=run_mode,
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
@@ -7277,6 +7338,7 @@ def _perform_phase_closeout(
     action: str,
     closeout_mode: str,
     allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
 ) -> tuple[str, LoopEvent]:
     terminal_status = snapshot.closeout_terminal_status or "executed"
     verification_status = "passed" if terminal_status == "complete" else "not_run"
@@ -7288,6 +7350,28 @@ def _perform_phase_closeout(
     }
     blocker = None
     status = terminal_status
+
+    def _closeout_event() -> LoopEvent:
+        """The single canonical closeout LoopEvent builder, read at call time so
+        every terminal (commit, no-op, guard-refused, governed-block, unowned
+        remainder) emits the identical event shape — no duplicated constructor to
+        drift when the schema changes (CR finding)."""
+        return LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action=action,
+            status=status,
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            blocker=blocker,
+            metadata=metadata,
+            **event_provenance(roadmap, phase),
+        )
+
     closeout_dirty_paths = tuple(
         dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
     )
@@ -7508,6 +7592,31 @@ def _perform_phase_closeout(
                     }
                 )
             else:
+                # model-routing-v2: governed pre-merge gate — relocated HERE, after
+                # `git add` staged the owned paths and BEFORE the commit, so the panel
+                # reviews the EXACT staged index (`git diff --cached`) that is about to
+                # be committed (advisor-panel reconciliation: "reviewed == committed"
+                # by construction). Autonomous is a literal no-op (run_mode guard); a
+                # block returns a non-human review_gate_block and does NOT commit. The
+                # nothing-staged no-op finalize (issue #6) is handled above and never
+                # reaches here, so the gate never blocks a legitimate empty commit.
+                _governed = _governed_premerge_review(
+                    repo, roadmap, phase, plan, terminal_status,
+                    closeout_dirty_paths, snapshot.terminal_summary, run_mode,
+                )
+                if _governed is not None:
+                    status = "blocked"
+                    blocker, _gov_meta = _governed
+                    metadata["closeout"].update(_gov_meta)
+                    # CR #3: the owned paths were `git add`-staged before this gate;
+                    # on a governed block, UNSTAGE them so a later out-of-loop / manual
+                    # `git commit` (no pathspec) can't land the panel-rejected changes.
+                    # The worktree files are untouched — only the index is reset to HEAD.
+                    _run_git_closeout(repo, "reset", "--quiet", "HEAD", "--", *closeout_dirty_paths)
+                    # CR #9: emit via the single shared builder (no duplicated event
+                    # constructor). The early return SKIPS the commit — a block must
+                    # not commit — but reuses the canonical event shape.
+                    return status, _closeout_event()
                 commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
@@ -7670,22 +7779,7 @@ def _perform_phase_closeout(
                     "unowned_dirty_paths": list(unowned_remainder),
                 }
             )
-    event = LoopEvent(
-        timestamp=utc_now(),
-        repo=str(repo),
-        roadmap=str(roadmap),
-        phase=phase,
-        action=action,
-        status=status,
-        model=selection.model,
-        reasoning_effort=selection.effort,
-        source=selection.source,
-        override_reason=selection.override_reason,
-        blocker=blocker,
-        metadata=metadata,
-        **event_provenance(roadmap, phase),
-    )
-    return status, event
+    return status, _closeout_event()
 
 
 def _closeout_commit_action(action: str, terminal_status: str) -> str:
@@ -7842,11 +7936,165 @@ class _null_context:
         return False
 
 
+# NOTE: there is deliberately no live `apply_fix` for the governed pre-merge gate.
+# The honest contract today: the gate REVIEWS the pre-merge bundle and BLOCKS on a
+# real `block` finding (a non-human `review_gate_block`, surfaced in the run-end
+# summary). The earlier closure re-rendered the SAME bundle from the unchanged tree
+# — a no-op that, given an identical bundle, burned `max_rounds` re-reviews before
+# blocking anyway (code-review finding, verified). Passing `apply_fix=None` makes
+# the loop terminate on the FIRST block instead. The executor-driven repair
+# re-dispatch (fold the panel's findings into a repair launch, then re-review) is
+# the documented remaining model-routing-v2 thread; the loop already supports an
+# injected `apply_fix` and is exercised by the e2e/live tests with one.
+
+
+def _phase_already_dispatched(repo, alias) -> bool:
+    """True if this phase has a prior execute/repair dispatch event — i.e. this is
+    a repair re-plan, not a first-attempt plan. The governed planning gate (P3)
+    reviews first-attempt plans only, to avoid re-reviewing on repair cycles."""
+    target = str(alias).upper()
+    for event in reversed(read_events(repo)):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).upper() != target:
+            continue
+        if str(event.get("action", "")) in ("execute", "repair"):
+            return True
+    return False
+
+
+def _phase_author_vendors(repo, alias) -> frozenset[str]:
+    """The review vendors of EVERY model that authored this phase's work — all
+    excluded from the reviewer pool (reviewer≠author).
+
+    Derived from the dispatch events' top-level ``selected_executor`` (the
+    post-rotation/fallback/pinning resolved executor), NOT a reverse-engineered
+    guess off the configured model. The prior single-vendor version filtered on
+    ``action in (execute/repair/plan)`` — but dispatch events log ``action='run'``
+    (the verb lives in ``metadata.dispatch_decision.launch_action``), so the
+    filter never matched and it fell through to the configured model, defeating
+    reviewer≠author. We drop the filter and take the UNION across all the phase's
+    dispatch events: under rotation/repair more than one vendor can author a phase
+    (codex executes, claude repairs) and EVERY author must be excluded. An empty
+    set means the author is unknown → the gate fails closed (advisor-panel
+    reconciliation, verified).
+    """
+    target = str(alias).upper()
+    vendors: set[str] = set()
+    for event in read_events(repo):
+        if not isinstance(event, dict) or str(event.get("phase", "")).upper() != target:
+            continue
+        ex = event.get("selected_executor")
+        if ex:
+            vendors.add(author_vendor_for_executor(str(ex)))
+    return frozenset(v for v in vendors if v)
+
+
+def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, action):
+    """Governed plan-stage gate (model-routing-v2 P3). Reviews the plan doc before
+    the first execute dispatch in governed mode. Returns ``None`` to proceed to
+    execute, or ``(status, LoopEvent)`` with a non-human ``review_gate_block``
+    when the plan is held (unresolved block). A `degraded` (advisory) result
+    promotes — autonomy-first, never a self-review pass that blocks."""
+    try:
+        artifact = Path(plan).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    result = governed_planning_gate(
+        artifact=artifact,
+        author_vendors=_phase_author_vendors(repo, alias),
+        run_mode="governed",
+        available_legs=available_panel_legs(),
+    )
+    if result.promoted:
+        return None
+    blocker = {
+        "human_required": False,
+        "blocker_class": "review_gate_block",
+        "blocker_summary": f"Governed planning gate held {alias}: {result.reason or 'unresolved block'}",
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+    event = LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=alias,
+        action=action,
+        status="blocked",
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        blocker=blocker,
+        metadata={"governed_planning": {"reason": result.reason, "degraded": result.degraded,
+                                        "findings": [f.to_json() for f in result.findings]}},
+        **event_provenance(roadmap, alias),
+    )
+    return ("blocked", event)
+
+
+def _governed_premerge_review(
+    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode
+):
+    """Governed pre-merge review, run INSIDE ``_perform_phase_closeout`` — AFTER
+    ``git add`` stages the owned paths and BEFORE the commit is finalized.
+
+    Reviews the EXACT staged index (``git diff --cached`` over the paths being
+    committed), so "what the panel reviews" == "what gets committed" by
+    construction. Returns ``None`` to proceed to the commit, or a
+    ``(blocker, metadata)`` tuple carrying a non-human ``review_gate_block`` when
+    the review did not converge (the caller blocks instead of committing).
+
+    Autonomous is a literal no-op (outer ``run_mode`` guard). Implementation
+    closeouts only — a plan-doc closeout is the planning gate's job (P3).
+    """
+    if run_mode != "governed" or terminal_status == "planned" or not closeout_dirty_paths:
+        return None
+    diff_text = staged_index_diff(repo, closeout_dirty_paths)
+    bundle = render_governed_bundle(
+        phase_alias=alias,
+        terminal=dict(terminal_summary or {}),
+        plan_path=plan,
+        diff_text=diff_text,
+    )
+    result = governed_premerge_for_run(
+        artifact=bundle,
+        author_executor="",  # unused: author_vendors carries the real authorship set
+        author_vendors=_phase_author_vendors(repo, alias),
+        run_mode="governed",
+        apply_fix=None,  # review+block; the executor-driven re-dispatch is a documented thread
+        available_legs=available_panel_legs(),
+    )
+    if result.mergeable:
+        return None
+    blocker = dict(result.terminal_blocker or {})
+    blocker.setdefault("human_required", False)
+    blocker.setdefault("blocker_class", "review_gate_block")
+    blocker.setdefault("blocker_summary", f"Governed pre-merge review held {alias}: {result.reason or 'unresolved block'}")
+    blocker.setdefault("required_human_inputs", ())
+    blocker.setdefault("access_attempts", ())
+    metadata = {
+        "closeout_action": "review_gate_block",
+        "verification_status": "blocked",
+        "governed_premerge": {
+            "rounds": result.rounds,
+            "reason": result.reason,
+            "degraded": result.degraded,
+            # Surface the panel findings so the run-end summary names WHY the merge
+            # was held — the operator otherwise saw only "blocked" with no detail.
+            "findings": [f.to_json() for f in result.findings],
+        },
+    }
+    return blocker, metadata
+
+
 def governed_premerge_for_run(
     *,
     artifact: str,
     author_executor: str,
     run_mode: str,
+    author_vendors=None,
     apply_fix=None,
     available_legs=None,
     invoke=None,
@@ -7866,6 +8114,7 @@ def governed_premerge_for_run(
         artifact=artifact,
         author_executor=author_executor,
         run_mode=run_mode,
+        author_vendors=author_vendors,
         apply_fix=apply_fix,
         available_legs=available_legs,
         max_rounds=max_rounds,

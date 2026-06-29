@@ -685,14 +685,40 @@ its `max`-effort planning actions. `worker` never authors a final patch
 (`execute`/`repair`), and an executor whose ceiling is below `max` (e.g. gemini)
 is never selected as the max-effort planner of record.
 
-`run_mode` (*how governed*): `autonomous` (default) or `governed` (opt-in).
-Autonomous invokes no advisor panel and adds no `human_required`. Governed adds a
-plan-stage and pre-merge panel gate that reuses the `review_finding`
-`block`/`nit` severity vocabulary on a seam separate from the closeout validator
-registry; the reviewer pool is vendor-disjoint from the author (degrading to an
-advisory autonomous-warn rather than a same-vendor self-review), the review loop
-is bounded, and every escalation terminal is a non-human `review_gate_block`
-surfaced in the run-end summary — never a synchronous human wait.
+`run_mode` (*how governed*): `autonomous` (default) or `governed` (opt-in, via
+`--governed` / `PHASE_LOOP_RUN_MODE=governed`). Autonomous invokes no advisor
+panel and adds no `human_required` — the panel is never spawned (the run-level
+guard short-circuits before any leg). Governed adds a plan-stage and pre-merge
+panel gate that reuses the `review_finding` `block`/`nit` severity vocabulary on
+a seam separate from the closeout validator registry; the reviewer pool is
+vendor-disjoint from the author, the review loop is bounded, and every escalation
+terminal is a non-human `review_gate_block` surfaced in the run-end summary —
+never a synchronous human wait.
+
+Governed mode is **live on the serial dispatch path** (model-routing-v2). The
+plan-stage gate runs on first-attempt plans (not repair re-plans). The pre-merge
+gate runs **inside the closeout, after `git add` stages the owned paths and
+before the commit is finalized**, and reviews the **exact staged index**
+(`git diff --cached`) over the paths being committed — so the artifact the panel
+reviews is, by construction, exactly what gets committed (no separately-derived
+path set, no untracked-file omission). Reviewer≠author is the **union** of the
+phase's dispatch `selected_executor` vendors (rotation/repair may have several);
+all are excluded. The gate is **fail-closed** (governed is the opt-in enforcement
+mode): a `block`, a non-conforming/unparseable verdict, or no usable reviewer
+disjoint from the author HOLDS the merge as a non-human `review_gate_block` — it
+never silently advisory-passes. Verdicts use a strict terminal-line contract (the
+last line begins with `AGREE` / `PARTIALLY AGREE` / `DISAGREE`). The panel spawns
+the codex + gemini subscription CLI legs (the claude leg is `unavailable` pending
+a native-Agent path). The autonomous default is byte-identical — the gate is a
+no-op off the governed path. Governed mode is **EXPERIMENTAL and fail-safe** — it
+may over-block, but never silently passes unreviewed or self-reviewed code. With
+only the codex + gemini legs live, a **multi-vendor** phase (authored by one vendor
+and repaired by the other) has no disjoint reviewer and is HELD with an explicit
+reason until the deferred claude leg lands. Out of scope / remaining threads:
+concurrent-wave dispatch is **not** governed yet; a held phase is not auto-repaired
+(the findings-driven executor re-dispatch is the remaining thread); and the
+`model_class` escalation decision is recorded on the dispatch metadata but not
+yet re-routed into live model selection.
 
 ## Reconcile Command
 

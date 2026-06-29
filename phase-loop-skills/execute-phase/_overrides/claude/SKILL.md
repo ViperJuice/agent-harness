@@ -122,6 +122,13 @@ no `human_required`; every governed escalation terminal is a non-human
 `review_gate_block` surfaced in the run-end summary, never a synchronous human
 wait.
 
+Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MODE=governed`,
+model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
+implementation diff *before* the closeout commit and runs a bounded
+review→fix→re-review loop; a `block` finding holds the merge until fixed or the
+bounded loop terminates non-human. Autonomous runs spawn no panel. Concurrent-wave
+dispatch is not governed yet.
+
 ## Inputs
 
 | Arg | Required | Meaning |

@@ -59,8 +59,10 @@ Model selection has two independent axes:
   This repo ships a default (planning at `max` effort, implementation at the
   implementer model); a checkout with no policy keeps the legacy resolution.
 - **`run_mode`** — *how governed*. `autonomous` (default) runs unattended with no
-  panel; `governed` (opt-in) adds a 3-harness advisor-panel review at planning
-  and pre-merge, bounded, with a non-human escalation terminal.
+  panel; `governed` (opt-in, `--governed` / `PHASE_LOOP_RUN_MODE=governed`) adds a
+  codex+gemini advisor-panel review at planning and pre-merge, bounded, with a
+  non-human escalation terminal. **Live on the serial path** (model-routing-v2);
+  concurrent-wave dispatch is not governed yet.
 
 "Autonomous default" means the **run_mode**, not the absence of a policy — the
 tiered `model_policy` is on by default; the panel is what's opt-in. See

@@ -141,12 +141,18 @@ class ReviewSummaryTest(unittest.TestCase):
 
 
 class GovernedNotLiveWarningTest(unittest.TestCase):
-    # CR fix: governed run_mode is fail-loud (not a silent no-op) until v2 wires it.
+    # v2-P2/P3: planning + pre-merge gates are LIVE (real panel spawn, a genuine
+    # block holds the merge). The notice states that honestly and names the two
+    # remaining caveats (vendor-disjoint degrade-to-advisory; no auto-repair).
     def test_governed_warns(self):
         msg = _governed_not_live_warning("governed")
         self.assertIsNotNone(msg)
-        self.assertIn("not yet live", msg)
-        self.assertIn("AUTONOMOUSLY", msg)
+        self.assertIn("LIVE", msg)
+        self.assertIn("FAIL-CLOSED", msg)
+        self.assertIn("HOLDS the merge", msg)
+        self.assertIn("git diff --cached", msg)               # reviews the staged index
+        self.assertNotIn("advisory autonomous-warn", msg)     # the old false claim is gone
+        self.assertNotIn("degrade to an advisory pass", msg)
 
     def test_autonomous_is_silent(self):
         self.assertIsNone(_governed_not_live_warning("autonomous"))

@@ -115,6 +115,7 @@ def run_governed_premerge_loop(
     artifact: str,
     author_executor: str,
     run_mode: str,
+    author_vendors: Sequence[str] | None = None,
     apply_fix: Callable[[int, str, tuple[ReviewFinding, ...]], str] | None = None,
     available_legs: Sequence[str] | None = None,
     invoke: Callable[..., GateResult] = governed_planning_gate,
@@ -125,44 +126,54 @@ def run_governed_premerge_loop(
 
     Autonomous mode is a no-op (mergeable, no panel). Governed mode reviews up to
     ``max_rounds`` times, applying ``apply_fix`` between rounds while ``block``
-    findings remain. Terminals are always non-human.
+    findings remain. Terminals are always non-human. ``author_vendors`` (the set
+    of vendors that authored the phase) takes precedence over ``author_executor``
+    for reviewer≠author exclusion when provided.
     """
     if run_mode != "governed":
         return LoopResult(mergeable=True, ran=False, reason="autonomous")
 
+    # Reasons that mean "the gate could not run a real review" (no disjoint
+    # reviewer / unknown author / no usable verdict) — surfaced verbatim in the
+    # terminal so the operator sees the ACCURATE cause, not a generic
+    # "non_convergence" (CR finding).
+    _STRUCTURAL_HOLD = frozenset({
+        "unknown_author", "no_disjoint_reviewer", "author_vendor_only",
+        "no_reviewers", "no_usable_review",
+    })
     seen_block = False
     current = artifact
     collected: list[ReviewFinding] = []
     rnd = 0
+    last_reason: str | None = None
     for rnd in range(1, max_rounds + 1):
         gate = invoke(
             artifact=current,
             author_executor=author_executor,
+            author_vendors=author_vendors,
             run_mode="governed",
             available_legs=available_legs,
             spawn=spawn,
         )
         collected.extend(gate.findings)
+        last_reason = gate.reason
 
         if gate.degraded:
-            # No disjoint reviewer. If we were already failing (saw a block and
-            # are mid-convergence), losing the panel is a non-human terminal.
-            if seen_block:
-                return LoopResult(
-                    mergeable=False, ran=True, rounds=rnd, findings=tuple(collected),
-                    terminal_blocker=_non_human_blocker(
-                        "review_gate_block",
-                        f"panel unavailable while unresolved block findings remained "
-                        f"after {rnd} round(s); halting (non-human)",
-                    ),
-                    reason="panel_unavailable_while_failing",
-                )
-            # Reviewers simply offline before any real review → advisory pass
-            # (autonomy-first: don't block a governed run because reviewers are
-            # down; record that it was not a real review).
+            # FAIL-CLOSED (advisor-panel reconciliation): in governed mode, "no
+            # usable disjoint reviewer" is NOT an advisory pass — the prior
+            # advisory-pass-before-any-block was a fail-open (a codex-empty phase
+            # whose only disjoint reviewer was offline both rendered an empty diff
+            # AND advisory-passed). The gate now blocks on no-usable-review
+            # directly (promoted=False), so reaching here means a degraded result
+            # we treat as a non-human halt regardless of `seen_block`.
             return LoopResult(
-                mergeable=True, ran=True, rounds=rnd, findings=tuple(collected),
-                degraded=True, reason=gate.reason or "panel_unavailable",
+                mergeable=False, ran=True, rounds=rnd, findings=tuple(collected),
+                terminal_blocker=_non_human_blocker(
+                    "review_gate_block",
+                    f"governed pre-merge review could not obtain a usable disjoint "
+                    f"reviewer after {rnd} round(s); halting (non-human)",
+                ),
+                reason=gate.reason or "panel_unavailable",
             )
 
         if gate.promoted:  # zero block findings; any nits already in `collected`
@@ -176,13 +187,24 @@ def run_governed_premerge_loop(
             break
         current = apply_fix(rnd, current, gate.findings)
 
-    # Fell out of the loop with unresolved block findings → non-convergence.
+    # Fell out of the loop while held. Distinguish a fail-closed STRUCTURAL hold
+    # (no disjoint reviewer / unknown author / no usable verdict — the review never
+    # really ran) from genuine NON-CONVERGENCE (real block findings unresolved), so
+    # the terminal carries the accurate cause instead of always "non_convergence".
+    if last_reason in _STRUCTURAL_HOLD:
+        summary = (
+            f"governed pre-merge review held ({last_reason}) — no real review could "
+            f"run after {rnd} round(s); halting (non-human, surfaced in run-end summary)"
+        )
+        reason = last_reason
+    else:
+        summary = (
+            f"governed pre-merge review did not converge to zero block findings "
+            f"after {rnd} round(s); halting (non-human, surfaced in run-end summary)"
+        )
+        reason = "non_convergence"
     return LoopResult(
         mergeable=False, ran=True, rounds=rnd, findings=tuple(collected),
-        terminal_blocker=_non_human_blocker(
-            "review_gate_block",
-            f"governed pre-merge review did not converge to zero block findings "
-            f"after {rnd} round(s); halting (non-human, surfaced in run-end summary)",
-        ),
-        reason="non_convergence",
+        terminal_blocker=_non_human_blocker("review_gate_block", summary),
+        reason=reason,
     )
