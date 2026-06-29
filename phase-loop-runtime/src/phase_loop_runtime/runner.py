@@ -164,7 +164,12 @@ from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
-from .governed_review import RUN_MODES, governed_planning_gate
+from .governed_review import (
+    RUN_MODES,
+    author_vendor_for_executor,
+    author_vendor_for_model,
+    governed_planning_gate,
+)
 from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
     next_escalation,
@@ -1055,20 +1060,30 @@ def _start_gate_bypassed_event(
 
 
 def _governed_not_live_warning(run_mode: str) -> str | None:
-    """Operator notice about the partial liveness of governed mode.
+    """Operator notice describing exactly how much governed enforcement is active.
 
-    model-routing-v2 P1 wires the pre-merge gate live on the serial path, but the
-    real panel-leg spawn (P2) and the planning-stage gate (P3) are not yet live —
-    so until P2 the panel reviewers degrade to an advisory pass. Return a loud,
-    non-fatal notice so an operator is never misled about how much enforcement is
-    active; return None for autonomous. Never adds human_required.
+    As of model-routing-v2 P2/P3 the planning gate and the pre-merge gate BOTH
+    run live: they spawn the real subscription panel (codex + gemini legs; the
+    claude leg is deferred → `unavailable`) and a genuine `block` finding holds
+    promotion as a non-human `review_gate_block`, surfaced in the run-end summary.
+    Two honest caveats remain, hence this loud, non-fatal notice (never adds
+    human_required; None for autonomous):
+      • If no reviewer is disjoint from the author's vendor (or none are authed)
+        the gate degrades to an advisory autonomous-warn rather than blocking —
+        autonomy-first, recorded but non-gating.
+      • A real block terminates the phase; the executor-driven auto-fix
+        re-dispatch (fold findings into a repair, then re-review) is not yet
+        wired, so the runner does not self-repair a held phase.
     """
     if run_mode == "governed":
         return (
-            "phase-loop: NOTE — run_mode=governed: the pre-merge gate is live on the "
-            "serial path, but the real 3-harness panel spawn (P2) and planning gate (P3) "
-            "are not yet wired, so reviewers currently degrade to an advisory pass. "
-            "Track model-routing-v2 for full governed mode."
+            "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
+            "LIVE — they spawn the real subscription panel (codex+gemini; claude leg "
+            "deferred) and a genuine block holds the merge as a non-human review_gate_block. "
+            "Caveats: with no reviewer disjoint from the author's vendor the gate degrades "
+            "to an advisory autonomous-warn (non-gating); and a held phase is not "
+            "auto-repaired (the findings-driven re-dispatch is the remaining thread). "
+            "Track model-routing-v2."
         )
     return None
 
@@ -2416,6 +2431,11 @@ def run_loop(
                         run_mode="governed",
                     )
                     repair_loop_pivot["model_class_escalation"] = {
+                        # `applied: False` is load-bearing honesty: this records the
+                        # ladder's DECISION for observability, but the runner does not
+                        # yet re-select the model_class off it (the documented remaining
+                        # thread). A consumer must not read this as an applied switch.
+                        "applied": False,
                         "action": _esc.action,
                         "model_class": _esc.model_class,
                         "reason": _esc.reason,
@@ -7890,27 +7910,16 @@ class _null_context:
         return False
 
 
-def _make_governed_apply_fix(repo: Path, phase_alias: str, plan, snapshot):
-    """Build the apply_fix closure for the governed pre-merge loop.
-
-    Contract (IF-0-P1-1): given the panel's `block` findings, re-dispatch the
-    phase's repair path with those findings folded in, then return the
-    re-rendered bundle for re-review. P1 wires the gate live and proves the
-    autonomous no-op; the FULL executor-driven repair re-dispatch is exercised
-    once P2 ships the real panel spawn (until then the panel degrades to an
-    advisory pass, so this closure is not reached in a live governed run and is
-    covered by isolated tests with an injected panel/fix). It re-renders the
-    bundle from the current tree as a safe best-effort.
-    """
-    def apply_fix(rnd: int, current: str, findings) -> str:
-        bundle, _ = render_governed_bundle(
-            repo=repo,
-            phase_alias=phase_alias,
-            terminal=dict(snapshot.terminal_summary or {}),
-            plan_path=plan,
-        )
-        return bundle
-    return apply_fix
+# NOTE: there is deliberately no live `apply_fix` for the governed pre-merge gate.
+# The honest contract today: the gate REVIEWS the pre-merge bundle and BLOCKS on a
+# real `block` finding (a non-human `review_gate_block`, surfaced in the run-end
+# summary). The earlier closure re-rendered the SAME bundle from the unchanged tree
+# — a no-op that, given an identical bundle, burned `max_rounds` re-reviews before
+# blocking anyway (code-review finding, verified). Passing `apply_fix=None` makes
+# the loop terminate on the FIRST block instead. The executor-driven repair
+# re-dispatch (fold the panel's findings into a repair launch, then re-review) is
+# the documented remaining model-routing-v2 thread; the loop already supports an
+# injected `apply_fix` and is exercised by the e2e/live tests with one.
 
 
 def _phase_already_dispatched(repo, alias) -> bool:
@@ -7928,6 +7937,24 @@ def _phase_already_dispatched(repo, alias) -> bool:
     return False
 
 
+def _phase_author_vendor(repo, alias, selection) -> str:
+    """The review vendor of the model that AUTHORED this phase's work — excluded
+    from the reviewer pool (reviewer≠author). Primary signal: the latest
+    execute/repair/plan event's recorded `selected_executor`; fallback: the
+    vendor of `selection.model` (ModelSelection has no `executor` field, so
+    deriving the author off `selection` directly would always be empty — the bug
+    this fixes)."""
+    target = str(alias).upper()
+    for event in reversed(read_events(repo)):
+        if not isinstance(event, dict) or str(event.get("phase", "")).upper() != target:
+            continue
+        if str(event.get("action", "")) in ("execute", "repair", "plan"):
+            ex = event.get("selected_executor")
+            if ex:
+                return author_vendor_for_executor(str(ex))
+    return author_vendor_for_model(str(getattr(selection, "model", "") or ""))
+
+
 def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, action):
     """Governed plan-stage gate (model-routing-v2 P3). Reviews the plan doc before
     the first execute dispatch in governed mode. Returns ``None`` to proceed to
@@ -7940,7 +7967,7 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
         return None
     result = governed_planning_gate(
         artifact=artifact,
-        author_executor=str(getattr(selection, "executor", "") or ""),
+        author_executor=_phase_author_vendor(repo, alias, selection),
         run_mode="governed",
         available_legs=available_panel_legs(),
     )
@@ -7993,9 +8020,9 @@ def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, act
     )
     result = governed_premerge_for_run(
         artifact=bundle,
-        author_executor=str(getattr(selection, "executor", "") or ""),
+        author_executor=_phase_author_vendor(repo, alias, selection),
         run_mode="governed",
-        apply_fix=_make_governed_apply_fix(repo, alias, plan, snapshot),
+        apply_fix=None,  # review+block; no no-op re-render loop (see note above)
         available_legs=available_panel_legs(),
     )
     if result.mergeable:
@@ -8017,7 +8044,15 @@ def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, act
         source=selection.source,
         override_reason=selection.override_reason,
         blocker=blocker,
-        metadata={"governed_premerge": {"rounds": result.rounds, "reason": result.reason, "degraded": result.degraded}},
+        metadata={"governed_premerge": {
+            "rounds": result.rounds,
+            "reason": result.reason,
+            "degraded": result.degraded,
+            # Surface the panel findings on the terminal event so the run-end
+            # summary names WHY the merge was held — without this the operator saw
+            # only "blocked" with no review detail (code-review finding, verified).
+            "findings": [f.to_json() for f in result.findings],
+        }},
         **event_provenance(roadmap, alias),
     )
     return ("blocked", event)

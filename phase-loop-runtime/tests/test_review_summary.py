@@ -141,13 +141,15 @@ class ReviewSummaryTest(unittest.TestCase):
 
 
 class GovernedNotLiveWarningTest(unittest.TestCase):
-    # v2-P1: governed pre-merge gate is now LIVE on the serial path; the notice
-    # explains the remaining partial liveness (panel spawn P2, planning gate P3).
+    # v2-P2/P3: planning + pre-merge gates are LIVE (real panel spawn, a genuine
+    # block holds the merge). The notice states that honestly and names the two
+    # remaining caveats (vendor-disjoint degrade-to-advisory; no auto-repair).
     def test_governed_warns(self):
         msg = _governed_not_live_warning("governed")
         self.assertIsNotNone(msg)
-        self.assertIn("pre-merge gate is live", msg)
-        self.assertIn("advisory pass", msg)
+        self.assertIn("LIVE", msg)
+        self.assertIn("block holds the merge", msg)
+        self.assertNotIn("degrade to an advisory pass", msg)  # the old false claim is gone
 
     def test_autonomous_is_silent(self):
         self.assertIsNone(_governed_not_live_warning("autonomous"))

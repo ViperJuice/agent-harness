@@ -70,6 +70,24 @@ def author_vendor_for_executor(executor: str) -> str:
     return _EXECUTOR_VENDOR.get((executor or "").lower(), (executor or "").lower())
 
 
+def author_vendor_for_model(model_id: str) -> str:
+    """Map a concrete model id to its panel-leg vendor (codex/gemini/claude/...).
+
+    Fallback author signal for reviewer≠author when no recorded executor is
+    available: the implementing model's vendor must be excluded from the pool.
+    """
+    m = (model_id or "").lower()
+    if not m:
+        return ""
+    if "claude" in m or "opus" in m or "sonnet" in m or "haiku" in m:
+        return "claude"
+    if "gemini" in m or m in {"pro", "flash", "flash-lite", "auto"}:
+        return "gemini"
+    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3") or m.startswith("openai/"):
+        return "codex"  # the codex panel leg runs the openai-family model
+    return m
+
+
 def resolve_run_mode(env: Mapping[str, str] | None = None, explicit: str | None = None) -> str:
     if explicit:
         value = str(explicit).strip().lower()

@@ -17,9 +17,12 @@ from phase_loop_runtime.governed_premerge import next_escalation
 
 
 def _sel():
+    # No `executor` field: ModelSelection has none, and the gate must NOT read one
+    # (the masked bug). The author vendor is derived from `model` (or a recorded
+    # execute event) — `claude-opus-4-8` → vendor `claude`.
     return types.SimpleNamespace(
-        model="m", effort="high", source="s", override_reason=None,
-        executor="claude", model_class="implementer",
+        model="claude-opus-4-8", effort="high", source="s", override_reason=None,
+        model_class="implementer",
     )
 
 
@@ -73,6 +76,30 @@ class FirstAttemptGuardTest(unittest.TestCase):
     def test_other_phase_dispatch_does_not_count(self):
         with patch.object(runner, "read_events", return_value=[{"phase": "P2", "action": "repair"}]):
             self.assertFalse(runner._phase_already_dispatched(Path("/x"), "P1"))
+
+
+class PhaseAuthorVendorTest(unittest.TestCase):
+    """Reviewer≠author depends on the gate knowing the REAL author vendor.
+    `ModelSelection` has no `executor`, so the old `getattr(selection,"executor")`
+    was always '' → vendor '' → no leg ever excluded → implementing model could
+    self-review (code-review finding #4). These pin the corrected derivation."""
+
+    def test_prefers_recorded_execute_executor(self):
+        events = [{"phase": "P1", "action": "execute", "selected_executor": "codex"}]
+        with patch.object(runner, "read_events", return_value=events):
+            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
+        self.assertEqual(v, "codex")  # the openai-family executor's vendor
+
+    def test_falls_back_to_selection_model_vendor(self):
+        with patch.object(runner, "read_events", return_value=[]):
+            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
+        self.assertEqual(v, "claude")  # claude-opus-4-8 → claude (no events recorded)
+
+    def test_never_empty_for_a_known_model(self):
+        # The masked bug produced '' here; '' disjoint from every leg = no exclusion.
+        with patch.object(runner, "read_events", return_value=[]):
+            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
+        self.assertTrue(v)
 
 
 class EscalationLadderBindingTest(unittest.TestCase):

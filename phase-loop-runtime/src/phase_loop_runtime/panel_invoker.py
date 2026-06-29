@@ -72,6 +72,11 @@ SpawnFn = Callable[[str, str], "tuple[str, str]"]
 # the claude leg's native-Agent/Agent-View path is deferred (returns `unavailable`).
 _LEG_TIMEOUT_S = 600
 _EMPTY_THRESHOLD = 200  # bytes — matches the advisor-panel script's EMPTY heuristic
+# A leg that ends with the required structured verdict produced a REAL review even
+# if terse (a one-line "DISAGREE — endpoint skips auth" is ~40 bytes). Such a
+# review must classify `ok`, not `empty`, or a genuine block silently downgrades
+# to a non-gating warn (code-review finding, verified).
+_VERDICT_TOKEN = re.compile(r"\b(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
 # Auth/error stderr signatures → `degraded` so a verbose auth error is never read
 # as a real review (mirrors run_cli_panels.sh).
 _AUTH_SIGNATURE = re.compile(
@@ -113,7 +118,11 @@ def _classify_leg(rc: int, review_text: str, log_text: str) -> str:
         return "timeout"
     if _AUTH_SIGNATURE.search(log_text or ""):
         return "degraded"
-    if len((review_text or "").strip()) <= _EMPTY_THRESHOLD:
+    body = (review_text or "").strip()
+    # A structured verdict means a real (if terse) review — never downgrade to empty.
+    if _VERDICT_TOKEN.search(body):
+        return "ok"
+    if len(body) <= _EMPTY_THRESHOLD:
         return "empty"
     return "ok"
 

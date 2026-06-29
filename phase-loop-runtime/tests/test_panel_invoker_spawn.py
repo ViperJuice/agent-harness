@@ -28,7 +28,15 @@ class StatusMappingTest(unittest.TestCase):
         self.assertIn("AGREE", text)
 
     def test_empty(self):
-        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "empty")  # <=200 bytes
+        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "empty")  # <=200 bytes, no verdict
+
+    def test_terse_verdict_is_ok_not_empty(self):
+        # A real but terse block (~35 bytes) carries the structured verdict and must
+        # classify `ok`, not `empty` — else a genuine DISAGREE silently downgrades to
+        # a non-gating warn (code-review finding #2, verified).
+        status, text = self._spawn_with(0, "DISAGREE — the endpoint skips auth", "")
+        self.assertEqual(status, "ok")
+        self.assertIn("DISAGREE", text)
 
     def test_degraded_on_auth_signature(self):
         self.assertEqual(self._spawn_with(0, "x" * 300, "error: not logged in; please run codex login")[0], "degraded")
