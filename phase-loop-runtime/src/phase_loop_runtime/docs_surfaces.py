@@ -126,3 +126,25 @@ def required_docs_for(path: str) -> tuple[str, ...]:
         if _match(path, pat):
             reqs.extend(docs)
     return tuple(dict.fromkeys(reqs))
+
+
+#: Doc-delta validator finding codes that mean docs-freshness is unsatisfied.
+DOC_FRESHNESS_FINDING_CODES: tuple[str, ...] = ("doc_delta_undecided", "release_doc_missing")
+
+
+def docs_freshness_verdict(
+    changed_paths: Iterable[str],
+    finding_codes: Iterable[str] = (),
+) -> str:
+    """`"passed" | "skipped" | "blocked"` — the shared Layer-A/Layer-B verdict.
+
+    ``skipped`` when no public surface changed; ``blocked`` when a doc-freshness
+    finding fired; ``passed`` when a public surface changed and was satisfied.
+    """
+    public = any(classify_surface(p) is not None for p in changed_paths)
+    if not public:
+        return "skipped"
+    codes = set(finding_codes)
+    if any(code in codes for code in DOC_FRESHNESS_FINDING_CODES):
+        return "blocked"
+    return "passed"

@@ -35,6 +35,7 @@ from .models import (
     SourceTruthImpact,
     WorkUnitCloseout,
 )
+from . import docs_surfaces
 from .redaction import build_source_truth_impact, metadata_redaction_diagnostic
 from .verification_evidence import ARTIFACT_NAME, validate_verification_artifact
 
@@ -123,6 +124,13 @@ def build_phase_loop_closeout(
     # Pluggable review gates (rigor-v1 P1). With zero validators registered this
     # is a no-op; gates default to `warn` (record + continue) and never set
     # human_required. See closeout_validators for the severity model.
+    _resolved_changed_paths = tuple(
+        changed_paths
+        or terminal.get("dirty_paths")
+        or terminal.get("phase_owned_dirty_paths")
+        or terminal.get("previous_phase_owned_paths")
+        or ()
+    )
     review_findings = run_closeout_validators(
         CloseoutContext(
             phase_alias=phase_alias,
@@ -130,15 +138,15 @@ def build_phase_loop_closeout(
             terminal=terminal,
             automation=normalized_automation,
             blocker=blocker_data,
-            changed_paths=tuple(
-                changed_paths
-                or terminal.get("dirty_paths")
-                or terminal.get("phase_owned_dirty_paths")
-                or terminal.get("previous_phase_owned_paths")
-                or ()
-            ),
+            changed_paths=_resolved_changed_paths,
             run_mode=run_mode,
         )
+    )
+    # docs-freshness v4 P3: a passed|skipped|blocked verdict (shared with the
+    # Layer A `docs-audit` CLI) so a clean worktree alone never implies docs are
+    # current. Derived from the doc-delta findings (warn-effective in-loop).
+    _docs_freshness_verdict = docs_surfaces.docs_freshness_verdict(
+        _resolved_changed_paths, [f.code for f in review_findings]
     )
     if review_findings:
         review_update = apply_review_findings(
@@ -252,6 +260,15 @@ def build_phase_loop_closeout(
     if work_unit_closeout is not None:
         payload["work_unit"] = _work_unit_fields(work_unit_closeout)
         payload["lane"] = _lane_closeout_fields(work_unit_closeout)
+    payload["docs_freshness"] = {
+        "status": _docs_freshness_verdict,
+        "changed_public_surfaces": [
+            p for p in _resolved_changed_paths if docs_surfaces.classify_surface(p) is not None
+        ],
+        "findings": [
+            f.code for f in review_findings if f.code in docs_surfaces.DOC_FRESHNESS_FINDING_CODES
+        ],
+    }
     return _clean(payload)
 
 

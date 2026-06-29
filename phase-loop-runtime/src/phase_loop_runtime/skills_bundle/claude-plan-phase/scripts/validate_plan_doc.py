@@ -53,6 +53,7 @@ Markdown parser, which would be overkill.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import re
 import subprocess
@@ -763,6 +764,82 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
     ]
 
 
+# docs-freshness v4 P3 — VENDORED copy of the canonical release-surface taxonomy.
+# This script is a stdlib-only bundled skill script and CANNOT import the runtime.
+# DRIFT-GUARD: must stay byte-equal to
+# `phase_loop_runtime.docs_surfaces.RELEASE_AFFECTING_PATTERNS` — a test in the
+# runtime suite (`test_docs_surfaces_drift`) fails if this copy diverges.
+_VENDORED_RELEASE_AFFECTING_PATTERNS: Tuple[str, ...] = (
+    ".github/workflows/**",
+    "CHANGELOG*",
+    "RELEASE*",
+    "VERSION",
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "uv.lock",
+    "poetry.lock",
+    "requirements*.txt",
+    "**/package.json",
+    "docs/release/**",
+    "docs/releases/**",
+    "docs/release*.md",
+    "scripts/*release*",
+    "scripts/download-release.py",
+)
+# Doc surfaces that satisfy a release change's documentation footprint.
+_VENDORED_RELEASE_DOC_GLOBS: Tuple[str, ...] = (
+    "CHANGELOG*",
+    "RELEASE*",
+    "**/README*",
+    "README*",
+    "docs/release*",
+    "docs/release/**",
+    "docs/releases/**",
+    "docs/operations*",
+    "**/operations*.md",
+)
+
+
+def _glob_match(path: str, pattern: str) -> bool:
+    p = path.replace("\\", "/")
+    if fnmatch.fnmatchcase(p, pattern):
+        return True
+    return pattern.startswith("**/") and fnmatch.fnmatchcase(p, pattern[3:])
+
+
+def _check_m_release_docs_underscope(lane_sections_parsed: Dict[str, dict]) -> Findings:
+    """docs-freshness v4 P3: warn when lanes touch a release/manifest surface but
+    no lane owns a release-doc surface (README/CHANGELOG/operations).
+
+    The #18 under-scope case caught at plan time. Autonomy-first WARN (recorded,
+    non-blocking) — the non-bypassable enforcement is the Layer A `docs-audit` CI
+    gate; this is early feedback. Stdlib-only: uses the vendored taxonomy above.
+    """
+    owned: List[str] = []
+    for sec in lane_sections_parsed.values():
+        owned.extend(sec.get("owned_globs") or [])
+    if not owned:
+        return []
+    release_touched = sorted(
+        g for g in owned
+        if any(_glob_match(g, pat) for pat in _VENDORED_RELEASE_AFFECTING_PATTERNS)
+    )
+    if not release_touched:
+        return []
+    docs_covered = any(
+        any(_glob_match(g, pat) for pat in _VENDORED_RELEASE_DOC_GLOBS) for g in owned
+    )
+    if docs_covered:
+        return []
+    return [
+        "(M) WARN: a lane owns a release/manifest surface "
+        f"({', '.join(release_touched)}) but no lane owns a release-doc surface "
+        "(README / CHANGELOG / docs/release / operations). Add the public docs to a "
+        "lane's owned files or the docs-audit CI gate will block the merge."
+    ]
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -820,6 +897,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
+    findings.extend(_check_m_release_docs_underscope(lane_sections_parsed))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]
