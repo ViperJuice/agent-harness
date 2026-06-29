@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix (#18 follow-up) — pipeline-independent `docs-audit` backstop.** v0.1.6's
+  `docs_freshness` closeout gate is *path-keyed* (it fires in the closeout pipeline and
+  flags stale *tokens present* in a doc) but structurally cannot catch the **silent-absence**
+  case: a release surface changed (e.g. `pyproject.toml`/`VERSION` bumped) while the
+  CHANGELOG simply was not updated — no token to find — or any path that bypasses closeout
+  (direct-`Agent()`, absent runtime helper). This adds a **diff-driven, pipeline-independent**
+  `phase-loop docs-audit --base <ref>` CLI (a new `docs_audit` module over a standalone
+  `docs_surfaces` taxonomy) wired into CI (`docs-audit.yml`) on `pull_request` (blocks the
+  merge), `push:main` (red-marks post-hoc — the autonomous loop pushes directly to main, so
+  the **whole pushed batch** is diffed via `github.event.before..HEAD`, not just the tip), and
+  `push:tags`. It enforces a per-surface, **relevance-bound** decision contract — a release
+  surface must change its *required* doc (a token or an unrelated README edit does not satisfy
+  it); every general public surface needs at least a recorded decision — and **fails closed**
+  on any un-evaluable input (unresolved base / git-diff error) rather than passing silently.
+  The shipped v0.1.6 closeout gate and `release_guard` are untouched (this is purely additive;
+  a single unified taxonomy is a later, separately-tested change). Decision-panel-reconciled.
+
 - **Fix (#18):** A phase-loop release recovery could close **green** (clean tree, pushed
   `main`, release workflow passed) while its public docs stayed stale or absent — the
   existing doc-delta gate is diff-keyed, so files that *should* have changed but didn't

@@ -30,10 +30,21 @@ class SkillsBundleDriftTest(unittest.TestCase):
         if not SRC_SKILLS.is_dir():
             self.skipTest("sibling phase-loop-skills/ source absent (from-wheel layout)")
         sync = _load_sync()
+
+        def _bundle_files(root: Path) -> dict:
+            # Exclude bytecode caches: importing a vendored bundle script (e.g. in another
+            # test) writes __pycache__/*.pyc into the committed tree, which would falsely
+            # read as drift. 0 .pyc are committed; they are never meaningful bundle content.
+            return {
+                p.relative_to(root): p
+                for p in root.rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+            }
+
         with tempfile.TemporaryDirectory() as td:
             regen = sync.assemble_bundle(SRC_SKILLS, Path(td) / "skills_bundle")
-            committed = {p.relative_to(COMMITTED): p for p in COMMITTED.rglob("*") if p.is_file()}
-            fresh = {p.relative_to(regen): p for p in regen.rglob("*") if p.is_file()}
+            committed = _bundle_files(COMMITTED)
+            fresh = _bundle_files(regen)
             self.assertEqual(
                 set(committed),
                 set(fresh),

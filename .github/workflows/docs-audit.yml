@@ -1,0 +1,48 @@
+name: docs-audit
+
+# Pipeline-independent docs-freshness gate (docs-freshness v4 P1, Layer A).
+# Runs on the git diff alone — immune to under-scoped docs lanes, direct-Agent
+# pipeline bypass, and absent runtime helpers (issue #18).
+#
+# - pull_request: a required check — BLOCKS the merge on an unsatisfied release surface.
+# - push: branches [main]: the autonomous loop pushes directly to main (no PR), so the
+#   audit also runs here to RED-MARK a stale-docs commit post-hoc (detect-and-alert).
+#   The whole pushed batch is diffed (github.event.before..HEAD), not just the tip commit.
+#   This preserves the autonomy model (no forced PRs / branch protection).
+# - push: tags ['v*']: enforce at release-tag time — a tag pushed with a release surface
+#   whose required doc was not updated since the prior tag fails the check.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-audit:
+    name: docs-freshness audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so --base resolves in every context (PR base / prior tag / HEAD~1).
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install phase-loop-runtime
+        run: python -m pip install ./phase-loop-runtime
+
+      - name: Run docs-audit
+        # --base auto-resolves: GITHUB_BASE_REF (PR) / prior tag (tag push) / the push
+        # `before` SHA (branch push — the WHOLE batch, not just the tip). Non-zero exit
+        # fails the check: blocks the merge on a PR, red-marks the commit on push:main.
+        env:
+          DOCS_AUDIT_PUSH_BEFORE: ${{ github.event.before }}
+        run: python -m phase_loop_runtime.cli docs-audit --repo . --json
