@@ -141,12 +141,13 @@ class ReviewSummaryTest(unittest.TestCase):
 
 
 class GovernedNotLiveWarningTest(unittest.TestCase):
-    # CR fix: governed run_mode is fail-loud (not a silent no-op) until v2 wires it.
+    # v2-P1: governed pre-merge gate is now LIVE on the serial path; the notice
+    # explains the remaining partial liveness (panel spawn P2, planning gate P3).
     def test_governed_warns(self):
         msg = _governed_not_live_warning("governed")
         self.assertIsNotNone(msg)
-        self.assertIn("not yet live", msg)
-        self.assertIn("AUTONOMOUSLY", msg)
+        self.assertIn("pre-merge gate is live", msg)
+        self.assertIn("advisory pass", msg)
 
     def test_autonomous_is_silent(self):
         self.assertIsNone(_governed_not_live_warning("autonomous"))

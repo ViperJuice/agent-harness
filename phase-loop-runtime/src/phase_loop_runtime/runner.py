@@ -169,6 +169,8 @@ from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
     run_governed_premerge_loop,
 )
+from .governed_bundle import render_governed_bundle
+from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
 from .review_summary import summarize_run
 from .route_log import build_route_log, with_route_log
@@ -1052,18 +1054,20 @@ def _start_gate_bypassed_event(
 
 
 def _governed_not_live_warning(run_mode: str) -> str | None:
-    """Operator warning when governed mode is requested but not yet live.
+    """Operator notice about the partial liveness of governed mode.
 
-    The governed pre-merge/panel loop is built and unit-tested but NOT yet
-    threaded into the live executor cycle (model-routing-v2). Return a loud,
-    non-fatal warning so an operator is never misled into believing review
-    enforcement is active; return None for autonomous. Never adds human_required.
+    model-routing-v2 P1 wires the pre-merge gate live on the serial path, but the
+    real panel-leg spawn (P2) and the planning-stage gate (P3) are not yet live —
+    so until P2 the panel reviewers degrade to an advisory pass. Return a loud,
+    non-fatal notice so an operator is never misled about how much enforcement is
+    active; return None for autonomous. Never adds human_required.
     """
     if run_mode == "governed":
         return (
-            "phase-loop: WARNING — run_mode=governed is not yet live in the executor "
-            "cycle; this run proceeds AUTONOMOUSLY (no panel review, no gating). "
-            "Track model-routing-v2 for live governed mode."
+            "phase-loop: NOTE — run_mode=governed: the pre-merge gate is live on the "
+            "serial path, but the real 3-harness panel spawn (P2) and planning gate (P3) "
+            "are not yet wired, so reviewers currently degrade to an advisory pass. "
+            "Track model-routing-v2 for full governed mode."
         )
     return None
 
@@ -1857,6 +1861,17 @@ def run_loop(
                 return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
                 if closeout_mode != "manual":
+                    # model-routing-v2 P1: governed pre-merge gate, before the
+                    # commit. Outer run_mode guard keeps the autonomous default
+                    # byte-identical — no bundle, no panel probe, zero cost.
+                    if run_mode == "governed":
+                        _gate = _governed_premerge_gate(
+                            repo, roadmap, alias, plan, snapshot, selection, action
+                        )
+                        if _gate is not None:
+                            classifications[alias], _gate_event = _gate
+                            append_event(repo, _gate_event)
+                            return (_DispatchOutcome("break", None), None)
                     classifications[alias], closeout_event = _perform_phase_closeout(
                         repo,
                         roadmap,
@@ -7840,6 +7855,80 @@ class _null_context:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+def _make_governed_apply_fix(repo: Path, phase_alias: str, plan, snapshot):
+    """Build the apply_fix closure for the governed pre-merge loop.
+
+    Contract (IF-0-P1-1): given the panel's `block` findings, re-dispatch the
+    phase's repair path with those findings folded in, then return the
+    re-rendered bundle for re-review. P1 wires the gate live and proves the
+    autonomous no-op; the FULL executor-driven repair re-dispatch is exercised
+    once P2 ships the real panel spawn (until then the panel degrades to an
+    advisory pass, so this closure is not reached in a live governed run and is
+    covered by isolated tests with an injected panel/fix). It re-renders the
+    bundle from the current tree as a safe best-effort.
+    """
+    def apply_fix(rnd: int, current: str, findings) -> str:
+        bundle, _ = render_governed_bundle(
+            repo=repo,
+            phase_alias=phase_alias,
+            terminal=dict(snapshot.terminal_summary or {}),
+            plan_path=plan,
+        )
+        return bundle
+    return apply_fix
+
+
+def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, action):
+    """Run the governed pre-merge review for an implementation closeout.
+
+    Returns ``None`` when the phase may merge (the caller falls through to the
+    commit), or ``(status, LoopEvent)`` carrying a non-human ``review_gate_block``
+    when the review did not converge. Gates IMPLEMENTATION closeouts only — a
+    plan-doc closeout (`closeout_terminal_status == "planned"`) is the planning
+    gate's job (P3), so it is skipped here.
+    """
+    if (snapshot.closeout_terminal_status or "") == "planned":
+        return None
+    review_dir = repo / ".phase-loop" / "governed" / str(alias)
+    bundle, _staged = render_governed_bundle(
+        repo=repo,
+        phase_alias=alias,
+        terminal=dict(snapshot.terminal_summary or {}),
+        plan_path=plan,
+        review_dir=review_dir,
+    )
+    result = governed_premerge_for_run(
+        artifact=bundle,
+        author_executor=str(getattr(selection, "executor", "") or ""),
+        run_mode="governed",
+        apply_fix=_make_governed_apply_fix(repo, alias, plan, snapshot),
+        available_legs=available_panel_legs(),
+    )
+    if result.mergeable:
+        return None
+    blocker = dict(result.terminal_blocker or {})
+    blocker.setdefault("human_required", False)
+    blocker.setdefault("blocker_class", "review_gate_block")
+    blocker.setdefault("required_human_inputs", ())
+    blocker.setdefault("access_attempts", ())
+    event = LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=alias,
+        action=action,
+        status="blocked",
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        blocker=blocker,
+        metadata={"governed_premerge": {"rounds": result.rounds, "reason": result.reason, "degraded": result.degraded}},
+        **event_provenance(roadmap, alias),
+    )
+    return ("blocked", event)
 
 
 def governed_premerge_for_run(
