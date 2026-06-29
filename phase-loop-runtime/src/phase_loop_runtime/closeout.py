@@ -156,6 +156,7 @@ def build_phase_loop_closeout(
                 or ()
             ),
             run_mode=run_mode,
+            docs_freshness=docs_freshness,
         )
     )
     if review_findings:

@@ -228,5 +228,103 @@ class ReleaseDocsCoverageCheckTest(unittest.TestCase):
         self.assertFalse(any("do not own" in f for f in findings))
 
 
+class PostDispatchReducerCheckF4Test(unittest.TestCase):
+    """issue #18 (F4) — a release-dispatch phase must include a post-dispatch
+    evidence-reducer lane that back-fills the now-known SHA / workflow result."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def _dispatch_src(self):
+        return "---\nphase: REL\nphase_loop_mutation: release_dispatch\n---\n# plan\n"
+
+    def _lanes(self, names):
+        Lane = self.mod.Lane
+        return [Lane(sl_id=f"SL-{i+1}", name=n) for i, n in enumerate(names)]
+
+    def _raw(self, lanes, bodies=None):
+        bodies = bodies or {}
+        return {lane.sl_id: bodies.get(lane.sl_id, "") for lane in lanes}
+
+    def _parsed(self, lanes):
+        return {lane.sl_id: {"owned_globs": []} for lane in lanes}
+
+    def test_release_dispatch_missing_reducer_is_error(self):
+        src = self._dispatch_src()
+        lanes = self._lanes(["Dispatch release workflow", "Documentation sweep"])
+        findings = self.mod._check_n_post_dispatch_reducer(
+            src, lanes, self._raw(lanes), self._parsed(lanes)
+        )
+        errors = [f for f in findings if "WARN" not in f]
+        self.assertTrue(errors, "release-dispatch without a reducer lane must ERROR")
+        self.assertTrue(any("post-dispatch" in f.lower() for f in errors))
+
+    def test_release_dispatch_with_reducer_lane_is_clean(self):
+        src = self._dispatch_src()
+        lanes = self._lanes(
+            ["Dispatch release workflow", "Post-dispatch evidence back-fill"]
+        )
+        self.assertEqual(
+            self.mod._check_n_post_dispatch_reducer(
+                src, lanes, self._raw(lanes), self._parsed(lanes)
+            ),
+            [],
+        )
+
+    def test_reducer_detected_in_lane_body(self):
+        # The signal may live in the lane body, not just the name.
+        src = self._dispatch_src()
+        lanes = self._lanes(["Dispatch", "Reconcile evidence"])
+        bodies = {
+            "SL-2": "Re-open evidence docs and back-fill the now-known commit SHA "
+            "and workflow result after the tag is cut.",
+        }
+        self.assertEqual(
+            self.mod._check_n_post_dispatch_reducer(
+                src, lanes, self._raw(lanes, bodies), self._parsed(lanes)
+            ),
+            [],
+        )
+
+    def test_ordinary_phase_missing_reducer_is_clean(self):
+        # A non-release plan never needs a post-dispatch reducer.
+        src = "---\nphase: INT\n---\n# plan\n"
+        lanes = self._lanes(["Core logic", "Wiring"])
+        self.assertEqual(
+            self.mod._check_n_post_dispatch_reducer(
+                src, lanes, self._raw(lanes), self._parsed(lanes)
+            ),
+            [],
+        )
+
+    def test_non_dispatch_release_shape_missing_reducer_is_warn(self):
+        # A release *shape* (lane owns a release artifact) that is NOT an explicit
+        # dispatch gets a WARN, never an ERROR (autonomy-first).
+        src = "---\nphase: REL\n---\n# plan\n"
+        lanes = self._lanes(["Bump manifests", "Docs"])
+        parsed = {
+            "SL-1": {"owned_globs": ["packages/x/package.json"]},
+            "SL-2": {"owned_globs": ["README.md"]},
+        }
+        findings = self.mod._check_n_post_dispatch_reducer(
+            src, lanes, self._raw(lanes), parsed
+        )
+        self.assertTrue(findings, "release-shaped plan should get the advisory")
+        self.assertEqual(
+            [f for f in findings if "WARN" not in f], [], "must be WARN-tier, not ERROR"
+        )
+
+    def test_explicit_dispatch_error_survives_full_validation(self):
+        # End-to-end through main()'s check ordering: an explicit release-dispatch
+        # plan with no reducer lane must surface the (N) ERROR.
+        src = self._dispatch_src()
+        lanes = self._lanes(["Dispatch the release"])
+        findings = self.mod._check_n_post_dispatch_reducer(
+            src, lanes, self._raw(lanes), self._parsed(lanes)
+        )
+        self.assertTrue(any(f.startswith("(N)") and "WARN" not in f for f in findings))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from phase_loop_runtime.closeout import build_phase_loop_closeout
 from phase_loop_runtime.docs_freshness import (
+    docs_freshness_evidence_backed,
     enumerate_public_docs,
     is_explicit_release_phase,
     is_release_phase,
@@ -190,6 +191,80 @@ class DocsFreshnessGateTest(unittest.TestCase):
         # No docs_freshness kwarg -> no key, never blocked.
         self.assertEqual(c["terminal_status"], "complete")
         self.assertNotIn("docs_freshness", c)
+
+
+class EvidenceBackedF5Test(unittest.TestCase):
+    """issue #18 F5: a `passed` claim must be PROVABLE from enumerated-surface
+    evidence; a bare/empty detail must not read as `passed`."""
+
+    def setUp(self):
+        self._fresh = os.environ.pop("PHASE_LOOP_DOCS_FRESHNESS", None)
+        self._td = tempfile.TemporaryDirectory()
+        self.repo = Path(self._td.name)
+
+    def tearDown(self):
+        if self._fresh is not None:
+            os.environ["PHASE_LOOP_DOCS_FRESHNESS"] = self._fresh
+        self._td.cleanup()
+
+    def _release_plan(self):
+        plan = self.repo / "plan.md"
+        plan.write_text(
+            "---\nphase: REL\nphase_loop_mutation: release_dispatch\n---\n# plan\n",
+            encoding="utf-8",
+        )
+        return plan
+
+    def test_release_phase_with_no_doc_surfaces_is_not_passed(self):
+        # A release scan that runs but finds NO public-doc surfaces cannot prove
+        # a pass — it must report `skipped` (no assertion), never `passed`.
+        plan = self._release_plan()
+        # repo has no README/CHANGELOG/etc.
+        scan = scan_docs_freshness(self.repo, plan_path=plan, changed_paths=["CHANGELOG.md"])
+        self.assertEqual(scan["status"], "skipped")
+        self.assertEqual(scan["surfaces_scanned"], [])
+        self.assertFalse(scan["evidence_backed"])
+
+    def test_clean_release_with_surfaces_is_evidence_backed_passed(self):
+        plan = self._release_plan()
+        (self.repo / "README.md").write_text("# proj\nv1.0.5 published.\n", encoding="utf-8")
+        scan = scan_docs_freshness(self.repo, plan_path=plan, changed_paths=["CHANGELOG.md"])
+        self.assertEqual(scan["status"], "passed")
+        self.assertTrue(scan["surfaces_scanned"])
+        self.assertTrue(scan["evidence_backed"])
+
+    def test_evidence_backed_helper_rejects_bare_and_blocked_details(self):
+        # passed + surfaces + no blocking => backed
+        self.assertTrue(
+            docs_freshness_evidence_backed(
+                {"status": "passed", "surfaces_scanned": ["README.md"], "blocking_hits": []}
+            )
+        )
+        # passed but NO surfaces => not backed (the bare-detail case)
+        self.assertFalse(
+            docs_freshness_evidence_backed(
+                {"status": "passed", "surfaces_scanned": [], "blocking_hits": []}
+            )
+        )
+        # passed but a blocking hit slipped in => not backed
+        self.assertFalse(
+            docs_freshness_evidence_backed(
+                {"status": "passed", "surfaces_scanned": ["README.md"], "blocking_hits": [{"path": "x"}]}
+            )
+        )
+        # skipped / blocked / empty are never evidence-backed passes
+        self.assertFalse(docs_freshness_evidence_backed({"status": "skipped", "surfaces_scanned": ["x"]}))
+        self.assertFalse(docs_freshness_evidence_backed({"status": "blocked", "surfaces_scanned": ["x"]}))
+        self.assertFalse(docs_freshness_evidence_backed(None))
+        self.assertFalse(docs_freshness_evidence_backed({}))
+
+    def test_ordinary_phase_still_skipped_with_evidence_flag_false(self):
+        plan = self.repo / "plan.md"
+        plan.write_text("---\nphase: INT\n---\n# plan\n", encoding="utf-8")
+        (self.repo / "README.md").write_text("# proj\n", encoding="utf-8")
+        scan = scan_docs_freshness(self.repo, plan_path=plan, changed_paths=["src/foo.py"])
+        self.assertEqual(scan["status"], "skipped")
+        self.assertFalse(scan["evidence_backed"])
 
 
 class AttachCloseoutIntegrationTest(unittest.TestCase):

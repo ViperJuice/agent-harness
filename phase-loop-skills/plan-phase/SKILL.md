@@ -90,6 +90,19 @@ this split if repo state prevents a safe roadmap repair; in that case keep
 `human_required=false`, set `next_skill: <harness>-phase-roadmap-builder`, and make
 `next_command` name the roadmap amendment needed.
 
+A `phase_loop_mutation: release_dispatch` plan must include a terminal
+**post-dispatch evidence-reducer lane**. A dispatch cuts a tag / runs an
+external release workflow whose commit SHA and workflow result are not knowable
+until *after* dispatch, so any evidence doc a pre-dispatch reducer writes carries
+a placeholder (for example `recovery commit pending`). The docs-freshness gate
+blocks the closeout if that placeholder survives. Plan around it: add a final
+lane (named so its purpose is unambiguous, e.g. `SL-N — Post-dispatch evidence
+back-fill`) that depends on the dispatch lane, re-opens the pre-dispatch evidence
+docs, and back-fills the now-known commit SHA and workflow result. Mark it
+`Parallel-safe: no` (it is a reducer). `validate_plan_doc.py` errors on a
+release-dispatch plan that omits this lane and warns on a non-dispatch release
+shape that omits it.
+
 Pipeline-aware metadata is additive. When planning from a Pipeline source bundle
 or explicit pipeline-required run context, keep the existing
 `phase_loop_plan_version: 1` fields unchanged and add only the optional

@@ -911,6 +911,101 @@ def _sl_sort_key(sl_id: str) -> tuple:
     return (int(m.group(1)),) if m else (10**9, sl_id)
 
 
+# issue #18 F4 — post-dispatch evidence-reducer lane.
+#
+# A release-DISPATCH phase cuts a tag / runs an external release workflow whose
+# commit SHA and workflow result are NOT KNOWABLE until *after* dispatch. Any
+# evidence doc a pre-dispatch reducer writes therefore carries a placeholder
+# (e.g. `recovery commit pending`). F1's docs-freshness scan BLOCKS a release
+# closeout if those placeholders survive — that is the backstop. F4 makes the
+# back-fill an explicit, *required* planning step: a release-dispatch plan must
+# include a post-dispatch lane that re-opens the pre-dispatch evidence docs and
+# back-fills the now-known SHA / workflow result, so the placeholder is resolved
+# by design rather than tripping the closeout gate.
+#
+# Tokens that mark a lane as the post-dispatch reducer. Word/phrase signals the
+# planner is told to emit (see plan-phase SKILL.md). Matched against the lane
+# NAME and its section body.
+_POST_DISPATCH_LANE_RE = re.compile(
+    r"post[-\s]?dispatch|back[-\s]?fill|backfill|"
+    r"reconcile.*(?:sha|commit|workflow|release)|"
+    r"(?:sha|commit|workflow|tag).*back[-\s]?fill",
+    re.IGNORECASE,
+)
+
+
+def _is_release_dispatch_plan(src: str) -> bool:
+    """True only for an explicit ``phase_loop_mutation: release_dispatch`` plan.
+
+    F4 is scoped to the *dispatch* case specifically (not every explicit
+    release ``phase_type``): only a dispatch cuts a tag / runs a workflow whose
+    SHA + result are unknowable pre-dispatch, which is what creates the
+    placeholder a post-dispatch reducer must back-fill.
+    """
+    fm = _parse_frontmatter_block(src)
+    return str(fm.get("phase_loop_mutation", "")).strip().lower() == "release_dispatch"
+
+
+def _has_post_dispatch_reducer_lane(
+    lanes: List[Lane],
+    lane_sections_raw: Dict[str, str],
+) -> bool:
+    """True if some lane is shaped as a post-dispatch evidence-reducer lane.
+
+    Detection is signal-based (mirrors how check (J)/(M) detect a docs lane):
+    a lane whose name or body names the post-dispatch back-fill of the
+    now-known SHA / workflow result.
+    """
+    for lane in lanes:
+        if _POST_DISPATCH_LANE_RE.search(lane.name):
+            return True
+    for body in lane_sections_raw.values():
+        if _POST_DISPATCH_LANE_RE.search(body):
+            return True
+    return False
+
+
+def _check_n_post_dispatch_reducer(
+    src: str,
+    lanes: List[Lane],
+    lane_sections_raw: Dict[str, str],
+    lane_sections_parsed: Dict[str, dict],
+) -> Findings:
+    """issue #18 F4: a release-dispatch phase must include a post-dispatch
+    evidence-reducer lane.
+
+    A release-dispatch phase writes evidence docs that reference a commit SHA /
+    workflow result unknowable before the tag is cut; a pre-dispatch reducer
+    necessarily leaves a placeholder. The plan must therefore carry a
+    post-dispatch lane that re-opens those evidence docs and back-fills the
+    now-known values (otherwise F1's placeholder scan blocks the closeout).
+
+    ERROR for explicit ``release_dispatch`` phases missing the lane (mirrors the
+    F2 explicit-release ERROR posture). WARN otherwise — for a non-dispatch
+    release shape we record the advisory but never escalate, preserving
+    autonomy-first. A non-release plan is inert (no finding)."""
+    if _has_post_dispatch_reducer_lane(lanes, lane_sections_raw):
+        return []
+    if _is_release_dispatch_plan(src):
+        return [
+            "(N) release-dispatch phase has no post-dispatch evidence-reducer "
+            "lane; a dispatch references a commit SHA / workflow result that is "
+            "unknowable before the tag is cut, so the plan must include a "
+            "terminal lane that re-opens the pre-dispatch evidence docs and "
+            "back-fills the now-known SHA / workflow result (otherwise the "
+            "docs-freshness placeholder scan blocks the closeout)."
+        ]
+    # A non-dispatch release *shape* gets a WARN; ordinary phases stay inert.
+    if _is_release_plan(src, lane_sections_parsed):
+        return [
+            "(N) WARN: release-shaped plan has no post-dispatch evidence-reducer "
+            "lane; if this phase dispatches an external release (tag/workflow), "
+            "add a lane that back-fills the now-known SHA / workflow result into "
+            "the pre-dispatch evidence docs."
+        ]
+    return []
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -969,6 +1064,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
+    findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

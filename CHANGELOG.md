@@ -4,6 +4,31 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased
+
+- **Fix (#18 follow-up) — F5: evidence-backed docs-freshness decision.** A
+  `docs_freshness: passed` claim is now *provable* from the scan evidence rather than a
+  self-attested literal: `scan_docs_freshness` no longer emits `passed` when the scan ran
+  but enumerated **no** public-doc surfaces (a bare/empty detail reports `skipped` — "could
+  not verify" — instead of reading as a pass), and every result carries an `evidence_backed`
+  flag (a new `docs_freshness_evidence_backed()` helper: `passed` AND surfaces enumerated AND
+  no blocking hit). The pre-existing `doc_delta` gate's self-attested `no_doc_delta` is now
+  **corroborated** against that scan on release phases — the freshness result is threaded into
+  the closeout-validator context (validators stay pure; no repo IO) and an un-corroborated
+  `no_doc_delta` is downgraded to a recorded **warn** (`doc_delta_uncorroborated`), never a
+  block. Ordinary phases, and any phase with no scan threaded in, are unaffected.
+- **Fix (#18 follow-up) — F4: required post-dispatch evidence-reducer lane.** A
+  release-dispatch phase writes evidence docs referencing a commit SHA / workflow result that
+  is unknowable before the tag is cut, so a pre-dispatch reducer necessarily leaves a
+  placeholder (F1's scan is the backstop that blocks the closeout if it survives). F4 makes the
+  back-fill an explicit, required planning step: `validate_plan_doc.py` now **errors** on an
+  explicit `phase_loop_mutation: release_dispatch` plan that omits a post-dispatch
+  evidence-reducer lane (and **warns** on a non-dispatch release shape that omits it), mirroring
+  the F2 explicit-release posture. Added to the plan-phase SKILL guidance and propagated to the
+  four `skills_bundle/*-plan-phase` copies via `sync_skills_bundle.py`. This is a
+  plan-validation rule only — no new runtime back-fill engine (the placeholder scan remains the
+  enforcement).
+
 ## v0.1.7
 
 - **Fix (#18 follow-up) — pipeline-independent `docs-audit` backstop.** v0.1.6's

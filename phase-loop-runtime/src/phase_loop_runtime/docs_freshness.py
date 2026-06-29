@@ -125,6 +125,29 @@ def resolve_docs_freshness_mode(env: Mapping[str, str] | None = None) -> str:
     return value if value in DOCS_FRESHNESS_MODES else DEFAULT_DOCS_FRESHNESS_MODE
 
 
+def docs_freshness_evidence_backed(detail: Mapping[str, Any] | None) -> bool:
+    """True iff a ``passed`` freshness claim is *provable* from the scan evidence (F5).
+
+    A ``passed`` status is only trustworthy when the scan actually ran and
+    enumerated a per-surface evidence list — i.e. ``surfaces_scanned`` is
+    non-empty — and recorded no blocking hit. A bare/empty detail (no surfaces
+    enumerated) must NOT read as a corroborated pass: there is nothing to back
+    the claim. ``skipped``/``blocked`` are never "evidence-backed passes".
+
+    Used in two places (single source of truth): :func:`scan_docs_freshness`
+    (so it cannot *emit* ``passed`` without enumerated-surface evidence) and
+    ``doc_delta_validator`` (to corroborate a self-attested ``no_doc_delta``).
+    """
+    if not detail:
+        return False
+    d = dict(detail)
+    if str(d.get("status") or "") != "passed":
+        return False
+    if d.get("blocking_hits"):
+        return False
+    return bool(d.get("surfaces_scanned"))
+
+
 def _glob_match(path: str, patterns: Iterable[str]) -> bool:
     path = path.strip()
     if not path:
@@ -378,6 +401,9 @@ def scan_docs_freshness(
         "surfaces_scanned": [],
         "hits": [],
         "blocking_hits": [],
+        # F5: `skipped` is never an evidence-backed pass — keep the flag present
+        # so every result has a consistent shape for downstream corroboration.
+        "evidence_backed": False,
     }
     if mode == "off" or not release or not repo:
         return base
@@ -417,9 +443,16 @@ def scan_docs_freshness(
     # phases in "hard" mode with a block-severity hit are blocked.
     if blocking and mode == "hard" and explicit:
         status = "blocked"
+    elif not surfaces:
+        # F5: a `passed` claim must be PROVABLE from enumerated-surface evidence.
+        # A release phase whose scan ran but found NO public-doc surfaces has
+        # nothing to back a pass — record it as `skipped` (no assertion made)
+        # rather than letting a bare/empty detail read as `passed`. The honest
+        # outcome here is "could not verify", which `skipped` already denotes.
+        status = "skipped"
     else:
         status = "passed"
-    return {
+    result = {
         "status": status,
         "mode": mode,
         "is_release_phase": release,
@@ -428,3 +461,8 @@ def scan_docs_freshness(
         "hits": [h.to_json() for h in hits],
         "blocking_hits": [h.to_json() for h in blocking],
     }
+    # F5: thread the corroboration verdict alongside the raw status so a
+    # downstream consumer (and doc_delta corroboration) never has to re-derive
+    # whether a `passed` is backed by enumerated-surface evidence.
+    result["evidence_backed"] = docs_freshness_evidence_backed(result)
+    return result

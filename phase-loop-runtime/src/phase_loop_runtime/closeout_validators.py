@@ -73,6 +73,12 @@ class CloseoutContext:
     # Carried so a validator can tell which mode it is in; governed-only review
     # machinery lives in `governed_review`, never in this closeout registry.
     run_mode: str = "autonomous"
+    # issue #18 F5: the runner-side docs-freshness pre-scan result (or None when
+    # unwired). Threaded read-only so a validator can CORROBORATE a self-attested
+    # decision (e.g. `no_doc_delta`) against the path-keyed scan evidence without
+    # doing repo IO itself (validators stay pure). None => no corroboration
+    # available => the validator must not newly-fail on its absence.
+    docs_freshness: Mapping[str, Any] | None = None
 
 
 # A validator receives the context and returns zero or more findings.
