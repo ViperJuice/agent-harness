@@ -408,7 +408,7 @@ def _render_baml_closeout_instruction(
         marker = "\n\nPhase-loop closeout JSON schema description:\n"
         if marker in prompt:
             prompt = prompt[: prompt.index(marker)].rstrip()
-    return "EmitPhaseCloseout (`phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
+    return "EmitPhaseCloseout (`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
 
 
 def materialize_claude_plugin_bundle(*, repo: Path, run_root: Path, prompt_bundle: PromptBundle) -> dict[str, object]:

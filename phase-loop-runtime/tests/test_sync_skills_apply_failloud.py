@@ -63,7 +63,8 @@ class SyncSkillsApplyFailLoudTest(unittest.TestCase):
         self.assertEqual(summary["unrepaired"][0]["reason"], "no_source_resolved")
         self.assertEqual(summary["unrepaired"][0]["skill_name"], "codex-phase-loop")
 
-    def test_cli_apply_exits_nonzero_when_unrepaired(self):
+    def test_cli_apply_total_noop_exits_nonzero(self):
+        # TOTAL no-op (nothing repaired, something unrepaired) → fail loud, exit 1.
         summary = {
             "mode": "apply", "repo": str(self.repo), "harnesses": ["codex"],
             "bridge_skills": [], "workflow_sources": [], "vestigial_workflow_candidates": [],
@@ -75,6 +76,26 @@ class SyncSkillsApplyFailLoudTest(unittest.TestCase):
         with patch.object(maintenance, "sync_bridge_skills", return_value=summary):
             rc = _sync_skills_command(repo=self.repo, args=args, as_json=False)
         self.assertEqual(rc, 1)   # fail loud — NOT a silent exit 0
+
+    def test_cli_apply_partial_repair_exits_zero_but_reports(self):
+        # SOME repaired + some not → exit 0 (don't hard-fail pipelines on a host
+        # that uses only some harnesses) BUT the loud report is still printed.
+        import contextlib
+        import io
+        summary = {
+            "mode": "apply", "repo": str(self.repo), "harnesses": ["codex", "gemini"],
+            "bridge_skills": [], "workflow_sources": [], "vestigial_workflow_candidates": [],
+            "skill_classifications": [],
+            "changed": [{"harness_target": "codex", "skill_name": "codex-phase-loop", "repair_target": "x"}],
+            "unrepaired": [{"harness_target": "gemini", "skill_name": "gemini-phase-loop", "reason": "no_source_resolved"}],
+            "blocked": False, "blocker": None,
+        }
+        args = argparse.Namespace(harness=("codex", "gemini"), apply=True)
+        err = io.StringIO()
+        with patch.object(maintenance, "sync_bridge_skills", return_value=summary), contextlib.redirect_stderr(err):
+            rc = _sync_skills_command(repo=self.repo, args=args, as_json=False)
+        self.assertEqual(rc, 0)                              # partial → not a hard fail
+        self.assertIn("could NOT repair", err.getvalue())    # but never silent
 
     def test_cli_apply_exits_zero_when_all_repaired(self):
         summary = {
