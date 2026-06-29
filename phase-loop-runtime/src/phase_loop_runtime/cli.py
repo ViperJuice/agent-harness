@@ -251,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "export-schema"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -312,6 +312,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "validate-roadmap":
             sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints)."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
+        if name == "docs-audit":
+            sub.description = "Pipeline-independent docs-freshness audit over a git diff (no .phase-loop state); fails loud on an unsatisfied release surface."
+            sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / HEAD~1).")
+            sub.add_argument("--decisions", help="Path to the repo-visible doc-decisions artifact (default: .doc-decisions.json).")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -515,6 +519,24 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
         return roadmap_lint.main(["validate-roadmap", str(candidate)])
+    if command == "docs-audit":
+        from . import docs_audit
+
+        repo = resolve_repo(args.repo or ".")
+        report = docs_audit.run_audit(repo, getattr(args, "base", None), getattr(args, "decisions", None))
+        if bool(args.json):
+            print(json.dumps(report.to_json(), indent=2))
+        else:
+            print(f"docs_freshness: {report.docs_freshness}")
+            for finding in report.findings:
+                print(f"  [{finding['klass']}] {finding.get('surface') or '-'}: {finding['reason']}")
+            if report.docs_freshness == "blocked":
+                print(
+                    "\nRemediation: update the required doc surface(s), or record a doc decision "
+                    "in .doc-decisions.json (a release-class surface needs a real, relevant doc "
+                    "change — a token does not satisfy it)."
+                )
+        return report.exit_code
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
         if args.roadmap:

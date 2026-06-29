@@ -278,17 +278,9 @@ DOC_DELTA_DECISIONS = (
 )
 
 # Globs whose change implies a user-visible public surface that docs may track.
-PUBLIC_SURFACE_GLOBS = (
-    "**/cli.py",
-    "**/*.proto",
-    "**/openapi*.json",
-    "**/openapi*.yaml",
-    "**/*.openapi.*",
-    "**/schema*.json",
-    "README.md",
-    "CHANGELOG.md",
-    "**/_contract_docs/**",
-)
+# Canonical definition lives in docs_surfaces (IF-0-P1-1, docs-freshness v4 P1);
+# re-exported here for back-compat so there is exactly one source of truth.
+from .docs_surfaces import GENERAL_PUBLIC_GLOBS as PUBLIC_SURFACE_GLOBS  # noqa: E402
 
 # Verification-evidence policy: OFF by default (warn-only) to preserve autonomy;
 # opt-in promotes a missing-evidence finding to `block`. Declining evidence when

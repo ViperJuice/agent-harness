@@ -7,26 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .discovery import plan_metadata
+# Canonical release-surface taxonomy lives in docs_surfaces (IF-0-P1-1); re-exported
+# here so there is exactly one source of truth (no parallel copy).
+from .docs_surfaces import RELEASE_AFFECTING_PATTERNS
 
 
 RELEASE_DISPATCH_MUTATION = "release_dispatch"
-RELEASE_AFFECTING_PATTERNS = (
-    ".github/workflows/**",
-    "CHANGELOG*",
-    "RELEASE*",
-    "VERSION",
-    "pyproject.toml",
-    "setup.cfg",
-    "setup.py",
-    "uv.lock",
-    "poetry.lock",
-    "requirements*.txt",
-    "docs/release/**",
-    "docs/releases/**",
-    "docs/release*.md",
-    "scripts/*release*",
-    "scripts/download-release.py",
-)
 
 
 @dataclass(frozen=True)
