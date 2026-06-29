@@ -36,7 +36,7 @@ class ReleaseEvidenceReducerTest(unittest.TestCase):
     def test_reducer_is_operator_path_human_required(self):
         # The release-dispatch reducer is the operator-driven flow (NOT the autonomous
         # run-loop) and like the existing release_dispatch_blocker uses human_required.
-        self._write("CHANGELOG.md", "- pending\n")
+        self._write("CHANGELOG.md", "- Message Board SHA: recovery commit pending\n")
         blocker = release_guard.release_dispatch_evidence_blocker(self.repo, ["CHANGELOG.md"])
         self.assertTrue(blocker.to_blocker()["human_required"])
 

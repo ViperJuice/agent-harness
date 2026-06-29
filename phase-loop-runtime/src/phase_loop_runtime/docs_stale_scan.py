@@ -39,14 +39,18 @@ _VERSION_RE = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)?)\b")
 class StaleScanConfig:
     """Configurable patterns + the historical-label exemption (all overridable)."""
 
+    # Specific template/unfilled markers — NOT bare English words. Calibrated after
+    # dogfooding flagged legitimate prose ("the result is pending", "a placeholder for")
+    # and CHANGELOG history. `pending` only matches the release-evidence compound forms.
     placeholder_patterns: tuple[str, ...] = (
         r"recovery commit pending",
-        r"\bpending\b",
+        r"\b(?:commit|sha|tag|result|recovery|release)\s+pending\b",
+        r"\bpending\s+(?:commit|sha|tag|fill|backfill)\b",
         r"\bTBD\b",
         r"\bTODO\b",
-        r"coming soon",
-        r"\bplaceholder\b",
         r"\bFIXME\b",
+        r"\bXXX\b",
+        r"coming soon",
     )
     #: A version mention is exempt from the old-version check if one of these labels
     #: appears within `historical_window` chars after it.
@@ -85,6 +89,22 @@ def _historical_nearby(text: str, end: int, config: StaleScanConfig) -> bool:
     return any(label in window for label in config.historical_labels)
 
 
+def _in_code_span(line: str, pos: int) -> bool:
+    """True when ``pos`` falls inside a backtick code span on ``line``.
+
+    A match that is *documenting* a placeholder (e.g. ``placeholders like
+    `recovery commit pending` ``) is an example, not a real stale marker.
+    """
+    return line.count("`", 0, pos) % 2 == 1
+
+
+def _is_changelog_doc(rel_path: str) -> bool:
+    """A CHANGELOG / RELEASE notes file IS the historical version record — its old
+    version entries are expected, so the unlabeled-old-version check does not apply."""
+    name = rel_path.replace("\\", "/").rsplit("/", 1)[-1].upper()
+    return name.startswith("CHANGELOG") or name.startswith("RELEASE") or "CHANGELOG" in name
+
+
 def scan_text(
     text: str,
     *,
@@ -101,11 +121,13 @@ def scan_text(
     lines = text.splitlines()
     flags = _flags(config)
 
-    # 1. placeholders (always on)
+    # 1. placeholders (always on); skip example mentions inside `code spans`.
     for pat in config.placeholder_patterns:
         rx = re.compile(pat, flags)
         for i, line in enumerate(lines, start=1):
             for m in rx.finditer(line):
+                if _in_code_span(line, m.start()):
+                    continue
                 findings.append(StaleFinding("placeholder", i, m.group(0), detail=f"matched /{pat}/"))
 
     # 2. stale package-count phrasing (opt-in via expected_package_count)
@@ -114,6 +136,8 @@ def scan_text(
             rx = re.compile(pat, flags)
             for i, line in enumerate(lines, start=1):
                 for m in rx.finditer(line):
+                    if _in_code_span(line, m.start()):
+                        continue
                     raw = m.group(1).lower()
                     n = _WORD_NUMBERS.get(raw, int(raw) if raw.isdigit() else None)
                     if n is not None and n != expected_package_count:
@@ -127,6 +151,8 @@ def scan_text(
         cur = _version_tuple(current_version)
         for i, line in enumerate(lines, start=1):
             for m in _VERSION_RE.finditer(line):
+                if _in_code_span(line, m.start()):
+                    continue  # `confidence: 0.0`, code samples — not a version claim
                 ver = m.group(1)
                 if _version_tuple(ver) < cur and not _historical_nearby(line, m.end(), config):
                     findings.append(StaleFinding(
@@ -168,11 +194,14 @@ def scan_doc_paths(
             body = fp.read_text(encoding="utf-8")
         except (OSError, ValueError):
             continue
+        # A CHANGELOG/RELEASE file is the historical version record — its old version
+        # entries are expected, so the unlabeled-old-version check does not apply there.
+        effective_version = None if _is_changelog_doc(rel) else current_version
         hits = scan_text(
             body,
             config=config,
             expected_package_count=expected_package_count,
-            current_version=current_version,
+            current_version=effective_version,
         )
         if hits:
             out[rel] = hits

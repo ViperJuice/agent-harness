@@ -20,7 +20,8 @@ class ScanTextTest(unittest.TestCase):
     def test_each_placeholder_flags(self):
         for txt in (
             "Status: recovery commit pending",
-            "The release is pending.",
+            "Message Board SHA: commit pending",
+            "Tag result pending",
             "Install path: TBD",
             "Runtime docs coming soon",
             "TODO: write this",
@@ -29,6 +30,33 @@ class ScanTextTest(unittest.TestCase):
                 hits = s.scan_text(txt)
                 self.assertTrue(hits, f"expected a placeholder finding for {txt!r}")
                 self.assertEqual(hits[0].code, "placeholder")
+
+    def test_bare_prose_words_do_not_flag(self):
+        # Calibration (dogfood): bare English "pending"/"placeholder" in prose is NOT a
+        # stale marker — only template/evidence forms are. Prevents false positives on
+        # legitimate docs (and on docs that *describe* the scanner).
+        for txt in (
+            "The verification result is pending review.",
+            "This field is a placeholder for the real value.",
+            "We mark it pending until the gate clears.",
+        ):
+            with self.subTest(txt=txt):
+                self.assertEqual(s.scan_text(txt), [], f"false positive on {txt!r}")
+
+    def test_placeholder_in_code_span_is_an_example_not_a_finding(self):
+        # Documenting a placeholder (in backticks) must not flag.
+        self.assertEqual(s.scan_text("placeholders like `recovery commit pending` are caught"), [])
+
+    def test_changelog_old_versions_exempt(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "CHANGELOG.md").write_text("## v0.1.4\n- old\n## v0.1.5\n- new\n", encoding="utf-8")
+            (repo / "README.md").write_text("Install the 0.1.4 package.\n", encoding="utf-8")
+            res = s.scan_doc_paths(repo, ["CHANGELOG.md", "README.md"], current_version="0.1.5")
+            self.assertNotIn("CHANGELOG.md", res)  # changelog history is exempt
+            self.assertIn("README.md", res)         # a README claiming an old version is stale
 
     def test_clean_text_has_no_findings(self):
         self.assertEqual(s.scan_text("The runtime ships three packages and a CLI."), [])
