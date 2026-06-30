@@ -68,6 +68,63 @@ Model selection has two independent axes:
 tiered `model_policy` is on by default; the panel is what's opt-in. See
 `CHANGELOG.md` (model-routing-v1).
 
+## Cross-repo release train
+
+The `phase-loop run-train` coordinator orchestrates changes that span multiple
+repos in a single atomic train: draft PRs open in topo order, a train-level
+governed review gates the entire diff, then nodes merge sequentially with each
+downstream re-verified against the upstream **MERGED SHA** before its own merge.
+
+### Quick start
+
+```sh
+phase-loop run-train --train train-roadmap.md            # P3: open all draft PRs
+phase-loop run-train --train train-roadmap.md --governed # P4: review + sequential merge
+```
+
+### Train roadmap format
+
+```markdown
+# Release Train: my-feature
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: repo-b / specs/plan-b.md
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** submodule path=vendor/repo-a
+```
+
+Channel types: `submodule path=<path>` or `pin file=<file> key=<yaml-key>`.
+
+### Safety invariants (structural, not advisory)
+
+- **Zero PRs on preflight failure** — preflight runs on all repos before any PR opens.
+- **No merge before train approval** — governed review gates the full diff;
+  a rejection is a non-human terminal (`human_required=False`).
+- **False-green killer** — before each downstream merge, `set_upstream_ref` is
+  called with the upstream MERGED SHA (not the draft SHA) and the downstream is
+  re-verified. Order is asserted in `tests/test_train_invariants.py`.
+- **Forward-only** — a downstream re-verify failure halts the train; upstream
+  merges stay merged.
+- **Train state off `.phase-loop/`** — the ledger is never written inside any
+  repo's `.phase-loop/` directory.
+- **Crash-resumable** — re-run with the same `--train` file; the ledger drives
+  which nodes are skipped (already merged) or retried (blocked).
+- **Autonomous boundary** — without `--governed`, the coordinator stops at
+  `drafts_open`; cross-repo merges are never auto-merged.
+
+### Documented limitation
+
+The merged downstream PR carries the **draft-time upstream pin**, not the
+merge-commit SHA. Use expand/contract upstream contracts (additive first,
+backward-compatible) so sequential merges are safe. See
+`_contract_docs/phase-loop/protocol.md` ("Cross-Repo Release Train") for the
+full protocol spec and ledger shape.
+
 ## License
 
 Apache-2.0 (see `LICENSE` / `NOTICE`).

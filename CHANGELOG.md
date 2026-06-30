@@ -4,6 +4,40 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## v0.1.11
+
+- **#29 — Cross-repo release-train coordinator.** `phase-loop run-train --train
+  <roadmap>` orchestrates multi-repo changes in a single atomic train: draft PRs
+  open across all nodes in topo order (P3), a train-level governed review gates
+  the full diff, then nodes merge sequentially with each downstream re-verified
+  against the upstream **MERGED SHA** before its own merge (P4). Safety invariants
+  are enforced structurally and asserted in the CI suite:
+  - **Zero PRs on preflight failure** (train-schema validation T-A/B/C/D runs before
+    any `publish_from_worktree` call).
+  - **No merge before train approval** — review panel rejection is a non-human
+    terminal (`terminal_blocker.human_required=False`, zero `merge_pr` calls).
+  - **False-green killer** — `set_upstream_ref` is called with the upstream MERGED
+    SHA (not the draft SHA) ordered before `reverify_fn`; asserted by call-log
+    capture in `tests/test_train_invariants.py::TestInvariant2FalseGreenKiller`.
+  - **Forward-only guard** — downstream re-verify failure halts the train at that
+    node; upstream merges stay merged.
+  - **Train state off `.phase-loop/`** — `append_record` raises `ValueError` on
+    violation; the ledger is caller-supplied and coordinator-side only.
+  - **Autonomous boundary** — `run_mode="autonomous"` stops at `drafts_open`;
+    `--governed` is required to proceed to review + merge.
+  - **Crash-resumable** — the JSONL ledger records `merged`/`pr_open`/`blocked`
+    per node; a second run skips already-merged nodes and retries blocked ones.
+  - Documented limitation: the merged downstream PR carries the draft-time upstream
+    pin (not the merge-commit SHA); safe under expand/contract upstream contracts.
+  - New `run-train` workflow skill (`claude-run-train`, `codex-run-train`,
+    `gemini-run-train`, `opencode-run-train`) added to `REQUIRED_SKILLS` and the
+    harness-skill-matrix; regenerated bundle + synced `skills_bundle/`; parity/drift
+    gates green.
+  - Protocol doc (`_contract_docs/phase-loop/protocol.md`) extended with: train
+    ledger shape, merge-SHA-pinned cross-repo gate, six numbered invariants, the
+    expand/contract limitation, and the train roadmap authoring format.
+  - `README.md` extended with a "Cross-repo release train" section.
+
 ## v0.1.10
 
 - **#28 — execute skills default to a published review surface.** `execute-detailed`

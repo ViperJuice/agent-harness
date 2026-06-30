@@ -15,6 +15,7 @@ REQUIRED_SKILLS: tuple[str, ...] = (
     "plan-detailed",
     "phase-roadmap-builder",
     "phase-loop",
+    "run-train",
     "skill-editor",
     "skill-improvement-planner",
     "task-contextualizer",

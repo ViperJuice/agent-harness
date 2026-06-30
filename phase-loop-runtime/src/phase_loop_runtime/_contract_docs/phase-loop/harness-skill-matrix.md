@@ -30,6 +30,7 @@ Gemini CLI, and OpenCode. Pi Agent role-style skills and governed-pipeline
 | task-contextualizer | `codex-task-contextualizer` | `claude-task-contextualizer` | `gemini-task-contextualizer` | `opencode-task-contextualizer` |
 | skill-improvement-planner | `codex-skill-improvement-planner` | `claude-skill-improvement-planner` | `gemini-skill-improvement-planner` | `opencode-skill-improvement-planner` |
 | skill-editor | `codex-skill-editor` | `claude-skill-editor` | `gemini-skill-editor` | `opencode-skill-editor` |
+| run-train | `codex-run-train` | `claude-run-train` | `gemini-run-train` | `opencode-run-train` |
 
 Canonical source roots (CANON / IF-0-CANON-1 — the authored skill *sources* now
 live in this repo under `skills-src/<harness>/`; the dotfiles `*-config` roots
