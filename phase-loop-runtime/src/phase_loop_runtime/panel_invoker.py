@@ -302,6 +302,8 @@ def _claude_agent_session_id(output: str) -> str | None:
             if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]+", value):
                 return value
     for pattern in (
+        r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9._:-]+)",
+        r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9._:-]+)\b",
         r"\b(?:agent|agent_id|session|session_id)\s*[:=]\s*([A-Za-z0-9._:-]+)",
         r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
     ):
@@ -327,6 +329,47 @@ def _claude_agent_state(output: str, session_id: str, cwd: str) -> str | None:
             continue
         return _normalize_claude_agent_state(record.get("state") or record.get("status"))
     return None
+
+
+def _claude_project_dir_for_cwd(cwd: str) -> Path:
+    slug = re.sub(r"[^A-Za-z0-9.-]", "-", cwd)
+    return Path.home() / ".claude" / "projects" / slug
+
+
+def _assistant_text_from_jsonl(path: Path) -> str:
+    texts: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for item in message.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                texts.append(item["text"])
+    return "\n".join(texts).strip()
+
+
+def _claude_agent_transcript_text(session_id: str, cwd: str) -> str:
+    project_dir = _claude_project_dir_for_cwd(cwd)
+    candidates: list[Path] = []
+    exact = project_dir / f"{session_id}.jsonl"
+    if exact.exists():
+        candidates.append(exact)
+    candidates.extend(
+        path for path in project_dir.glob(f"{session_id}*.jsonl") if path not in candidates
+    )
+    for path in sorted(candidates, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        text = _assistant_text_from_jsonl(path)
+        if text:
+            return text
+    return ""
 
 
 def _normalize_claude_agent_state(value: object) -> str:
@@ -359,12 +402,15 @@ def _exec_claude_agent_view_leg(review_dir: Path, out_dir: Path, timeout_s: int,
     prompt = _render_leg_prompt(artifact)
     adapter = ClaudeAgentViewAdapter()
     command = adapter.launch_command(
-        prompt,
-        cwd=review_dir,
+        None,
         name=_CLAUDE_AGENT_NAME,
         model=CLAUDE_IMPLEMENTER_MODEL,
         effort="high",
         permission="plan",
+        safe_mode=True,
+        strict_mcp_config=True,
+        mcp_config=json.dumps({"mcpServers": {}}),
+        tools="",
     )
     try:
         proc = subprocess.run(
@@ -375,7 +421,7 @@ def _exec_claude_agent_view_leg(review_dir: Path, out_dir: Path, timeout_s: int,
             text=True,
             timeout=min(timeout_s, _CLAUDE_LAUNCH_TIMEOUT_S),
             check=False,
-            stdin=subprocess.DEVNULL,
+            input=prompt,
         )
     except subprocess.TimeoutExpired:
         return "TIMEOUT", f"timeout after {timeout_s}s"
@@ -394,6 +440,11 @@ def _exec_claude_agent_view_leg(review_dir: Path, out_dir: Path, timeout_s: int,
     cwd = str(review_dir)
     while True:
         remaining = max(1.0, deadline - time.monotonic())
+        transcript_text = _claude_agent_transcript_text(session_id, cwd)
+        if transcript_text:
+            last_review = transcript_text
+            if terminal_verdict(last_review) is not None:
+                return _classify_leg(0, last_review, ""), last_review
         try:
             logs_proc = subprocess.run(
                 adapter.logs_command(session_id),

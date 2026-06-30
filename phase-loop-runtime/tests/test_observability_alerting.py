@@ -144,6 +144,30 @@ class ObservabilityAlertingTest(unittest.TestCase):
             self.assertEqual(summary["liveness_class"], "cpu_active_quiet")
             self.assertFalse(summary["stalled_suspect"])
 
+    def test_heartbeat_summary_uses_process_group_cpu_for_child_activity(self):
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "output.log"
+            log_path.write_text("child working\n", encoding="utf-8")
+
+            with (
+                patch("phase_loop_runtime.observability._pid_is_live", return_value=True),
+                patch("phase_loop_runtime.observability._process_cpu_percent", return_value=0.0),
+                patch("phase_loop_runtime.observability._process_group_cpu_percent", return_value=3.0),
+            ):
+                summary = run_heartbeat_summary(
+                    log_path=log_path,
+                    pid=12345,
+                    process_group_id=12345,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                )
+
+            self.assertEqual(summary["process_group_id"], 12345)
+            self.assertEqual(summary["cpu_percent"], 3.0)
+            self.assertEqual(summary["quiet_level"], "stale")
+            self.assertEqual(summary["liveness_class"], "cpu_active_quiet")
+            self.assertFalse(summary["stalled_suspect"])
+
     def test_heartbeat_summary_marks_stale_cpu_unknown_without_crashing(self):
         with tempfile.TemporaryDirectory() as td:
             log_path = Path(td) / "output.log"

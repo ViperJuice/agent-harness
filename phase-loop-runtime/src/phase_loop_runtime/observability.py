@@ -926,6 +926,7 @@ def run_heartbeat_summary(
     quiet_blocker_seconds: int = 1800,
     command: list[str] | None = None,
     returncode: int | None = None,
+    process_group_id: int | None = None,
 ) -> dict[str, Any]:
     log = Path(log_path) if log_path else None
     heartbeat = Path(heartbeat_path) if heartbeat_path else (heartbeat_path_for_log(log) if log else None)
@@ -936,7 +937,7 @@ def run_heartbeat_summary(
     seconds_since_log_update = int(max(0, now - log_mtime)) if log_mtime else None
     quiet_level = _quiet_level(seconds_since_log_update, quiet_warning_seconds, quiet_blocker_seconds)
     process_alive = _pid_is_live(pid) if pid else False
-    cpu_percent = _process_cpu_percent(pid) if process_alive else None
+    cpu_percent = _process_tree_cpu_percent(pid, process_group_id) if process_alive else None
     liveness_class = _liveness_class(quiet_level, process_alive, returncode, pid, cpu_percent)
     elapsed_seconds = int(time.monotonic() - started_monotonic) if started_monotonic is not None else None
     last_log_excerpt = _last_log_excerpt(log)
@@ -944,6 +945,7 @@ def run_heartbeat_summary(
     summary: dict[str, Any] = {
         "timestamp": utc_now(),
         "pid": pid,
+        "process_group_id": process_group_id,
         "process_alive": process_alive,
         "returncode": returncode,
         "heartbeat_status": heartbeat_status,
@@ -1172,6 +1174,20 @@ def _pid_is_live(pid: int | None) -> bool:
     return True
 
 
+def _process_tree_cpu_percent(pid: int | None, process_group_id: int | None) -> float | None:
+    values = [
+        value
+        for value in (
+            _process_cpu_percent(pid),
+            _process_group_cpu_percent(process_group_id),
+        )
+        if value is not None
+    ]
+    if not values:
+        return None
+    return max(values)
+
+
 def _process_cpu_percent(pid: int | None) -> float | None:
     if not pid or pid <= 0:
         return None
@@ -1194,6 +1210,34 @@ def _process_cpu_percent(pid: int | None) -> float | None:
         return float(first[0].strip())
     except ValueError:
         return None
+
+
+def _process_group_cpu_percent(process_group_id: int | None) -> float | None:
+    if not process_group_id or process_group_id <= 0:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "%cpu=", "-g", str(process_group_id)],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    total = 0.0
+    seen = False
+    for line in (result.stdout or "").strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            total += float(line.strip())
+        except ValueError:
+            continue
+        seen = True
+    return total if seen else None
 
 
 def _slug(value: str) -> str:

@@ -1825,6 +1825,7 @@ def launch(
                         quiet_blocker_seconds=quiet_blocker_seconds,
                         command=command,
                         returncode=process.poll(),
+                        process_group_id=process_group_id,
                     )
                     last_heartbeat_summary = heartbeat
                     write_run_heartbeat(heartbeat_path, heartbeat)
@@ -1900,6 +1901,7 @@ def launch(
             quiet_blocker_seconds=quiet_blocker_seconds,
             command=command,
             returncode=returncode,
+            process_group_id=process_group_id,
         )
         write_run_heartbeat(heartbeat_path, heartbeat_summary)
     return LaunchResult(

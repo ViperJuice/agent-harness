@@ -17,7 +17,7 @@ from phase_loop_runtime.governed_review import select_reviewer_pool
 
 
 class ClaudeAgentViewLegTest(unittest.TestCase):
-    def test_claude_leg_uses_agent_view_sonnet5_and_inline_prompt(self):
+    def test_claude_leg_uses_agent_view_sonnet5_and_stdin_prompt(self):
         captured = {"commands": [], "envs": []}
 
         def fake_run(cmd, **kwargs):
@@ -30,14 +30,17 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
                 self.assertEqual(cmd[cmd.index("--model") + 1], "claude-sonnet-5")
                 self.assertIn("--permission-mode", cmd)
                 self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
+                self.assertNotIn("--cwd", cmd)
                 self.assertNotIn("-p", cmd)
-                self.assertIn("SENTINEL-CLAUDE-ARTIFACT", cmd[-1])
-                self.assertIn("repo-grounded, whole-feature integration", cmd[-1])
-                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
-                return _completed(cmd, stdout=json.dumps({"id": "agent-1"}))
-            if cmd == ["claude", "logs", "agent-1"]:
-                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
-                return _completed(cmd, stdout="Repo-grounded review.\nAGREE")
+                self.assertIn("--safe-mode", cmd)
+                self.assertIn("--strict-mcp-config", cmd)
+                self.assertEqual(cmd[cmd.index("--mcp-config") + 1], '{"mcpServers": {}}')
+                self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+                self.assertNotIn("SENTINEL-CLAUDE-ARTIFACT", cmd)
+                self.assertIn("SENTINEL-CLAUDE-ARTIFACT", kwargs["input"])
+                self.assertIn("repo-grounded, whole-feature integration", kwargs["input"])
+                self.assertNotIn("stdin", kwargs)
+                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude\n")
             raise AssertionError(f"unexpected command: {cmd}")
 
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
@@ -45,7 +48,13 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+            with (
+                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
+                patch(
+                    "phase_loop_runtime.panel_invoker._claude_agent_transcript_text",
+                    return_value="Repo-grounded review.\nAGREE",
+                ),
+            ):
                 status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "SENTINEL-CLAUDE-ARTIFACT")
 
         self.assertEqual(status, "OK")
@@ -54,6 +63,33 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
         for env in captured["envs"]:
             if env is not None:
                 self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_claude_launch_id_parser_accepts_agent_view_background_output(self):
+        self.assertEqual(
+            pi._claude_agent_session_id("backgrounded · 170a3dd3 · advisor-panel-claude"),
+            "170a3dd3",
+        )
+        self.assertEqual(pi._claude_agent_session_id("  claude attach 170a3dd3    open"), "170a3dd3")
+
+    def test_claude_transcript_helpers_extract_assistant_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "session.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"message": {"role": "user", "content": "prompt"}}),
+                        json.dumps({"message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "..."}]}}),
+                        json.dumps({"message": {"role": "assistant", "content": [{"type": "text", "text": "AGREE"}]}}),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(str(pi._claude_project_dir_for_cwd("/tmp/a_b/review")).endswith("/-tmp-a-b-review"))
+            self.assertTrue(
+                str(pi._claude_project_dir_for_cwd("/tmp/x-_1_y/review")).endswith("/-tmp-x--1-y-review")
+            )
+            self.assertEqual(pi._assistant_text_from_jsonl(path), "AGREE")
 
     def test_claude_below_minimum_version_is_unavailable_without_launch(self):
         calls = []
@@ -67,7 +103,10 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+            with (
+                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
+                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
+            ):
                 status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
 
         self.assertEqual(status, "UNAVAILABLE")
@@ -79,7 +118,7 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
             if cmd == ["claude", "--version"]:
                 return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
             if cmd[:2] == ["claude", "--bg"]:
-                return _completed(cmd, stdout="agent: agent-1")
+                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
             if cmd == ["claude", "logs", "agent-1"]:
                 return _completed(cmd, stdout="No terminal verdict yet.")
             if cmd == ["claude", "agents", "--json", "--all"]:

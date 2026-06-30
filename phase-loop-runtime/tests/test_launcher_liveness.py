@@ -119,7 +119,31 @@ class LauncherLivenessTest(unittest.TestCase):
             self.assertFalse(result.timed_out)
             self.assertIsNone(result.cleanup_evidence)
 
+    def test_process_group_cpu_activity_prevents_stale_cleanup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_path = root / "output.log"
+            heartbeat_path = root / "heartbeat.json"
+
+            with (
+                patch("phase_loop_runtime.observability._process_cpu_percent", return_value=0.0),
+                patch("phase_loop_runtime.observability._process_group_cpu_percent", return_value=99.0),
+            ):
+                result = launch(
+                    [sys.executable, "-c", "import time; time.sleep(0.2)"],
+                    log_path=log_path,
+                    heartbeat_path=heartbeat_path,
+                    heartbeat_interval_seconds=0,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                    timeout_seconds=2,
+                )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(result.stalled)
+            self.assertFalse(result.timed_out)
+            self.assertIsNone(result.cleanup_evidence)
+
 
 if __name__ == "__main__":
     unittest.main()
-
