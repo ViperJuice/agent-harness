@@ -20,6 +20,10 @@ Coverage:
          MERGED SHA read from ledger; no double-merge
   P4-6. Autonomous mode with _merge_phase_enabled=True → status=drafts_open,
          merge_pr NOT called (cross-repo merges never auto-merge)
+  P4-7. Crash-between-merge-and-ledger-write resume: repo-a merged on GitHub
+         but ledger not yet updated (pr_open) — pr_merged_sha_fn cross-check
+         recovers the merged SHA, skips re-merge of repo-a, injects merged
+         SHA into repo-b
 """
 from __future__ import annotations
 
@@ -725,3 +729,153 @@ class TestAutonomyBoundary:
             f"got {result['status']!r}"
         )
         assert merge_calls == [], "P3 must never call merge_pr"
+
+
+# ---------------------------------------------------------------------------
+# P4-7: Crash-between-merge-and-ledger-write resume
+
+class TestCrashBetweenMergeAndLedgerWrite:
+    """Crash recovery: repo-a merged on GitHub but ledger write didn't happen.
+
+    The idempotent resume path has two layers:
+      (A) Ledger has a ``merged`` record with ``upstream_merge_sha`` → skip.
+          Covered by P4-5.
+      (B) Ledger still shows ``pr_open``, but GitHub already merged the PR
+          → ``_pr_merged_sha_fn`` cross-check recovers the SHA and skips
+          re-merge (the crash window between ``gh pr merge`` and
+          ``append_record``).
+          This class covers (B) exclusively.
+
+    The scenario is: coordinator called ``gh pr merge`` for repo-a, the
+    merge succeeded on GitHub (merge commit exists), but the process crashed
+    before writing the ``merged`` ledger record.  On restart:
+      - Ledger: repo-a=pr_open, repo-b=pr_open, _train_review_=approved
+      - GitHub (via ``_pr_merged_sha_fn``): repo-a → "sha-merged-a"
+      - Expected: repo-a NOT re-merged; repo-b injected with "sha-merged-a"
+    """
+
+    def _make_ledger_crash_state(self, tmp_path: Path) -> Path:
+        """Ledger state after crash: review approved, repo-a PR merged on GitHub
+        but ledger not updated (still shows pr_open)."""
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md",
+                status="pr_open",
+                branch="feat/train-a",
+                head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1",
+                merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md",
+                status="pr_open",
+                branch="feat/train-b",
+                head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1",
+                merge_order=1,
+            ),
+            # Train-level review was approved before the crash
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            # NOTE: NO merged record for repo-a — that's what crashed
+        ]:
+            append_record(ledger, rec)
+        return ledger
+
+    def test_crash_resume_skips_already_merged_via_live_check(self, tmp_path: Path):
+        """repo-a merged on GitHub (ledger=pr_open) → not re-merged; repo-b gets merged SHA."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = self._make_ledger_crash_state(tmp_path)
+
+        merge_calls: List[str] = []
+        re_injection_refs: List[str] = []
+
+        def _set_upstream_ref(workspace: Path, channel, ref: str):
+            if workspace.name == "repo-b":
+                re_injection_refs.append(ref)
+            return []
+
+        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+            # Simulate GitHub: repo-a is merged, repo-b is not
+            if workspace.name == "repo-a":
+                return "sha-merged-a"
+            return None
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=_set_upstream_ref,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _reverify_fn=_reverify_pass,
+            # NOTE: _train_review_fn omitted — _already_approved_ path covers it
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=_pr_merged_sha,
+        )
+
+        assert result["status"] == "merged", (
+            f"Expected 'merged' on crash-resume, got {result['status']!r}"
+        )
+        # repo-a must NOT be re-merged (GitHub already merged it)
+        assert "repo-a" not in merge_calls, (
+            f"repo-a must not be re-merged after crash (GitHub already merged it); "
+            f"merge_calls={merge_calls}"
+        )
+        # repo-b must be merged (still pending)
+        assert "repo-b" in merge_calls, (
+            f"repo-b must be merged on resume; merge_calls={merge_calls}"
+        )
+        # The re-injection for repo-b must use the LIVE merged SHA from GitHub
+        assert re_injection_refs == ["sha-merged-a"], (
+            f"repo-b must be re-injected with merged SHA from live check ('sha-merged-a'); "
+            f"got {re_injection_refs!r}"
+        )
+
+    def test_crash_resume_review_not_re_invoked(self, tmp_path: Path):
+        """Ledger has _train_review_ approved → review not called on crash-resume."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = self._make_ledger_crash_state(tmp_path)
+
+        review_calls: List[str] = []
+
+        def _counting_review_fn(artifact: str, run_mode: str) -> LoopResult:
+            review_calls.append("called")
+            return _approval_review_fn(artifact, run_mode)
+
+        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+            if workspace.name == "repo-a":
+                return "sha-merged-a"
+            return None
+
+        run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub([]),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_counting_review_fn,
+            _pr_merged_sha_fn=_pr_merged_sha,
+        )
+
+        # already_approved=True from ledger → review must NOT be re-invoked
+        assert review_calls == [], (
+            f"Review must not be called when ledger already shows approved; "
+            f"got {len(review_calls)} call(s)"
+        )
