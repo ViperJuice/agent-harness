@@ -258,8 +258,11 @@ class TestMissingChannelTrain:
 
 class TestInRepoTokenReused:
     def test_if0_token_as_dep_fails_parse(self) -> None:
-        # Parsing fails because IF-0-P1-1 is not a valid node id of the form repo/roadmap
-        with pytest.raises(ValueError):
+        # Parsing must raise a DISTINCT error about the IF-gate token namespace,
+        # not the generic "unknown node" message produced by missing-node failures.
+        # This proves that the IF-0 rejection is its own check, not a coincidental
+        # side-effect of the node-lookup failing for unrelated reasons.
+        with pytest.raises(ValueError, match="IF-gate"):
             parse_train_roadmap(IN_REPO_TOKEN_TRAIN_MD)
 
 
@@ -439,7 +442,6 @@ class TestLedgerAppendResume:
         path = default_ledger_path(coordinator_dir, "my-train")
         # The path must not contain .phase-loop
         assert ".phase-loop" not in str(path)
-        assert "phase-loop" not in path.parts or ".phase-loop" not in path.parts
 
 
 class TestLedgerDurability:

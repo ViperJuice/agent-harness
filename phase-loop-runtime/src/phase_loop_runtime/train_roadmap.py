@@ -189,6 +189,14 @@ def parse_train_roadmap(text: str) -> TrainRoadmap:
 
     edges: List[TrainEdge] = []
     for downstream, dep_id, channel_raw in raw_edges:
+        # Distinct check: reject in-repo IF-gate tokens before the node lookup so
+        # "invalid in-repo token" and "missing node" produce distinguishable errors.
+        if _IF_GATE_TOKEN_RE.search(dep_id):
+            raise ValueError(
+                f"node '{downstream.node_id}' references in-repo IF-gate token "
+                f"'{dep_id}' as a dependency; cross-repo edges use '<repo>/<roadmap>' "
+                f"node identifiers (XGATE: namespace), not IF-0-... tokens"
+            )
         upstream = node_by_id.get(dep_id) or node_by_str.get(dep_id)
         if upstream is None:
             # Try normalising " / " vs "/"
