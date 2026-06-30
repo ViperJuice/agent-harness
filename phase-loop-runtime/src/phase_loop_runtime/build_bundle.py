@@ -17,11 +17,17 @@ ACTIVE_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "opencode")
 # to every harness root. Without this, the SKILL Step 8 helper
 # `scripts/validate_roadmap.py` never leaves the canonical source tree.
 AUX_SUBDIRS: tuple[str, ...] = ("scripts", "references", "assets")
+# IF-0-CANON-1: the canonical phase-loop skill sources now live IN this repo
+# under `skills-src/<harness>/` (one tree per active harness, each holding
+# `<harness>-<skill>/` dirs). `build_bundle` consumes these to produce the
+# committed `phase-loop-skills/` bundle with NO dotfiles checkout required.
+# The fleet's `bootstrap.sh` may still override these with an explicit
+# `--source <dotfiles-root>` during the cutover; that path keeps working.
 DEFAULT_SOURCES: dict[str, str] = {
-    "claude": "claude-config/claude-skills",
-    "codex": "codex-config/skills",
-    "gemini": "gemini-config/skills",
-    "opencode": "opencode-config/skills",
+    "claude": "skills-src/claude",
+    "codex": "skills-src/codex",
+    "gemini": "skills-src/gemini",
+    "opencode": "skills-src/opencode",
 }
 OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 

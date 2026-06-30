@@ -1,0 +1,62 @@
+name: skills-parity
+
+# CANON / IF-0-CANON-2 — hard parity gate: the committed phase-loop-skills/ bundle
+# MUST equal build_bundle(<canonical skills-src/ sources>). Self-contained: no
+# dotfiles checkout. If this fails, run the documented regenerate:
+#   python phase-loop-runtime/scripts/regenerate_skills_bundle.py
+#   python phase-loop-runtime/scripts/sync_skills_bundle.py   # refresh packaged bundle
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills-src/**'
+      - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
+      - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
+      - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
+      - '.github/workflows/skills-parity.yml'
+  pull_request:
+    paths:
+      - 'skills-src/**'
+      - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
+      - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
+      - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
+      - '.github/workflows/skills-parity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: build_bundle(skills-src) == committed phase-loop-skills/
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install phase-loop-runtime + pytest
+        run: python -m pip install ./phase-loop-runtime pytest
+
+      - name: Parity gate (CANON)
+        working-directory: phase-loop-runtime
+        run: python -m pytest -q tests/test_skills_canon_parity.py
+
+      - name: Regenerate is a no-op (proves parity is reachable)
+        # Belt-and-suspenders: run the documented regenerate against the checkout
+        # and fail if it dirties the tree. This catches a stale committed bundle
+        # even if the pytest gate's exclusion list ever drifts.
+        run: |
+          python phase-loop-runtime/scripts/regenerate_skills_bundle.py
+          if ! git diff --quiet -- phase-loop-skills/; then
+            echo "::error::phase-loop-skills/ is stale vs skills-src/. Run:"
+            echo "  python phase-loop-runtime/scripts/regenerate_skills_bundle.py"
+            echo "  python phase-loop-runtime/scripts/sync_skills_bundle.py"
+            git --no-pager diff --stat -- phase-loop-skills/
+            exit 1
+          fi
