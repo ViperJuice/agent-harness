@@ -170,21 +170,24 @@ Handoff frontmatter must include `from: <harness>-execute-phase`, `timestamp:`, 
 
 ## Publication mode
 
-After verified phase work, select exactly one of three modes:
+After verified phase work, select exactly one of three modes. **Default to (a) unless a
+clear interactive signal is present** — a run missing BOTH the adapter prompt prefix AND
+`PHASE_LOOP_RUN_MODE` is AMBIGUOUS and MUST be treated as (a) (fail safe toward the runner).
 
-- (a) Runner-managed closeout (incl. governed mode). If this is the phase-loop adapter
-  (the prompt begins with `<harness>-execute-phase <plan>` from a pipeline run dir) or
-  `PHASE_LOOP_RUN_MODE` is set (autonomous/governed), the RUNNER owns closeout and
-  commit. Do NOT independently publish — defer entirely to runner closeout
-  (`awaiting_phase_closeout` / runner commit). Publishing here would bypass the governed
-  pre-merge review panel. When mode detection is ambiguous, DEFER (fail safe toward the
-  runner).
-- (b) Interactive orchestrator on a clean, non-protected feature branch. After the
+- (a) Runner-managed closeout (incl. governed mode), OR ambiguous mode. If this is the
+  phase-loop adapter (the prompt begins with `<harness>-execute-phase <plan>` from a
+  pipeline run dir), or `PHASE_LOOP_RUN_MODE` is set (autonomous/governed), OR neither
+  interactive signal is clearly present, the RUNNER owns closeout and commit. Do NOT
+  independently publish — defer entirely to runner closeout (`awaiting_phase_closeout` /
+  runner commit). Publishing here would bypass the governed pre-merge review panel.
+- (b) Interactive orchestrator on a clean, non-protected feature branch (a clear
+  interactive signal, and the merge target passed the merge-target safety gate). After the
   Step-9 clean-tree state, push the merge-target branch and open a PR (`gh pr create`,
-  `--draft` if deps/partial else ready) instead of leaving the lane merge only local.
-- (c) Interactive orchestrator whose merge target is `main` or a protected branch. STOP
-  and report — do NOT merge lanes onto `main`/protected. Re-target a feature branch or
-  take explicit instruction.
+  `--draft` if dependencies remain or verification was partial/skipped, else ready) instead
+  of leaving the lane merge only local.
+- (c) Merge target is `main` or a protected branch. Already STOPPED at the merge-target
+  safety gate before any lane merge — never merge lanes onto `main`/protected. Re-target a
+  feature branch or take explicit instruction.
 
 This applies only to interactive (non-runner) completion; it never overrides
 `awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
