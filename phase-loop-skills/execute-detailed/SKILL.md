@@ -25,8 +25,14 @@ handoff roots, helper roots, and reflection roots.
 - Treat ignored, private, raw-data, credential, and evidence-source files as
   read-protected unless the detailed plan explicitly allowlists the exact path
   or glob for read access.
-- Do not commit, push, merge, or run destructive git commands unless the user
-  explicitly requested that operation.
+- Git safety invariant: never commit to `main` or a protected branch, never commit from
+  a dirty primary checkout, and never commit/push onto a branch this run does not own (a
+  shared or pre-existing colleague branch). When executing a plan, publishing a PR from a
+  dedicated branch is the default outcome (see the Workflow + "## Publication") unless a
+  runner owns closeout, or the user asked for local-only, planning-only, or no-publication
+  work, or verification failed. Never merge, force-push, reset, delete a publication
+  branch/worktree holding unmerged work, or run other destructive git commands without
+  explicit instruction.
 
 ## Inputs
 
@@ -48,7 +54,7 @@ handoff roots, helper roots, and reflection roots.
    and metadata that identifies the run and plan artifact. Manifest lifecycle
    failures emit ledger/reflection warnings only and do not abort execution
    during the dual-mode window.
-6. Apply the `## Changes` section in declared order. Use `apply_patch` for
+6. **Establish the safe working tree BEFORE editing** (unless a runner owns closeout — see step 2 / the Git safety invariant): resolve a fresh base ref (`origin/<default-branch>` after fetch, or an explicit merge target; never a stale local `main`) and select the working tree — reuse the current branch only if it is clean, non-protected, AND owned by this run; otherwise (`main`/a protected branch, a shared/foreign branch, or a dirty primary checkout) create a worktree+branch off the base: `git worktree add <path> -b <branch> <base>` under `/mnt/workspace/worktrees/<project>-<branch-slug>` if `/mnt/workspace` exists, else a repo sibling `../<project>-<branch-slug>`. Do ALL editing, the `git status` snapshots, the dirty-path classification, and verification in that tree — never on `main`/protected/dirty/shared. Then apply the `## Changes` section in declared order. Use `apply_patch` for
    manual edits. If implementation requires a file or behavior not named by the
    plan, stop and report `dirty worktree from non-plan output`.
 7. Run every command in `## Verification` unless unsafe, unavailable, or blocked
@@ -80,6 +86,10 @@ handoff roots, helper roots, and reflection roots.
   `## Acceptance criteria`.
 - `dirty worktree from non-plan output`: closeout finds a dirty path that was
   not pre-existing and is not produced by the detailed plan's declared changes.
+- `publication blocked`: a publication precheck failed (no remote / no push auth / no `gh` /
+  branch-name collision / push rejected / unresolved base ref), or publishing would otherwise
+  require committing to `main`/a protected branch or a branch this run does not own. Verified
+  work is preserved locally on a safe branch/worktree; report what blocked the PR.
 
 
 ## Runner Verification Evidence
@@ -102,3 +112,32 @@ was executed, no edit was made, and no decision was made.
 Final response must include the detailed plan artifact path, changed files,
 verification command results, acceptance-criteria status, final dirty-path
 classification, and next action or blocker.
+
+
+## Publication
+
+After a verified implementation, publishing a PR from the working tree established in
+Workflow step 6 is the default outcome — under the Git safety invariant in Core Rules.
+Defer entirely if a runner / pipeline owns closeout (a phase-loop-runner-driven or adapter
+run, or an explicit runner-owned-closeout instruction): the runner owns commit and closeout.
+Do NOT infer "runner owns closeout" from `verification_artifact_path` — every closeout
+records it; it does not signal a runner. The steps below are for human-invoked plan
+execution.
+
+1. **Publication preflight.** Confirm a remote, push auth, the `gh` CLI, and that the
+   intended branch name is free. If publication infrastructure is missing, keep the verified
+   work committed on the safe branch/worktree and STOP at publish with `publication blocked`
+   — never on `main`/a protected branch, and never imply a PR exists.
+2. **Stage + audit before committing.** Stage only plan-owned paths by explicit path
+   (`git add -- <owned paths>`), never `git add -A`. Then audit the staged set:
+   `git diff --cached --name-only` must equal the plan-owned set; reject any ignored,
+   private, raw-data, credential, or `.env` path; run `git diff --cached --check`; fail
+   closed (stop) on any unexpected staged or unstaged delta — path-scoping alone does not
+   catch a secret inside an owned file; the read-protection rules and this audit are the
+   backstop.
+3. **Commit + push (no force).** Commit the audited diff and `git push` without force. If
+   the push is rejected (divergent / non-fast-forward / branch protection), STOP and report
+   `publication blocked` — never force-push or merge to resolve it.
+4. **Open the PR.** `gh pr create` — `--draft` if dependencies remain or verification was
+   partial/skipped, ready (`--fill`) when verification is complete. Skipped or partial
+   verification is not a pass and never opens a ready PR.

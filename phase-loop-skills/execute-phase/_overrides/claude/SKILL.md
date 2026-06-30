@@ -225,6 +225,11 @@ Build the lane graph. Topologically sort it; reject on cycle with a clear error.
 
 - **Run `scripts/verify_harness.sh <merge-target>`.** Enforces the hard gates: git + git-worktree available, inside a work tree, merge-target branch exists locally, working tree clean (allowlist: `.claude/worktrees/`, `.claude/<harness>-execute-phase-state.json`), `.gitignore` covers worktree paths. **Non-zero exit blocks dispatch.** On dirty-tree failure, invoke `AskUserQuestion` with `[commit the changes as a chore, stash for the duration of the phase, abort /<harness>-execute-phase]` and take the user's answer. No override.
 - Record merge target = current branch (or `$EXECUTE_MERGE_TARGET`).
+- **Merge-target safety gate (before any lane dispatch or merge).** If the resolved merge
+  target is `main` or a protected branch, STOP — do not dispatch lanes or run any
+  `git merge` onto it. Interactive: check out / create a dedicated feature branch first and
+  re-resolve the merge target; runner/adapter: the runner resolves a runner-managed branch.
+  This gate precedes Step 7's auto-merge, which would otherwise mutate `main` directly.
 - Sanity check: every symbol appearing in any lane's `Interfaces consumed` must either be produced by an upstream lane's `Interfaces provided` OR be pre-existing (skip unknown symbols with a warning, don't hard-fail).
 - Producer-dependency check: if a lane consumes another lane's findings, interfaces, or artifacts, that producer lane must appear in `Depends on`. If a lane writes a synthesized artifact, it must be downstream of every producer lane it summarizes. Missing dependencies block execution until the plan is corrected.
 - If `--dry-run`: print the topological schedule with per-lane model/thinking assignments (see Step 3) and stop here.
@@ -710,3 +715,31 @@ After plan validation and before lane execution, perform a best-effort `plan-man
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+
+
+## Publication mode
+
+After verified phase work, select exactly one of three modes. **Default to (a) unless a
+clear interactive signal is present** — a run missing BOTH the adapter prompt prefix AND
+`PHASE_LOOP_RUN_MODE` is AMBIGUOUS and MUST be treated as (a) (fail safe toward the runner).
+
+- (a) Runner-managed closeout (incl. governed mode), OR ambiguous mode. If this is the
+  phase-loop adapter (the prompt begins with `<harness>-execute-phase <plan>` from a
+  pipeline run dir), or `PHASE_LOOP_RUN_MODE` is set (autonomous/governed), OR neither
+  interactive signal is clearly present, the RUNNER owns closeout and commit. Do NOT
+  independently publish — defer entirely to runner closeout (`awaiting_phase_closeout` /
+  runner commit). Publishing here would bypass the governed pre-merge review panel.
+- (b) Interactive orchestrator on a clean, non-protected feature branch (a clear
+  interactive signal, and the merge target passed the merge-target safety gate). After the
+  Step-9 clean-tree state, push the merge-target branch and open a PR (`gh pr create`,
+  `--draft` if dependencies remain or verification was partial/skipped, else ready) instead
+  of leaving the lane merge only local.
+- (c) Merge target is `main` or a protected branch. Already STOPPED at the merge-target
+  safety gate before any lane merge — never merge lanes onto `main`/protected. Re-target a
+  feature branch or take explicit instruction.
+
+This applies only to interactive (non-runner) completion; it never overrides
+`awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
+hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
+unchanged — the destructive-op ban targets publication branches/worktrees holding
+unmerged work.
