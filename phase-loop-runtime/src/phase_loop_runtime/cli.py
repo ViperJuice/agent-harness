@@ -311,8 +311,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--allow-skill", action="append", default=())
             sub.add_argument("--improvement-plan")
         if name == "validate-roadmap":
-            sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints)."
+            sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints).  Pass --train for cross-repo release-train roadmaps."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
+            sub.add_argument("--train", action="store_true", default=False, help="Validate as a cross-repo release-train roadmap (P2 train mode).")
         if name == "docs-audit":
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
@@ -519,7 +520,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             candidate = select_roadmap(repo, None)
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
-        return roadmap_lint.main(["validate-roadmap", str(candidate)])
+        argv_extra = ["--train"] if getattr(args, "train", False) else []
+        return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
     if command == "docs-audit":
         from . import docs_audit
 
