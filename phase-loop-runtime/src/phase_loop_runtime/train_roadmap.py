@@ -228,6 +228,11 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
     (T-B) Every edge's upstream node exists in the node list.
     (T-C) Every edge with a dependency carries a non-none channel descriptor.
     (T-D) The cross-repo DAG is acyclic (topo-sort succeeds).
+    (T-E) Every dependency edge uses a supported channel kind: ``pin`` (with
+          ``file=``) or ``submodule``.  ``workspace`` channels are not
+          implemented for real consumption and are rejected here so that a
+          train with a workspace edge fails the preflight gate — opening zero
+          PRs — rather than running until injection fails mid-train.
     """
     errors: List[str] = []
 
@@ -261,6 +266,20 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
                 f"(T-C) edge '{edge.downstream.node_id}' → '{edge.upstream.node_id}' "
                 f"has no consumption-channel descriptor; a channel (pin/submodule/workspace) "
                 f"is required for every cross-repo dependency"
+            )
+
+    # (T-E) Only supported channel kinds: pin (with file=) or submodule
+    _SUPPORTED_KINDS = frozenset({"pin", "submodule"})
+    for edge in roadmap.edges:
+        kind = edge.channel.kind
+        if kind == "none":
+            continue  # T-C already reported this
+        if kind not in _SUPPORTED_KINDS:
+            errors.append(
+                f"(T-E) edge '{edge.downstream.node_id}' → '{edge.upstream.node_id}' "
+                f"uses unsupported channel kind '{kind}'; only 'pin' (with file=) and "
+                f"'submodule' are supported for real consumption. "
+                f"'workspace' channels are rejected at preflight to prevent hollow injection."
             )
 
     # (T-D) Acyclic + serially orderable

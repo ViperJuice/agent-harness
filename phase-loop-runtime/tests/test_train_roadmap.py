@@ -83,12 +83,12 @@ VALID_TRAIN_3NODE_MD = """\
 ### Node: beta / specs/beta.md
 
 **Depends on:** alpha / specs/alpha.md
-**Channel:** pin name=alpha-lib version=1.0.0
+**Channel:** pin file=manifest.json key=deps.alpha-lib
 
 ### Node: gamma / specs/gamma.md
 
 **Depends on:** beta / specs/beta.md
-**Channel:** workspace path=../beta
+**Channel:** submodule path=vendor/beta
 """
 
 CYCLIC_TRAIN_MD = """\
@@ -284,11 +284,22 @@ class TestParseChannelLine:
         assert c.kind == "submodule"
         assert c.params["path"] == "vendor/repo-a"
 
-    def test_pin(self) -> None:
-        c = parse_channel_line("pin name=mylib version=1.2.3")
+    def test_pin_plain_file(self) -> None:
+        c = parse_channel_line("pin file=VERSION")
         assert c.kind == "pin"
-        assert c.params["name"] == "mylib"
-        assert c.params["version"] == "1.2.3"
+        assert c.params["file"] == "VERSION"
+        assert "key" not in c.params
+
+    def test_pin_json_manifest(self) -> None:
+        c = parse_channel_line("pin file=manifest.json key=deps.mylib")
+        assert c.kind == "pin"
+        assert c.params["file"] == "manifest.json"
+        assert c.params["key"] == "deps.mylib"
+
+    def test_pin_missing_file_raises(self) -> None:
+        """pin without 'file' param fails loud at parse time."""
+        with pytest.raises(ValueError, match="file"):
+            parse_channel_line("pin key=deps.schema")  # missing file=
 
     def test_workspace(self) -> None:
         c = parse_channel_line("workspace path=../sibling")
@@ -331,12 +342,13 @@ class TestSetUpstreamRef:
 
     def test_pin_calls_executor(self, tmp_path: Path) -> None:
         calls, stub = self._make_stub()
-        channel = parse_channel_line("pin name=mylib version=0.0.0")
+        channel = parse_channel_line("pin file=manifest.json key=deps.mylib")
         set_upstream_ref(tmp_path, channel, "sha-pin-123", _executor=stub)
         assert len(calls) == 1
         ws, kind, params, ref = calls[0]
         assert kind == "pin"
-        assert params["name"] == "mylib"
+        assert params["file"] == "manifest.json"
+        assert params.get("key") == "deps.mylib"
         assert ref == "sha-pin-123"
 
     def test_workspace_calls_executor(self, tmp_path: Path) -> None:
@@ -591,29 +603,71 @@ class TestTrainNodeAndGateIdentity:
 # adds live-path coverage.
 
 class TestDefaultExecutorRealSeam:
-    """_default_executor: submodule is actually consumable; pin/workspace raise."""
+    """_default_executor: submodule + pin are actually consumable; workspace raises."""
 
-    def test_default_executor_pin_raises_unsupported(self, tmp_path: Path) -> None:
-        """'pin' channel with default executor raises UnsupportedChannelKind.
+    def test_default_executor_pin_json_key_write_and_read_back(self, tmp_path: Path) -> None:
+        """'pin' channel with JSON key: default executor writes SHA into JSON → read-back == SHA.
 
-        Pre-fix: wrote a sentinel file to .phase-loop-upstream-pin/ that nothing
-        reads → downstream built against the absent upstream silently.
-        Post-fix: raises UnsupportedChannelKind immediately (fail-loud).
+        Pre-fix (Finding #2a): pin wrote a sentinel file nothing read → hollow injection.
+        Post-fix: executor rewrites the manifest file the downstream build ACTUALLY reads.
+        The injected SHA must be readable at the declared dotted key after set_upstream_ref.
         """
-        from phase_loop_runtime.cross_repo_channel import (
-            UnsupportedChannelKind,
-            parse_channel_line,
-            set_upstream_ref,
+        from phase_loop_runtime.cross_repo_channel import parse_channel_line, set_upstream_ref
+
+        # Pre-seed a manifest that the downstream build reads
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(
+            json.dumps({"deps": {"schema": "0.0.0"}, "version": "1.0"}),
+            encoding="utf-8",
         )
 
-        channel = parse_channel_line("pin name=mylib version=1.0.0")
-        with pytest.raises(UnsupportedChannelKind, match="pin"):
-            set_upstream_ref(tmp_path, channel, "sha-abc123")
+        channel = parse_channel_line("pin file=manifest.json key=deps.schema")
+        sha = "abc123def456"
+        set_upstream_ref(tmp_path, channel, sha)  # uses _default_executor
 
-        # Sentinel file must NOT have been created (the hollow-sentinel behaviour
-        # was the pre-fix bug; confirm it doesn't exist)
-        assert not (tmp_path / ".phase-loop-upstream-pin").exists(), (
-            "Sentinel file .phase-loop-upstream-pin/ must not exist after fail-loud"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        assert data["deps"]["schema"] == sha, (
+            f"Expected SHA {sha!r} at deps.schema in manifest after pin injection; "
+            f"got {data['deps']['schema']!r}. "
+            f"Pin injection is hollow — downstream builds against wrong upstream."
+        )
+        # Other keys must be preserved (not clobbered by the rewrite)
+        assert data["version"] == "1.0", "manifest rewrite must preserve unrelated keys"
+
+    def test_default_executor_pin_plain_file_write_and_read_back(self, tmp_path: Path) -> None:
+        """'pin' channel without key: default executor writes SHA as plain file content.
+
+        The injected SHA must be the sole readable content of the version file
+        after set_upstream_ref — proving injection is real, not hollow.
+        """
+        from phase_loop_runtime.cross_repo_channel import parse_channel_line, set_upstream_ref
+
+        channel = parse_channel_line("pin file=VERSION")
+        sha = "deadbeef12345"
+        set_upstream_ref(tmp_path, channel, sha)  # uses _default_executor
+
+        version_file = tmp_path / "VERSION"
+        assert version_file.exists(), "Pin executor must create the version file"
+        content = version_file.read_text(encoding="utf-8").strip()
+        assert content == sha, (
+            f"Expected SHA {sha!r} in VERSION file; got {content!r}. "
+            f"Pin injection is hollow — downstream builds against wrong upstream."
+        )
+
+    def test_default_executor_pin_json_creates_missing_intermediate_keys(self, tmp_path: Path) -> None:
+        """Pin JSON executor creates missing intermediate dict keys on the fly."""
+        from phase_loop_runtime.cross_repo_channel import parse_channel_line, set_upstream_ref
+
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("{}", encoding="utf-8")  # empty manifest — no deps key yet
+
+        channel = parse_channel_line("pin file=manifest.json key=deps.upstream.sha")
+        sha = "feedcafe"
+        set_upstream_ref(tmp_path, channel, sha)
+
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        assert data["deps"]["upstream"]["sha"] == sha, (
+            f"Expected SHA at deps.upstream.sha; got {data!r}"
         )
 
     def test_default_executor_workspace_raises_unsupported(self, tmp_path: Path) -> None:
@@ -708,3 +762,52 @@ class TestDefaultExecutorRealSeam:
             f"'{target_sha}'; got '{actual_sha}'. "
             f"The ref is NOT consumable — upstream injection is hollow."
         )
+
+
+# ---------------------------------------------------------------------------
+# T-E validation: unsupported channel kind rejected at validate_train
+
+class TestUnsupportedChannelKindInTrain:
+    """(T-E) workspace-channel edge in a train is rejected by validate_train."""
+
+    WORKSPACE_TRAIN_MD = """\
+# Release Train: workspace-train
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** workspace path=../repo-a
+"""
+
+    def test_workspace_channel_rejected_by_t_e(self) -> None:
+        """validate_train returns a (T-E) error for a workspace-channel edge."""
+        r = parse_train_roadmap(self.WORKSPACE_TRAIN_MD)
+        errors = validate_train(r)
+        t_e_errors = [e for e in errors if "(T-E)" in e]
+        assert t_e_errors, f"expected (T-E) error for workspace channel; got: {errors}"
+        assert "workspace" in " ".join(t_e_errors), (
+            f"(T-E) error must mention the rejected kind 'workspace'; got: {t_e_errors}"
+        )
+
+    def test_workspace_channel_t_e_mentions_edge_nodes(self) -> None:
+        """(T-E) error message must identify the problematic edge (node IDs)."""
+        r = parse_train_roadmap(self.WORKSPACE_TRAIN_MD)
+        errors = validate_train(r)
+        combined = " ".join(errors)
+        assert "repo-b" in combined or "repo-a" in combined, (
+            f"(T-E) error must reference the edge nodes; got: {errors}"
+        )
+
+    def test_supported_pin_and_submodule_pass_t_e(self) -> None:
+        """A train with only pin (file=) and submodule edges passes T-E."""
+        r = parse_train_roadmap(VALID_TRAIN_3NODE_MD)  # pin + submodule
+        errors = validate_train(r)
+        t_e_errors = [e for e in errors if "(T-E)" in e]
+        assert not t_e_errors, f"Expected no T-E errors for supported channels; got: {t_e_errors}"

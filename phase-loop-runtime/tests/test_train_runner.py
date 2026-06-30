@@ -82,12 +82,46 @@ TRAIN_3NODE_MD = """\
 ### Node: beta / specs/beta.md
 
 **Depends on:** alpha / specs/alpha.md
-**Channel:** pin name=alpha-lib version=1.0.0
+**Channel:** pin file=manifest.json key=deps.alpha-lib
 
 ### Node: gamma / specs/gamma.md
 
 **Depends on:** beta / specs/beta.md
-**Channel:** workspace path=../beta
+**Channel:** submodule path=vendor/beta
+"""
+
+# A train with an unsupported workspace-channel edge (for T-E / preflight tests)
+TRAIN_WORKSPACE_MD = """\
+# Release Train: workspace-train
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** workspace path=../repo-a
+"""
+
+# A 2-node train with a pin-channel edge (for real-seam pin tests)
+TRAIN_PIN_MD = """\
+# Release Train: pin-feature
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** pin file=manifest.json key=deps.repo-a
 """
 
 # ---------------------------------------------------------------------------
@@ -642,7 +676,7 @@ class TestThreeNodeTrain:
 
         gamma_injections = [e for e in injection_log if e["workspace"] == "gamma"]
         assert len(gamma_injections) == 1
-        assert gamma_injections[0]["channel_kind"] == "workspace"
+        assert gamma_injections[0]["channel_kind"] == "submodule"
         assert gamma_injections[0]["ref"] == "sha-beta"
 
         # Ledger state: all three nodes pr_open
@@ -1696,3 +1730,161 @@ class TestDownstreamRebuildsWhenUpstreamRebuilt:
             f"run_loop_calls={run_loop_calls}"
         )
         assert "repo-b" in publish_calls, "repo-b must publish a new PR"
+
+
+# ---------------------------------------------------------------------------
+# 15. T-E: workspace-channel train → preflight_failed → zero PRs
+#
+# Pre-fix: validate_train had no T-E rule; a workspace edge would reach the
+# executor which raises UnsupportedChannelKind mid-train (after partial PRs opened).
+# Post-fix: validate_train_loud fires in preflight → preflight_failed → zero PRs.
+
+
+class TestWorkspaceTrainZeroPRs:
+    """Workspace-channel edge in a train → T-E validation → preflight_failed → zero PRs."""
+
+    def test_workspace_train_preflight_failed_zero_prs(self, tmp_path: Path):
+        """A train with a workspace-channel edge fails at preflight, opens zero PRs.
+
+        T-E rule: only pin (with file=) and submodule are supported for real
+        consumption.  validate_train_loud fires before the per-node loop, so
+        no PR is ever opened when the train is structurally invalid.
+
+        Pre-fix: no T-E rule → workspace edge reached executor → UnsupportedChannelKind
+        mid-train (after repo-a's PR was already opened — a partial draft train).
+        Post-fix: T-E in preflight → zero PRs.
+        """
+        roadmap = parse_train_roadmap(TRAIN_WORKSPACE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        publish_mock = MagicMock()
+        run_loop_mock = MagicMock()
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=run_loop_mock,
+            _publish=publish_mock,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+        )
+
+        assert result["status"] == "preflight_failed", (
+            f"Expected preflight_failed for workspace-channel train; got {result}"
+        )
+        assert any("(T-E)" in e for e in result.get("errors", [])), (
+            f"Expected T-E validation error in preflight errors; got {result.get('errors')}"
+        )
+        # THE CRITICAL ASSERTION: zero PRs even though repo-a is a valid root node
+        assert publish_mock.call_count == 0, (
+            f"Expected zero publish calls for workspace-channel train; "
+            f"got {publish_mock.call_count}"
+        )
+        assert run_loop_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 16. Pin channel real seam: executor writes manifest → snapshot paths published
+#
+# Pre-fix (Finding #2a): pin wrote a sentinel file nothing read → hollow injection.
+# Post-fix: _default_executor rewrites the manifest file the downstream build reads.
+# The manifest path must appear in the publish call's owned_paths (snapshot invariant).
+
+
+class TestPinChannelRealSeam:
+    """Pin channel: real executor writes manifest; snapshot paths include manifest."""
+
+    def test_pin_train_manifest_written_and_in_published_paths(self, tmp_path: Path):
+        """2-node pin train: real executor writes manifest.json; manifest appears in publish.
+
+        Real seam: no _set_upstream_ref_fn stub → _default_executor runs and
+        rewrites repo-b/manifest.json with the upstream SHA.  run_loop returns
+        a snapshot with manifest.json in phase_owned_dirty_paths — asserting that
+        path appears in the publish call's owned_paths ties the real write to the
+        snapshot-publishing invariant.
+
+        Two things proven:
+          (a) manifest.json on disk contains the injected upstream SHA.
+          (b) manifest.json is in the owned_paths forwarded to publish.
+        """
+        from types import SimpleNamespace
+
+        # Repo-b workspace has a manifest.json the downstream build reads
+        repo_b_ws = tmp_path / "repo-b"
+        repo_b_ws.mkdir()
+        import json as _json
+        (repo_b_ws / "manifest.json").write_text(
+            _json.dumps({"deps": {"repo-a": "0.0.0"}, "version": "1.0"}),
+            encoding="utf-8",
+        )
+
+        repo_a_ws = tmp_path / "repo-a"
+        repo_a_ws.mkdir()
+
+        roadmap = parse_train_roadmap(TRAIN_PIN_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {
+            "repo-a/specs/plan-a.md": repo_a_ws,
+            "repo-b/specs/plan-b.md": repo_b_ws,
+        }
+
+        # Stub run_loop: repo-b returns snapshot with manifest.json in owned paths
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            if workspace.name == "repo-b":
+                return (
+                    SimpleNamespace(
+                        phase_owned_dirty_paths=("manifest.json", "src/feature.py"),
+                        dirty_paths=("manifest.json", "src/feature.py"),
+                    ),
+                    [],
+                )
+            return (None, [])
+
+        published_paths: dict = {}
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            published_paths[workspace.name] = list(owned_paths)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            # _set_upstream_ref_fn intentionally NOT provided → real _default_executor
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed", (
+            f"Expected completed; got {result}"
+        )
+
+        # (a) The real executor wrote the upstream SHA into manifest.json on disk
+        data = _json.loads((repo_b_ws / "manifest.json").read_text(encoding="utf-8"))
+        upstream_sha = "sha-repo-a"  # publish returned this for repo-a
+        assert data["deps"]["repo-a"] == upstream_sha, (
+            f"Expected upstream SHA {upstream_sha!r} at deps.repo-a in manifest.json "
+            f"after pin injection; got {data['deps']['repo-a']!r}. "
+            f"Pin injection is hollow — downstream builds against wrong upstream."
+        )
+
+        # (b) manifest.json is in repo-b's published owned_paths (snapshot publishing)
+        repo_b_paths = published_paths.get("repo-b", [])
+        assert "manifest.json" in repo_b_paths, (
+            f"Expected 'manifest.json' in repo-b's published paths (snapshot invariant); "
+            f"got {repo_b_paths!r}. The snapshot path is not being forwarded to publish."
+        )

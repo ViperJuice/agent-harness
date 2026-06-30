@@ -1,8 +1,8 @@
 """Cross-repo consumption-channel descriptor and injection primitive.
 
 IF-0-P2-2 contract: every cross-repo dependency edge declares HOW the
-downstream workspace references the upstream — via a package/version pin, a
-``git submodule``, or a workspace/path override.  **NOT a git rebase**: two
+downstream workspace references the upstream — via a manifest-file version pin,
+a ``git submodule``, or a workspace/path override.  **NOT a git rebase**: two
 repos have unrelated git histories.
 
 The load-bearing primitive is :func:`set_upstream_ref`, which the coordinator
@@ -14,9 +14,19 @@ all.
 Channel kinds (closed set — no plugin system):
 
 ``pin``
-    A package-manager version pin (e.g. ``requirements.txt``, ``package.json``
-    dependency entry).  Params: ``name`` (package name), ``version`` (version
-    string or ref; may be a SHA for VCS installs).
+    A manifest-file version pin: the executor rewrites a file the downstream
+    build ACTUALLY reads (e.g. ``requirements.txt``, ``package.json``, a
+    lockfile, a plain version file).
+
+    Two forms:
+      ``pin file=<path>``               — plain version/ref file: writes ``ref``
+                                          as the sole file content.
+      ``pin file=<path> key=<a.b.c>``  — JSON manifest: loads existing JSON,
+                                          sets the nested dotted key to ``ref``,
+                                          writes back with 2-space indent.
+
+    Required param: ``file`` (repo-relative path of the file to rewrite).
+    Optional param: ``key`` (dotted JSON key; absent → plain file).
 
 ``submodule``
     A ``git submodule``.  Params: ``path`` (submodule path relative to the
@@ -25,6 +35,8 @@ Channel kinds (closed set — no plugin system):
 ``workspace``
     A workspace/path override (e.g. a ``[tool.uv.sources]`` workspace entry or
     a Cargo workspace path dep).  Params: ``path`` (the override path).
+    **Rejected at train validation (T-E)**: workspace injection is not
+    implemented for real consumption and is rejected at preflight.
 
 ``none``
     No upstream dependency; declared explicitly for root nodes.
@@ -34,6 +46,7 @@ Zero external deps (stdlib only).
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,12 +92,13 @@ def parse_channel_line(raw: str) -> ChannelDescriptor:
 
     Accepted forms::
 
-        (none)                              → ChannelDescriptor(kind="none")
+        (none)                                         → ChannelDescriptor(kind="none")
         submodule path=vendor/consiliency-portal
-        pin name=mylib version=1.2.3
+        pin file=manifest.json                         → plain version/ref file
+        pin file=manifest.json key=deps.schema         → JSON manifest, dotted key
         workspace path=../mylib
 
-    Raises :exc:`ValueError` on unrecognised channel kind.
+    Raises :exc:`ValueError` on unrecognised channel kind or missing required params.
     """
     stripped = raw.strip()
     if stripped.lower() in _NONE_VALUES:
@@ -113,11 +127,10 @@ def parse_channel_line(raw: str) -> ChannelDescriptor:
 
 def _validate_params(kind: ChannelKind, params: Dict[str, str], raw: str) -> None:
     if kind == "pin":
-        missing = [k for k in ("name", "version") if k not in params]
-        if missing:
+        if "file" not in params:
             raise ValueError(
-                f"pin channel requires 'name' and 'version' params; "
-                f"missing: {', '.join(missing)} in: {raw!r}"
+                f"pin channel requires a 'file' param (the manifest file that gets "
+                f"rewritten with the upstream ref); got: {raw!r}"
             )
     elif kind in ("submodule", "workspace"):
         if "path" not in params:
@@ -157,13 +170,17 @@ def _default_executor(
     Channel support:
       ``submodule`` — git fetch + checkout; the downstream build ACTUALLY
           consumes the injected ref (submodule HEAD is updated).
-      ``pin``       — NOT YET IMPLEMENTED for real consumption.  Writing a
-          sentinel file that nothing reads would silently build against the
-          absent upstream; raises :exc:`UnsupportedChannelKind` instead.
-      ``workspace`` — NOT YET IMPLEMENTED for real consumption.  Same reason.
+      ``pin``       — rewrites the manifest file the downstream build reads:
+          - ``file`` only → writes ``ref`` as the plain file content (+ newline).
+          - ``file`` + ``key`` → loads existing JSON, sets the nested dotted key
+            to ``ref``, writes back with 2-space indent + trailing newline.
+          The downstream build reads the file directly, so injection is real.
+      ``workspace`` — NOT IMPLEMENTED for real consumption; raises
+          :exc:`UnsupportedChannelKind`.  Workspace edges are rejected at train
+          validation (T-E) before any executor is reached.
 
     Stubbing the executor (``_executor=stub``) is the correct approach for
-    tests that exercise non-submodule channel kinds.
+    tests that exercise workspace channel kinds (which remain unimplemented).
     """
     if kind == "submodule":
         submodule_path = params["path"]
@@ -180,20 +197,29 @@ def _default_executor(
             check=True,
         )
     elif kind == "pin":
-        raise UnsupportedChannelKind(
-            f"'pin' channel injection is not yet implemented for real consumption "
-            f"(package={params.get('name')!r}): writing a sentinel file that nothing "
-            f"reads would silently build the downstream against the absent upstream. "
-            f"Implement a real package-manager manifest rewrite before using pin channels "
-            f"with the live executor, or provide a custom _executor."
-        )
+        file_path = workspace / params["file"]
+        key = params.get("key")
+        if key:
+            # JSON manifest: load existing file (or start with empty dict), set
+            # the nested dotted key to ref, write back with consistent indent.
+            data: Dict = json.loads(file_path.read_text(encoding="utf-8")) if file_path.exists() else {}
+            keys = key.split(".")
+            node: Dict = data
+            for k in keys[:-1]:
+                if k not in node or not isinstance(node[k], dict):
+                    node[k] = {}
+                node = node[k]
+            node[keys[-1]] = ref
+            file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        else:
+            # Plain version/ref file: write ref as the sole content.
+            file_path.write_text(ref + "\n", encoding="utf-8")
     elif kind == "workspace":
         raise UnsupportedChannelKind(
-            f"'workspace' channel injection is not yet implemented for real consumption "
-            f"(path={params.get('path')!r}): writing a sentinel file that nothing reads "
-            f"would silently build the downstream against the absent upstream. "
-            f"Implement a real workspace-manifest rewrite before using workspace channels "
-            f"with the live executor, or provide a custom _executor."
+            f"'workspace' channel injection is not implemented for real consumption "
+            f"(path={params.get('path')!r}). Workspace edges are rejected at train "
+            f"validation (T-E) before reaching the executor; a workspace channel in a "
+            f"live train means the train roadmap was not validated — check preflight."
         )
     else:
         raise ValueError(f"unknown channel kind for executor: {kind!r}")
