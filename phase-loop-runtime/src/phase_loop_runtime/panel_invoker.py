@@ -39,13 +39,12 @@ _DEFAULT_LEG_TIMEOUT_S = 600
 _MAX_LEG_TIMEOUT_S = 1800
 _TIMEOUT_STEP_BYTES = 12_000
 _TIMEOUT_STEP_S = 60
-_MAX_INLINE_ARTIFACT_BYTES = 120_000
-_INLINE_ARTIFACT_EDGE_BYTES = 48_000
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
 _CLAUDE_LAUNCH_TIMEOUT_S = 120
 _CLAUDE_POLL_INTERVAL_S = 2.0
+_CLAUDE_STOP_TIMEOUT_S = 15
 _LEG_TIMEOUT_BOUNDS: dict[str, tuple[int, int]] = {
     "codex": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
     "gemini": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
@@ -193,25 +192,12 @@ _REVIEW_INSTRUCTIONS = (
 def _inline_artifact_block(artifact: str) -> str:
     data = (artifact or "").encode("utf-8", errors="replace")
     digest = sha256(data).hexdigest()
-    if len(data) <= _MAX_INLINE_ARTIFACT_BYTES:
-        return (
-            "## Review Artifact\n"
-            f"sha256: {digest}\n"
-            f"bytes: {len(data)}\n\n"
-            f"{artifact}"
-        )
-    head = data[:_INLINE_ARTIFACT_EDGE_BYTES].decode("utf-8", errors="replace")
-    tail = data[-_INLINE_ARTIFACT_EDGE_BYTES:].decode("utf-8", errors="replace")
     return (
         "## Review Artifact\n"
         f"sha256: {digest}\n"
         f"bytes: {len(data)}\n"
-        f"inline_mode: thresholded_head_tail\n"
-        f"inline_limit_bytes: {_MAX_INLINE_ARTIFACT_BYTES}\n\n"
-        "### Artifact Head\n"
-        f"{head}\n\n"
-        "### Artifact Tail\n"
-        f"{tail}"
+        "inline_mode: full_stdin\n\n"
+        f"{artifact}"
     )
 
 
@@ -372,6 +358,25 @@ def _claude_agent_transcript_text(session_id: str, cwd: str) -> str:
     return ""
 
 
+def _stop_claude_agent(adapter: ClaudeAgentViewAdapter, session_id: str, cwd: str, env: Mapping[str, str]) -> str:
+    try:
+        proc = subprocess.run(
+            adapter.stop_command(session_id),
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_CLAUDE_STOP_TIMEOUT_S,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return "stop_timeout"
+    except FileNotFoundError:
+        return "stop_unavailable"
+    return "stopped" if proc.returncode == 0 else "stop_failed"
+
+
 def _normalize_claude_agent_state(value: object) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
     if normalized in {"running", "started", "starting", "active", "working"}:
@@ -482,9 +487,13 @@ def _exec_claude_agent_view_leg(review_dir: Path, out_dir: Path, timeout_s: int,
         if state in {"done", "blocked", "failed", "stopped"}:
             if state == "done" and last_review:
                 return _classify_leg(0, last_review, ""), last_review
+            if state == "blocked":
+                stop_status = _stop_claude_agent(adapter, session_id, cwd, env)
+                return "DEGRADED", f"claude_agent_state:{state}; stop={stop_status}"
             return "DEGRADED", f"claude_agent_state:{state or 'unknown'}"
         if time.monotonic() >= deadline:
-            return "TIMEOUT", f"timeout after {timeout_s}s"
+            stop_status = _stop_claude_agent(adapter, session_id, cwd, env)
+            return "TIMEOUT", f"timeout after {timeout_s}s; stop={stop_status}"
         time.sleep(min(_CLAUDE_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
 
@@ -503,12 +512,12 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path, timeout_s: int, artifac
             "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
             "--sandbox", "read-only", "--model", "gpt-5.5",
             "-c", "model_reasoning_effort=xhigh",
-            "--output-last-message", str(out_file), prompt,
+            "--output-last-message", str(out_file), "-",
         ]
         try:
             proc = subprocess.run(
                 cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=timeout_s, check=False, stdin=subprocess.DEVNULL,
+                timeout=timeout_s, check=False, input=prompt,
             )
         except subprocess.TimeoutExpired:
             return 124, "", f"timeout after {timeout_s}s"
@@ -517,12 +526,12 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path, timeout_s: int, artifac
     if leg == "gemini":
         cmd = [
             "agy", "--model", "Gemini 3.1 Pro (High)",
-            "--print-timeout", f"{timeout_s}s", "-p", prompt,
+            "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
         try:
             proc = subprocess.run(
                 cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=timeout_s + 60, check=False, stdin=subprocess.DEVNULL,
+                timeout=timeout_s + 60, check=False, input=prompt,
             )
         except subprocess.TimeoutExpired:
             return 124, "", f"timeout after {timeout_s}s"

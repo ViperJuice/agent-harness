@@ -136,6 +136,63 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
         self.assertEqual(status, "DEGRADED")
         self.assertIn("failed", text)
 
+    def test_claude_blocked_agent_is_stopped_before_degrading(self):
+        def fake_run(cmd, **kwargs):
+            if cmd == ["claude", "--version"]:
+                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
+            if cmd[:2] == ["claude", "--bg"]:
+                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
+            if cmd == ["claude", "logs", "agent-1"]:
+                return _completed(cmd, stdout="No terminal verdict yet.")
+            if cmd == ["claude", "agents", "--json", "--all"]:
+                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "blocked"}]))
+            if cmd == ["claude", "stop", "agent-1"]:
+                return _completed(cmd, stdout="stopped agent-1")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with (
+                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
+                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
+            ):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
+
+        self.assertEqual(status, "DEGRADED")
+        self.assertIn("blocked", text)
+        self.assertIn("stop=stopped", text)
+
+    def test_claude_post_launch_timeout_stops_agent(self):
+        def fake_run(cmd, **kwargs):
+            if cmd == ["claude", "--version"]:
+                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
+            if cmd[:2] == ["claude", "--bg"]:
+                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
+            if cmd == ["claude", "logs", "agent-1"]:
+                return _completed(cmd, stdout="No terminal verdict yet.")
+            if cmd == ["claude", "agents", "--json", "--all"]:
+                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "running"}]))
+            if cmd == ["claude", "stop", "agent-1"]:
+                return _completed(cmd, stdout="stopped agent-1")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with (
+                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
+                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
+            ):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 0, "bundle")
+
+        self.assertEqual(status, "TIMEOUT")
+        self.assertIn("stop=stopped", text)
+
     def test_claude_launch_timeout_omits_artifact_payload(self):
         def fake_run(cmd, **kwargs):
             if cmd == ["claude", "--version"]:
@@ -235,7 +292,7 @@ class BundleStagingTest(unittest.TestCase):
         self.assertEqual(pi.panel_leg_timeout_seconds("codex", "small"), 600)
         self.assertEqual(pi.panel_leg_timeout_seconds("codex", "x" * 1_000_000), 1800)
 
-    def test_codex_command_prompt_contains_inline_artifact_and_closes_stdin(self):
+    def test_codex_command_prompt_contains_full_artifact_on_stdin(self):
         captured = {}
 
         class Completed:
@@ -260,10 +317,11 @@ class BundleStagingTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
-        self.assertIn("SENTINEL-CODEX-ARTIFACT", captured["cmd"][-1])
-        self.assertEqual(captured["kwargs"]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(captured["cmd"][-1], "-")
+        self.assertIn("SENTINEL-CODEX-ARTIFACT", captured["kwargs"]["input"])
+        self.assertNotIn("stdin", captured["kwargs"])
 
-    def test_gemini_command_prompt_contains_inline_artifact_without_add_dir_and_closes_stdin(self):
+    def test_gemini_command_prompt_contains_full_artifact_on_stdin_without_add_dir(self):
         captured = {}
 
         class Completed:
@@ -287,8 +345,9 @@ class BundleStagingTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
         self.assertNotIn("--add-dir", captured["cmd"])
-        self.assertIn("SENTINEL-GEMINI-ARTIFACT", captured["cmd"][-1])
-        self.assertEqual(captured["kwargs"]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(captured["cmd"][-1], "-")
+        self.assertIn("SENTINEL-GEMINI-ARTIFACT", captured["kwargs"]["input"])
+        self.assertNotIn("stdin", captured["kwargs"])
 
     def test_timeout_log_mentions_timeout_without_artifact_payload(self):
         with tempfile.TemporaryDirectory() as td:
@@ -306,15 +365,16 @@ class BundleStagingTest(unittest.TestCase):
         self.assertIn("777s", log_text)
         self.assertNotIn("SECRET-SENTINEL", log_text)
 
-    def test_large_artifact_prompt_is_thresholded_with_digest_metadata(self):
-        artifact = "HEAD-SENTINEL\n" + ("x" * 200_000) + "\nTAIL-SENTINEL"
+    def test_large_artifact_prompt_is_full_with_digest_metadata(self):
+        artifact = "HEAD-SENTINEL\n" + ("x" * 200_000) + "\nMIDDLE-SENTINEL\n" + ("y" * 200_000) + "\nTAIL-SENTINEL"
         prompt = pi._render_leg_prompt(artifact)
 
-        self.assertIn("inline_mode: thresholded_head_tail", prompt)
+        self.assertIn("inline_mode: full_stdin", prompt)
         self.assertIn("sha256:", prompt)
         self.assertIn("HEAD-SENTINEL", prompt)
+        self.assertIn("MIDDLE-SENTINEL", prompt)
         self.assertIn("TAIL-SENTINEL", prompt)
-        self.assertLess(len(prompt), len(artifact))
+        self.assertGreater(len(prompt), len(artifact))
 
 
 class SubscriptionAuthTest(unittest.TestCase):
