@@ -166,3 +166,28 @@ Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/opencode-execute-phase/latest.md`
 
 Handoff frontmatter must include `from: opencode-execute-phase`, `timestamp:`, `repo:`, `repo_root:`, `branch:`, `branch_slug:`, `commit:`, `run_id:`, `artifact:`, `artifact_state:`, `next_skill:`, `next_command:`, and `next_phase:`. Put open follow-up items in the body, and update `latest.md` with the same handoff content.
+
+
+## Publication mode
+
+After verified phase work, select exactly one of three modes:
+
+- (a) Runner-managed closeout (incl. governed mode). If this is the phase-loop adapter
+  (the prompt begins with `<harness>-execute-phase <plan>` from a pipeline run dir) or
+  `PHASE_LOOP_RUN_MODE` is set (autonomous/governed), the RUNNER owns closeout and
+  commit. Do NOT independently publish — defer entirely to runner closeout
+  (`awaiting_phase_closeout` / runner commit). Publishing here would bypass the governed
+  pre-merge review panel. When mode detection is ambiguous, DEFER (fail safe toward the
+  runner).
+- (b) Interactive orchestrator on a clean, non-protected feature branch. After the
+  Step-9 clean-tree state, push the merge-target branch and open a PR (`gh pr create`,
+  `--draft` if deps/partial else ready) instead of leaving the lane merge only local.
+- (c) Interactive orchestrator whose merge target is `main` or a protected branch. STOP
+  and report — do NOT merge lanes onto `main`/protected. Re-target a feature branch or
+  take explicit instruction.
+
+This applies only to interactive (non-runner) completion; it never overrides
+`awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
+hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
+unchanged — the destructive-op ban targets publication branches/worktrees holding
+unmerged work.

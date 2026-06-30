@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **#28 — execute skills default to a published review surface.** `execute-detailed`
+  and `execute-phase` no longer leave a verified implementation as dirty changes in the
+  primary checkout with no PR. A human-invoked run now publishes a branch + PR by default
+  after verification, under a hard safety invariant: never commit to `main`/a protected
+  branch or from a dirty primary checkout; if not already on a clean dedicated branch,
+  work in a worktree off a fresh base ref. `execute-detailed` gains a publication flow
+  (runner/manifest carve-out, pre-edit preflight, scoped staged-diff audit, push-rejection
+  stop, skipped-verification→draft); `execute-phase` gains a 3-state publication mode that
+  **stops rather than merging lanes onto `main`/a protected branch** and defers to the
+  runner (incl. governed mode) when the runner owns closeout. Merge/force-push/reset stay
+  gated by explicit instruction. Source-edited in the `skills-src/` canon (harness-neutral;
+  collapses to the build base) + regenerated bundle; parity/drift gates green.
+  Decision-panel-reconciled. Cross-repo publication is a separate follow-up (#29).
+
 - **Fix (#18 follow-up) — F5: evidence-backed docs-freshness decision.** A
   `docs_freshness: passed` claim is now *provable* from the scan evidence rather than a
   self-attested literal: `scan_docs_freshness` no longer emits `passed` when the scan ran

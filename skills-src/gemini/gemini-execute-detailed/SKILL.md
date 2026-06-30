@@ -26,8 +26,12 @@ handoff roots, helper roots, and reflection roots.
 - Treat ignored, private, raw-data, credential, and evidence-source files as
   read-protected unless the detailed plan explicitly allowlists the exact path
   or glob for read access.
-- Do not commit, push, merge, or run destructive git commands unless the user
-  explicitly requested that operation.
+- Git safety invariant: never commit to `main` or a protected branch, and never
+  commit from a dirty primary checkout. After a verified implementation, publishing a
+  PR is the default outcome (see "## Publication") unless the user asked for local-only,
+  planning-only, or no-publication work, or verification failed. Never merge,
+  force-push, reset, delete a publication branch/worktree holding unmerged work, or run
+  other destructive git commands without explicit instruction.
 
 ## Inputs
 
@@ -92,3 +96,47 @@ was executed, no edit was made, and no decision was made.
 Final response must include the detailed plan artifact path, changed files,
 verification command results, acceptance-criteria status, final dirty-path
 classification, and next action or blocker.
+
+
+## Publication
+
+After a verified implementation the default outcome is a pushed branch + PR, but only
+under the git safety invariant in Core Rules. Apply this flow:
+
+1. Defer if a runner owns closeout. If the run is runner/manifest-supervised — a
+   runner-provided `verification_artifact_path`, or a phase-loop-runner-driven run — do
+   NOT independently publish; the runner owns commit and closeout. The rest of this
+   section is for human-invoked runs only.
+2. Preflight (before editing). Fetch and resolve a fresh base ref (the remote default
+   branch `origin/<default-branch>`, or an explicit merge target) — never a stale local
+   `main`. Confirm the current branch is not `main`/protected and the primary checkout is
+   clean; confirm a remote, push auth, the `gh` CLI, and that the intended branch name is
+   free. If any publication precheck fails, continue local-only and say so explicitly at
+   the end — never imply a PR exists when it does not.
+3. Choose the workspace (honor the invariant). If already on a clean, non-protected
+   branch, work there. Otherwise create a dedicated worktree + branch off the resolved
+   base — `git worktree add <path> -b <branch> <base>` — under
+   `/mnt/workspace/worktrees/<project>-<branch-slug>` if `/mnt/workspace` exists, else a
+   repo-local `.worktrees/<branch-slug>`. Read the plan/handoff artifact from the primary
+   checkout by absolute path; perform all editing, the starting `git status` snapshot, the
+   closeout dirty-path classification, verification, and manifest-lifecycle writes in the
+   chosen working tree.
+4. Stage only plan-owned paths, then audit before committing. Stage by explicit path
+   (`git add -- <owned paths>`), never `git add -A`. Then audit the staged set:
+   `git diff --cached --name-only` must equal the plan-owned set; reject any ignored,
+   private, raw-data, credential, or `.env` path; run `git diff --cached --check`. Fail
+   closed (stop and report) on any unexpected staged or unstaged delta — path-scoping
+   alone does not catch a secret inside an owned file; the read-protection rules and this
+   audit are the backstop.
+5. Commit, push (no force), open a PR. Commit the audited diff and `git push` the branch
+   without force. If the push is rejected (divergent / non-fast-forward / branch
+   protection), STOP and report — never force-push or merge to resolve it. Open a PR with
+   `gh pr create` — `--draft` if dependencies remain or verification was partial/skipped,
+   ready (`--fill`) when verification is complete. Skipped or partial verification is not
+   a pass: it caps the PR at draft, or stops.
+
+New stop conditions: `publication blocked` (a precheck failed — no remote / no push auth /
+no `gh` / branch-name collision / push rejected / unresolved base ref; verified work is
+preserved locally, report what blocked the PR); `protected branch` (the run would
+otherwise commit to `main`/a protected branch or from a dirty primary checkout — stop
+publication and report).

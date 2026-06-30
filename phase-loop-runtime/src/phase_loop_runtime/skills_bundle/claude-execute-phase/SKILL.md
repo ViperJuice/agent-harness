@@ -710,3 +710,28 @@ After plan validation and before lane execution, perform a best-effort `plan-man
 Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+
+
+## Publication mode
+
+After verified phase work, select exactly one of three modes:
+
+- (a) Runner-managed closeout (incl. governed mode). If this is the phase-loop adapter
+  (the prompt begins with `<harness>-execute-phase <plan>` from a pipeline run dir) or
+  `PHASE_LOOP_RUN_MODE` is set (autonomous/governed), the RUNNER owns closeout and
+  commit. Do NOT independently publish — defer entirely to runner closeout
+  (`awaiting_phase_closeout` / runner commit). Publishing here would bypass the governed
+  pre-merge review panel. When mode detection is ambiguous, DEFER (fail safe toward the
+  runner).
+- (b) Interactive orchestrator on a clean, non-protected feature branch. After the
+  Step-9 clean-tree state, push the merge-target branch and open a PR (`gh pr create`,
+  `--draft` if deps/partial else ready) instead of leaving the lane merge only local.
+- (c) Interactive orchestrator whose merge target is `main` or a protected branch. STOP
+  and report — do NOT merge lanes onto `main`/protected. Re-target a feature branch or
+  take explicit instruction.
+
+This applies only to interactive (non-runner) completion; it never overrides
+`awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
+hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
+unchanged — the destructive-op ban targets publication branches/worktrees holding
+unmerged work.
