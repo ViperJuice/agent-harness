@@ -2556,3 +2556,190 @@ freshness) + phase + non-empty reason. A **stale** attestation (content drifted
 since it was written) no longer matches and does not authorize a later closeout;
 a recorded `secrets`-class remainder never recovers (the clean-worktree guard is
 the real backstop — SL-1 never commits a secret, so the worktree stays dirty).
+
+## Cross-Repo Release Train (#29)
+
+The cross-repo release-train coordinator (`train_runner.run_train`) orchestrates
+multi-repo changes in a single atomic train: draft PRs open across all nodes in
+topo order, a train-level governed review gates the full diff, then nodes merge
+sequentially with downstream re-verification against the upstream MERGED SHA
+before each downstream merge.
+
+This section documents the coordinator's ledger shape, the merge-SHA-pinned
+cross-repo gate, and the merge/re-verify invariants that are enforced
+structurally (not just by convention).
+
+### Train Ledger Shape
+
+The train coordinator writes a side-car JSONL ledger at a caller-supplied path
+(never inside any repo's `.phase-loop/`). Each line is a `LedgerRecord`:
+
+```json
+{
+  "node_id": "<repo>/<plan-path>",
+  "status": "pending|running|pr_open|approved|merged|blocked",
+  "branch": "<feature-branch-name>",
+  "pr_url": "<draft-PR-url>",
+  "head_sha": "<draft-PR-head-commit-SHA>",
+  "upstream_merge_sha": "<merge-commit-SHA-from-upstream-merge>",
+  "merge_order": 0
+}
+```
+
+Fields:
+
+- `node_id`: `"<repo>/<plan-path>"` — identifies the train node.
+- `status`: one of `pending`, `running`, `pr_open`, `approved`, `merged`,
+  `blocked`.
+- `branch`: the feature branch opened by P3 for this node.
+- `pr_url`: the GitHub PR URL opened by P3.
+- `head_sha`: the commit SHA at the HEAD of the draft PR when it was opened
+  (the *draft pin*).
+- `upstream_merge_sha`: the merge-commit SHA of this node's PR (populated
+  after the P4 merge step). For root nodes (no upstream dependency) this is
+  the node's own merge SHA. For downstream nodes this field is also written
+  when a dependent upstream's merged SHA is required.
+- `merge_order`: zero-based integer indicating the sequential merge position
+  in the topo-sorted order.
+
+A synthetic `_train_review_` record (`node_id="_train_review_"`) is appended
+when the train-level review panel approves. Its `status` is `"approved"`.
+
+Idempotent resume: re-running `run_train` reads the ledger to skip nodes that
+are already `pr_open` (confirmed via a live `_pr_is_open` check) or already
+`merged`. A `blocked` node in the ledger is retried on resume.
+
+### Merge-SHA-Pinned Cross-Repo Gate (False-Green Killer)
+
+Before merging each downstream node, the coordinator:
+
+1. Calls `set_upstream_ref(workspace, channel, upstream_merged_sha)` to
+   re-resolve the downstream workspace's channel to the upstream **MERGED SHA**
+   (not the draft SHA used during P3).
+2. Calls `reverify_fn(workspace, roadmap_path, run_mode)` to re-run the
+   downstream's per-repo `run_loop` in verification mode.
+3. **Only** if reverify passes does `merge_pr_fn(workspace, branch)` execute
+   for the downstream.
+
+Step 1 **must precede** step 2. This ordering is structural (not advisory):
+the `set_upstream_ref` call is in the call log before the `reverify` call, as
+asserted by `tests/test_train_invariants.py::TestInvariant2FalseGreenKiller`.
+
+A downstream that was green only against the draft ref (step 1 skipped) would
+produce a false-green verdict — the entire reason for the merged-SHA-pinned
+gate.
+
+### Merge and Re-Verify Invariants
+
+The following invariants are enforced by the coordinator and asserted in the
+test suite (`tests/test_train_invariants.py`):
+
+**INV-1 — No merge before approval.** `merge_pr_fn` is never called until the
+train-level review panel approves. A rejection returns
+`status="review_halted"` with `terminal_blocker.human_required=False`; no node
+is merged.
+
+**INV-2 — Merged SHA injected before re-verify (false-green killer).** For
+every downstream node, `set_upstream_ref` is called with the upstream MERGED
+SHA before `reverify_fn`. The ref passed to `set_upstream_ref` must equal the
+upstream merge-commit SHA, not the draft SHA. The ordering is asserted via a
+shared call log.
+
+**INV-3 — Preflight failure opens zero PRs.** `run_train` runs preflight on
+all nodes before entering the per-node loop. Any preflight error causes an
+immediate return with `status="preflight_failed"` and zero `publish_from_worktree`
+calls.
+
+**INV-4 — Train state off `.phase-loop/`.** The ledger path must not be inside
+any repo's `.phase-loop/`. `append_record` raises `ValueError` on violation.
+
+**INV-5 — Autonomous mode stops at `drafts_open`.** Cross-repo merges are
+never auto-merged. With `run_mode="autonomous"` and `_merge_phase_enabled=True`
+the coordinator returns `status="drafts_open"` without calling `merge_pr_fn` or
+the review panel.
+
+**INV-6 — `_live_reverify` reads real `StateSnapshot` failure signals.** The
+live-default `_live_reverify` returns False on `closeout_terminal_status` in
+`{"blocked","stale_input","failed_verification","human_required"}`, on
+`human_required=True`, and on `blocker_class is not None`.
+`closeout_terminal_status=None` is NOT a failure (verify mode may leave this
+field absent on a clean run).
+
+**INV-6a — `run_loop` failure-signal contract (load-bearing for the false-green
+killer).** Because INV-6 treats `closeout_terminal_status=None` +
+`human_required=False` + `blocker_class=None` as a *pass*, the false-green killer
+is only sound if `run_loop` **always** surfaces a real verification failure
+through at least one of those three signals — i.e. it must NEVER return a
+"silent-failure" snapshot (all three clear) for a genuine failure. The runtime
+upholds this today: failure paths set `blocker_class` (defaulting to
+`contract_bug`), a non-`complete` `closeout_terminal_status`
+(`failed_verification`/`blocked`/`stale_input`), or `human_required=True`. Any
+future change to `run_loop` that can return a clean-looking snapshot on a real
+failure would silently defeat the downstream re-verify gate and MUST instead
+raise or set a failure signal. (INV-6's consumer-side tests pin `_live_reverify`;
+this producer-side contract is the assumption they rest on.)
+
+**Forward-only guard.** A downstream re-verify failure halts the merge train
+at that node (`status="merge_halted"`); already-merged upstream nodes stay
+merged and are never reverted. The remaining nodes are blocked. Resuming with
+`--governed` after the integration issue is fixed picks up from the first
+unmerged node.
+
+### Documented Limitation: Draft-Time Pin in Downstream PR
+
+The downstream draft PR (opened during P3) retains the P3-time upstream pin,
+not the P4 merged-SHA pin. The re-resolution in step 1 of the gate changes
+only the **local workspace file** used for the re-verify pass; it does not
+amend the draft PR's content or rebase the feature branch.
+
+As a result, the merged downstream PR carries the **draft-time pin** (the
+version of the upstream artifact that was current when the draft PR was opened),
+not the merge-commit SHA.
+
+This is safe under **expand/contract** upstream contracts: the upstream artifact
+must be backward-compatible at the draft-time version, so the downstream
+integrates correctly even if the upstream has since moved to the merge SHA.
+Teams should author upstream changes as expand/contract (additive first,
+backward-compatible) so sequential merges are safe regardless of this pin
+limitation.
+
+A future release may address this by amending the downstream draft PR after the
+upstream merges (requiring an update-existing-PR primitive); that work is
+deferred.
+
+### Cross-Repo Train Roadmap Format
+
+A train roadmap is a Markdown file consumed by `parse_train_roadmap()`:
+
+```markdown
+# Release Train: <name>
+
+## Nodes
+
+### Node: <repo> / <plan-path>
+
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: <downstream-repo> / <downstream-plan>
+
+**Depends on:** <repo> / <plan-path>
+**Channel:** submodule path=<submodule-path>
+```
+
+**Channel descriptors:**
+
+- `submodule path=<path>`: the downstream uses a git submodule at `<path>`
+  pointing to the upstream repo. The coordinator calls `set_upstream_ref` with
+  the upstream merged SHA to update the submodule pointer before re-verify.
+- `pin file=<file> key=<yaml-key>`: the downstream reads the upstream SHA from
+  a pinfile at `<file>` under the YAML key `<key>`.
+
+**Authoring recommendations:**
+
+- Declare `**Depends on:** (none)` and `**Channel:** (none)` explicitly for
+  root nodes.
+- Use expand/contract upstream changes so sequential merges are safe even if
+  the downstream PR carries the draft-time pin.
+- Keep node `<repo>/<plan-path>` identifiers unique within a train.
+- Topo order is computed automatically; declare dependencies, not order.

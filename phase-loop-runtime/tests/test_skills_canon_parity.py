@@ -253,6 +253,7 @@ class SkillsCanonParityTest(unittest.TestCase):
         "claude-execute-",
         "claude-plan-",
         "claude-phase-",
+        "claude-run-",
         "claude-skill-",
         "claude-skills",
         "claude-task-",

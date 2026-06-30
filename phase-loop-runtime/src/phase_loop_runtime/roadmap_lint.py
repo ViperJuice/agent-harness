@@ -343,12 +343,54 @@ def lint_roadmap(path: Path | str) -> List[str]:
     return lint_roadmap_text(Path(path).read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# Train mode — validate a cross-repo release-train roadmap (P2)
+
+def lint_train_roadmap_text(text: str) -> List[str]:
+    """Return validation issues for a cross-repo train roadmap markdown ``text``.
+
+    Validates the cross-repo DAG: acyclic, every depended-on node exists, the
+    train is serially orderable (topo-sort), and every dependency edge carries
+    a valid consumption-channel descriptor.  A non-orderable, cyclic, or
+    channel-less train fails loud (returns non-empty list).
+
+    This is a separate validation path from :func:`lint_roadmap_text` — it
+    uses the train-roadmap parser (``train_roadmap.parse_train_roadmap``), not
+    the phase-plan regex.
+    """
+    from .train_roadmap import parse_train_roadmap, validate_train
+
+    try:
+        roadmap = parse_train_roadmap(text)
+    except ValueError as exc:
+        return [f"(T-PARSE) {exc}"]
+    return validate_train(roadmap)
+
+
+def lint_train_roadmap(path: Path | str) -> List[str]:
+    """Return validation issues for the train roadmap at ``path``."""
+    return lint_train_roadmap_text(Path(path).read_text(encoding="utf-8"))
+
+
 def main(argv: List[str]) -> int:
-    if len(argv) != 2:
+    if len(argv) < 2:
         prog = Path(argv[0]).name if argv else "validate_roadmap"
-        print(f"usage: {prog} <roadmap-path>", file=sys.stderr)
+        print(f"usage: {prog} [--train] <roadmap-path>", file=sys.stderr)
         return 2
-    path = Path(argv[1])
+
+    # Handle --train flag
+    train_mode = False
+    args = list(argv[1:])
+    if "--train" in args:
+        train_mode = True
+        args = [a for a in args if a != "--train"]
+
+    if len(args) != 1:
+        prog = Path(argv[0]).name if argv else "validate_roadmap"
+        print(f"usage: {prog} [--train] <roadmap-path>", file=sys.stderr)
+        return 2
+
+    path = Path(args[0])
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -357,6 +399,16 @@ def main(argv: List[str]) -> int:
     except OSError as exc:
         print(f"error: could not read {path}: {exc}", file=sys.stderr)
         return 2
+
+    if train_mode:
+        errors = lint_train_roadmap_text(text)
+        if errors:
+            print(f"validate_roadmap (train): {len(errors)} issue(s) in {path}", file=sys.stderr)
+            for e in errors:
+                print(f"  • {e}", file=sys.stderr)
+            return 1
+        print(f"validate_roadmap (train): OK — {path}")
+        return 0
 
     phases = _extract_phases(text)
     errors = lint_roadmap_text(text)

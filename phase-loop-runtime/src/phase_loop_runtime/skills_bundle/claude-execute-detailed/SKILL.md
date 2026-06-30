@@ -119,23 +119,34 @@ Workflow step 6 is the default outcome — under the Git safety invariant in Cor
 Defer entirely if a runner / pipeline owns closeout (a phase-loop-runner-driven or adapter
 run, or an explicit runner-owned-closeout instruction): the runner owns commit and closeout.
 Do NOT infer "runner owns closeout" from `verification_artifact_path` — every closeout
-records it; it does not signal a runner. The steps below are for human-invoked plan
+records it; it does not signal a runner. The following applies for human-invoked plan
 execution.
 
-1. **Publication preflight.** Confirm a remote, push auth, the `gh` CLI, and that the
-   intended branch name is free. If publication infrastructure is missing, keep the verified
-   work committed on the safe branch/worktree and STOP at publish with `publication blocked`
-   — never on `main`/a protected branch, and never imply a PR exists.
-2. **Stage + audit before committing.** Stage only plan-owned paths by explicit path
-   (`git add -- <owned paths>`), never `git add -A`. Then audit the staged set:
-   `git diff --cached --name-only` must equal the plan-owned set; reject any ignored,
-   private, raw-data, credential, or `.env` path; run `git diff --cached --check`; fail
-   closed (stop) on any unexpected staged or unstaged delta — path-scoping alone does not
-   catch a secret inside an owned file; the read-protection rules and this audit are the
-   backstop.
-3. **Commit + push (no force).** Commit the audited diff and `git push` without force. If
-   the push is rejected (divergent / non-fast-forward / branch protection), STOP and report
-   `publication blocked` — never force-push or merge to resolve it.
-4. **Open the PR.** `gh pr create` — `--draft` if dependencies remain or verification was
-   partial/skipped, ready (`--fill`) when verification is complete. Skipped or partial
-   verification is not a pass and never opens a ready PR.
+Call `phase_loop_runtime.publishing.publish_from_worktree(repo, owned_paths, draft=<intent>)`
+(IF-0-P1-1 — the runtime publication primitive), supplying the worktree root, the plan's
+owned paths, and the draft/ready intent:
+- `draft=True` when dependencies remain or verification was partial/skipped;
+- `draft=False` when verification is complete (skipped or partial verification never opens
+  a ready PR).
+
+The primitive performs the complete #28 flow in code, not prose:
+
+1. **Preflight.** Confirms the branch is non-protected, non-main, and not in a
+   dirty/unowned state; confirms a remote, push auth, and the `gh` CLI. A preflight
+   failure returns `{status: "publication_blocked", reason: ...}` — keep the committed
+   work on the safe branch/worktree and STOP at publish with `publication blocked`;
+   never on `main`/a protected branch, and never imply a PR exists.
+2. **Stage + audit.** Stages only owned paths (`git add -- <paths>`, never `git add -A`),
+   audits the staged set (rejects any ignored, private, raw-data, credential, or `.env`
+   path; runs `git diff --cached --check`), and fails closed on any violation — path-scoping
+   alone does not catch a secret inside an owned file; the read-protection rules and this
+   audit are the backstop.
+3. **Commit + push.** Commits the audited diff and pushes without force. A rejected push
+   (divergent / non-fast-forward / branch protection) returns `publication_blocked` — never
+   force-push or merge to resolve it.
+4. **Open the PR.** `gh pr create --draft` or ready (`--fill`) per the intent flag.
+
+Returns `{status: "published", branch, head_sha, pr_url}` on success (IF-0-P1-1; report
+`pr_url` in the final response and include `head_sha` in the handoff for downstream
+consumers). Returns `{status: "publication_blocked", reason: <slug>}` on any violation —
+report `publication blocked` with the reason and stop.
