@@ -15,6 +15,7 @@ The advisor panel (unanimous PARTIALLY AGREE) confirmed the **topology** — a r
 - Edges are `Depends on: <upstream node>`; the cross-repo contract is a **gate pinned to the upstream merge-commit SHA** — which *is* the content identity, and gating downstream on the upstream **merge** (not "produced") kills a designed-in **false-green** bug (a downstream worktree must test against a *real* merged upstream).
 - **Train-level governed review is MVP, not optional** (2-of-3): per-repo merging creates the *partial-merge rollback disaster*, and a single-repo reviewer can't catch a change that's wrong *for* the consumer. So: hold **linked draft PRs → one train-level review → sequential merge**, re-verifying each downstream against the upstream merged SHA.
 - The #28 publish flow lives in **skill prose**, not the runtime — so a runtime-owned coordinator needs publishing **factored into a runtime primitive** first (the prerequisite).
+- **The cross-repo dependency is not a git relationship — it is a consumption channel** (a package/version pin, a `git submodule`, or a workspace path). Two repos have *unrelated git histories*, so a downstream "rebase onto the upstream commit" is meaningless. Because the per-repo `run_loop` is unchanged, **the coordinator must inject** the upstream ref into the downstream workspace *through that channel* before invoking `run_loop` — the upstream **draft** branch during execution (P3) and the upstream **merged SHA** during the pre-merge re-verify (P4). This injection primitive (IF-0-P2-2) is the load-bearing mechanism that makes both the build and the false-green guard real.
 
 ---
 
@@ -25,6 +26,7 @@ The advisor panel (unanimous PARTIALLY AGREE) confirmed the **topology** — a r
 3. "never commit to main/protected" holds, so every upstream landing yields a **merge-commit SHA** usable as the cross-repo content identity.
 4. The governed pre-merge gate is single-repo (inside closeout, `git diff --cached` of one worktree); per-repo `--governed` composes. A **train-level** review is net-new.
 5. Cross-repo train state cannot live in any repo's `.phase-loop/`; it needs a coordinator-side durable store.
+6. Each cross-repo edge has a determinable **consumption channel** (a package/version pin, a `git submodule`, or a workspace path) that the coordinator can re-resolve to a given upstream ref. If an edge declares no channel the train **fails loud at `validate-roadmap` (P2)** — never silently at execution. The MVP supports that fixed small set of channel kinds (no plugin system).
 
 ## Non-Goals
 
@@ -72,8 +74,9 @@ The advisor panel (unanimous PARTIALLY AGREE) confirmed the **topology** — a r
 
 ## Top Interface-Freeze Gates
 
-1. **IF-0-P1-1** — Publishing-primitive contract: a runtime function that takes a repo + worktree + owned-paths + draft/ready intent and performs the #28 flow (invariant-guarded worktree/branch selection, scoped staged-diff audit, commit, push, `gh pr create`), returning `{branch, pr_url, status}` or a `publication_blocked` reason. Consumed by P3 (coordinator) and re-consumed by the execute skills.
+1. **IF-0-P1-1** — Publishing-primitive contract: a runtime function that takes a repo + worktree + owned-paths + draft/ready intent and performs the #28 flow (invariant-guarded worktree/branch selection, scoped staged-diff audit, commit, push, `gh pr create`), returning `{branch, head_sha, pr_url, status}` or a `publication_blocked` reason — the **`branch` and `head_sha` are load-bearing**: the coordinator injects them into downstream nodes (IF-0-P2-2). Reuse `git_topology.resolve_closeout_push_target` / `_gh_pr_metadata` (already in runtime). Consumed by P3/P4 and re-consumed by the execute skills.
 2. **IF-0-P2-1** — Train contract: the release-train roadmap schema (nodes = `(repo, roadmap)`, `Depends on: <upstream node>` edges), the **merge-SHA-pinned cross-repo gate identity**, and the durable append-only **train-ledger** record shape (node status `pending|running|pr_open|approved|merged(sha)|blocked`, branch, PR URL, upstream merge SHA, merge order). Consumed by P3/P4.
+3. **IF-0-P2-2** — Cross-repo **consumption channel + injection primitive** (the load-bearing mechanism the panel found missing): a per-edge **channel descriptor** declaring HOW a downstream node references an upstream node — a package/version pin, a `git submodule` path, or a workspace/path override (NOT a git rebase: separate repos have unrelated histories) — plus a runtime **re-resolution operation** `set_upstream_ref(downstream_workspace, channel, ref)` that the **coordinator** runs to point the channel at a given upstream ref/SHA **before invoking the unchanged `run_loop`**. This is how an unchanged per-repo `run_loop` consumes the upstream at all (draft branch in P3, merged SHA in P4). Frozen in P2; consumed by P3 (inject draft) and P4 (re-inject merged + re-verify).
 
 ---
 
@@ -116,22 +119,22 @@ Factor the #28 worktree→branch→verify→commit→push→PR flow out of the e
 Define the data model: the cross-repo release-train roadmap (nodes + `Depends on` edges), the merge-SHA-pinned cross-repo gate identity, the durable resumable train ledger, and a `validate-roadmap` extension for trains.
 
 **Exit criteria**
-- [ ] A train-roadmap schema + parser: nodes = `(repo, roadmap)`; edges = `Depends on: <upstream node>` (node adjacency, like intra-repo deps); a cross-repo gate identity **pinned to an upstream merge SHA** (NOT the in-repo `IF-0-<alias>-<n>` token — a new namespace) (IF-0-P2-1).
-- [ ] A durable, append-only, atomic train **ledger** (`O_APPEND` + temp-rename, like `events.jsonl`): per-node `status`, `branch`, `pr_url`, `upstream_merge_sha`, `merge_order`; a resume reader that re-reads live PR/SHA state.
-- [ ] `validate-roadmap` (train mode) validates: the cross-repo DAG is acyclic, every depended-on node exists, and the train is serially orderable (topo-sort succeeds); a non-orderable or cyclic train fails loud.
-- [ ] Train state never touches any repo's `.phase-loop/`; tests prove ledger append/resume survives a simulated crash (truncated trailing write ignored).
-- [ ] Tests: schema parse/validate (valid + cyclic + missing-node + invalid in-repo-token-reused); ledger append/resume/atomicity.
+- [ ] A train-roadmap schema + parser (a **NEW parser**, not an extension of the `### Phase N (ALIAS)` regex — only `roadmap_lint`'s topo/cycle algorithm is reused): nodes = `(repo, roadmap)`; edges = `Depends on: <upstream node>`; a cross-repo gate identity **pinned to an upstream merge SHA** (NOT the in-repo `IF-0-<alias>-<n>` token — a new namespace) (IF-0-P2-1); plus a per-edge **consumption-channel descriptor** (package/version pin | submodule path | workspace override) and the runtime **injection/re-resolution primitive** `set_upstream_ref(workspace, channel, ref)` (IF-0-P2-2).
+- [ ] A durable, append-only train **ledger** with a **self-consistent** durability model: atomic single-`write` append (`O_APPEND`) **plus a tolerant resume reader that DROPS a malformed trailing line** (note: `events.py:read_events` does a bare `json.loads` and crashes on a truncated final line — so this tolerant reader is **net-new**, not a mirror of `events.py`; no temp-rename). Records per-node `status`, `branch`, `pr_url`, `upstream_merge_sha`, `merge_order`; a resume reader that re-reads live PR/SHA state.
+- [ ] `validate-roadmap` (train mode) validates: the cross-repo DAG is acyclic, every depended-on node exists, the train is serially orderable (topo-sort succeeds), **and every edge carries a valid consumption-channel descriptor**; a non-orderable/cyclic/channel-less train fails loud.
+- [ ] Train state never touches any repo's `.phase-loop/`; a test proves ledger append/resume survives a simulated crash (a truncated trailing write is dropped, not crashed on).
+- [ ] Tests: schema parse/validate (valid + cyclic + missing-node + missing-channel + invalid in-repo-token-reused); `set_upstream_ref` re-resolves each channel kind to a given ref (stubbed); ledger append/resume/atomicity incl. truncated-trailing-line.
 
 **Scope notes**
-- Decompose into 2 lanes: (a) the train-roadmap schema/parser + the merge-SHA gate identity + the `validate-roadmap` train extension; (b) the durable train-ledger module + resume + atomicity tests. Both freeze IF-0-P2-1.
+- Decompose into 3 lanes: (a) the train-roadmap schema/parser + the merge-SHA gate identity + the `validate-roadmap` train extension (IF-0-P2-1); (b) the consumption-channel descriptor + the `set_upstream_ref` injection primitive (IF-0-P2-2); (c) the durable train-ledger module + tolerant resume + atomicity tests.
 
 **Non-goals**
-- No coordinator/execution (P3). No content-hash identity (merge SHA only).
+- No coordinator/execution (P3). No content-hash identity (merge SHA only). The channel kinds are a fixed small set (pin/submodule/workspace) — no plugin system.
 
 **Key files**
 - phase-loop-runtime/src/phase_loop_runtime/train_roadmap.py
 - phase-loop-runtime/src/phase_loop_runtime/train_ledger.py
-- phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py
+- phase-loop-runtime/src/phase_loop_runtime/cross_repo_channel.py
 - phase-loop-runtime/tests/test_train_roadmap.py
 
 **Depends on**
@@ -139,6 +142,7 @@ Define the data model: the cross-repo release-train roadmap (nodes + `Depends on
 
 **Produces**
 - IF-0-P2-1
+- IF-0-P2-2
 
 ---
 
@@ -148,11 +152,11 @@ Define the data model: the cross-repo release-train roadmap (nodes + `Depends on
 The `train_runner` / `phase-loop run-train`: topo-sort the train, run each per-repo `run_loop` (unchanged, per-repo `--governed`) in order to open **linked draft PRs**, persist the ledger, and support partial-success/resume — without merging anything yet.
 
 **Exit criteria**
-- [ ] `phase-loop run-train --train <file> [--governed]` topo-sorts the train and, per node in order, invokes the unchanged `run_loop(repo, roadmap, run_mode)` then the P1 publishing primitive to open a **draft** PR; records each node in the ledger (`pr_open`, branch, PR URL); cross-links PRs (dependency + merge order in each body).
-- [ ] Downstream nodes are **blocked from starting** until upstream nodes reach a defined state (here: their PR is open + ledgered — the merge gating is P4); a downstream node never builds/verifies against an un-pinned upstream.
-- [ ] **No merges occur in this phase** — execution stops at "all linked draft PRs open + ledgered." Partial failure (a node's `run_loop` blocks/fails) leaves prior nodes' draft PRs open, the ledger marking the failed node `blocked`, and the train **resumable** (re-run skips completed nodes by re-reading the ledger + live PR state).
+- [ ] **Train-level preflight (entry-gate, before ANY PR is opened):** verify **all** repos in the train are clean, `gh` auth is valid, remotes are reachable, and each base branch exists — fail-loud and atomically up front. A preflight failure opens **zero** PRs (closes the partial-draft-train hole — the partial-PR analog of the partial-merge disaster).
+- [ ] `phase-loop run-train --train <file> [--governed]` topo-sorts the train and, per node in order: (i) **inject the upstream's draft via `set_upstream_ref` (IF-0-P2-2)** — point this node's consumption channel at each upstream node's **draft branch/`head_sha`** in its workspace, so the unchanged `run_loop` builds/verifies against the actual upstream change-in-flight (an unchanged `run_loop` cannot otherwise see the upstream); (ii) invoke `run_loop(repo, roadmap, run_mode)`; (iii) call the P1 publishing primitive to open a **draft** PR; record `pr_open`, branch, `head_sha`, PR URL in the ledger; cross-link PRs (dependency + merge order in each body).
+- [ ] **No merges occur in this phase** — execution stops at "all linked draft PRs open + ledgered." Partial failure (a node's `run_loop` or publish blocks/fails) leaves prior nodes' draft PRs open, the ledger marking the failed node `blocked`, and the train **resumable** (re-run skips completed nodes by re-reading the ledger + live PR state).
 - [ ] Per-repo `--governed` composes (each node's own pre-merge gate runs inside its `run_loop`); the coordinator adds no `human_required`.
-- [ ] Tests: a 2-3 node train (mocked `run_loop` + stubbed publishing) opens linked draft PRs in order; a mid-train node failure → ledger `blocked` + resumable; no merge is attempted.
+- [ ] Tests: preflight fails (dirty repo / bad auth) → zero PRs opened; a 2-3 node train (mocked `run_loop` + stubbed publishing/channel) injects each upstream draft via `set_upstream_ref` then opens linked draft PRs in order; a mid-train node failure → ledger `blocked` + resumable; no merge is attempted.
 
 **Scope notes**
 - Single lane: the `train_runner` module + the `run-train` CLI subcommand + the draft-PR-only execution loop over P1/P2, with ledger persistence and resume. Justified single lane — one coherent coordinator state machine; consumes IF-0-P1-1 + IF-0-P2-1.
@@ -181,7 +185,8 @@ The safety-critical merge orchestration: hold the linked draft PRs for one **tra
 
 **Exit criteria**
 - [ ] After P3 opens all linked draft PRs, the coordinator holds for **one train-level governed review** of the bundle (the linked PRs reviewed as one logical change). Reuses the governed panel machinery; a non-approval halts the train with a non-human terminal — **no PR is merged** (the partial-merge-disaster guard).
-- [ ] On approval, merge **sequentially** in topo order. Before merging each downstream node, **re-verify it against the upstream's merge SHA**: rebase/retarget the downstream branch onto the upstream merged commit and re-run that node's verification; a re-verify failure halts the train (downstream stays draft, upstream stays legitimately on `main`, ledger records the merged-SHA boundary) — never merge a downstream node that was only green against an *unmerged* upstream (the false-green guard).
+- [ ] On approval, merge **sequentially** in topo order. Before merging each downstream node, **re-verify it against the upstream's merge SHA — via the consumption channel, NOT a git rebase** (separate repos have unrelated histories): call `set_upstream_ref(downstream_workspace, channel, <upstream_merge_sha>)` (IF-0-P2-2) to re-resolve the downstream's dependency to the **merged** contract, then re-run that node's verification. A re-verify failure halts the train (downstream stays draft, upstream stays legitimately on `main`, ledger records the merged-SHA boundary) — never merge a downstream node that was only green against the *draft/unmerged* upstream (the false-green guard).
+- [ ] The re-verify is a **real, testable** step: the P4 test (and the P5 CI invariant) assert the channel was actually **re-resolved to the upstream merged SHA** before the downstream verification ran — not merely that a re-verify function was called.
 - [ ] The ledger records `approved`, then per node `merged(<sha>)` in order; resume after a crash mid-merge re-reads live PR/merge state and continues from the last `merged` node (idempotent).
 - [ ] Forward-only: a downstream failure does NOT revert merged upstream nodes; the ledger may record a revert *candidate* but the coordinator does not auto-revert. Recommend (doc) expand/contract upstream contracts so sequential merges are low-risk.
 - [ ] Tests (mocked panel + stubbed git/gh): train-review block → no merges; approve → sequential merges in order with a downstream re-verify gate that, when failed, halts before the downstream merge while upstream stays merged; crash-mid-merge resume is idempotent.
@@ -195,7 +200,11 @@ The safety-critical merge orchestration: hold the linked draft PRs for one **tra
 **Key files**
 - phase-loop-runtime/src/phase_loop_runtime/train_runner.py
 - phase-loop-runtime/src/phase_loop_runtime/governed_review.py
+- phase-loop-runtime/src/phase_loop_runtime/cross_repo_channel.py
+- phase-loop-runtime/src/phase_loop_runtime/pipeline_adapter/branch_ops.py
 - phase-loop-runtime/tests/test_train_merge.py
+
+(Note: `branch_ops.py`/`merge_policy.py` are the existing rebase/merge primitives but are **intra-repo only** — insufficient for the cross-repo re-verify, which goes through `set_upstream_ref`, not a rebase.)
 
 **Depends on**
 - P3
@@ -212,7 +221,7 @@ An end-to-end train test (mocked), the CI invariants that lock in the safety pro
 
 **Exit criteria**
 - [ ] An end-to-end test (mocked `run_loop` + panel + stubbed git/gh) exercises a 2-3 repo train: draft PRs → train review → sequential merge with downstream re-verify → all merged; plus the non-approval terminal and a mid-train resumable failure.
-- [ ] CI invariants: **no node merges before train approval**; **no downstream merges without a re-verify against the upstream merged SHA** (false-green guard); train state never written under any `.phase-loop/`; per-repo autonomous/governed behavior unchanged (no `human_required` added by the coordinator).
+- [ ] CI invariants: **no node merges before train approval**; **no downstream merges without the consumption channel having been re-resolved to the upstream merged SHA and the node re-verified** (false-green guard — asserts the re-resolution *occurred*, not just that a function was called); a **preflight failure opens zero PRs**; train state never written under any `.phase-loop/`; per-repo autonomous/governed behavior unchanged (no `human_required` added by the coordinator).
 - [ ] A `run-train` skill (or roadmap-builder "train" mode) fronts the coordinator as the human entry point — thin, deferring all gated logic to the runtime.
 - [ ] Docs: `protocol.md` (the train ledger + merge-SHA gate + the merge/re-verify invariants), `README.md`, CHANGELOG (#29), and the cross-repo authoring guide (incl. the expand/contract recommendation). `validate-roadmap specs/phase-plans-cross-repo-v1.md` passes; full standalone suite green; #12 + skills-parity drift gates green.
 
