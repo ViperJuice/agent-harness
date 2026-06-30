@@ -137,7 +137,7 @@ Applied N of M recommendations from <plan-path>. See the plan file for
 per-skill details. Reflections consumed this run moved to each skill's
 reflections/<repo_hash>/<branch_slug>/archive/ subdirectory.
 
-Co-Authored-By: Harness Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 Team repo (if edits landed there):
@@ -240,4 +240,4 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 ## Closeout
 
-Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
+Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.

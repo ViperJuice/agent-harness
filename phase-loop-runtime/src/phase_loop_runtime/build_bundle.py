@@ -51,6 +51,11 @@ PRESERVE_LITERALS: tuple[str, ...] = (
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
     "claude-in-chrome",
+    # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
+    # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer
+    # to `Harness Opus 4.8` — a concrete model attribution corrupted into a name
+    # that denotes nothing. One real model, no per-harness variant -> preserve.
+    "Claude Opus 4.8",
 )
 _PRESERVE_SENTINEL = "\x00PRESERVE{index}\x00"
 

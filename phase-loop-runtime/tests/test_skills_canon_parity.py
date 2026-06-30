@@ -158,7 +158,14 @@ class SkillsCanonParityTest(unittest.TestCase):
                     f"installed claude bundle lost concrete literal {literal!r} "
                     "(neutralizer corrupted it to a <harness>- form)",
                 )
-                corrupted = literal.replace("claude-", "<harness>-", 1)
+                # The corrupted form depends on the literal's shape: a `claude-X`
+                # token (model id / claude-in-chrome) collapses to `<harness>-X`,
+                # while a `Claude X` brand-display form (the Co-Authored-By model
+                # attribution) collapses to `Harness X` via the brand regex.
+                if literal.startswith("claude-"):
+                    corrupted = literal.replace("claude-", "<harness>-", 1)
+                else:
+                    corrupted = literal.replace("Claude", "Harness", 1)
                 self.assertNotIn(
                     corrupted,
                     installed,
@@ -222,6 +229,98 @@ class SkillsCanonParityTest(unittest.TestCase):
                     installed,
                     f"{harness} installed body leaked claude skill-name ref",
                 )
+
+    # ----------------------------------------------------------------------
+    # PRESERVE_LITERALS enumeration backstop (#26 item 4).
+    #
+    # PRESERVE_LITERALS is a hardcoded tuple. A NEW concrete `claude-…` literal
+    # (a future model id like `claude-haiku-5-0`, an `@anthropic-ai/claude-foo`
+    # package, etc.) that lands in skills-src but is NOT added to the tuple would
+    # be silently collapsed to `<harness>-…` by the neutralizer — a content
+    # regression the parity gate cannot see (both committed + build agree on the
+    # corrupt token). The install-output gate (test above) catches it ONLY for the
+    # specific literals already enumerated. This lint is the missing backstop: it
+    # flags any `claude-[a-z]` token in skills-src that is neither a known
+    # harness-VARIANT token (skill names / config dirs that SHOULD collapse) nor a
+    # preserved literal — i.e. a candidate new concrete literal a maintainer must
+    # consciously triage (add to PRESERVE_LITERALS, or to the variant allowlist).
+    # ----------------------------------------------------------------------
+
+    # Harness-VARIANT stems: tokens that legitimately become `<harness>-…` per
+    # harness (skill-name dirs, config/skill roots, bundle/code prefixes). A token
+    # is "known-collapsible" iff it starts with one of these.
+    _VARIANT_STEMS = (
+        "claude-execute-",
+        "claude-plan-",
+        "claude-phase-",
+        "claude-skill-",
+        "claude-skills",
+        "claude-task-",
+        "claude-config",
+        "claude-code-",
+        "claude-bundle",
+    )
+
+    import re as _re
+
+    _CLAUDE_TOKEN = _re.compile(r"claude-[a-z][a-z0-9-]*")
+
+    def _claude_tokens_in_skills_src(self) -> set[str]:
+        from phase_loop_runtime.build_bundle import PRESERVE_LITERALS
+
+        preserved = {lit for lit in PRESERVE_LITERALS if lit.startswith("claude-")}
+        unexpected: set[str] = set()
+        for skill_md in sorted((SKILLS_SRC["claude"]).rglob("SKILL.md")):
+            text = skill_md.read_text(encoding="utf-8")
+            for tok in self._CLAUDE_TOKEN.findall(text):
+                tok = tok.rstrip("-")  # `claude-skill-editor-` etc.
+                if tok in preserved:
+                    continue
+                if any(tok.startswith(stem) for stem in self._VARIANT_STEMS):
+                    continue
+                unexpected.add(tok)
+        return unexpected
+
+    def test_no_unguarded_claude_literal_in_skills_src(self):
+        """No `claude-…` token in skills-src outside the variant allowlist or
+        PRESERVE_LITERALS. A failure means a new concrete Claude literal landed and
+        must be triaged: add it to PRESERVE_LITERALS (so it survives neutralization)
+        or extend ``_VARIANT_STEMS`` (if it is genuinely a per-harness variant)."""
+        self._require_sources()
+        unexpected = self._claude_tokens_in_skills_src()
+        self.assertEqual(
+            set(),
+            unexpected,
+            "unguarded claude-* literal(s) in skills-src/claude/: "
+            f"{sorted(unexpected)} — add to PRESERVE_LITERALS in build_bundle.py "
+            "(if a concrete literal that must survive) or to the variant allowlist "
+            "in this test (if a per-harness skill/config token).",
+        )
+
+    def test_lint_fires_on_an_injected_unguarded_literal(self):
+        """Negative control: the lint MUST catch a new concrete literal. Inject a
+        fake `claude-frobnicate` into a temp skills-src/claude tree and assert the
+        scan reports it (a lint that cannot fail is no backstop)."""
+        self._require_sources()
+        with tempfile.TemporaryDirectory() as td:
+            fake_src = Path(td) / "claude" / "claude-execute-phase"
+            fake_src.mkdir(parents=True)
+            (fake_src / "SKILL.md").write_text(
+                "Use the claude-frobnicate model for this step.\n", encoding="utf-8"
+            )
+            tokens = {
+                tok.rstrip("-")
+                for skill_md in fake_src.rglob("SKILL.md")
+                for tok in self._CLAUDE_TOKEN.findall(
+                    skill_md.read_text(encoding="utf-8")
+                )
+            }
+            # The injected literal is neither a preserved literal nor a variant stem.
+            self.assertIn("claude-frobnicate", tokens)
+            self.assertFalse(
+                any("claude-frobnicate".startswith(stem) for stem in self._VARIANT_STEMS),
+                "test bug: the injected literal must not match a variant stem",
+            )
 
 
 if __name__ == "__main__":
