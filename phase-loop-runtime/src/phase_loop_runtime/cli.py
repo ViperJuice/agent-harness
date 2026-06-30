@@ -454,6 +454,59 @@ def build_parser() -> argparse.ArgumentParser:
                 default="json-schema",
                 help="Output format: a declared JSON-Schema (default) or the flat field-list gp consumes.",
             )
+    # run-train: cross-repo release-train coordinator (P3, #29).
+    # Registered outside the common-args loop because it has its own argument
+    # set (--train, --governed, --workspace-root, --ledger-dir) and does NOT
+    # use the per-repo --repo/--roadmap/--phase/--max-phases args.
+    run_train_sub = subparsers.add_parser(
+        "run-train",
+        help=(
+            "Run a cross-repo release train: topo-sort, preflight, per-node "
+            "draft-PR execution via the unchanged per-repo run_loop. "
+            "Stops at 'all draft PRs open + ledgered'; no merges (P4 scope)."
+        ),
+    )
+    run_train_sub.add_argument(
+        "--train",
+        dest="train_file",
+        required=False,
+        metavar="FILE",
+        help="Path to the cross-repo release-train roadmap (train-roadmap format).",
+    )
+    run_train_sub.add_argument(
+        "--governed",
+        action="store_true",
+        default=False,
+        help=(
+            "Pass run_mode='governed' to each per-repo run_loop "
+            "(per-repo governed panel review before merge)."
+        ),
+    )
+    run_train_sub.add_argument(
+        "--workspace-root",
+        default=".",
+        metavar="DIR",
+        help=(
+            "Root directory under which each node's repo is found. "
+            "A node with repo='my-service' resolves to <workspace-root>/my-service. "
+            "Default: current directory."
+        ),
+    )
+    run_train_sub.add_argument(
+        "--ledger-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory for the coordinator-side train ledger. "
+            "Must not be inside any repo's .phase-loop/. "
+            "Default: <train-file-parent>/.train-ledger/."
+        ),
+    )
+    run_train_sub.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the result as JSON.",
+    )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -522,6 +575,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
         argv_extra = ["--train"] if getattr(args, "train", False) else []
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
+    if command == "run-train":
+        return _run_train_command(parser=parser, args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -1802,6 +1857,90 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
     if result.has_setup_errors():
         return 2
     return 1 if result.has_drift() else 0
+
+
+def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """Handle the 'run-train' subcommand (#29 P3).
+
+    Topo-sorts the release train, preflights ALL repos, then per node (in
+    order): injects upstream draft ref → runs the unchanged per-repo
+    run_loop → publishes a draft PR → appends to the coordinator ledger.
+    No merges occur (P4 scope).
+    """
+    from .train_roadmap import load_train_roadmap
+    from .train_ledger import default_ledger_path
+    from . import train_runner
+
+    train_file = getattr(args, "train_file", None)
+    if not train_file:
+        parser.error("run-train requires --train <file>")
+        return 1  # unreachable but makes mypy happy
+
+    train_path = Path(train_file)
+    if not train_path.exists():
+        print(f"run-train: train file not found: {train_path}", file=sys.stderr)
+        return 1
+
+    try:
+        roadmap = load_train_roadmap(train_path)
+    except ValueError as exc:
+        print(f"run-train: failed to parse train roadmap: {exc}", file=sys.stderr)
+        return 1
+
+    # run_mode mirrors how 'run' handles --governed (cli.py:796)
+    run_mode = "governed" if bool(getattr(args, "governed", False)) else "autonomous"
+
+    # Workspace resolution: <workspace-root>/<node.repo>
+    workspace_root = Path(getattr(args, "workspace_root", None) or ".")
+    def _resolve_workspace(node) -> Path:
+        return workspace_root / node.repo
+
+    # Ledger path — must not be inside any repo's .phase-loop/
+    ledger_dir_arg = getattr(args, "ledger_dir", None)
+    if ledger_dir_arg:
+        ledger_dir = Path(ledger_dir_arg)
+    else:
+        ledger_dir = train_path.parent / ".train-ledger"
+    ledger_path = default_ledger_path(ledger_dir, train_path.stem)
+
+    as_json = bool(getattr(args, "json", False))
+
+    result = train_runner.run_train(
+        roadmap,
+        ledger_path,
+        run_mode=run_mode,
+        resolve_workspace=_resolve_workspace,
+    )
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+
+    if result["status"] == "preflight_failed":
+        print("run-train: preflight failed — zero PRs opened:", file=sys.stderr)
+        for err in result.get("errors", []):
+            print(f"  {err}", file=sys.stderr)
+        return 1
+
+    if result["status"] == "blocked":
+        node_id = result.get("node_id", "?")
+        detail = result.get("detail", {})
+        print(
+            f"run-train: blocked at node '{node_id}': {detail.get('reason', detail)}",
+            file=sys.stderr,
+        )
+        print(
+            "  Prior nodes' draft PRs remain open. Re-run to resume.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # status == "completed"
+    nodes = result.get("nodes", {})
+    if not as_json:
+        print(f"run-train: completed — {len(nodes)} draft PR(s) open")
+        for node_id, info in nodes.items():
+            print(f"  {node_id}: {info.get('pr_url', '?')}")
+    return 0
 
 
 def _direct_invocation_blocker(
