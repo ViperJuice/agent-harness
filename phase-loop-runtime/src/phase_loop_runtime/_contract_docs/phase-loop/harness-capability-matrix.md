@@ -312,7 +312,7 @@ Claude settings.
 `claude agents --json --all` and reduces each record to non-secret
 `AgentViewSession` metadata:
 `{id, session_id, cwd, kind, state, status, name, started_at, pid}`. State
-reduction is limited to `running`, `done`, `blocked`, `stopped`, and `unknown`;
+reduction is limited to `running`, `done`, `blocked`, `stopped`, `failed`, and `unknown`;
 unknown CLI states are retained as unknown metadata instead of being treated as
 success. Agent View launch preparation builds `claude --bg` commands only after
 workspace and repo-local `.mcp.json` trust preflights pass, including

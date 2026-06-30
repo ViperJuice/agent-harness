@@ -1592,7 +1592,7 @@ def _agent_view_route_status(lifecycle_state: str) -> str:
         return "done"
     if lifecycle_state == "running":
         return "working"
-    if lifecycle_state in {"blocked", "stopped"}:
+    if lifecycle_state in {"blocked", "stopped", "failed"}:
         return "blocked"
     return "stale"
 

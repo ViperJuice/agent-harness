@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.claude_channel_sidecar import ChannelSidecar, build_server
-from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult
+from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult, BlockerSummary
 from phase_loop_runtime.launcher import (
     build_launch_request,
     build_launch_spec,
@@ -340,6 +340,38 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(result.claude_route_result["session_id"], "agent-1")
         self.assertEqual(result.claude_route_result["artifacts"][0]["logs_ref"], "claude logs agent-1")
         self.assertNotIn("-p", result.command)
+        rendered = json.dumps(result.event_metadata(), sort_keys=True)
+        self.assertNotIn("raw transcript", rendered)
+        self.assertNotIn("Bearer", rendered)
+
+    def test_agent_view_failed_launch_returns_blocked_route_result(self):
+        class FakeAgentViewAdapter:
+            def launch_background(self, prompt, *, cwd, **kwargs):
+                return AgentViewLifecycleResult(
+                    session_id="agent-1",
+                    state="failed",
+                    cwd=str(cwd),
+                    logs_ref="claude logs agent-1",
+                    started_at="2026-06-19T12:00:00Z",
+                    completed_at="2026-06-19T12:05:00Z",
+                    stop_result=None,
+                    auth_posture="subscription_local",
+                    billing_posture="subscription_included",
+                    blocker=BlockerSummary("agent_view_failed", "Claude Agent View reported a terminal failed state."),
+                )
+
+        with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "agent_view"}, clear=False):
+            spec = build_launch_spec(self._request(Path("/tmp/repo")))
+        with patch("phase_loop_runtime.launcher.ClaudeAgentViewAdapter", return_value=FakeAgentViewAdapter()):
+            result = launch_with_spec(spec)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.claude_route, "claude_agent_view")
+        self.assertEqual(result.claude_route_result["status"], "blocked")
+        self.assertEqual(result.claude_route_result["text"], "Claude Agent View reported a terminal failed state.")
+        self.assertEqual(result.claude_route_result["warnings"], ["Claude Agent View reported a terminal failed state."])
+        self.assertEqual(result.claude_route_result["artifacts"][0]["state"], "failed")
+        self.assertEqual(result.claude_route_result["artifacts"][0]["logs_ref"], "claude logs agent-1")
         rendered = json.dumps(result.event_metadata(), sort_keys=True)
         self.assertNotIn("raw transcript", rendered)
         self.assertNotIn("Bearer", rendered)

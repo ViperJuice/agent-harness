@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-AGENT_VIEW_STATES = {"running", "done", "blocked", "stopped", "unknown"}
+AGENT_VIEW_STATES = {"running", "done", "blocked", "stopped", "failed", "unknown"}
 SECRET_LIKE_KEYS = {
     "api_key",
     "authorization",
@@ -466,6 +466,8 @@ def _agent_state(value: Any) -> str:
         return "blocked"
     if normalized in {"stopped", "cancelled", "canceled", "terminated", "killed"}:
         return "stopped"
+    if normalized in {"failed", "failure", "error", "errored", "crashed"}:
+        return "failed"
     return "unknown"
 
 
@@ -497,15 +499,21 @@ def _validated_agent_id(agent_id: str) -> str:
 
 def _lifecycle_from_session(session: AgentViewSession) -> AgentViewLifecycleResult:
     session_id = session.session_id or session.id or "unknown"
+    failed = session.state == "failed"
     return _lifecycle_from_parts(
         session_id=session_id,
         state=session.state,
         cwd=session.cwd,
         started_at=session.started_at,
-        completed_at=session.completed_at if session.state in {"done", "blocked", "stopped"} else None,
+        completed_at=(
+            (session.completed_at or _utc_now())
+            if failed
+            else (session.completed_at if session.state in {"done", "blocked", "stopped"} else None)
+        ),
         stop_result="stopped" if session.state == "stopped" else None,
         auth_posture=_agent_auth_posture(session.metadata),
         billing_posture=_agent_billing_posture(session.metadata),
+        blocker=BlockerSummary("agent_view_failed", "Claude Agent View reported a terminal failed state.") if failed else None,
     )
 
 
