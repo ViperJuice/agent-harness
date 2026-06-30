@@ -293,8 +293,22 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
         snapshot = result[0] if isinstance(result, tuple) else None
         if snapshot is None:
             return True  # no snapshot produced; assume pass
-        terminal_status = getattr(snapshot, "terminal_status", None)
-        if terminal_status in {"blocked", "failed", "error"}:
+        # StateSnapshot has no `terminal_status` field.  The real failure
+        # signals (models.py) are:
+        #   closeout_terminal_status: str|None — None or "complete" on clean
+        #     pass; any explicit failure value means the run did not succeed.
+        #     NOTE: None is NOT a failure — verify mode may not emit a full
+        #     closeout event, leaving None on a successful run.  Only the
+        #     known-bad literals trigger failure.
+        #   human_required: bool — True when a human is needed.
+        #   blocker_class: str|None — non-None means a blocker was raised.
+        if snapshot.closeout_terminal_status in {
+            "blocked", "stale_input", "failed_verification", "human_required"
+        }:
+            return False
+        if snapshot.human_required:
+            return False
+        if snapshot.blocker_class is not None:
             return False
         return True
     except Exception:
@@ -560,7 +574,37 @@ def run_train(
             workspace = resolve_workspace(node)
             if rec.status == "pr_open":
                 if not pr_is_open_fn(workspace, rec.branch):
-                    continue  # PR closed between runs; not usable for resume
+                    # In P4 mode: before dropping, check whether this PR was
+                    # already merged on GitHub (crash window between the merge
+                    # call and the ledger write).  If merged, recover the SHA
+                    # and add to completed_nodes so downstream injection works
+                    # correctly; write a merged record so the P4 merge loop
+                    # skips it (idempotent, forward-only).
+                    if _merge_phase_enabled:
+                        _step3_merged_sha_fn = (
+                            _pr_merged_sha_fn if _pr_merged_sha_fn is not None
+                            else _live_pr_merged_sha
+                        )
+                        _recovered_sha = _step3_merged_sha_fn(workspace, rec.branch)
+                        if _recovered_sha:
+                            _recovered_rec = LedgerRecord(
+                                node_id=nid,
+                                status="merged",
+                                branch=rec.branch,
+                                pr_url=rec.pr_url,
+                                head_sha=rec.head_sha,
+                                upstream_merge_sha=_recovered_sha,
+                            )
+                            append_record(ledger_path, _recovered_rec)
+                            # Update in-memory view so Step 4's merged-node skip
+                            # (nid_rec.status == "merged" → continue) fires correctly.
+                            ledger_state[nid] = _recovered_rec
+                            completed_nodes[nid] = {
+                                "branch": rec.branch,
+                                "head_sha": rec.head_sha,
+                                "pr_url": rec.pr_url,
+                            }
+                    continue  # not open: recovered-as-merged or dropped
                 # Prefer the live PR head SHA (the branch may have been updated
                 # since the last run); fall back to the ledger-recorded head_sha.
                 live_sha = live_pr_head_sha_fn(workspace, rec.branch)
@@ -939,9 +983,29 @@ def run_train(
                     ),
                 }
 
-        # Merge the PR.
+        # Merge the PR.  Wrap the call: a real gh pr merge failure (branch
+        # protection, conflict, required checks) raises CalledProcessError
+        # from the live default (subprocess check=True).  Record blocked +
+        # return merge_halted so no uncaught exception escapes run_train and
+        # already-merged upstream nodes remain recorded (forward-only).
         _pr_branch_m = completed_nodes[_nid_m]["branch"]
-        _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m)
+        try:
+            _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m)
+        except Exception as _merge_exc_m:
+            append_record(
+                ledger_path,
+                LedgerRecord(
+                    node_id=_nid_m,
+                    status="blocked",
+                    branch=_pr_branch_m,
+                ),
+            )
+            return {
+                "status": "merge_halted",
+                "node_id": _nid_m,
+                "reason": "merge_failed",
+                "detail": str(_merge_exc_m),
+            }
         merged_shas[_nid_m] = _merged_sha_m
 
         # Record the merge.  Carry branch/pr_url/head_sha forward from

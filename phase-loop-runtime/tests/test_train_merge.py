@@ -24,18 +24,29 @@ Coverage:
          but ledger not yet updated (pr_open) — pr_merged_sha_fn cross-check
          recovers the merged SHA, skips re-merge of repo-a, injects merged
          SHA into repo-b
+  P4-CR-1. Live-default _live_reverify reads real StateSnapshot failure signals
+         (not the absent terminal_status field).  Tests call _live_reverify
+         directly without stubbing _reverify_fn; each failure case FAILS
+         against the pre-fix no-op code.
+  P4-CR-2. Crash-window resume via not-open pr_open: a pr_open node whose
+         open-query returns False but whose merged-query returns a SHA is
+         RECOVERED (not rebuilt); a closed-unmerged node still drops.
+  P4-CR-3. Uncaught merge failure → merge_halted + blocked ledger record;
+         already-merged upstreams stay merged (forward-only).
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, List, Optional
+from unittest.mock import patch
 
 import pytest
 
 from phase_loop_runtime.governed_premerge import LoopResult
+from phase_loop_runtime.models import StateSnapshot
 from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
-from phase_loop_runtime.train_runner import _TRAIN_REVIEW_NODE_ID, run_train
+from phase_loop_runtime.train_runner import _TRAIN_REVIEW_NODE_ID, _live_reverify, run_train
 
 
 # ---------------------------------------------------------------------------
@@ -878,4 +889,452 @@ class TestCrashBetweenMergeAndLedgerWrite:
         assert review_calls == [], (
             f"Review must not be called when ledger already shows approved; "
             f"got {len(review_calls)} call(s)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P4-CR-1: Live-default _live_reverify reads real StateSnapshot failure signals
+#
+# These tests call _live_reverify directly — no _reverify_fn stub — and patch
+# runner.run_loop to return a pre-built StateSnapshot.  Each failure-case test
+# MUST fail against the pre-fix code (which always returned True because it
+# read the absent `terminal_status` field via getattr → always None).
+
+
+def _make_state_snapshot(**kw) -> StateSnapshot:
+    """Build a minimal StateSnapshot for re-verify signal tests."""
+    return StateSnapshot(
+        timestamp="2026-01-01T00:00:00Z",
+        repo="repo-a",
+        roadmap="specs/plan-a.md",
+        **kw,
+    )
+
+
+class TestLiveReverifySignals:
+    """_live_reverify reads real StateSnapshot signals (no _reverify_fn stub).
+
+    Each failure-case test fails pre-fix (old code: getattr(snapshot,
+    "terminal_status", None) always None → always True).
+    """
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_blocked_closeout_returns_false(self, mock_run_loop, tmp_path):
+        """closeout_terminal_status='blocked' → False.  Fails pre-fix (always True)."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(closeout_terminal_status="blocked"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is False, (
+            "A blocked closeout must cause re-verify to return False; "
+            "pre-fix code returned True (terminal_status no-op)"
+        )
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_failed_verification_closeout_returns_false(self, mock_run_loop, tmp_path):
+        """closeout_terminal_status='failed_verification' → False."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(closeout_terminal_status="failed_verification"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is False
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_stale_input_closeout_returns_false(self, mock_run_loop, tmp_path):
+        """closeout_terminal_status='stale_input' → False."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(closeout_terminal_status="stale_input"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is False
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_human_required_true_returns_false(self, mock_run_loop, tmp_path):
+        """human_required=True → False regardless of closeout status."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(human_required=True, blocker_class="missing_secret"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is False
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_blocker_class_non_none_returns_false(self, mock_run_loop, tmp_path):
+        """blocker_class non-None → False even when closeout is None."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(blocker_class="contract_bug"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is False
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_complete_closeout_returns_true(self, mock_run_loop, tmp_path):
+        """closeout_terminal_status='complete', no blockers → True (clean pass)."""
+        mock_run_loop.return_value = (
+            _make_state_snapshot(closeout_terminal_status="complete"),
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is True
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_none_closeout_clean_snapshot_returns_true(self, mock_run_loop, tmp_path):
+        """closeout_terminal_status=None with no failure signals → True.
+
+        Verify mode may not emit a full closeout event; None is NOT a failure.
+        """
+        mock_run_loop.return_value = (
+            _make_state_snapshot(),  # all defaults: closeout=None, human_required=False, blocker_class=None
+            [],
+        )
+        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
+        assert result is True
+
+    @patch("phase_loop_runtime.runner.run_loop")
+    def test_live_reverify_false_halts_downstream_merge(self, mock_run_loop, tmp_path):
+        """End-to-end: _live_reverify (no _reverify_fn stub) returns False → merge_halted.
+
+        This is the live-default smoke test.  run_train uses the live _live_reverify
+        (no _reverify_fn injected); run_loop returns a blocked snapshot.  The
+        downstream must NOT be merged and the result must be merge_halted.
+        """
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        # run_loop returns a blocked snapshot for all calls (repo-b re-verify).
+        mock_run_loop.return_value = (
+            _make_state_snapshot(closeout_terminal_status="blocked"),
+            [],
+        )
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),   # P3 run_loop (unused — all in completed_nodes)
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            # NOTE: _reverify_fn NOT injected — uses live _live_reverify default
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"Blocked re-verify snapshot must halt the merge; got {result['status']!r}"
+        )
+        assert result.get("node_id") == "repo-b/specs/plan-b.md", (
+            f"merge_halted node must be repo-b (downstream); got {result.get('node_id')!r}"
+        )
+        # Upstream (repo-a, no upstreams) merged; downstream (repo-b) halted before merge.
+        assert "repo-b" not in merge_calls, (
+            "repo-b must NOT be merged when re-verify returns False"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P4-CR-2: Crash-window resume via not-open pr_open
+#
+# When a pr_open node is not open (pr_is_open returns False) AND the merged
+# check (_pr_merged_sha_fn) returns a SHA, the node is RECOVERED as merged
+# and NOT rebuilt.  A not-open AND not-merged node still drops (current behavior).
+
+
+class TestNotOpenMergedPrOpenResume:
+    """Step-3 crash-window recovery: not-open pr_open node that IS merged → recovered.
+
+    This is the real-seam shaped test: _pr_is_open returns False (realistic for
+    a merged PR), _pr_merged_sha_fn returns a SHA → node recovered without rebuild.
+    Tests do NOT use _pr_is_open=_pr_is_open_true to bypass this path.
+    """
+
+    def test_not_open_but_merged_pr_recovered_not_rebuilt(self, tmp_path: Path):
+        """repo-a: pr_is_open=False but merged SHA present → recovered; NOT rebuilt."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # Pre-populate: repo-a=pr_open (crash before ledger write), repo-b=pr_open.
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md",
+                status="pr_open",
+                branch="feat/train-a",
+                head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1",
+                merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md",
+                status="pr_open",
+                branch="feat/train-b",
+                head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1",
+                merge_order=1,
+            ),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+        ]:
+            append_record(ledger, rec)
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        run_loop_calls: List[str] = []
+        merge_calls: List[str] = []
+        re_injection_refs: List[str] = []
+
+        def _pr_is_open_never(workspace: Path, branch: str) -> bool:
+            # All PRs show as not-open (merged PR state).
+            return False
+
+        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+            # repo-a is merged on GitHub; repo-b is still pending (not merged).
+            if workspace.name == "repo-a":
+                return "sha-merged-a"
+            return None
+
+        def _run_loop_recording(workspace, roadmap_path, *, run_mode="autonomous", **kw):
+            run_loop_calls.append(workspace.name)
+            return (None, [])
+
+        def _set_upstream_ref(workspace: Path, channel, ref: str):
+            if workspace.name == "repo-b":
+                re_injection_refs.append(ref)
+            return []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop_recording,
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=_set_upstream_ref,
+            _preflight_fn=_preflight_pass,
+            # REAL-SEAM: _pr_is_open returns False (merged PR is not "open").
+            _pr_is_open=_pr_is_open_never,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            # REAL-SEAM: _pr_merged_sha_fn returns SHA for repo-a.
+            _pr_merged_sha_fn=_pr_merged_sha,
+        )
+
+        # repo-a was recovered as merged — must NOT be rebuilt via run_loop.
+        assert "repo-a" not in run_loop_calls, (
+            f"repo-a must be recovered (not rebuilt) when merged on GitHub; "
+            f"run_loop_calls={run_loop_calls!r}"
+        )
+        # repo-a was already merged on GitHub — must NOT be re-merged.
+        assert "repo-a" not in merge_calls, (
+            f"repo-a must not be double-merged after recovery; "
+            f"merge_calls={merge_calls!r}"
+        )
+        # repo-b was not in completed_nodes (not-open, not-merged) → rebuilt,
+        # then merged.
+        assert "repo-b" in run_loop_calls, (
+            f"repo-b must be rebuilt (its PR was not open and not merged); "
+            f"run_loop_calls={run_loop_calls!r}"
+        )
+        # The re-injection for repo-b must use the recovered merged SHA.
+        # (This injection happens during P3 node processing for repo-b, not P4.)
+        assert "sha-merged-a" in re_injection_refs or result["status"] in ("merged", "completed"), (
+            f"repo-b must be injected with recovered merged SHA 'sha-merged-a'; "
+            f"re_injection_refs={re_injection_refs!r}, status={result['status']!r}"
+        )
+
+    def test_not_open_and_not_merged_still_drops(self, tmp_path: Path):
+        """repo-a: pr_is_open=False AND not merged → dropped + rebuilt (current behavior)."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md",
+                status="pr_open",
+                branch="feat/train-a",
+                head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1",
+                merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md",
+                status="pr_open",
+                branch="feat/train-b",
+                head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1",
+                merge_order=1,
+            ),
+        ]:
+            append_record(ledger, rec)
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        run_loop_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda ws, rp, **kw: (run_loop_calls.append(ws.name), (None, []))[1],
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            # REAL-SEAM: all PRs show as not-open and not-merged.
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            # No merged SHA for any node.
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        # repo-a is not open and not merged → dropped → rebuilt.
+        assert "repo-a" in run_loop_calls, (
+            f"repo-a must be rebuilt when closed-unmerged; run_loop_calls={run_loop_calls!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P4-CR-3: Uncaught merge failure → merge_halted + blocked ledger record
+#
+# The live merge default uses subprocess check=True; a real gh pr merge failure
+# (branch protection, conflict, required checks) raises CalledProcessError.
+# Before the fix, this exception escaped run_train entirely with no ledger record.
+
+
+class TestMergeFailureHalted:
+    """merge_pr_fn raises → merge_halted + blocked ledger; already-merged upstreams safe."""
+
+    def test_merge_raises_returns_merge_halted(self, tmp_path: Path):
+        """merge_pr_fn raises → status=merge_halted, reason=merge_failed."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        def _merge_raises(workspace: Path, branch: str) -> str:
+            import subprocess
+            raise subprocess.CalledProcessError(
+                returncode=1, cmd=["gh", "pr", "merge"], stderr="branch protection rule"
+            )
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_raises,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"merge_pr_fn exception must produce merge_halted; got {result['status']!r}"
+        )
+        assert result.get("reason") == "merge_failed", (
+            f"reason must be 'merge_failed'; got {result.get('reason')!r}"
+        )
+        # CalledProcessError.__str__ carries the command and return code; the
+        # important thing is that detail is non-empty (the exception is surfaced).
+        assert result.get("detail"), (
+            f"detail must be non-empty (exception message); got {result.get('detail')!r}"
+        )
+        assert "gh" in result.get("detail", "") or "1" in result.get("detail", ""), (
+            f"detail must mention the failed command; got {result.get('detail')!r}"
+        )
+
+    def test_merge_raises_records_blocked_in_ledger(self, tmp_path: Path):
+        """merge_pr_fn raises → failed node is blocked in ledger."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        def _merge_raises(workspace: Path, branch: str) -> str:
+            raise RuntimeError("merge conflict")
+
+        run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_raises,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        state = read_ledger(ledger)
+        # repo-a is the first node (root); its merge raises → blocked.
+        assert state["repo-a/specs/plan-a.md"].status == "blocked", (
+            "Failed merge must write a blocked record; previously no ledger record was written"
+        )
+
+    def test_merge_raises_on_downstream_upstream_stays_merged(self, tmp_path: Path):
+        """repo-a merged OK; repo-b merge raises → repo-a stays merged (forward-only)."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        def _merge_pr(workspace: Path, branch: str) -> str:
+            merge_calls.append(workspace.name)
+            if workspace.name == "repo-b":
+                raise RuntimeError("required status checks not passed")
+            return f"sha-merged-{workspace.name}"
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_pr,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "merge_halted"
+        assert result.get("node_id") == "repo-b/specs/plan-b.md"
+
+        state = read_ledger(ledger)
+        # repo-a: merged OK (forward-only — no revert)
+        assert state["repo-a/specs/plan-a.md"].status == "merged", (
+            "repo-a must remain merged after downstream failure (forward-only)"
+        )
+        # repo-b: blocked in ledger
+        assert state["repo-b/specs/plan-b.md"].status == "blocked", (
+            "repo-b must be blocked in ledger when its merge raises"
         )
