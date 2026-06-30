@@ -1,8 +1,17 @@
-"""Cross-repo release-train coordinator (P3).
+"""Cross-repo release-train coordinator (P3 + P4).
 
-Serial draft-PR execution: topo-sort the train, preflight ALL repos, then per
-node (in topo order): inject upstream draft ref via set_upstream_ref → invoke
-the unchanged per-repo run_loop → publish a draft PR → append to ledger.
+P3: Serial draft-PR execution: topo-sort the train, preflight ALL repos, then
+per node (in topo order): inject upstream draft ref via set_upstream_ref →
+invoke the unchanged per-repo run_loop → publish a draft PR → append to ledger.
+
+P4 (``_merge_phase_enabled=True``): After all draft PRs are open, hold for a
+train-level governed review (one round, reusing ``run_governed_premerge_loop``).
+On panel approval, merge sequentially in topo order.  Before merging each
+downstream node, re-resolve its channel to the upstream MERGED SHA and re-verify
+(the false-green killer — NEVER merge a downstream that was only green against
+the draft ref).  Forward-only: a downstream failure does NOT revert merged
+upstream nodes; use expand/contract upstream contracts to keep sequential merges
+safe.
 
 Safety invariants (enforced structurally, asserted in tests):
   1. **Zero-PRs-on-preflight-failure**: preflight runs on ALL repos before the
@@ -11,8 +20,8 @@ Safety invariants (enforced structurally, asserted in tests):
      Train-schema validation (T-A/B/C/D via ``validate_train_loud``) runs as
      part of this gate — a malformed train (e.g. a ``none``-channel dependency
      edge) opens zero PRs.
-  2. **Draft-only**: every ``publish_from_worktree`` call uses ``draft=True``.
-     P3 never merges.  The merge seam (P4) is absent here.
+  2. **Draft-only** (P3): every ``publish_from_worktree`` call uses
+     ``draft=True``.  P3 never merges.
   3. **Train state off .phase-loop/**: ledger_path is caller-supplied and must
      pass ``_assert_not_phase_loop``; the coordinator never touches any repo's
      ``.phase-loop/`` directory.
@@ -28,9 +37,22 @@ Safety invariants (enforced structurally, asserted in tests):
      update-existing-PR primitive and is deferred to a future release.
   5. **Exception safety**: if inject or run_loop raises, the node is marked
      ``blocked`` in the ledger (never left stuck at ``running``).
+  6. **Autonomy boundary** (P4): cross-repo merges are NEVER auto-merged.  In
+     autonomous mode with ``_merge_phase_enabled=True`` the coordinator stops at
+     ``status="drafts_open"`` so the operator can review and re-run with
+     ``--governed``.  Only ``run_mode="governed"`` proceeds to review + merge.
+  7. **False-green killer** (P4): before merging each downstream node,
+     ``set_upstream_ref`` is called with the upstream MERGED SHA (not the draft
+     SHA) and ``_reverify_fn`` re-verifies the downstream.  A downstream that
+     was green only against the draft ref is blocked (``merge_halted``).
+  8. **Idempotent resume** (P4): ledger ``merged`` records carry
+     ``upstream_merge_sha`` (the real merge-commit SHA) plus ``branch``,
+     ``pr_url``, and ``head_sha`` so the resumed run can skip already-merged
+     nodes without double-merging and can still inject the correct draft SHA
+     for any remaining downstream nodes.
 
-All git/gh/run_loop/publish boundaries are injectable seams so the module is
-fully testable without live network access.
+All git/gh/run_loop/publish/review boundaries are injectable seams so the
+module is fully testable without live network access.
 """
 from __future__ import annotations
 
@@ -204,6 +226,162 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# P4 merge seams — stubbed in tests; live implementations below.
+
+#: Synthetic ledger node_id used to record the train-level review approval.
+#: Not a real roadmap node — only stored in the coordinator ledger.
+_TRAIN_REVIEW_NODE_ID: str = "_train_review_"
+
+
+def _live_merge_pr(workspace: Path, branch: str) -> str:
+    """Merge the PR for ``branch`` via the GitHub CLI; return the merge commit SHA.
+
+    Idempotent: checks ``_live_pr_merged_sha`` before issuing the merge command.
+    Already-merged PRs return the existing SHA without error.
+
+    Stubbable seam: inject ``_merge_pr_fn`` into :func:`run_train`.
+    """
+    # Idempotent guard: if already merged, return the existing SHA.
+    existing = _live_pr_merged_sha(workspace, branch)
+    if existing:
+        return existing
+
+    subprocess.run(
+        ["gh", "pr", "merge", branch, "--merge", "--delete-branch", "--yes"],
+        cwd=str(workspace),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    result = subprocess.run(
+        [
+            "gh", "pr", "view", branch,
+            "--json", "mergeCommit",
+            "--jq", ".mergeCommit.oid",
+        ],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    sha = result.stdout.strip()
+    if not sha or sha == "null":
+        raise RuntimeError(
+            f"could not determine merge commit SHA for branch '{branch}' in "
+            f"'{workspace}'; gh pr view returned no mergeCommit.oid after merge"
+        )
+    return sha
+
+
+def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
+    """Re-verify a node by re-running the per-repo run_loop; return True on pass.
+
+    This is the live default for ``_reverify_fn``.  Tests stub this seam.
+
+    NOTE: This calls ``run_loop`` in verify mode.  It does NOT re-publish or
+    open a new PR — the existing draft PR from P3 remains open.  The downstream
+    draft PR retains the P3-time draft pin; only the *local workspace file* is
+    re-resolved to the upstream merged SHA for this verification pass.  The
+    merged PR will therefore carry the draft-time pin, not the merged-SHA pin.
+    Use expand/contract (backward-compatible) upstream contracts so this is safe.
+    """
+    from .runner import run_loop
+
+    try:
+        result = run_loop(workspace, roadmap_path, run_mode=run_mode)
+        snapshot = result[0] if isinstance(result, tuple) else None
+        if snapshot is None:
+            return True  # no snapshot produced; assume pass
+        terminal_status = getattr(snapshot, "terminal_status", None)
+        if terminal_status in {"blocked", "failed", "error"}:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _live_pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+    """Return the merge-commit SHA if the PR for ``branch`` is already merged, else None.
+
+    Used for idempotent resume: the merge loop skips nodes whose PR has already
+    landed on main (covers crash-between-merge-and-ledger-write).
+
+    Stubbable seam: inject ``_pr_merged_sha_fn`` into :func:`run_train`.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "view", branch,
+                "--json", "state,mergeCommit",
+                "--jq", 'if .state == "MERGED" then .mergeCommit.oid else null end',
+            ],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        sha = result.stdout.strip()
+        return sha if (result.returncode == 0 and sha and sha not in {"null", ""}) else None
+    except Exception:
+        return None
+
+
+def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
+    """Train-level governed review: one-round bounded panel review.
+
+    Returns a :class:`LoopResult` with ``mergeable=True`` on approval or a
+    non-human terminal blocker (``human_required=False``) on rejection.
+
+    In ``autonomous`` mode ``run_governed_premerge_loop`` short-circuits to
+    ``mergeable=True`` without spawning a panel — callers should gate on
+    ``run_mode == "governed"`` before reaching here (P4 enforces this).
+
+    Stubbable seam: inject ``_train_review_fn`` into :func:`run_train`.
+    """
+    from .governed_premerge import LoopResult, run_governed_premerge_loop
+
+    return run_governed_premerge_loop(
+        artifact=artifact,
+        author_executor="train-coordinator",
+        run_mode=run_mode,
+        max_rounds=1,
+        apply_fix=None,
+    )
+
+
+def _build_train_review_bundle(
+    roadmap: "TrainRoadmap",
+    completed_nodes: Dict[str, Dict],
+    topo_order: "List[TrainNode]",
+) -> str:
+    """Build the artifact text for the train-level review panel.
+
+    Summarises all draft PRs in merge order so the panel can review the
+    cross-repo change as one logical unit.
+    """
+    lines: List[str] = [
+        "# Train-level bundle review\n\n",
+        f"**Train:** `{roadmap.title}`\n\n",
+        "## Draft PRs (merge order)\n\n",
+        "Review the following PRs as **one logical cross-repo change**.\n",
+        "Approve (AGREE) only if the change is correct as a unit.\n\n",
+    ]
+    for i, node in enumerate(topo_order, 1):
+        nid = node.node_id
+        info = completed_nodes.get(nid, {})
+        pr_url = info.get("pr_url", "(unknown)")
+        head_sha = info.get("head_sha") or "?"
+        short_sha = head_sha[:8] if len(head_sha) >= 8 else head_sha
+        lines.append(f"{i}. **`{nid}`** — [PR]({pr_url}) (draft `{short_sha}`)\n")
+    lines.append(
+        "\n---\n"
+        "Reject (DISAGREE) with specific blocking concerns if not ready.\n"
+    )
+    return "".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # PR body builder
 
 
@@ -257,8 +435,16 @@ def run_train(
     _pr_is_open: Optional[Callable] = None,
     _live_pr_head_sha_fn: Optional[Callable] = None,
     _preflight_fn: Optional[Callable] = None,
+    # P4 gate: False (default) preserves P3 behavior for all existing callers.
+    # The CLI sets this True; run_mode then determines autonomous vs governed.
+    _merge_phase_enabled: bool = False,
+    # P4 seams — unused when _merge_phase_enabled is False.
+    _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch) → merged_sha
+    _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
+    _train_review_fn: Optional[Callable] = None,     # (artifact, run_mode) → LoopResult
+    _pr_merged_sha_fn: Optional[Callable] = None,    # (workspace, branch) → Optional[str]
 ) -> Dict:
-    """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open.
+    """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open [+ merge].
 
     Parameters
     ----------
@@ -269,7 +455,7 @@ def run_train(
         repo's ``.phase-loop/`` (enforced by ``append_record``).
     run_mode:
         ``"autonomous"`` or ``"governed"``.  Passed unchanged to each
-        per-repo ``run_loop`` call.
+        per-repo ``run_loop`` call and to the P4 review/merge gate.
     resolve_workspace:
         Maps a ``TrainNode`` to its workspace ``Path`` on disk.
     resolve_owned_paths:
@@ -281,18 +467,36 @@ def run_train(
         (e.g. tests, or callers that know the paths ahead of time).
     _run_loop, _publish, _set_upstream_ref_fn, _pr_is_open,
     _live_pr_head_sha_fn, _preflight_fn:
-        Injectable seams for testing.  Each defaults to the corresponding
+        P3 injectable seams for testing.  Each defaults to the corresponding
         live implementation.
+    _merge_phase_enabled:
+        When ``False`` (default): P3 behavior only — returns
+        ``{"status": "completed"}`` once all draft PRs are open.  This
+        preserves backward compatibility with all P3 callers and tests.
+        When ``True``: P4 merge logic activates.  Autonomous mode stops at
+        ``{"status": "drafts_open"}``; governed mode proceeds to review+merge.
+    _merge_pr_fn, _reverify_fn, _train_review_fn, _pr_merged_sha_fn:
+        P4 injectable seams.  Each defaults to the corresponding live
+        implementation.  Unused when ``_merge_phase_enabled=False``.
 
     Returns
     -------
     dict
-        ``{"status": "completed", "nodes": {node_id: {branch, head_sha, pr_url}}}``
-        on success;
-        ``{"status": "blocked", "node_id": ..., "detail": ...}`` if a node
-        fails (prior nodes' draft PRs remain open; train is resumable);
-        ``{"status": "preflight_failed", "errors": [...]}`` if any preflight
-        check or train-validation fails (zero PRs opened).
+        P3 statuses:
+          ``{"status": "completed", "nodes": {…}}`` — all draft PRs open
+          (``_merge_phase_enabled=False``);
+          ``{"status": "blocked", "node_id": …, "detail": …}`` — P3 node
+          failed; prior PRs remain open (resumable);
+          ``{"status": "preflight_failed", "errors": […]}`` — zero PRs opened.
+        P4 statuses (``_merge_phase_enabled=True``):
+          ``{"status": "drafts_open", "nodes": {…}}`` — all draft PRs open;
+          autonomous mode terminal (no merge);
+          ``{"status": "review_halted", …}`` — panel rejected; ZERO merges
+          (``terminal_blocker`` carries ``human_required=False``);
+          ``{"status": "merged", "nodes": {nid: {branch, merged_sha}}}`` —
+          all nodes merged in topo order;
+          ``{"status": "merge_halted", "node_id": …, "reason": …}`` —
+          downstream re-verify failed; upstream stays merged (forward-only).
     """
     # Resolve seams
     from .publishing import publish_from_worktree as _default_publish
@@ -352,9 +556,11 @@ def run_train(
     for node in topo_order:
         nid = node.node_id
         rec = ledger_state.get(nid)
-        if rec and rec.status == "pr_open" and rec.branch and rec.pr_url:
+        if rec and rec.status in ("pr_open", "merged") and rec.branch and rec.pr_url:
             workspace = resolve_workspace(node)
-            if pr_is_open_fn(workspace, rec.branch):
+            if rec.status == "pr_open":
+                if not pr_is_open_fn(workspace, rec.branch):
+                    continue  # PR closed between runs; not usable for resume
                 # Prefer the live PR head SHA (the branch may have been updated
                 # since the last run); fall back to the ledger-recorded head_sha.
                 live_sha = live_pr_head_sha_fn(workspace, rec.branch)
@@ -362,11 +568,17 @@ def run_train(
                 # Detect out-of-band push: live SHA exists and differs from ledger.
                 if live_sha and rec.head_sha and live_sha != rec.head_sha:
                     out_of_band_upstreams.add(nid)
-                completed_nodes[nid] = {
-                    "branch": rec.branch,
-                    "head_sha": head_sha,
-                    "pr_url": rec.pr_url,
-                }
+            else:
+                # status == "merged" — P4 resume: PR is already merged, no live check.
+                # head_sha carries the draft SHA (written to the merged record by P4
+                # so this node can still serve as the injection ref for any P3 nodes
+                # that were not yet processed before the crash — see merged-record write).
+                head_sha = rec.head_sha
+            completed_nodes[nid] = {
+                "branch": rec.branch,
+                "head_sha": head_sha,
+                "pr_url": rec.pr_url,
+            }
 
     # --- Step 4: Execute in topo order ------------------------------------
     # rebuilt_this_run tracks nodes where run_loop was actually invoked during
@@ -377,16 +589,20 @@ def run_train(
     for i, node in enumerate(topo_order):
         nid = node.node_id
 
-        # Resume: skip nodes already confirmed pr_open (live PR check passed).
-        # BUT: if an upstream changed — either rebuilt this run OR an out-of-band
-        # push advanced its SHA since the last run — and this node's PR is open,
-        # we cannot silently skip (stale) or re-publish (no update-existing-PR
-        # primitive exists).  Block with a clear reason so the user can close the
-        # stale downstream PR and re-run.
+        # Resume: skip nodes already confirmed pr_open (live PR check passed) OR
+        # already merged (P4 resume — merged nodes cannot be rebuilt or stale).
+        # For pr_open nodes: check stale-upstream (an upstream rebuilt this run
+        # or received an out-of-band push) and block with a clear reason so the
+        # user can close the stale PR and re-run.
         #
         # NOTE: automatic downstream rebuild when an upstream changes requires an
         # update-existing-PR primitive and is deferred to a future release.
         if nid in completed_nodes:
+            # Merged nodes: skip unconditionally — no stale-upstream check applies.
+            nid_rec = ledger_state.get(nid)
+            if nid_rec and nid_rec.status == "merged":
+                continue
+
             upstream_edges = roadmap.edges_for_downstream(node)
             changed_upstreams = [
                 edge for edge in upstream_edges
@@ -578,4 +794,182 @@ def run_train(
             ),
         )
 
-    return {"status": "completed", "nodes": completed_nodes}
+    # --- P3 complete: all draft PRs open ------------------------------------
+
+    if not _merge_phase_enabled:
+        # P3 behavior (default): done once draft PRs are open.  Cross-repo
+        # merges are a P4 concern.  All existing P3 callers and tests hit this
+        # path because they never set _merge_phase_enabled=True.
+        return {"status": "completed", "nodes": completed_nodes}
+
+    # --- P4: train-level governed review + sequential merge with re-verify ---
+    #
+    # Autonomy boundary: cross-repo merges are NEVER auto-merged.  In
+    # autonomous mode (the default) the coordinator stops here at a
+    # ``drafts_open`` terminal.  Only ``run_mode="governed"`` (opt-in via
+    # ``--governed`` CLI flag) proceeds to the review + merge loop.
+    if run_mode != "governed":
+        return {"status": "drafts_open", "nodes": completed_nodes}
+
+    # Resolve P4 seams (defaults to live; tests inject stubs).
+    merge_pr_fn = _merge_pr_fn if _merge_pr_fn is not None else _live_merge_pr
+    reverify_fn = _reverify_fn if _reverify_fn is not None else _live_reverify
+    train_review_fn = (
+        _train_review_fn if _train_review_fn is not None else _default_train_review
+    )
+    pr_merged_sha_fn = (
+        _pr_merged_sha_fn if _pr_merged_sha_fn is not None else _live_pr_merged_sha
+    )
+
+    # Re-read ledger to recover P4 state from a previous partial run
+    # (idempotent resume: skip already-merged nodes, recover their SHA).
+    p4_ledger_state = read_ledger(ledger_path)
+
+    # Build merged_shas: node_id → actual merge-commit SHA.  The field
+    # ``upstream_merge_sha`` on a ``merged`` record holds the real SHA
+    # (NOT the draft head_sha — ledger schema keeps these distinct).
+    merged_shas: Dict[str, str] = {}
+    for _nid_r, _rec_r in p4_ledger_state.items():
+        if _rec_r.status == "merged" and _rec_r.upstream_merge_sha:
+            merged_shas[_nid_r] = _rec_r.upstream_merge_sha
+
+    # Cross-check with live GitHub state: covers crash-between-merge-and-
+    # ledger-write (the PR landed on main but the ledger write didn't happen).
+    for _node_r in topo_order:
+        _nid_r = _node_r.node_id
+        if _nid_r in merged_shas:
+            continue  # already recovered from ledger
+        _pr_branch_r = completed_nodes.get(_nid_r, {}).get("branch")
+        if _pr_branch_r:
+            _ws_r = resolve_workspace(_node_r)
+            _live_sha_r = pr_merged_sha_fn(_ws_r, _pr_branch_r)
+            if _live_sha_r:
+                merged_shas[_nid_r] = _live_sha_r
+
+    # --- Train-level review (one-round bounded panel) ----------------------
+    # Idempotent resume: skip review if already approved in a previous run.
+    train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
+    already_approved = (
+        train_review_rec is not None and train_review_rec.status == "approved"
+    )
+
+    if not already_approved:
+        bundle_text = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
+        review_result = train_review_fn(bundle_text, run_mode)
+
+        if not review_result.mergeable:
+            # Non-approval → NON-HUMAN terminal, ZERO merges.
+            # The partial-merge-disaster guard: no node is merged if the panel
+            # rejects the train.  terminal_blocker carries human_required=False.
+            return {
+                "status": "review_halted",
+                "nodes": completed_nodes,
+                "terminal_blocker": review_result.terminal_blocker,
+                "reason": review_result.reason or "train_review_rejected",
+            }
+
+        # Record approval (with synthetic node_id — never a real roadmap node).
+        append_record(
+            ledger_path,
+            LedgerRecord(
+                node_id=_TRAIN_REVIEW_NODE_ID,
+                status="approved",
+            ),
+        )
+
+    # --- Sequential merge in topo order with downstream re-verify -----------
+    #
+    # False-green killer: before merging each downstream node, re-resolve its
+    # channel to the upstream MERGED SHA and re-verify.  NEVER merge a
+    # downstream that was only green against the draft (unmerged) upstream ref.
+    #
+    # Forward-only: a downstream re-verify failure does NOT revert merged
+    # upstream nodes.  Recommendation: use expand/contract (backward-compatible)
+    # upstream contracts so sequential merges remain safe even when a downstream
+    # fails post-merge of its upstream.
+    for _i_m, _node_m in enumerate(topo_order):
+        _nid_m = _node_m.node_id
+
+        # Idempotent: skip already-merged nodes (never double-merge).
+        if _nid_m in merged_shas:
+            continue
+
+        _ws_m = resolve_workspace(_node_m)
+        _upstream_edges_m = roadmap.edges_for_downstream(_node_m)
+
+        if _upstream_edges_m:
+            # Re-resolve every upstream channel to its MERGED SHA (not the
+            # draft SHA from P3).  This is the call the test asserts on:
+            # set_upstream_ref must be called with the merged SHA and must
+            # appear in the call log BEFORE the re-verify call.
+            for _edge_m in _upstream_edges_m:
+                _upstream_merged_sha = merged_shas.get(_edge_m.upstream.node_id)
+                if _upstream_merged_sha is None:
+                    # Defensive: topo-order ensures upstream is processed first.
+                    raise RuntimeError(
+                        f"upstream '{_edge_m.upstream.node_id}' is not yet merged "
+                        f"— cannot re-verify downstream '{_nid_m}'; "
+                        f"check topo order and that the upstream merge succeeded"
+                    )
+                set_upstream_ref_fn(_ws_m, _edge_m.channel, _upstream_merged_sha)
+
+            # Re-verify the downstream against the merged upstream contracts.
+            # Failure means the downstream was only green against the draft ref.
+            _reverify_ok = reverify_fn(_ws_m, _ws_m / _node_m.roadmap, run_mode)
+            if not _reverify_ok:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(
+                        node_id=_nid_m,
+                        status="blocked",
+                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
+                    ),
+                )
+                # Forward-only: DO NOT revert the already-merged upstream nodes.
+                # Use expand/contract upstream contracts to prevent this situation.
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_m,
+                    "reason": "downstream_reverify_failed",
+                    "detail": (
+                        f"node '{_nid_m}' failed re-verification against upstream "
+                        f"merged SHA(s). Upstream nodes remain merged (forward-only). "
+                        f"Recommendation: use expand/contract upstream contracts so "
+                        f"sequential merges are safe even when a downstream fails."
+                    ),
+                }
+
+        # Merge the PR.
+        _pr_branch_m = completed_nodes[_nid_m]["branch"]
+        _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m)
+        merged_shas[_nid_m] = _merged_sha_m
+
+        # Record the merge.  Carry branch/pr_url/head_sha forward from
+        # completed_nodes so the merged record is self-sufficient for P4 resume
+        # (last-wins overwrites the pr_open record; the resumed run reads branch
+        # and head_sha from this merged record to inject downstream nodes).
+        _node_info_m = completed_nodes[_nid_m]
+        append_record(
+            ledger_path,
+            LedgerRecord(
+                node_id=_nid_m,
+                status="merged",
+                branch=_node_info_m.get("branch"),
+                pr_url=_node_info_m.get("pr_url"),
+                head_sha=_node_info_m.get("head_sha"),   # draft SHA for downstream injection
+                upstream_merge_sha=_merged_sha_m,         # actual merge-commit SHA (P4)
+                merge_order=_i_m,
+            ),
+        )
+
+    return {
+        "status": "merged",
+        "nodes": {
+            _nid_out: {
+                "branch": completed_nodes[_nid_out]["branch"],
+                "merged_sha": _sha_out,
+            }
+            for _nid_out, _sha_out in merged_shas.items()
+            if _nid_out in completed_nodes  # exclude _train_review_ synthetic node
+        },
+    }

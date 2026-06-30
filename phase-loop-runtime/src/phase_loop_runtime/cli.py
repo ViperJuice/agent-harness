@@ -1860,12 +1860,19 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
 
 
 def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    """Handle the 'run-train' subcommand (#29 P3).
+    """Handle the 'run-train' subcommand (#29 P3+P4).
 
     Topo-sorts the release train, preflights ALL repos, then per node (in
     order): injects upstream draft ref → runs the unchanged per-repo
     run_loop → publishes a draft PR → appends to the coordinator ledger.
-    No merges occur (P4 scope).
+
+    After all draft PRs are open:
+    - ``autonomous`` (default): stops at ``drafts_open`` terminal.  Cross-repo
+      merges are never auto-merged; the operator reviews and re-runs with
+      ``--governed``.
+    - ``governed`` (``--governed`` flag): runs the train-level governed review
+      panel (one round), then merges sequentially in topo order with downstream
+      re-verify against each upstream's merged SHA before merging.
     """
     from .train_roadmap import load_train_roadmap
     from .train_ledger import default_ledger_path
@@ -1924,6 +1931,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         ledger_path,
         run_mode=run_mode,
         resolve_workspace=_resolve_workspace,
+        _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
     )
 
     if as_json:
@@ -1948,7 +1956,54 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         )
         return 1
 
-    # status == "completed"
+    if result["status"] == "drafts_open":
+        # Autonomous mode terminal: all draft PRs open, awaiting governed review.
+        nodes = result.get("nodes", {})
+        if not as_json:
+            print(
+                f"run-train: {len(nodes)} draft PR(s) open — "
+                f"train held for governed review. Re-run with --governed to merge."
+            )
+            for node_id, info in nodes.items():
+                print(f"  {node_id}: {info.get('pr_url', '?')}")
+        return 0
+
+    if result["status"] == "review_halted":
+        # Panel rejected the train — ZERO merges (partial-merge-disaster guard).
+        blocker = result.get("terminal_blocker") or {}
+        reason = result.get("reason", "unknown")
+        print(
+            f"run-train: train-level review rejected — ZERO merges "
+            f"(reason: {reason}; human_required: {blocker.get('human_required', False)})",
+            file=sys.stderr,
+        )
+        return 1
+
+    if result["status"] == "merge_halted":
+        # Downstream re-verify failed — upstream stays merged (forward-only).
+        node_id = result.get("node_id", "?")
+        reason = result.get("reason", "unknown")
+        print(
+            f"run-train: merge halted at node '{node_id}': {reason}",
+            file=sys.stderr,
+        )
+        print(
+            "  Upstream nodes remain merged (forward-only). "
+            "Use expand/contract upstream contracts to prevent this.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if result["status"] == "merged":
+        # All nodes merged successfully in topo order.
+        nodes = result.get("nodes", {})
+        if not as_json:
+            print(f"run-train: merged — {len(nodes)} node(s) landed on main")
+            for node_id, info in nodes.items():
+                print(f"  {node_id}: {info.get('merged_sha', '?')}")
+        return 0
+
+    # status == "completed" (legacy / direct run_train calls with _merge_phase_enabled=False)
     nodes = result.get("nodes", {})
     if not as_json:
         print(f"run-train: completed — {len(nodes)} draft PR(s) open")
