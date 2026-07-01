@@ -43,3 +43,32 @@ def test_claude_tui_leg_returns_promptly_on_pty_eof(tmp_path):
     assert status == "claude_tui_pty_eof_no_output", status
     # Structured, fail-closed classification — never a silent pass, never a hang.
     assert _classify_leg(rc, text, status) in {"ERROR", "EMPTY"}, (rc, status)
+
+
+def test_claude_tui_eof_does_not_promote_transcript_verdict_to_ok(tmp_path, monkeypatch):
+    """#48 CR: canonical output is the review FILE. On PTY EOF with no file verdict,
+    a verdict scraped from the transcript is SALVAGE evidence only — it must NEVER be
+    promoted to OK (that would be a race-dependent false-green in the fail-closed gate).
+    """
+    import phase_loop_runtime.panel_invoker as pi
+
+    # Child closes all pty fds (EOF) and exits 0; no canonical review file is written,
+    # but the transcript scrape returns a terminal verdict.
+    monkeypatch.setattr(pi, "_latest_claude_transcript_text", lambda *a, **k: "DISAGREE — salvage only")
+    output_file = tmp_path / "panel-claude.txt"  # never written → no file verdict
+
+    rc, text, status = _run_claude_tui_session(
+        command=["sh", "-c", "exec 0<&- 1>&- 2>&-; exit 0"],
+        cwd=tmp_path,
+        prompt="review this",
+        output_file=output_file,
+        timeout_s=20,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+
+    assert rc != 0, f"EOF without a canonical file verdict must be non-zero (fail-closed); got rc={rc}"
+    assert status == "claude_tui_pty_eof_no_output", status
+    assert _classify_leg(rc, text, status) != "OK", (
+        f"a transcript-only verdict must not classify OK (false-green); "
+        f"got {_classify_leg(rc, text, status)}"
+    )

@@ -611,19 +611,21 @@ def _run_claude_tui_session(
                         # deadline: an EOF fd is always "readable", os.read keeps
                         # returning b"", and proc.poll() never fires when the launched
                         # process is a wrapper whose parent lingers after the CLI exits.
-                        # Return a structured result now (verdict if one landed, else a
-                        # DEGRADED-classified status), never an indefinite hang.
+                        # Return a structured result now, never an indefinite hang.
+                        # Canonical output is the review FILE — only a file verdict is
+                        # OK. A transcript verdict is SALVAGE evidence only (carried in
+                        # the text, never promoted to OK), and the rc is forced non-zero
+                        # (`proc.poll() or 1`) so _classify_leg fails closed — matching
+                        # the proc.poll()/deadline sibling paths. Promoting a transcript
+                        # verdict to OK here would be a race-dependent false-green.
                         review_text = _read_review_output(output_file)
                         if terminal_verdict(review_text) is not None:
                             return 0, review_text, "claude_tui_file_output"
                         transcript_text = transcript_salvage or _latest_claude_transcript_text(
                             str(cwd), since=start_wall
                         )
-                        if terminal_verdict(transcript_text) is not None:
-                            return 0, transcript_text, "claude_tui_transcript_output"
-                        rc = proc.poll()
                         return (
-                            rc if rc is not None else 1,
+                            proc.poll() or 1,
                             review_text or transcript_text,
                             "claude_tui_pty_eof_no_output",
                         )

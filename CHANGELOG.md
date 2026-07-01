@@ -11,7 +11,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the pty, the leg returns a structured result (verdict if one landed, else an `ERROR`-classified
   `claude_tui_pty_eof_no_output`) instead of busy-spinning to the input-scaled (up to 30-min)
   deadline. Previously a lingering wrapper parent kept `proc.poll()` from firing while the EOF fd
-  stayed "readable", hanging the panel indefinitely.
+  stayed "readable", hanging the panel indefinitely. On EOF the canonical review **file** is the
+  only OK path; a transcript-scraped verdict is salvage evidence only (non-zero rc, fail-closed) —
+  never promoted to OK, matching the sibling exit paths.
 - **#52 — Actionable lane-IR closeout refusals.** When closeout/status fails closed on an
   unresolved Lane IR diagnostic, the `blocker_summary` now names the concrete diagnostic
   (`kind@lane` + message) and the phase-plan file location, instead of the opaque "Lane IR
