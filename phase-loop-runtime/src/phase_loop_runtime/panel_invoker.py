@@ -287,6 +287,39 @@ def _subscription_env() -> dict[str, str]:
     return env
 
 
+# #64: cheap per-leg auth preflight. A logged-out CLI fails obliquely (codex
+# empty-turns then rate-limit-errors) rather than reporting "not logged in", so
+# a whole panel silently degrades and the failure is misdiagnosed. Probe auth
+# BEFORE spending a full leg timeout. Only legs with a reliable cheap status
+# command are probed; others fail OPEN here (their own run + the _AUTH_SIGNATURE
+# classification still catch de-auth downstream).
+_LEG_AUTH_PROBE: dict[str, list[str]] = {"codex": ["codex", "login", "status"]}
+
+
+def _leg_auth_ok(leg: str, env: Mapping[str, str], timeout_s: int = 20) -> tuple[bool, str]:
+    """Return ``(ok, detail)`` for a leg's auth preflight.
+
+    A missing or inconclusive probe (CLI absent / probe times out) fails OPEN
+    (``ok=True``) — we never block a leg on a flaky probe; the leg's own run is
+    still fail-closed. ``detail`` contains a ``_AUTH_SIGNATURE``-matching phrase
+    so a caller that surfaces it classifies the leg ``DEGRADED``, not ``EMPTY``.
+    """
+    probe = _LEG_AUTH_PROBE.get(leg)
+    if not probe:
+        return True, ""
+    try:
+        proc = subprocess.run(
+            probe, capture_output=True, text=True, timeout=timeout_s,
+            check=False, stdin=subprocess.DEVNULL, env=dict(env),
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
+        return False, f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)"
+    return True, ""
+
+
 def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:
     match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", text or "")
     if not match:
@@ -868,6 +901,13 @@ def _exec_leg(
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
     """
     env = _subscription_env()
+    # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
+    # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
+    # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
+    # signature), never a silent empty leg.
+    authed, auth_detail = _leg_auth_ok(leg, env)
+    if not authed:
+        return 1, "", auth_detail
     timeout_s = _leg_timeout_for(review_dir) if timeout_s is None else timeout_s
     artifact = _read_review_output(review_dir / "review-bundle.md") if artifact is None else artifact
     prompt = _render_leg_prompt(artifact, review_dir)
@@ -879,15 +919,24 @@ def _exec_leg(
             "-c", "model_reasoning_effort=xhigh",
             "--output-last-message", str(out_file), "-",
         ]
-        try:
-            proc = subprocess.run(
-                cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=timeout_s, check=False, input=prompt,
-            )
-        except subprocess.TimeoutExpired:
-            return 124, "", f"timeout after {timeout_s}s"
-        review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
-        return proc.returncode, review_text, (proc.stdout or "") + (proc.stderr or "")
+        # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
+        # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
+        # a rate-limited backend; classification handles it downstream.
+        rc, review_text, log_text = 1, "", ""
+        for _attempt in range(2):
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
+                    timeout=timeout_s, check=False, input=prompt,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, "", f"timeout after {timeout_s}s"
+            review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+            rc = proc.returncode
+            log_text = (proc.stdout or "") + (proc.stderr or "")
+            if rc != 0 or review_text.strip():
+                break  # hard failure OR real output → stop (never hammer, never waste)
+        return rc, review_text, log_text
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
         cmd = [

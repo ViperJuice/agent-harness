@@ -251,6 +251,8 @@ class BundleStagingTest(unittest.TestCase):
             stderr = ""
 
         def fake_run(cmd, **kwargs):
+            if list(cmd[:3]) == ["codex", "login", "status"]:  # #64 auth preflight
+                return Completed()
             captured["cmd"] = cmd
             captured["kwargs"] = kwargs
             out_file = Path(cmd[cmd.index("--output-last-message") + 1])

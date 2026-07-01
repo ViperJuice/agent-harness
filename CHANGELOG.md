@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#64 — advisor-panel leg auth preflight + soft-empty-turn retry.** A logged-out CLI made the
+  codex leg fail obliquely (an `rc=0` empty-turn, then rate-limit errors), so the panel silently
+  degraded and the failure was misdiagnosed. `_exec_leg` now runs a cheap auth preflight
+  (`codex login status`) before the expensive leg — a de-authed leg fails fast and classifies
+  `DEGRADED` (never a silent empty leg) — and retries a transient soft empty-turn (`rc=0` + empty
+  output) once, while never retrying a hard failure (`rc!=0`).
+
 - **#48 — Advisor-panel Claude TUI leg no longer hangs on child exit.** The TUI read loop now
   treats PTY EOF (`os.read` → empty) as terminal: when the child CLI and its descendants close
   the pty, the leg returns a structured result (verdict if one landed, else an `ERROR`-classified
