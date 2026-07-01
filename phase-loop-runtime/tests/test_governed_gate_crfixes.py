@@ -81,8 +81,8 @@ def test_substantive_nonconforming_leg_blocks_not_warns():
     # non-conforming leg must produce a BLOCK so the gate does not promote on the
     # lone AGREE (the pre-fix code downgraded it to a non-gating warn).
     panel = _panel(
-        PanelLegResult(leg="codex", status="ok", text="Looks correct.\nAGREE"),
-        PanelLegResult(leg="gemini", status="degraded",
+        PanelLegResult(leg="codex", status="OK", text="Looks correct.\nAGREE"),
+        PanelLegResult(leg="gemini", status="DEGRADED",
                        text="This drops the auth check and is unsafe — but I forgot the verdict line."),
     )
     findings = governed_review._findings_from_panel(panel)
@@ -93,7 +93,7 @@ def test_substantive_nonconforming_leg_blocks_not_warns():
 def test_empty_leg_is_warn_not_block():
     # A leg with NO usable text (timeout/auth/empty) is "no review happened" → warn,
     # not a block (don't over-block on an absent reviewer; #7 calibration).
-    panel = _panel(PanelLegResult(leg="gemini", status="timeout", text=""))
+    panel = _panel(PanelLegResult(leg="gemini", status="TIMEOUT", text=""))
     findings = governed_review._findings_from_panel(panel)
     assert [f.severity for f in findings] == ["warn"], findings
 

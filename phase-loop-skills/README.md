@@ -8,6 +8,7 @@ directory is one workflow skill, authored once and installed with a per-harness 
 
 | Skill | What it does |
 |---|---|
+| `advisor-panel` | Run the runtime-owned cross-vendor advisor panel over high-stakes review artifacts |
 | `phase-roadmap-builder` | Turn a plan/conversation into a phased `specs/phase-plans-v<N>.md` roadmap |
 | `plan-phase` | Architect one phase into parallel swim-lanes with frozen interfaces |
 | `execute-phase` | Run a phase's lanes to completion (parallel, auto-merge on green) |

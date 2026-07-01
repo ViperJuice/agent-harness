@@ -17,4 +17,4 @@ __all__ = [
     "state_ops",
 ]
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"

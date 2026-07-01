@@ -1014,6 +1014,9 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertIn("SIGTERM", result.cleanup_evidence["signals_sent"])
             self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
             self.assertIsNotNone(result.process_group_id)
+            self.assertIn("salvage_snapshot", result.cleanup_evidence)
+            self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["reason"], "timeout")
+            self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["log_path"], str(log_path))
 
     def test_stale_child_is_torn_down_and_marked_stalled(self):
         # A child that goes silent past quiet_blocker_seconds while still running
@@ -1024,14 +1027,15 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             log_path = root / "output.log"
             heartbeat_path = root / "heartbeat.json"
 
-            result = launch(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                log_path=log_path,
-                heartbeat_path=heartbeat_path,
-                heartbeat_interval_seconds=0,
-                quiet_warning_seconds=0,
-                quiet_blocker_seconds=0,
-            )
+            with patch("phase_loop_runtime.observability._process_cpu_percent", return_value=0.0):
+                result = launch(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    log_path=log_path,
+                    heartbeat_path=heartbeat_path,
+                    heartbeat_interval_seconds=0,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                )
 
             self.assertTrue(result.stalled)
             self.assertFalse(result.timed_out)
@@ -1039,6 +1043,32 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertIsNotNone(result.cleanup_evidence)
             self.assertEqual(result.cleanup_evidence["reason"], "stalled")
             self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
+            self.assertEqual(
+                result.cleanup_evidence["salvage_snapshot"]["heartbeat"]["liveness_class"],
+                "suspect_stalled",
+            )
+
+    def test_cpu_active_quiet_child_is_not_torn_down_for_stale_output_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_path = root / "output.log"
+            heartbeat_path = root / "heartbeat.json"
+
+            with patch("phase_loop_runtime.observability._process_cpu_percent", return_value=99.0):
+                result = launch(
+                    [sys.executable, "-c", "import time; time.sleep(0.2)"],
+                    log_path=log_path,
+                    heartbeat_path=heartbeat_path,
+                    heartbeat_interval_seconds=0,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                    timeout_seconds=2,
+                )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(result.stalled)
+            self.assertFalse(result.timed_out)
+            self.assertIsNone(result.cleanup_evidence)
 
     def test_launch_contract_blocker_maps_stall_to_stalled_child_observation(self):
         from phase_loop_runtime.runner import _launch_contract_blocker

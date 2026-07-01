@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#36 / dotfiles #135 — Advisor panel ownership and staged review packets.**
+  `agent-harness` now owns the advisor-panel runtime primitive and harness-prefixed
+  skill source. Codex and Gemini receive compact prompts that point to staged
+  `review-instructions.md` / `review-bundle.md` files instead of embedded artifact
+  bodies; Claude uses a Claude Code TUI session with `claude-sonnet-5`, max effort,
+  subscription-safe env stripping, no `claude -p`, and a canonical scratch
+  `panel-claude.txt` output file. Dotfiles can now reduce its
+  unprefixed `advisor-panel` skill to compatibility guidance over this packaged source.
+- **#33 / #39 — Runner hardening.** Background subprocess monitoring now preserves
+  salvage evidence and bounds stale `quiet_unknown` children after a grace period when
+  CPU sampling is unavailable, while still avoiding cleanup for CPU-active quiet work.
+  Cross-repo live reverify honors hard-mode verification enforcement.
 - **#29 — Cross-repo release-train coordinator.** `phase-loop run-train --train
   <roadmap>` orchestrates multi-repo changes in a single atomic train: draft PRs
   open across all nodes in topo order (P3), a train-level governed review gates

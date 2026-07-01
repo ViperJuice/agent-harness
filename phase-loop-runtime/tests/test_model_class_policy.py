@@ -30,14 +30,14 @@ def _resolve(action, executor, *, model_policy=False, plan_policy=None,
 class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
         self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-4-8")
-        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-4-6")
+        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.4")
-        # gemini has only `pro` (planning) + `auto` (execution routing alias); no
-        # vetted distinct cheap model, so implementer/worker route via `auto`.
+        # Gemini keeps `pro` for planning while implementer/worker route through
+        # the validated agy Flash model name.
         self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "implementer"), "auto")
-        self.assertEqual(resolve_model_class("gemini", "worker"), "auto")
+        self.assertEqual(resolve_model_class("gemini", "implementer"), "Gemini 3.5 Flash (High)")
+        self.assertEqual(resolve_model_class("gemini", "worker"), "Gemini 3.5 Flash (High)")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 
     def test_model_class_field_validates(self):
@@ -63,7 +63,7 @@ class ShippedPolicyTest(unittest.TestCase):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
 
     def test_execute_claude_becomes_sonnet_medium(self):
-        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-4-6", "medium"))
+        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "medium"))
 
 
 class EffortClampTest(unittest.TestCase):
@@ -107,13 +107,13 @@ class PrecedenceTest(unittest.TestCase):
         # to the registry heavy model.
         plan = ExecutionPolicyRule(selector="execute", action="execute", effort="low", source="phase-plan policy")
         model, effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
-        self.assertEqual(model, "claude-sonnet-4-6")  # implementer, from model_policy
+        self.assertEqual(model, "claude-sonnet-5")  # implementer, from model_policy
         self.assertEqual(effort, "low")               # plan's effort wins
 
     def test_plan_policy_executor_only_inherits_shipped_model_class(self):
         plan = ExecutionPolicyRule(selector="execute", action="execute", executor="claude", source="phase-plan policy")
         model, _effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
-        self.assertEqual(model, "claude-sonnet-4-6")  # implementer still applied
+        self.assertEqual(model, "claude-sonnet-5")  # implementer still applied
 
 
 class MaxEffortPlannerGuardTest(unittest.TestCase):

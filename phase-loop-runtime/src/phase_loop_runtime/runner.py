@@ -1077,7 +1077,7 @@ def _governed_not_live_warning(run_mode: str) -> str | None:
             "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
             "LIVE and FAIL-CLOSED. The pre-merge gate reviews the exact staged index "
             "(git diff --cached) inside the closeout, before the commit, via the real "
-            "subscription panel (codex+gemini; claude leg deferred). A block, an "
+            "subscription panel (codex+gemini+Claude TUI when available). A block, an "
             "unparseable verdict, or no disjoint reviewer HOLDS the merge as a non-human "
             "review_gate_block. Caveat: a held phase is not auto-repaired (the "
             "findings-driven re-dispatch is the remaining thread). Track model-routing-v2."
@@ -8008,6 +8008,7 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
         author_vendors=_phase_author_vendors(repo, alias),
         run_mode="governed",
         available_legs=available_panel_legs(),
+        repo_dir=repo,
     )
     if result.promoted:
         return None
@@ -8068,6 +8069,7 @@ def _governed_premerge_review(
         run_mode="governed",
         apply_fix=None,  # review+block; the executor-driven re-dispatch is a documented thread
         available_legs=available_panel_legs(),
+        repo_dir=repo,
     )
     if result.mergeable:
         return None
@@ -8101,6 +8103,7 @@ def governed_premerge_for_run(
     apply_fix=None,
     available_legs=None,
     invoke=None,
+    repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
 ):
     """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
@@ -8120,6 +8123,7 @@ def governed_premerge_for_run(
         author_vendors=author_vendors,
         apply_fix=apply_fix,
         available_legs=available_legs,
+        repo_dir=repo_dir,
         max_rounds=max_rounds,
     )
     if invoke is not None:

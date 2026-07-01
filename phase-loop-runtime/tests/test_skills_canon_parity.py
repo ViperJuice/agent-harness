@@ -113,6 +113,28 @@ class SkillsCanonParityTest(unittest.TestCase):
             "committed phase-loop-skills/ is stale vs skills-src/ — run the regenerate",
         )
 
+    def test_advisor_panel_is_required_and_packaged_from_canonical_source(self):
+        self._require_sources()
+        from phase_loop_runtime.skill_install import REQUIRED_SKILLS
+
+        self.assertIn("advisor-panel", REQUIRED_SKILLS)
+        for harness, root in SKILLS_SRC.items():
+            with self.subTest(source_harness=harness):
+                self.assertTrue((root / f"{harness}-advisor-panel" / "SKILL.md").is_file())
+        committed = COMMITTED_BUNDLE / "advisor-panel" / "SKILL.md"
+        self.assertTrue(committed.is_file())
+        committed_text = committed.read_text(encoding="utf-8")
+        self.assertIn("phase_loop_runtime.panel_invoker", committed_text)
+        self.assertNotIn("run_cli_panels.sh", committed_text)
+        packaged_root = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
+        for harness in SKILLS_SRC:
+            with self.subTest(packaged_harness=harness):
+                packaged = packaged_root / f"{harness}-advisor-panel" / "SKILL.md"
+                self.assertTrue(packaged.is_file())
+                text = packaged.read_text(encoding="utf-8")
+                self.assertIn("phase_loop_runtime.panel_invoker", text)
+                self.assertNotIn("run_cli_panels.sh", text)
+
     def test_installed_bundle_preserves_concrete_harness_literals(self):
         """CR blind-spot gate: parity (committed == build) does NOT catch a
         neutralizer that corrupts concrete harness literals — both sides agree on
@@ -182,12 +204,12 @@ class SkillsCanonParityTest(unittest.TestCase):
 
         sample = (
             "Run `claude-execute-phase`; route via `claude-config/claude-skills`. "
-            "Models: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5. "
+            "Models: claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5. "
             "Screenshot with claude-in-chrome. Claude Code drives it."
         )
         out = _neutralize_skill(sample, harness="claude", skill="execute-phase")
         # Concrete literals preserved verbatim.
-        for literal in ("claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-in-chrome"):
+        for literal in ("claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-in-chrome"):
             self.assertIn(literal, out, f"{literal} must survive neutralization")
         # Harness-variant tokens collapsed.
         self.assertIn("<harness>-execute-phase", out)
@@ -250,6 +272,7 @@ class SkillsCanonParityTest(unittest.TestCase):
     # harness (skill-name dirs, config/skill roots, bundle/code prefixes). A token
     # is "known-collapsible" iff it starts with one of these.
     _VARIANT_STEMS = (
+        "claude-advisor-",
         "claude-execute-",
         "claude-plan-",
         "claude-phase-",

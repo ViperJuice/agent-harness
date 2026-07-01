@@ -67,6 +67,29 @@ class GovernedGateTest(unittest.TestCase):
         self.assertTrue(result.findings)      # nits recorded (warn), non-gating
         self.assertTrue(all(f.severity == "warn" for f in result.findings))
 
+    def test_repo_dir_is_forwarded_to_panel_invoker(self):
+        captured = {}
+
+        def invoke(artifact, pool, **kwargs):
+            captured["artifact"] = artifact
+            captured["pool"] = pool
+            captured["kwargs"] = kwargs
+            return _panel(PanelLegResult(leg="codex", status="ok", text="AGREE"))
+
+        result = governed_planning_gate(
+            artifact="ART",
+            author_executor="claude",
+            run_mode="governed",
+            available_legs=("codex",),
+            invoke=invoke,
+            repo_dir="/tmp/repo-under-review",
+        )
+
+        self.assertTrue(result.promoted)
+        self.assertEqual(captured["artifact"], "ART")
+        self.assertEqual(captured["pool"], ("codex",))
+        self.assertEqual(captured["kwargs"]["repo_dir"], "/tmp/repo-under-review")
+
 
 class ReviewerPoolTest(unittest.TestCase):
     def test_pool_excludes_author_vendor(self):

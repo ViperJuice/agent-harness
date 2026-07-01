@@ -48,7 +48,7 @@ OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 # codex base, so masking is a no-op there and the dedup comparison is unaffected.)
 PRESERVE_LITERALS: tuple[str, ...] = (
     "claude-opus-4-8",
-    "claude-sonnet-4-6",
+    "claude-sonnet-5",
     "claude-haiku-4-5",
     "claude-in-chrome",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
