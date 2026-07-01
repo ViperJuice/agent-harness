@@ -865,21 +865,32 @@ class TestInvariant6LiveReverifyRunsVerification:
         result = _live_reverify(repo, roadmap, "governed")
         assert result is True, (
             "INV-6 VIOLATED: _live_reverify returned False when the plan declares "
-            "no verification commands — empty is not a failure"
+            "no verification commands — empty is not a failure (warn default)"
         )
 
-    def test_no_verification_commands_returns_false_in_hard_mode(self, tmp_path: Path, monkeypatch):
-        """Plan with no verification commands → False when hard enforcement is on."""
+    def test_no_verification_hard_enforce_returns_false(self, tmp_path: Path, monkeypatch):
+        """[#39] No ## Verification under PHASE_LOOP_VERIFY_ENFORCE=hard → False (fail-closed).
+
+        A downstream that declares no verification cannot be proven to survive the
+        upstream MERGED-pin contract, so under hard enforce the re-verify gate must
+        NOT trivial-pass it — it returns False, halting the train at merge_halted (a
+        non-human terminal; no human_required added, preserving autonomy-first).
+        Mirrors the single-repo execute preflight under hard enforce.
+        """
         monkeypatch.setenv("PHASE_LOOP_VERIFY_ENFORCE", "hard")
-        repo, roadmap = self._make_reverify_repo(
-            tmp_path,
-            verify_lines="",  # empty → verification_commands_from_plan returns []
-        )
+        repo, roadmap = self._make_reverify_repo(tmp_path, verify_lines="")
         result = _live_reverify(repo, roadmap, "governed")
         assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True without verification "
-            "evidence while PHASE_LOOP_VERIFY_ENFORCE=hard"
+            "#39 VIOLATED: _live_reverify must fail-closed (False) for a no-verification "
+            "node under PHASE_LOOP_VERIFY_ENFORCE=hard — else a no-verification downstream "
+            "merges unverified against the merged pin"
         )
+
+    def test_no_verification_warn_explicit_returns_true(self, tmp_path: Path, monkeypatch):
+        """[#39] The same node under an explicit warn → True (unchanged trivial pass)."""
+        monkeypatch.setenv("PHASE_LOOP_VERIFY_ENFORCE", "warn")
+        repo, roadmap = self._make_reverify_repo(tmp_path, verify_lines="")
+        assert _live_reverify(repo, roadmap, "governed") is True
 
     def test_exception_returns_false(self, tmp_path: Path):
         """Non-existent workspace → exception → False (fail-safe)."""

@@ -38,10 +38,12 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude"}
-_DEFAULT_LEG_TIMEOUT_S = 600
-_MAX_LEG_TIMEOUT_S = 1800
-_TIMEOUT_STEP_BYTES = 12_000
-_TIMEOUT_STEP_S = 60
+_LEG_TIMEOUT_BASE_S = 600
+_LEG_TIMEOUT_MAX_S = 1800
+_LEG_TIMEOUT_PER_KB_S = 12
+_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S  # floor / back-compat alias
+_DEFAULT_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S
+_MAX_LEG_TIMEOUT_S = _LEG_TIMEOUT_MAX_S
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
@@ -70,8 +72,8 @@ def panel_leg_timeout_seconds(leg: str, artifact: str) -> int:
     """Input-scaled leg timeout, bounded per vendor."""
     minimum, maximum = _LEG_TIMEOUT_BOUNDS.get(leg, (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S))
     artifact_bytes = len((artifact or "").encode("utf-8", errors="replace"))
-    extra_steps = artifact_bytes // _TIMEOUT_STEP_BYTES
-    return min(maximum, max(minimum, minimum + extra_steps * _TIMEOUT_STEP_S))
+    extra_kb = artifact_bytes // 1024
+    return min(maximum, max(minimum, minimum + extra_kb * _LEG_TIMEOUT_PER_KB_S))
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,13 @@ SpawnFn = Callable[..., "tuple[str, str]"]
 # model-routing-v2 P2/PNLCLAUDE: the real panel-leg spawn. Subscription-auth
 # only (ChatGPT login for codex, Google token for agy, Claude Max through the
 # interactive Claude Code TUI) -- NEVER API keys and never `claude -p`.
+# Input-scaled leg timeout (#36): a FIXED 600s under-ran frontier `xhigh` review on
+# large artifacts (codex xhigh is ~900s on ~1.3k lines) -- the leg timed out and the
+# panel silently degraded to fewer legs (the exact failure mode observed across the
+# cross-repo work). Scale the timeout by the staged review size, capped, so large
+# reviews get the time they need while small ones stay snappy. Keep --add-dir /
+# --output-last-message profile unchanged: the live smoke confirmed those work; the
+# fixed timeout was the real regression, not the feeding mechanism.
 
 # STRICT TERMINAL-LINE VERDICT CONTRACT (advisor-panel reconciliation, verified).
 # The panel brief requires each leg to END with exactly one of AGREE / PARTIALLY
@@ -800,14 +809,42 @@ def _exec_claude_agent_view_attempt(
         time.sleep(min(_CLAUDE_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
 
-def _exec_leg(leg: str, review_dir: Path, out_dir: Path, timeout_s: int, artifact: str) -> tuple[int, str, str]:
-    """Run one CLI leg with a file-reference prompt; return (rc, review_text, log_text).
+def _review_bytes(review_dir: Path) -> int:
+    """Total byte size of the staged review material — the timeout-scaling input."""
+    total = 0
+    for path in review_dir.rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _leg_timeout_for(review_dir: Path) -> int:
+    """Input-scaled per-leg timeout (#36): base + per-KB, capped. A large artifact
+    review gets the wall-clock frontier `xhigh` reasoning needs (~900s+); a small one
+    stays near the base. Replaces the fixed 600s that silently timed out big reviews."""
+    kb = _review_bytes(review_dir) // 1024
+    return min(_LEG_TIMEOUT_MAX_S, _LEG_TIMEOUT_BASE_S + kb * _LEG_TIMEOUT_PER_KB_S)
+
+
+def _exec_leg(
+    leg: str,
+    review_dir: Path,
+    out_dir: Path,
+    timeout_s: int | None = None,
+    artifact: str | None = None,
+) -> tuple[int, str, str]:
+    """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
     The single real-subprocess boundary — tests monkeypatch THIS, never spawn a
     frontier CLI. codex's clean review is its `--output-last-message` file (its
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
     """
     env = _subscription_env()
+    timeout_s = _leg_timeout_for(review_dir) if timeout_s is None else timeout_s
+    artifact = _read_review_output(review_dir / "review-bundle.md") if artifact is None else artifact
     prompt = _render_leg_prompt(artifact, review_dir)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
@@ -829,7 +866,7 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path, timeout_s: int, artifac
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
         cmd = [
-            "agy", "--model", "Gemini 3.1 Pro (High)",
+            "agy", "--model", "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
         try:
@@ -866,11 +903,11 @@ def _default_spawn(leg: str, artifact: str, *, repo_dir: Path | str | None = Non
             return _exec_claude_tui_leg(
                 review_dir,
                 out_dir,
-                panel_leg_timeout_seconds(leg, artifact),
+                _leg_timeout_for(review_dir),
                 artifact,
                 repo_dir=resolved_repo_dir,
             )
-        rc, review_text, log_text = _exec_leg(leg, review_dir, out_dir, panel_leg_timeout_seconds(leg, artifact), artifact)
+        rc, review_text, log_text = _exec_leg(leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact)
         return _classify_leg(rc, review_text, log_text), review_text
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]

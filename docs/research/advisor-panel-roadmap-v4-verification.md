@@ -13,7 +13,7 @@ This document is the metadata-only closeout evidence for
   passed with 82 tests, 52 skipped, and 299 subtests.
 - Full runtime suite:
   `PYTHONPATH=src python -m pytest -q`
-  passed with 1291 tests, 625 skipped, and 458 subtests.
+  passed with 1299 tests, 625 skipped, and 458 subtests.
 - Roadmap validation:
   `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md`
   passed for 6 phases.
@@ -32,7 +32,7 @@ Structured smoke evidence is in
 - `test_codex_command_prompt_references_staged_artifact_file` proves the
   Codex leg receives a compact prompt that points to `review-bundle.md`
   rather than embedding the artifact body in argv or stdin.
-- `test_gemini_command_prompt_references_staged_artifact_file_without_add_dir`
+- `test_gemini_command_prompt_references_staged_artifact_file_with_add_dir`
   proves the Gemini leg receives the same staged-file pointer prompt and does
   not depend on `--add-dir`.
 - `test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file`

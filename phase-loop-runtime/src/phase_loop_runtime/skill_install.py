@@ -42,6 +42,7 @@ def install_skills(
     destination: Path | None = None,
     mode: str = "symlink",
     apply: bool = False,
+    expand_body: bool = True,
 ) -> list[InstallAction]:
     normalized = current_harness(harness)
     if mode not in {"symlink", "copy"}:
@@ -71,7 +72,7 @@ def install_skills(
         )
         actions.append(record)
         if apply:
-            _apply_action(source_dir, destination_dir, mode, installed_name, overlay_dir if overlay else None)
+            _apply_action(source_dir, destination_dir, mode, installed_name, normalized, overlay_dir if overlay else None, expand_body=expand_body)
     return actions
 
 
@@ -93,7 +94,7 @@ def _planned_action(source_dir: Path, destination_dir: Path, mode: str, overlay_
     return "create"
 
 
-def _apply_action(source_dir: Path, destination_dir: Path, mode: str, installed_name: str, overlay_dir: Path | None) -> None:
+def _apply_action(source_dir: Path, destination_dir: Path, mode: str, installed_name: str, harness: str, overlay_dir: Path | None, *, expand_body: bool = True) -> None:
     destination_dir.parent.mkdir(parents=True, exist_ok=True)
     if destination_dir.is_symlink() or destination_dir.exists():
         if destination_dir.is_dir() and not destination_dir.is_symlink():
@@ -104,7 +105,7 @@ def _apply_action(source_dir: Path, destination_dir: Path, mode: str, installed_
     shutil.copytree(source_dir, destination_dir, ignore=shutil.ignore_patterns("_overrides"))
     if overlay_dir is not None:
         _copy_overlay(overlay_dir, destination_dir)
-    _rewrite_skill_name(destination_dir / "SKILL.md", installed_name)
+    _rewrite_skill_name(destination_dir / "SKILL.md", installed_name, harness, expand_body=expand_body)
 
 
 def _copy_overlay(overlay_dir: Path, destination_dir: Path) -> None:
@@ -118,11 +119,21 @@ def _copy_overlay(overlay_dir: Path, destination_dir: Path) -> None:
             shutil.copy2(path, target)
 
 
-def _rewrite_skill_name(path: Path, installed_name: str) -> None:
+def _rewrite_skill_name(path: Path, installed_name: str, harness: str, *, expand_body: bool = True) -> None:
     text = path.read_text(encoding="utf-8")
+    # #26 item 2: the canonical bundle keeps skill-name references harness-neutral
+    # as the ``<harness>-<skill>`` placeholder in prose (so the base collapses and
+    # avoids per-harness override bloat). On the FINAL install to a harness's skill
+    # root, re-expand it to the concrete per-harness form so the installed body
+    # references its real sibling skills (e.g. ``claude-execute-phase``), not the
+    # literal ``<harness>-execute-phase``. The package-data bundle build
+    # (``sync_skills_bundle``) passes ``expand_body=False`` so the shipped bundle
+    # stays harness-neutral (and the #12 drift guard stays byte-identical).
+    if expand_body:
+        text = text.replace("<harness>-", f"{harness}-")
     lines = text.splitlines()
     for index, line in enumerate(lines[:8]):
         if line.startswith("name: "):
             lines[index] = f"name: {installed_name}"
-            path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""), encoding="utf-8")
-            return
+            break
+    path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""), encoding="utf-8")

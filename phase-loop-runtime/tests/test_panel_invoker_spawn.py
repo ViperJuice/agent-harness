@@ -275,7 +275,7 @@ class BundleStagingTest(unittest.TestCase):
         self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input"])
         self.assertNotIn("stdin", captured["kwargs"])
 
-    def test_gemini_command_prompt_references_staged_artifact_file_without_add_dir(self):
+    def test_gemini_command_prompt_references_staged_artifact_file_with_add_dir(self):
         captured = {}
 
         class Completed:
@@ -298,7 +298,8 @@ class BundleStagingTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
-        self.assertNotIn("--add-dir", captured["cmd"])
+        self.assertIn("--add-dir", captured["cmd"])
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--add-dir") + 1], str(review_dir))
         self.assertEqual(captured["cmd"][-1], "-")
         self.assertNotIn("SENTINEL-GEMINI-ARTIFACT", captured["kwargs"]["input"])
         self.assertIn("review-instructions.md", captured["kwargs"]["input"])

@@ -47,7 +47,10 @@ def assemble_bundle(source: Path, dest: Path) -> Path:
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     for harness in ACTIVE_HARNESSES:
-        install_skills(harness=harness, source=source, destination=dest, mode="copy", apply=True)
+        # expand_body=False: the shipped package-data bundle stays harness-neutral
+        # (keeps `<harness>-` placeholders); body re-expansion happens only at the
+        # final install to a harness skill root. Keeps the #12 drift guard byte-identical. [#26]
+        install_skills(harness=harness, source=source, destination=dest, mode="copy", apply=True, expand_body=False)
     return dest
 
 
