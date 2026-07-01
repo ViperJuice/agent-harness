@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#63 — advisor-panel advisory mode.** `panel_invoker` was hardcoded to a pre-merge
+  code-review framing, so the three-model panel couldn't be used for general adversarial/advisory
+  analysis (architecture, product, red-teaming a plan) — 2/3 legs replied "nothing to review".
+  `invoke_panel(artifact, legs, mode="advisory")` now reuses all the leg-spawn machinery but swaps
+  the framing and drops the AGREE/DISAGREE requirement (substantial prose is a real leg);
+  `mode="review"` stays the default (back-compat, byte-identical behavior).
+
 - **#64 — advisor-panel leg auth preflight + soft-empty-turn retry.** A logged-out CLI made the
   codex leg fail obliquely (an `rc=0` empty-turn, then rate-limit errors), so the panel silently
   degraded and the failure was misdiagnosed. `_exec_leg` now runs a cheap auth preflight
