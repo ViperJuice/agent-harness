@@ -469,6 +469,16 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     )
 
 
+def _manifest_file_phase_key(entry) -> tuple[str, str]:
+    """#46: dedup identity for a manifest plan entry — normalized file path +
+    upper-cased phase alias. Matches entries pointing at the same phase plan
+    file/phase regardless of their (planner vs synthetic-import) slug, so
+    reconcile does not re-add a duplicate imported row."""
+    file_norm = str(getattr(entry, "file", "") or "").replace("\\", "/").strip().lower()
+    phase_norm = str(getattr(entry, "phase_alias", "") or "").strip().upper()
+    return (file_norm, phase_norm)
+
+
 def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) -> list[dict]:
     from .discovery import _phase_manifest_disabled
 
@@ -486,6 +496,13 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
     except Exception as exc:
         return [_ledger_warning("manifest", "", "unknown", "manifest_read_failed", value=str(exc))]
     known_slugs = {entry.slug for entry in manifest.plans}
+    # #46: also key by (normalized file, phase_alias) so an auto-import whose
+    # SYNTHETIC slug differs from a committed planner entry (e.g. import slug
+    # "v1-CORE" vs planner slug "phase-plan-v1-CORE") is not appended as a
+    # duplicate when the same phase-plan file + phase alias is already present.
+    # Dedup-by-slug-alone re-added a duplicate `imported` row (and, with it, a
+    # punctuation-variant IF gate that the planner entry never contained).
+    known_file_phase = {_manifest_file_phase_key(entry) for entry in manifest.plans}
     for entry in manifest.plans:
         if entry.type != "phase" or entry.status in {"orphaned", "completed", "failed"}:
             continue
@@ -509,11 +526,16 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
     for entry in imported.plans:
         if entry.slug in known_slugs:
             continue
+        if _manifest_file_phase_key(entry) in known_file_phase:
+            # #46: same phase-plan file + phase alias already represented by a
+            # committed entry — do not append a second `imported` row.
+            continue
         if entry.phase_alias and entry.phase_alias.upper() not in phases:
             continue
         try:
             append_entry(repo, entry)
             known_slugs.add(entry.slug)
+            known_file_phase.add(_manifest_file_phase_key(entry))
         except Exception as exc:
             warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), "imported", "manifest_auto_import_failed", value=str(exc)))
         else:
