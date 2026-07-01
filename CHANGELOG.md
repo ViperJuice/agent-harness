@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#45 — `phase-loop train-status` command.** Non-mutating inspection of the cross-repo
+  train ledger (`train-status --train <file> [--ledger-dir DIR] [--json]`) — the command the
+  v0.1.11 run-train docs/skills already referenced but which did not exist. Resolves the same
+  default ledger path as `run-train` and prints per-node status/branch/PR/merge-order/merged-SHA
+  in topo order (pending nodes surfaced). Also corrects the stale `run-train --help` (the P4
+  governed review + sequential merge path is implemented behind `--governed`).
 - **#36 / dotfiles #135 — Advisor panel ownership and staged review packets.**
   `agent-harness` now owns the advisor-panel runtime primitive and harness-prefixed
   skill source. Codex and Gemini receive compact prompts that point to staged
