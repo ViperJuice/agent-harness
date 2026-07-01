@@ -462,8 +462,10 @@ def build_parser() -> argparse.ArgumentParser:
         "run-train",
         help=(
             "Run a cross-repo release train: topo-sort, preflight, per-node "
-            "draft-PR execution via the unchanged per-repo run_loop. "
-            "Stops at 'all draft PRs open + ledgered'; no merges (P4 scope)."
+            "draft-PR execution via the unchanged per-repo run_loop. Without "
+            "--governed, opens all draft PRs and stops. With --governed, holds "
+            "for a train-level review then merges sequentially, re-verifying "
+            "each downstream against the upstream merged SHA."
         ),
     )
     run_train_sub.add_argument(
@@ -506,6 +508,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit the result as JSON.",
+    )
+    # train-status: non-mutating inspection of the cross-repo train ledger (#45).
+    # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
+    train_status_sub = subparsers.add_parser(
+        "train-status",
+        help=(
+            "Inspect the cross-repo release-train ledger WITHOUT modifying state: "
+            "per-node status, branch, PR URL, merge order, and merged SHA."
+        ),
+    )
+    train_status_sub.add_argument(
+        "--train",
+        dest="train_file",
+        required=False,
+        metavar="FILE",
+        help="Path to the cross-repo release-train roadmap (same file as run-train).",
+    )
+    train_status_sub.add_argument(
+        "--ledger-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory of the coordinator-side train ledger. "
+            "Default: <train-file-parent>/.train-ledger/ (same as run-train)."
+        ),
+    )
+    train_status_sub.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the ledger state as JSON.",
     )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
@@ -577,6 +609,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
+    if command == "train-status":
+        return _run_train_status_command(parser=parser, args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -2078,6 +2112,90 @@ def _direct_invocation_blocker(
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")
     print(render_status(snapshot, as_json=as_json))
     return 1
+
+
+def _run_train_status_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """train-status (#45): non-mutating inspection of the cross-repo train ledger.
+
+    Reads the SAME default ledger path as ``run-train`` and prints per-node status
+    (status, branch, PR URL, merge order, merged SHA). Never writes — safe to run
+    between draft-PR creation, review, and merge/reverify.
+    """
+    import json as _json
+
+    from .train_ledger import default_ledger_path, read_ledger
+
+    train_file = getattr(args, "train_file", None)
+    if not train_file:
+        parser.error("train-status requires --train <file>")
+        return 2
+    train_path = Path(train_file)
+    if not train_path.exists():
+        print(f"train-status: train file not found: {train_path}", file=sys.stderr)
+        return 1
+
+    ledger_dir_arg = getattr(args, "ledger_dir", None)
+    ledger_dir = Path(ledger_dir_arg) if ledger_dir_arg else train_path.parent / ".train-ledger"
+    ledger_path = default_ledger_path(ledger_dir, train_path.stem)
+
+    try:
+        state = read_ledger(ledger_path)
+    except Exception as exc:
+        print(f"train-status: failed to read ledger at {ledger_path}: {exc}", file=sys.stderr)
+        return 1
+
+    # Prefer the train roadmap's topo order (also surfaces not-yet-run nodes as
+    # 'pending'); fall back to ledger order if the train can't be parsed.
+    node_order: list[str] = []
+    try:
+        from .train_roadmap import parse_train_roadmap
+
+        roadmap = parse_train_roadmap(train_path.read_text(encoding="utf-8"))
+        node_order = [node.node_id for node in roadmap.topo_order()]
+    except Exception:
+        node_order = sorted(
+            state.keys(),
+            key=lambda nid: (
+                state[nid].merge_order if state[nid].merge_order is not None else 1 << 30,
+                nid,
+            ),
+        )
+    for nid in state:  # defensive: any ledger node absent from the roadmap
+        if nid not in node_order:
+            node_order.append(nid)
+
+    rows = []
+    for nid in node_order:
+        rec = state.get(nid)
+        rows.append(
+            {
+                "node_id": nid,
+                "status": rec.status if rec else "pending",
+                "branch": rec.branch if rec else None,
+                "pr_url": rec.pr_url if rec else None,
+                "merge_order": rec.merge_order if rec else None,
+                "merged_sha": rec.upstream_merge_sha if rec else None,
+            }
+        )
+
+    if bool(getattr(args, "json", False)):
+        print(_json.dumps({"ledger_path": str(ledger_path), "nodes": rows}, indent=2))
+        return 0
+
+    print(f"train-status: {ledger_path}")
+    if not rows:
+        print("  (no ledger records yet — run-train has not run, or the ledger path differs)")
+        return 0
+    for row in rows:
+        line = f"  [{row['status']}] {row['node_id']}"
+        if row["merge_order"] is not None:
+            line += f" (order {row['merge_order']})"
+        print(line)
+        if row["pr_url"]:
+            print(f"        PR: {row['pr_url']}  branch={row['branch']}")
+        if row["merged_sha"]:
+            print(f"        merged: {row['merged_sha']}")
+    return 0
 
 
 def render_handoff_json(path: Path, repo: Path) -> str:
