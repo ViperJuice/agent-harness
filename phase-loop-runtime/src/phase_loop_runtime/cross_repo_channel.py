@@ -110,7 +110,8 @@ def parse_channel_line(raw: str) -> ChannelDescriptor:
     kind = parts[0].lower()
     if kind not in VALID_CHANNEL_KINDS or kind == "none":
         raise ValueError(
-            f"unknown channel kind '{kind}'; expected one of: pin, submodule, workspace"
+            f"unknown channel kind '{kind}'; expected one of: pin, submodule, "
+            f"workspace, order-only"
         )
 
     params: Dict[str, str] = {}

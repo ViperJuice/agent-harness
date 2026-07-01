@@ -731,8 +731,15 @@ def run_train(
             upstream_edges = roadmap.edges_for_downstream(node)
             changed_upstreams = [
                 edge for edge in upstream_edges
-                if edge.upstream.node_id in rebuilt_this_run
-                or edge.upstream.node_id in out_of_band_upstreams
+                # #47: an order-only edge injects nothing — the downstream never
+                # consumed the upstream, so an upstream change does NOT make the
+                # downstream stale. Exclude order-only edges from stale-detection
+                # to avoid a spurious 'upstream_changed_downstream_pr_open' block.
+                if edge.channel.kind != "order-only"
+                and (
+                    edge.upstream.node_id in rebuilt_this_run
+                    or edge.upstream.node_id in out_of_band_upstreams
+                )
             ]
             if not changed_upstreams:
                 continue

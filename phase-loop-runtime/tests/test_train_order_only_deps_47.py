@@ -108,3 +108,54 @@ def test_run_train_skips_injection_for_order_only_edge(tmp_path):
     assert publish_calls == ["repo-a", "repo-b"], publish_calls
     # The order-only edge injects NOTHING — set_upstream_ref is never called.
     assert inject_calls == [], f"order-only edge must not inject a channel; got {inject_calls}"
+
+
+def test_resume_order_only_upstream_change_does_not_block_downstream(tmp_path):
+    """#47 resume fix: an order-only upstream that changed out-of-band must NOT
+    spuriously block the downstream. The downstream consumes nothing from the
+    upstream, so an upstream SHA change does not make it stale. (Contrast: the
+    same OOB scenario with a submodule/pin channel DOES block — see
+    test_train_runner's out-of-band test.)
+    """
+    from unittest.mock import MagicMock
+
+    from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+    roadmap = parse_train_roadmap(ORDER_ONLY_TRAIN)
+    ledger = tmp_path / "ledger" / "t.ledger.jsonl"
+    append_record(ledger, LedgerRecord(
+        node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/a",
+        pr_url="https://gh/a/1", head_sha="sha-v1", merge_order=0,
+    ))
+    append_record(ledger, LedgerRecord(
+        node_id="repo-b/specs/plan-b.md", status="pr_open", branch="feat/b",
+        pr_url="https://gh/b/1", head_sha="sha-b1", merge_order=1,
+    ))
+    ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+    def _live_sha(workspace, branch):
+        # repo-a's live SHA diverged from the ledger (out-of-band push).
+        if branch == "feat/a":
+            return "sha-v2"
+        if branch == "feat/b":
+            return "sha-b1"
+        return None
+
+    result = run_train(
+        roadmap,
+        ledger,
+        run_mode="autonomous",
+        resolve_workspace=lambda n: ws_map[n.node_id],
+        _run_loop=MagicMock(),
+        _publish=MagicMock(),
+        _set_upstream_ref_fn=lambda *a, **kw: None,
+        _preflight_fn=lambda *a, **kw: [],
+        _pr_is_open=lambda *a, **kw: True,
+        _live_pr_head_sha_fn=_live_sha,
+    )
+
+    assert result["status"] != "blocked", (
+        f"#47 resume: an order-only upstream's out-of-band change must not block the "
+        f"downstream (it consumes nothing); got {result}"
+    )
+    assert result["status"] == "completed", result
