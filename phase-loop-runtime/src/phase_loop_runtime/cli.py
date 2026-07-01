@@ -26,6 +26,7 @@ from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock
 from .profiles import DEFAULT_PROFILES
 from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
+from . import repo_validation
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
 from .skill_install import actions_to_json, install_skills
@@ -507,6 +508,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the result as JSON.",
     )
+    # repo-validate: the harness-neutral local-first validation contract resolver
+    # (docs/repo-validation-contract.md). Registered outside the common-args loop
+    # because it takes a single positional target and reuses only the top-level
+    # --repo/--json; it is a NEUTRAL capability (not a dotfiles-domain command),
+    # so it belongs in the base CLI, not the profile plugin.
+    repo_validate_sub = subparsers.add_parser(
+        "repo-validate",
+        help=(
+            "Resolve and run a repo's EXPLICIT agent validation contract "
+            "(just agent::<t> or package.json agent:<t>); fail closed on "
+            "unmigrated repos. Never guesses npm test / pytest / make test."
+        ),
+    )
+    repo_validate_sub.add_argument(
+        "repo_validate_target",
+        metavar="target",
+        choices=repo_validation.ALL_TARGET_TOKENS,
+        help="One of: fast, gate, full, fix, affected, doctor (check == doctor).",
+    )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -562,6 +582,15 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     if command == "version":
         print(f"phase-loop {__version__}")
         return 0
+    if command == "repo-validate":
+        # Neutral local-first validation contract resolver. Resolves the git
+        # work-tree root itself (worktree-aware) rather than via resolve_repo, so
+        # it honors the same --show-toplevel semantics as the dotfiles wrapper.
+        return repo_validation.cli_main(
+            target=args.repo_validate_target,
+            cwd=args.repo or ".",
+            as_json=bool(getattr(args, "json", False)),
+        )
     if command == "export-schema":
         return _export_schema_command(args=args)
     if command == "validate-roadmap":
