@@ -20,7 +20,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
     def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
         captured = {}
 
-        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env):
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review"):
             captured["command"] = command
             captured["cwd"] = cwd
             captured["prompt"] = prompt
@@ -221,7 +221,7 @@ class BundleStagingTest(unittest.TestCase):
     def test_bundle_and_instructions_staged_readonly_dir(self):
         captured = {}
 
-        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact):
+        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review"):
             captured["bundle"] = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
             captured["instructions_exists"] = (review_dir / "review-instructions.md").exists()
             captured["out_separate"] = out_dir != review_dir
@@ -372,7 +372,7 @@ class InvokePanelFailClosedTest(unittest.TestCase):
                 panel = pi.invoke_panel("b", ("claude",), repo_dir=repo_dir)
 
         self.assertEqual(panel.legs[0].status, "OK")
-        spawn.assert_called_once_with("claude", "b", repo_dir=repo_dir)
+        spawn.assert_called_once_with("claude", "b", repo_dir=repo_dir, mode="review")
 
 
 class ReviewerNeqAuthorTest(unittest.TestCase):
