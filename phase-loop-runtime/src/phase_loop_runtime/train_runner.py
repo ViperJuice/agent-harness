@@ -332,10 +332,20 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
             # Malformed suite command — fail closed.
             return False
 
-        # 4. If the plan declares no verification at all, treat as trivial pass
-        #    (the plan author deliberately chose not to add verification).
+        # 4. If the plan declares no verification at all:
+        #    - Under PHASE_LOOP_VERIFY_ENFORCE=hard, the re-verify gate cannot
+        #      prove the downstream still survives the upstream's MERGED-pin
+        #      contract, so it must fail-closed (return False -> the train halts
+        #      at merge_halted). This is a NON-HUMAN terminal -- never adds
+        #      human_required -- preserving autonomy-first. Mirrors the single-repo
+        #      execute preflight (runner.py `_verification_enforcement_mode` /
+        #      `_execute_verification_preflight_blocker`, which blocks on a missing
+        #      suite command under hard enforce). [#39]
+        #    - Under warn (the default), treat as a trivial pass (the plan author
+        #      deliberately chose not to add verification).
         if not commands and suite_command is None:
-            return True
+            enforce = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
+            return enforce != "hard"
 
         # 5. Run verification against the workspace.  set_upstream_ref has
         #    already written the merged-pin file, so commands that read the
