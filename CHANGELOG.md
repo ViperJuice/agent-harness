@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#49 — Codex effort `max` → CLI `xhigh`.** The internal `max` effort tier (codex's top
+  tier, used by the max-effort planner of record) is now translated to `xhigh` at the codex CLI
+  boundary (`build_codex_command`). Previously `model_reasoning_effort="max"` was emitted verbatim
+  and rejected by the codex CLI ("Invalid value: 'max'"), which misclassified the phase as
+  `account_or_billing_setup`. Codex remains max-*eligible* in the policy/tier layer; only the CLI
+  value is clamped to codex's real ceiling.
+- **#47 — order-only cross-repo train dependencies.** `**Channel:** order-only` declares a
+  merge-order (freeze) dependency with no channel injection — see the authoring guide.
 - **#45 — `phase-loop train-status` command.** Non-mutating inspection of the cross-repo
   train ledger (`train-status --train <file> [--ledger-dir DIR] [--json]`) — the command the
   v0.1.11 run-train docs/skills already referenced but which did not exist. Resolves the same

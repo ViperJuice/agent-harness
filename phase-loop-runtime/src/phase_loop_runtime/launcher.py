@@ -287,6 +287,24 @@ class AuthPreflightResult:
     demoted_to: str | None = None
 
 
+# Codex CLI reasoning-effort ceiling is 'xhigh'. The internal 'max' tier (codex's
+# top tier, used by the max-effort planner of record) must be emitted to the CLI
+# as 'xhigh' — emitting 'max' verbatim is rejected ("Invalid value: 'max'. Supported
+# values are: 'none', 'minimal', 'low', 'medium', 'high', and 'xhigh'"). #49.
+# Translating here (the CLI boundary) keeps codex max-ELIGIBLE in the policy/tier
+# layer: a 'max' planner request is honored, at the codex CLI's real ceiling.
+_CODEX_CLI_EFFORT_OVERRIDES = {"max": "xhigh"}
+
+
+def _codex_cli_effort(effort: str) -> str:
+    """Map an internal effort tier to a codex-CLI-supported value (#49).
+
+    The codex CLI accepts none/minimal/low/medium/high/xhigh; the internal 'max'
+    tier maps to 'xhigh' (codex's ceiling). Every other tier passes through.
+    """
+    return _CODEX_CLI_EFFORT_OVERRIDES.get(effort, effort)
+
+
 def build_codex_command(
     repo: Path,
     selection: ModelSelection,
@@ -303,7 +321,7 @@ def build_codex_command(
         "--model",
         selection.model,
         "-c",
-        f'model_reasoning_effort="{selection.effort}"',
+        f'model_reasoning_effort="{_codex_cli_effort(selection.effort)}"',
     ]
     if bypass_approvals:
         command.append("--dangerously-bypass-approvals-and-sandbox")
