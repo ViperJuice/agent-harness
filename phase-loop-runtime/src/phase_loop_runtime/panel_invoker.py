@@ -70,7 +70,17 @@ SpawnFn = Callable[[str, str], "tuple[str, str]"]
 # model-routing-v2 P2: the real CLI-leg spawn. Subscription-auth only (ChatGPT
 # login for codex, Google token for agy) — NEVER API keys. codex/gemini are live;
 # the claude leg's native-Agent/Agent-View path is deferred (returns `unavailable`).
-_LEG_TIMEOUT_S = 600
+# Input-scaled leg timeout (#36): a FIXED 600s under-ran frontier `xhigh` review on
+# large artifacts (codex xhigh is ~900s on ~1.3k lines) — the leg timed out and the
+# panel silently degraded to fewer legs (the exact failure mode observed across the
+# cross-repo work). Scale the timeout by the staged review size, capped, so large
+# reviews get the time they need while small ones stay snappy. Keep --add-dir /
+# --output-last-message profile unchanged: the live smoke confirmed those work; the
+# fixed timeout was the real regression, not the feeding mechanism.
+_LEG_TIMEOUT_BASE_S = 600
+_LEG_TIMEOUT_MAX_S = 1800
+_LEG_TIMEOUT_PER_KB_S = 12
+_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S  # floor / back-compat alias
 
 # STRICT TERMINAL-LINE VERDICT CONTRACT (advisor-panel reconciliation, verified).
 # The panel brief requires each leg to END with exactly one of AGREE / PARTIALLY
@@ -167,6 +177,26 @@ def _classify_leg(rc: int, review_text: str, log_text: str) -> str:
     return "degraded"
 
 
+def _review_bytes(review_dir: Path) -> int:
+    """Total byte size of the staged review material — the timeout-scaling input."""
+    total = 0
+    for path in review_dir.rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _leg_timeout_for(review_dir: Path) -> int:
+    """Input-scaled per-leg timeout (#36): base + per-KB, capped. A large artifact
+    review gets the wall-clock frontier `xhigh` reasoning needs (~900s+); a small one
+    stays near the base. Replaces the fixed 600s that silently timed out big reviews."""
+    kb = _review_bytes(review_dir) // 1024
+    return min(_LEG_TIMEOUT_MAX_S, _LEG_TIMEOUT_BASE_S + kb * _LEG_TIMEOUT_PER_KB_S)
+
+
 def _exec_leg(leg: str, review_dir: Path, out_dir: Path) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -175,6 +205,7 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path) -> tuple[int, str, str]
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
     """
     env = _subscription_env()
+    timeout_s = _leg_timeout_for(review_dir)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
         cmd = [
@@ -186,7 +217,7 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path) -> tuple[int, str, str]
         try:
             proc = subprocess.run(
                 cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=_LEG_TIMEOUT_S, check=False,
+                timeout=timeout_s, check=False,
             )
         except subprocess.TimeoutExpired:
             return 124, "", "timeout"
@@ -195,12 +226,12 @@ def _exec_leg(leg: str, review_dir: Path, out_dir: Path) -> tuple[int, str, str]
     if leg == "gemini":
         cmd = [
             "agy", "--model", "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
-            "--print-timeout", f"{_LEG_TIMEOUT_S}s", "-p", _LEG_PROMPT,
+            "--print-timeout", f"{timeout_s}s", "-p", _LEG_PROMPT,
         ]
         try:
             proc = subprocess.run(
                 cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=_LEG_TIMEOUT_S + 60, check=False,
+                timeout=timeout_s + 60, check=False,
             )
         except subprocess.TimeoutExpired:
             return 124, "", "timeout"
