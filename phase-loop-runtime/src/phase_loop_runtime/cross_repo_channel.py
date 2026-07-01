@@ -55,9 +55,11 @@ from typing import Callable, Dict, List, Literal, Optional
 # ---------------------------------------------------------------------------
 # Channel descriptor — IF-0-P2-2
 
-ChannelKind = Literal["pin", "submodule", "workspace", "none"]
+ChannelKind = Literal["pin", "submodule", "workspace", "none", "order-only"]
 
-VALID_CHANNEL_KINDS: frozenset[str] = frozenset({"pin", "submodule", "workspace", "none"})
+VALID_CHANNEL_KINDS: frozenset[str] = frozenset(
+    {"pin", "submodule", "workspace", "none", "order-only"}
+)
 
 _NONE_VALUES = frozenset({"(none)", "none", ""})
 
@@ -272,6 +274,16 @@ def _default_executor(
             f"(path={params.get('path')!r}). Workspace edges are rejected at train "
             f"validation (T-E) before reaching the executor; a workspace channel in a "
             f"live train means the train roadmap was not validated — check preflight."
+        )
+    elif kind == "order-only":
+        # #47: an order-only edge carries NO physical channel — the downstream does
+        # not consume the upstream artifact, so there is nothing to inject. The
+        # coordinator skips set_upstream_ref for order-only edges; reaching the
+        # executor here means a caller forgot to skip — fail loud, never no-op.
+        raise UnsupportedChannelKind(
+            "'order-only' edges carry no consumption channel and must never be "
+            "injected; the train coordinator skips set_upstream_ref for them "
+            "(they enforce merge order only)."
         )
     else:
         raise ValueError(f"unknown channel kind for executor: {kind!r}")

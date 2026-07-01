@@ -787,6 +787,12 @@ def run_train(
             # make the "no silent skip" contract explicit and catch future refactors.
             injected_channel_paths: List[str] = []
             for edge in upstream_edges:
+                if edge.channel.kind == "order-only":
+                    # #47: an order-only edge enforces merge ORDER (via the topo
+                    # sort + sequential per-node execution) but carries no physical
+                    # channel — the downstream does not consume the upstream, so
+                    # there is nothing to inject. Skip; do not resolve a ref.
+                    continue
                 upstream_result = completed_nodes.get(edge.upstream.node_id)
                 if upstream_result is None:
                     # Defensive: topo-order + T-B validation make this
@@ -1069,6 +1075,11 @@ def run_train(
             # merge call below (forward-only: already-merged upstreams stay merged).
             try:
                 for _edge_m in _upstream_edges_m:
+                    if _edge_m.channel.kind == "order-only":
+                        # #47: order-only edges carry no channel — the merged
+                        # upstream is not injected/re-resolved. Merge order is
+                        # already enforced by the sequential topo-order merge loop.
+                        continue
                     _upstream_merged_sha = merged_shas.get(_edge_m.upstream.node_id)
                     if _upstream_merged_sha is None:
                         # Defensive: topo-order ensures upstream is processed first.
