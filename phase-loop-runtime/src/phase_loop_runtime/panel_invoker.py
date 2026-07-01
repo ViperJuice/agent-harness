@@ -38,6 +38,14 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude"}
+
+# #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-fable-5"})`
+# overrides any subset per-leg without an in-process monkeypatch of `CLAUDE_IMPLEMENTER_MODEL`.
+DEFAULT_LEG_MODELS: dict[str, str] = {
+    "codex": "gpt-5.5",
+    "gemini": "Gemini 3.1 Pro (High)",
+    "claude": CLAUDE_IMPLEMENTER_MODEL,
+}
 _LEG_TIMEOUT_BASE_S = 600
 _LEG_TIMEOUT_MAX_S = 1800
 _LEG_TIMEOUT_PER_KB_S = 12
@@ -298,7 +306,7 @@ def _render_claude_tui_prompt(
     )
 
 
-def _claude_tui_command(review_dir: Path, repo_dir: Path) -> list[str]:
+def _claude_tui_command(review_dir: Path, repo_dir: Path, model: str | None = None) -> list[str]:
     add_dirs = [review_dir]
     if repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
@@ -307,7 +315,7 @@ def _claude_tui_command(review_dir: Path, repo_dir: Path) -> list[str]:
         "--ax-screen-reader",
         "--safe-mode",
         "--model",
-        CLAUDE_IMPLEMENTER_MODEL,
+        model or CLAUDE_IMPLEMENTER_MODEL,
         "--effort",
         "max",
         "--permission-mode",
@@ -796,6 +804,7 @@ def _exec_claude_tui_leg(
     *,
     repo_dir: Path | None = None,
     mode: str = "review",
+    model: str | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -812,7 +821,7 @@ def _exec_claude_tui_leg(
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
     rc, review_text, log_text = _run_claude_tui_session(
-        command=_claude_tui_command(review_dir, repo_dir or Path.cwd()),
+        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model),
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -951,6 +960,7 @@ def _exec_leg(
     timeout_s: int | None = None,
     artifact: str | None = None,
     mode: str = "review",
+    model: str | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -973,7 +983,7 @@ def _exec_leg(
         out_file = out_dir / "panel-codex.txt"
         cmd = [
             "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
-            "--sandbox", "read-only", "--model", "gpt-5.5",
+            "--sandbox", "read-only", "--model", model or "gpt-5.5",
             "-c", "model_reasoning_effort=xhigh",
             "--output-last-message", str(out_file), "-",
         ]
@@ -998,7 +1008,7 @@ def _exec_leg(
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
         cmd = [
-            "agy", "--model", "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
+            "agy", "--model", model or "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
         try:
@@ -1016,7 +1026,12 @@ def _exec_leg(
 
 
 def _default_spawn(
-    leg: str, artifact: str, *, repo_dir: Path | str | None = None, mode: str = "review"
+    leg: str,
+    artifact: str,
+    *,
+    repo_dir: Path | str | None = None,
+    mode: str = "review",
+    model: str | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -1041,9 +1056,10 @@ def _default_spawn(
                 artifact,
                 repo_dir=resolved_repo_dir,
                 mode=mode,
+                model=model,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode
+            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed
@@ -1059,6 +1075,7 @@ def invoke_panel(
     spawn: SpawnFn | None = None,
     repo_dir: Path | str | None = None,
     mode: str = "review",
+    models: Mapping[str, str] | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
 
@@ -1068,15 +1085,22 @@ def invoke_panel(
     non-code question (architecture, product, red-teaming a plan) with no verdict
     required — substantial prose is a real leg.
 
+    ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-fable-5"}`` — any
+    subset; unset legs use ``DEFAULT_LEG_MODELS``. Replaces the prior need to monkeypatch
+    ``CLAUDE_IMPLEMENTER_MODEL``.
+
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
     and never mistaken for a real review.
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    leg_models = dict(models or {})
     if spawn is None:
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
-            return _default_spawn(leg, panel_artifact, repo_dir=repo_dir, mode=mode)
+            return _default_spawn(
+                leg, panel_artifact, repo_dir=repo_dir, mode=mode, model=leg_models.get(leg)
+            )
     else:
         runner = spawn
     results: list[PanelLegResult] = []

@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#66 — advisor-panel per-leg model override.** Each leg's model was hardcoded (`CLAUDE_IMPLEMENTER_MODEL`, `gpt-5.5`, `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
+  `claude-fable-5` required monkeypatching a module constant. `invoke_panel(..., models={"claude":
+  "claude-fable-5"})` now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
+
 - **#63 — advisor-panel advisory mode.** `panel_invoker` was hardcoded to a pre-merge
   code-review framing, so the three-model panel couldn't be used for general adversarial/advisory
   analysis (architecture, product, red-teaming a plan) — 2/3 legs replied "nothing to review".

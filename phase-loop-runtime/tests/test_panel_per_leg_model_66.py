@@ -1,0 +1,82 @@
+"""#66 — per-leg model override for the advisor panel.
+
+The panel hardcoded each leg's model (claude via `CLAUDE_IMPLEMENTER_MODEL`, codex
+`gpt-5.5`, gemini `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
+`claude-fable-5` required an in-process monkeypatch. `invoke_panel(..., models={...})`
+now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
+"""
+
+from __future__ import annotations
+
+import types
+from unittest.mock import patch
+
+import phase_loop_runtime.panel_invoker as pi
+
+
+def test_default_leg_models_exposed():
+    assert pi.DEFAULT_LEG_MODELS["claude"] == pi.CLAUDE_IMPLEMENTER_MODEL
+    assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-5.5"
+    assert "Gemini" in pi.DEFAULT_LEG_MODELS["gemini"]
+
+
+def test_claude_tui_command_model_override(tmp_path):
+    cmd = pi._claude_tui_command(tmp_path, tmp_path, "claude-fable-5")
+    assert cmd[cmd.index("--model") + 1] == "claude-fable-5"
+
+
+def test_claude_tui_command_defaults_when_unset(tmp_path):
+    cmd = pi._claude_tui_command(tmp_path, tmp_path)
+    assert cmd[cmd.index("--model") + 1] == pi.CLAUDE_IMPLEMENTER_MODEL
+
+
+def _stage(tmp_path):
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    (review_dir / "review-bundle.md").write_text("q", encoding="utf-8")
+    (review_dir / "review-instructions.md").write_text("i", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    return review_dir, out_dir
+
+
+def test_exec_leg_codex_uses_model_override(tmp_path, monkeypatch):
+    review_dir, out_dir = _stage(tmp_path)
+    captured = {}
+
+    def fake_run(cmd, **k):
+        if list(cmd[:3]) == ["codex", "login", "status"]:
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        captured["cmd"] = list(cmd)
+        (out_dir / "panel-codex.txt").write_text("AGREE", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    pi._exec_leg("codex", review_dir, out_dir, 60, "q", model="gpt-5.4-codex")
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "gpt-5.4-codex"
+
+
+def test_exec_leg_gemini_uses_model_override(tmp_path, monkeypatch):
+    review_dir, out_dir = _stage(tmp_path)
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["cmd"] = list(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="AGREE", stderr="")
+
+    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    pi._exec_leg("gemini", review_dir, out_dir, 60, "q", model="Gemini 3.5 Flash (High)")
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "Gemini 3.5 Flash (High)"
+
+
+def test_invoke_panel_threads_per_leg_model():
+    with patch.object(pi, "_default_spawn", return_value=("OK", "x\nAGREE")) as ds:
+        pi.invoke_panel("b", ("claude",), models={"claude": "claude-fable-5"})
+    ds.assert_called_once_with("claude", "b", repo_dir=None, mode="review", model="claude-fable-5")
+
+
+def test_invoke_panel_unset_leg_gets_none_and_falls_back():
+    with patch.object(pi, "_default_spawn", return_value=("OK", "x\nAGREE")) as ds:
+        pi.invoke_panel("b", ("codex",), models={"claude": "claude-fable-5"})  # codex unset
+    # codex leg gets model=None → _exec_leg falls back to its default
+    ds.assert_called_once_with("codex", "b", repo_dir=None, mode="review", model=None)
