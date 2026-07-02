@@ -5,6 +5,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **Self-ingest: agent-harness adopts its own `.consiliency/`.** First governed repo — archetype `tooling-meta` + `public` modifier, adopted scope `[layout, gates]`, vendoring `@consiliency/contract` 0.3.0. Additive (`.phase-loop/` untouched); all L0 gates pass (presence/local-integrity/layout/version-skew). Docs are L0 presence-stubs to be filled at L1.
 
 - Bumped the vendored `consiliency-contract` pin from `>=0.2.1,<0.3.0` to
   `>=0.3.0,<0.4.0`. 0.3.0 rebalances the required-documents registry: the
