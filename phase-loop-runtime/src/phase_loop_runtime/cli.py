@@ -252,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -318,6 +318,14 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
             sub.add_argument("--decisions", help="Path to the repo-visible doc-decisions artifact (default: .doc-decisions.json).")
+        if name == "worktree-index":
+            sub.description = (
+                "Read-only, git-derived freshness pointer: which active worktree (or origin/main) "
+                "holds the freshest copy of a path, and whether origin/main is behind on it. "
+                "Never writes repo state."
+            )
+            sub.add_argument("--path", help="Report freshness holders for a single repo-relative path. Omit to report every path touched by an active worktree.")
+            sub.add_argument("--base", help="Diff base ref (default: origin/<default-branch>, falling back to origin/main).")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -638,6 +646,19 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                     ".doc-decisions.json (a release-class surface needs a real, relevant doc change)."
                 )
         return report.exit_code
+    if command == "worktree-index":
+        from . import worktree_index
+
+        repo_arg = args.repo or "."
+        if isinstance(repo_arg, list):
+            repo_arg = repo_arg[0] if repo_arg else "."
+        repo = resolve_repo(repo_arg)
+        report = worktree_index.build_index(repo, base_ref=getattr(args, "base", None), path=getattr(args, "path", None))
+        if bool(args.json):
+            print(json.dumps(report.to_json(), indent=2))
+        else:
+            print(worktree_index.render_human(report))
+        return 0
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
         if args.roadmap:

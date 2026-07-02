@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.12
 
+- **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,
+  purely git-derived command that answers "where is the freshest working copy
+  of a path, and who's touching it": enumerates active worktrees (`git
+  worktree list --porcelain`), diffs each worktree's branch against
+  `origin/<default-branch>` (falling back to `origin/main`), and reports the
+  holders (worktree path, branch, last commit) for a queried path — or every
+  touched path when none is given — plus whether `origin/main` is behind on
+  it. No new persistent state; a repo with no divergent worktrees answers
+  `origin/main`. `phase_loop_runtime.worktree_index` is the module; never
+  writes repo state.
 - **CS-0.7 — realized-edge / fleet-map v0 extractor.** Between the core
   Consiliency-standardization repos there are ~zero package-level deps, so a
   package-lockfile scan renders the real cross-repo interface graph
