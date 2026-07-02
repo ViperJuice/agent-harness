@@ -12,6 +12,8 @@ from pathlib import Path
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
 from .closeout import build_phase_loop_closeout
+from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
+from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
@@ -252,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -348,6 +350,34 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--backup-suffix", default=".bak-before-def4-migrate")
         if name == "init":
             sub.add_argument("--install-hooks", action="store_true", help="Install opt-in local git hooks for this repo.")
+        if name == "consiliency-scaffold":
+            sub.description = (
+                "CS-0.5: first-writer scaffolder for a schema-valid `.consiliency/` layout "
+                "(manifest, contract-version status, interface declaration, and L0 presence-stub "
+                "docs for the declared archetype). Additive only: never touches `.phase-loop/` or "
+                "`.pipeline/`, and never overwrites a file that already exists."
+            )
+            sub.add_argument(
+                "--archetype",
+                action="append",
+                default=[],
+                choices=ARCHETYPE_IDS,
+                help="Repeatable. Declares an archetype (product/service/library/infra/tooling-meta/experiment/document).",
+            )
+            sub.add_argument(
+                "--modifier",
+                action="append",
+                default=[],
+                choices=MODIFIER_IDS,
+                help="Repeatable. Declares a modifier (data-bearing/public/regulated/user-facing).",
+            )
+            sub.add_argument(
+                "--baseline-only",
+                action="store_true",
+                help="Declare baseline-only mode (no archetype). Mutually exclusive with --archetype/--modifier.",
+            )
+            sub.add_argument("--repo-id", help="Override the manifest's repo.id (default: derived from the repo directory name).")
+            sub.add_argument("--display-name", help="Override the manifest's repo.display_name (default: the repo directory name).")
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -680,6 +710,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return profile_func(repo=repo, args=args, as_json=as_json)
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
+    if command == "consiliency-scaffold":
+        return _consiliency_scaffold_command(repo=repo, args=args, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -1464,6 +1496,44 @@ def _init_command(*, repo: Path, dry_run: bool, as_json: bool, install_hooks: bo
         print(f"gitignore_entry: {entry} ({'needed' if needs_entry else 'present'})")
         print(f"handoffs: {handoffs} ({'needed' if needs_handoffs else 'present'})")
         print(f"hooks: {hook_target} ({'needed' if needs_hook else 'not requested' if not install_hooks else 'present'})")
+    return 0
+
+
+def _consiliency_scaffold_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    archetypes = tuple(dict.fromkeys(getattr(args, "archetype", None) or ()))
+    modifiers = tuple(dict.fromkeys(getattr(args, "modifier", None) or ()))
+    baseline_only = bool(getattr(args, "baseline_only", False))
+    if baseline_only and (archetypes or modifiers):
+        print("phase-loop consiliency-scaffold: --baseline-only is mutually exclusive with --archetype/--modifier", file=sys.stderr)
+        return 2
+    if not baseline_only and not archetypes:
+        print("phase-loop consiliency-scaffold: pass --archetype <name> (repeatable) or --baseline-only", file=sys.stderr)
+        return 2
+    try:
+        result = scaffold(
+            repo,
+            mode="baseline-only" if baseline_only else "archetyped",
+            archetypes=archetypes,
+            modifiers=modifiers,
+            repo_id=getattr(args, "repo_id", None),
+            display_name=getattr(args, "display_name", None),
+            dry_run=bool(args.dry_run),
+        )
+    except ScaffoldError as exc:
+        print(f"phase-loop consiliency-scaffold: {exc}", file=sys.stderr)
+        return 2
+    payload = result.to_json()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        mode = "would scaffold" if result.dry_run else ("already present" if result.already_present else "scaffolded")
+        print(f"phase-loop consiliency-scaffold: {mode} {result.manifest_path}")
+        for created in result.created_paths:
+            print(f"  created: {created}")
+        for referenced in result.referenced_paths:
+            print(f"  referenced (already existed): {referenced}")
+        for missing in result.declared_missing_paths:
+            print(f"  declared, not authored (no fake content -- see presence gate): {missing}")
     return 0
 
 

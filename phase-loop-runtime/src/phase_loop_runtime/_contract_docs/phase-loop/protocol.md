@@ -1898,6 +1898,20 @@ The blocker taxonomy is frozen to these literals:
 - `concurrent_dispatch`
 - `review_gate_block`
 - `docs_freshness_stale`
+- `consiliency_gate_blocked`
+
+`consiliency_gate_blocked` is the non-human blocker raised by the CS-0.6
+`.consiliency/` L0 gates (presence, local-integrity, layout-validity,
+version-skew) when the opt-in `PHASE_LOOP_CONSILIENCY_GATES=hard` control is
+set and at least one gate has a finding. The default is `warn`
+(`PHASE_LOOP_CONSILIENCY_GATES` unset or `warn`): findings are recorded in the
+closeout's `consiliency_gates`/`consiliency_gates_detail` fields but never
+block. A repo with no `.consiliency/manifest` is a pure no-op (`skipped`) --
+the gates only ever act on repos that have opted in. The version-skew gate
+never escalates past `warn` regardless of this control (the version-skew
+protocol pins Phase 0 severity to `warn`). It never sets `human_required` —
+the fix is to resolve the named finding (author the missing doc, repair the
+manifest, etc.) or drop back to `warn`/`off`.
 
 `docs_freshness_stale` is the non-human blocker raised by the docs-freshness
 closeout gate (issue #18) when a **release/package phase** closes `complete`

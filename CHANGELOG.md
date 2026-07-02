@@ -4,6 +4,42 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased
+
+- **CS-0.5 — `.consiliency/` scaffolder (first-writer).** New
+  `phase-loop consiliency-scaffold --repo <path> --archetype <name>` (repeatable
+  `--archetype`/`--modifier`, or `--baseline-only`) writes a schema-valid
+  `.consiliency/` layout: `manifest.json` (declaring archetype(s)/modifier(s) +
+  the composed governed-doc allowlist), `status.json` (contract-version-status)
+  and `interfaces.json` (interface declaration) as real minimal artifacts, and
+  L0 presence-stub docs — each an honest "unauthored, tracked" marker with an
+  explicit authored zone, never a fabricated projection — for every doc the
+  vendored `consiliency_contract` required-documents registry demands.
+  Additive/first-writer: never touches `.phase-loop/`/`.pipeline/`, never
+  overwrites a file that already exists (re-running is a safe no-op), and
+  docs marked `l0_stub_allowed: false` (`readme`, `license`, `document-index`)
+  are never fabricated — referenced if present, otherwise just declared for
+  the presence gate to flag. `phase_loop_runtime.consiliency_scaffold` /
+  `phase_loop_runtime.consiliency_layout` are the modules.
+- **CS-0.6 — `.consiliency/` L0 gates.** Four gates — `presence`,
+  `local-integrity` (git-scoped hash snapshot; a forward-compatible no-op
+  today since Phase 0 floors every doc at `presence-only`), `layout-validity`
+  (manifest/status/interfaces validate against the vendored schemas), and
+  `version-skew` (repo `contract_version` vs the installed
+  `consiliency-contract` package) — wired at top-of-loop (a non-blocking
+  advisory notice, mirroring the existing governed-mode notice) and closeout
+  (threaded into `build_phase_loop_closeout` alongside `docs_freshness`, new
+  `consiliency_gates`/`consiliency_gates_detail` closeout fields). SOFT/warn
+  by default; `PHASE_LOOP_CONSILIENCY_GATES=hard` opts into blocking (new
+  `consiliency_gate_blocked` frozen blocker literal), never sets
+  `human_required`, and the version-skew gate never blocks even under `hard`
+  (Phase 0 severity is normatively `warn`). CONSENT-GATED: a repo without a
+  `.consiliency/manifest` is a pure no-op. `phase_loop_runtime.consiliency_gates`
+  is the module.
+- Added `consiliency-contract` (the published shared Consiliency contract
+  package) and `jsonschema` as runtime dependencies; all `.consiliency/`
+  schemas/registries are read from the vendored package, never copied.
+
 ## v0.1.12
 
 - **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,

@@ -114,6 +114,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "verification_evidence_missing",
                 "review_gate_block",
                 "docs_freshness_stale",
+                "consiliency_gate_blocked",
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))
