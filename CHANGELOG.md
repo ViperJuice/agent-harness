@@ -5,6 +5,27 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **CS-0.10c — local-file `LeaseStore` + soft leases.** New
+  `phase_loop_runtime.lease_store`: a local-file backend for the CS-0.10b
+  `LeaseStore` contract (`consiliency_contract`'s `lease.schema.json` /
+  `lease-event.schema.json` / `lease-store-protocol.schema.json`) so parallel
+  local agents can claim path-sets without stepping on each other. SOFT MODE
+  ONLY — this backend never declares an atomic backend, so a requested hard
+  lease always degrades to soft (no cross-machine atomic acquire locally;
+  that needs the off-device backend, CS-0.10d). TTL + heartbeat +
+  auto-expiry: an unrenewed lease past `heartbeat_at + ttl_seconds`
+  (exclusive boundary) is free, so a dead holder can never freeze a path.
+  Give-way policy is REROUTE, not block: an `acquire()` colliding with an
+  active lease (same `lease_id`, or an overlapping path-set scope held by
+  someone else) returns the blocking lease instead of raising or waiting.
+  The current-lease view (`query()`) is a pure projection of the append-only
+  `.consiliency/leases/events.jsonl` event log ONLY — the module has no
+  parameter a coordination-channel message could occupy, so the sole-truth
+  guardrail (the inbox is never authoritative for lease state) is structural,
+  not a runtime check. New `phase-loop consiliency-lease
+  acquire|renew|release|query --repo <path> ...` CLI. Vector-tested against
+  every `lease-*`/`coordination-*` conformance vector the vendored
+  `consiliency_contract` (>=0.2.0) ships.
 - **CS-0.8 — agent-runtime provider seam.** New `phase_loop_runtime.agent_runtime_provider`:
   an `AgentRuntimeProvider` Protocol (matching omniagent-plus core-contracts) +
   `HomebrewAgentRuntimeProvider` degraded profile — a one-shot CLI spawn presented as a

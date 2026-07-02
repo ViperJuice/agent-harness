@@ -22,7 +22,7 @@ dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
-    "consiliency-contract>=0.2.0,<0.3.0",
+    "consiliency-contract>=0.2.1,<0.3.0",
     "jsonschema>=4,<5",
 ]
 

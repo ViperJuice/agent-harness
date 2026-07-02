@@ -188,13 +188,17 @@ class ConsiliencyIngestVerifyTest(unittest.TestCase):
             # that same vendored schema, honestly) surfaces as a standing
             # soft warn on every verify pass -- not something CS-0.11
             # fabricates or should paper over.
+            # consiliency-contract 0.2.1 fixed contract-version-status's version pin
+            # (^0.1.0 -> ^0.2.\\d+), so version-status now CONFORMS: no more
+            # governance.present_nonconforming finding, no contract-version-status label.
+            # The scan still soft-warns, but now only from a separate legitimate source:
+            # the "library" fixture ships no LICENSE, so the presence gate warns
+            # missing_file(license) (nested in gates.presence, not a top-level finding).
             self.assertEqual(second.gate_scan["status"], "warn")
-            self.assertEqual(
-                {f["code"] for f in second.findings},
-                {"governance.present_nonconforming"},
-            )
+            self.assertEqual(second.gate_scan["gates"]["presence"]["status"], "warn")
+            self.assertEqual({f["code"] for f in second.findings}, set())
             nonconforming = [label["doc_id"] for label in second.document_labels if label.get("labels")]
-            self.assertEqual(nonconforming, ["contract-version-status"])
+            self.assertEqual(nonconforming, [])
 
     def test_hand_corrupted_manifest_is_flagged_not_overwritten(self):
         with tempfile.TemporaryDirectory() as td:

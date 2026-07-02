@@ -71,7 +71,8 @@ class ConsiliencyGatesScanTest(unittest.TestCase):
             # layout_validity warn (never a block). What this test actually
             # exercises -- the presence gate -- still passes cleanly.
             self.assertEqual(result["gates"]["presence"]["status"], "passed")
-            self.assertEqual(result["status"], "warn")
+            # consiliency-contract 0.2.1 fixed the version-status pin -> now a clean pass
+            self.assertEqual(result["status"], "passed")
 
     def test_gates_mode_off_skips_entirely_even_with_a_manifest(self):
         with tempfile.TemporaryDirectory() as td:

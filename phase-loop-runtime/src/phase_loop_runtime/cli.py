@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -329,6 +329,26 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--path", help="Report freshness holders for a single repo-relative path. Omit to report every path touched by an active worktree.")
             sub.add_argument("--base", help="Diff base ref (default: origin/<default-branch>, falling back to origin/main).")
+        if name == "consiliency-lease":
+            sub.description = (
+                "CS-0.10c: local-file LeaseStore -- soft, TTL+heartbeat path-set leases so parallel "
+                "local agents don't collide. SOFT MODE ONLY (hard degrades to soft: no cross-machine "
+                "atomic acquire locally). Give-way = reroute: a conflicting acquire never blocks, it "
+                "returns the blocking lease so the caller can go work something else. The current-lease "
+                "view is a projection of the append-only .consiliency/leases/events.jsonl log only."
+            )
+            sub.add_argument("action", choices=("acquire", "renew", "release", "query"), help="The LeaseStore operation to perform.")
+            sub.add_argument("--lease-id", help="Required for acquire/renew/release.")
+            sub.add_argument("--holder", help="Required for acquire/renew/release.")
+            sub.add_argument("--ttl-seconds", type=int, default=300, help="acquire only. Default 300.")
+            sub.add_argument("--mode", choices=("soft", "hard"), default="soft", help="acquire only. Always degrades to soft on this backend.")
+            sub.add_argument(
+                "--granularity", choices=("repo", "path-set", "symbol"), default="path-set", help="acquire/query scope granularity."
+            )
+            sub.add_argument("--scope", action="append", default=[], help="acquire/query. Repeatable path-set/symbol selector entry.")
+            sub.add_argument("--lease-phase", default="", help="acquire only. The declaring phase/step label. (--phase is the roadmap-phase common arg.)")
+            sub.add_argument("--path", help="query only. Shorthand for --granularity path-set --scope <path>.")
+            sub.add_argument("--now", help="Override the current time (ISO 8601 UTC, e.g. 2026-01-01T00:00:00Z) for deterministic testing.")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -725,6 +745,12 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         else:
             print(worktree_index.render_human(report))
         return 0
+    if command == "consiliency-lease":
+        repo_arg = args.repo or "."
+        if isinstance(repo_arg, list):
+            repo_arg = repo_arg[0] if repo_arg else "."
+        repo = resolve_repo(repo_arg)
+        return _consiliency_lease_command(repo=repo, args=args, as_json=bool(args.json))
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
         if args.roadmap:
@@ -1610,6 +1636,79 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
             print(f"  gate scan: {result.gate_scan.get('status')}")
             for finding in result.findings:
                 print(f"  finding: {finding.get('code')} ({finding.get('path')})")
+    return 0
+
+
+def _consiliency_lease_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    from .lease_store import LeaseStore
+
+    action = args.action
+    store = LeaseStore(repo)
+    now = getattr(args, "now", None)
+
+    if action in ("acquire", "renew", "release") and not (args.lease_id and args.holder):
+        print(f"phase-loop consiliency-lease {action}: --lease-id and --holder are required", file=sys.stderr)
+        return 2
+
+    if action == "acquire":
+        scope = {"granularity": args.granularity, "selector": list(args.scope)}
+        result = store.acquire(
+            lease_id=args.lease_id,
+            holder=args.holder,
+            ttl_seconds=args.ttl_seconds,
+            mode=args.mode,
+            scope=scope,
+            phase=args.lease_phase,
+            now=now,
+        )
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.granted:
+            note = " (degraded to soft)" if result.degraded else ""
+            print(f"phase-loop consiliency-lease acquire: granted{note} {args.lease_id} to {args.holder}")
+        else:
+            conflict = result.conflict or {}
+            print(
+                f"phase-loop consiliency-lease acquire: conflict -- give_way={result.give_way} "
+                f"held by {conflict.get('holder')} (lease {conflict.get('lease_id')})"
+            )
+        return 0 if result.granted else 1
+
+    if action == "renew":
+        result = store.renew(lease_id=args.lease_id, holder=args.holder, now=now)
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.renewed:
+            print(f"phase-loop consiliency-lease renew: renewed {args.lease_id}")
+        else:
+            print(f"phase-loop consiliency-lease renew: rejected ({result.reason})")
+        return 0 if result.renewed else 1
+
+    if action == "release":
+        result = store.release(lease_id=args.lease_id, holder=args.holder, now=now)
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.released:
+            print(f"phase-loop consiliency-lease release: released {args.lease_id}")
+        else:
+            print(f"phase-loop consiliency-lease release: rejected ({result.reason})")
+        return 0 if result.released else 1
+
+    # action == "query"
+    scope = {"granularity": args.granularity, "selector": list(args.scope)} if args.scope else None
+    if not (args.lease_id or args.path or scope):
+        print("phase-loop consiliency-lease query: pass --lease-id, --path, or --scope", file=sys.stderr)
+        return 2
+    current = store.query(lease_id=args.lease_id, path=args.path, scope=scope, now=now)
+    if as_json:
+        print(json.dumps(current, indent=2, sort_keys=True))
+    elif current is None:
+        print("phase-loop consiliency-lease query: free")
+    else:
+        print(f"phase-loop consiliency-lease query: held by {current['holder']} (lease {current['lease_id']}, mode {current['mode']})")
     return 0
 
 
