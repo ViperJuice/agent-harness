@@ -26,6 +26,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .agent_runtime_provider import (
+    CreateSessionRequest,
+    HomebrewAgentRuntimeProvider,
+    SendTurnRequest,
+)
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
 
@@ -1068,6 +1073,44 @@ def _default_spawn(
         shutil.rmtree(base, ignore_errors=True)
 
 
+# CS-0.8: routes the `_default_spawn` real-exec boundary through the
+# AgentRuntimeProvider seam (agent_runtime_provider.py) — the same one-shot CLI
+# spawn presented as a single-turn, buffered-replay `HomebrewAgentRuntimeProvider`
+# session, per leg. This is a transport wrapper only: `_default_spawn`'s call
+# signature and single-call semantics are unchanged, so `invoke_panel`'s
+# downstream status/empty-text normalization (below) sees the exact same
+# `(status, text)` it always did. A per-leg provider instance is deliberate —
+# each leg session is independent and the provider is process-local, in-memory
+# state with no cross-call reuse to manage.
+def _default_spawn_via_provider(
+    leg: str,
+    artifact: str,
+    *,
+    repo_dir: Path | str | None = None,
+    mode: str = "review",
+    model: str | None = None,
+) -> tuple[str, str]:
+    provider = HomebrewAgentRuntimeProvider(
+        spawn=lambda request, register_process=None: _default_spawn(
+            leg, artifact, repo_dir=repo_dir, mode=mode, model=model
+        )
+    )
+    session = provider.create_session(
+        CreateSessionRequest(target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}")
+    )
+    provider.send_turn(
+        SendTurnRequest(session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact)
+    )
+    status, text = "DEGRADED", ""
+    for event in provider.read_history(session.id).events:
+        if event.type == "runtime.text.delta":
+            text = event.payload.get("delta", "")
+        elif event.type in ("runtime.turn.completed", "runtime.turn.failed"):
+            status = event.payload.get("status", status)
+    provider.close_session(session.id)
+    return status, text
+
+
 def invoke_panel(
     artifact: str,
     legs: Sequence[str],
@@ -1098,7 +1141,7 @@ def invoke_panel(
     leg_models = dict(models or {})
     if spawn is None:
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
-            return _default_spawn(
+            return _default_spawn_via_provider(
                 leg, panel_artifact, repo_dir=repo_dir, mode=mode, model=leg_models.get(leg)
             )
     else:
