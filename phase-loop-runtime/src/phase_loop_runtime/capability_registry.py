@@ -431,6 +431,7 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         notes=(
             "Gemini CLI fallback stays CLI-based and reason-coded; API-key execution requires an explicit command adapter.",
             "Gemini CLI defaults use built-in routing aliases (`pro` for planning/review and `auto` for execution/repair) to preserve CLI fallback behavior.",
+            "Model-routing-v3 uses explicit `Gemini 3.5 Flash (High)` for implementer/worker model_class routing, but Gemini remains capped at high effort and is not max-effort planner-of-record eligible.",
             "Run-local user-scope modelConfigs.customAliases remain available only for explicit phase-loop thinking-level proof runs.",
             "thinkingConfig.thinkingLevel is carried by custom aliases and is not exposed as a CLI flag.",
         ),

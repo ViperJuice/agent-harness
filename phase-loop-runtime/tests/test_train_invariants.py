@@ -855,8 +855,9 @@ class TestInvariant6LiveReverifyRunsVerification:
             "awaiting_phase_closeout — fail-closed contract violated"
         )
 
-    def test_no_verification_commands_returns_true(self, tmp_path: Path):
-        """Plan with no ## Verification section → True (plan author chose none)."""
+    def test_no_verification_commands_returns_true_by_default(self, tmp_path: Path, monkeypatch):
+        """Plan with no verification commands → True when hard enforcement is off."""
+        monkeypatch.delenv("PHASE_LOOP_VERIFY_ENFORCE", raising=False)
         repo, roadmap = self._make_reverify_repo(
             tmp_path,
             verify_lines="",  # empty → verification_commands_from_plan returns []

@@ -131,6 +131,7 @@ BLOCKER_CLASSES = (
     "verification_evidence_missing",
     "review_gate_block",
     "docs_freshness_stale",
+    "consiliency_gate_blocked",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (

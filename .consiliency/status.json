@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-07-02T08:23:08Z",
+  "compatibility": "compatible",
+  "evidence": [],
+  "maturity": "presence-only",
+  "package": {
+    "name": "consiliency-contract",
+    "version": "0.3.0"
+  },
+  "repo_contract_version": "0.3.0",
+  "schema": "consiliency.contract_version_status.v1"
+}

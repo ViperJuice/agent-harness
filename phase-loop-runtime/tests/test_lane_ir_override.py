@@ -98,6 +98,27 @@ class LaneIrOverrideTest(unittest.TestCase):
             self.assertEqual(blocker["blocker_class"], "contract_bug")
             self.assertEqual(blocker["lane_ir_diagnostics"][0]["kind"], "overlapping_write_ownership")
 
+    def test_lane_ir_blocker_summary_names_diagnostic_and_plan_location(self):
+        """#52: the failed-closed summary must name the concrete diagnostic
+        (kind@lane + message) and the plan file, so the operator can repair the
+        plan without guessing — not the old opaque generic string."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap, body=OVERLAPPING_PLAN)
+
+            blocker = _plan_blocker(repo, roadmap, "RUNNER")
+            summary = blocker["blocker_summary"]
+
+            self.assertIn("overlapping_write_ownership", summary)  # the concrete diagnostic kind
+            self.assertIn("SL-", summary)                          # the failing lane id
+            self.assertIn("RUNNER", summary)                       # the phase
+            self.assertIn(".md", summary)                          # the plan file location
+            self.assertNotEqual(
+                summary,
+                "Lane IR diagnostics failed closed for the current phase plan.",
+            )
+
     def test_closeout_on_lane_ir_invalid_plan_reports_contract_bug_not_missing_owned(self):
         # OWNFIX #17: when the plan's Lane IR is invalid (here: overlapping write
         # ownership), the CLOSEOUT must surface the contract_bug naming the failing

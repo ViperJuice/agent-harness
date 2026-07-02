@@ -47,9 +47,15 @@ upstream reference before re-verify at merge time.
 |---------|--------|----------|
 | `submodule` | `submodule path=<path>` | Downstream uses a git submodule at `<path>` pointing to the upstream repo. |
 | `pin file` | `pin file=<file> key=<yaml-key>` | Downstream reads the upstream SHA from a YAML pinfile at `<file>` under key `<key>`. |
+| `order-only` | `order-only` | Downstream must merge **after** the upstream (freeze/merge order) but does **not** consume its artifact. No SHA is injected or re-resolved; the edge enforces ordering only. |
 
 Declare `**Channel:** (none)` for root nodes (no upstream dependency).
 Declare `**Depends on:** (none)` for root nodes.
+
+For a **dependency** edge you must declare a channel: `pin`/`submodule` if the
+downstream consumes the upstream, or `order-only` for a pure merge-order (freeze)
+dependency. A bare `**Channel:** (none)` on a dependency edge is rejected (it is
+ambiguous — likely a forgotten channel).
 
 ## Expand/contract recommendation
 

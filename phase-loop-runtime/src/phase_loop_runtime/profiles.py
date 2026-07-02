@@ -19,6 +19,7 @@ OPENAI_HEAVY_MODEL = "gpt-5.5"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.5"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
+GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
 PI_AUTO_ROUTED_MODEL = "auto"
 
 DEFAULT_PROFILES = {
@@ -85,19 +86,16 @@ EXECUTOR_EFFORT_OVERRIDES = {
 # to its single model (pi). Non-`phase-loop-` model strings pass through
 # `_resolve_policy_model` unchanged for every executor (claude/codex have no
 # model_aliases; gemini/pi pass through non-alias strings), so these resolve.
-CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-4-6"
+CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-5"
 CLAUDE_WORKER_MODEL = "claude-haiku-4-5"
 OPENAI_IMPLEMENTER_MODEL = "gpt-5.4"
 OPENAI_WORKER_MODEL = "gpt-5.4-mini"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.4"
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.4-mini"
-# Gemini exposes only two built-in routing aliases the registry preserves for CLI
-# fallback: `pro` (planning/review) and `auto` (execution/repair). It has no
-# vetted distinct cheap-model alias, so implementer/worker route via `auto` (the
-# CLI auto-routes) rather than an invented, unvalidated `flash`/`flash-lite`
-# string that would bypass the alias guard and risk a dispatch-time failure.
-GEMINI_IMPLEMENTER_MODEL = GEMINI_AUTO_ROUTED_MODEL
-GEMINI_WORKER_MODEL = GEMINI_AUTO_ROUTED_MODEL
+# Gemini planner stays on the CLI `pro` alias; bounded implementer/worker lanes
+# use the validated agy model name directly rather than the broad `auto` alias.
+GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
+GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 
 CLASS_MODEL_OVERRIDES = {
     "claude": {

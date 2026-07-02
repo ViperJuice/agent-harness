@@ -14,8 +14,8 @@ Run modes (the second orthogonal axis; the first is `model_policy`):
 
 Reviewer ≠ author: the panel pool must differ from the author in vendor. If the
 only authed reviewer is the author's vendor — or none are authed — the gate
-degrades to **autonomous-warn** (an advisory, recorded finding) rather than
-rubber-stamping a same-vendor self-review as a pass.
+holds fail-closed with a non-human review-gate blocker rather than rubber-
+stamping a same-vendor self-review as a pass.
 """
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ class GateResult:
     ran: bool                       # did the governed gate actually evaluate?
     promoted: bool                  # may the artifact advance? (False only on unresolved block)
     findings: tuple[ReviewFinding, ...] = ()
-    degraded: bool = False          # True => not a real review (advisory autonomous-warn)
+    degraded: bool = False          # Legacy field; governed gate holds fail-closed.
     reason: str | None = None
     panel: PanelResult | None = None
 
@@ -187,6 +187,7 @@ def governed_planning_gate(
     available_legs: Sequence[str] | None = None,
     invoke: Callable[..., PanelResult] = invoke_panel,
     spawn=None,
+    repo_dir=None,
 ) -> GateResult:
     """Evaluate a governed gate (plan-stage or pre-merge).
 
@@ -227,13 +228,16 @@ def governed_planning_gate(
             (
                 f"governed mode requires a reviewer disjoint from author vendor(s) "
                 f"{sorted(authors)} but none is available ({degraded_reason}); "
-                f"holding (non-human). Multi-vendor phases (authored/repaired across "
-                f"more than one vendor) need the claude panel leg, which is currently "
-                f"deferred — see CHANGELOG (governed-mode limitation)."
+                f"holding (non-human). Authenticate or install at least one available "
+                f"non-author panel leg; the Claude TUI leg can satisfy this when its "
+                f"local Claude Code subscription route is available."
             ),
         )
 
-    panel = invoke(artifact, pool, spawn=spawn)
+    invoke_kwargs = {"spawn": spawn}
+    if repo_dir is not None:
+        invoke_kwargs["repo_dir"] = repo_dir
+    panel = invoke(artifact, pool, **invoke_kwargs)
     findings = _findings_from_panel(panel)
     if not panel.usable_legs:
         # Pool existed but no leg produced a usable, conforming review → the review

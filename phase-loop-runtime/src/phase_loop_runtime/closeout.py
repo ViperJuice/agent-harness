@@ -100,6 +100,7 @@ def build_phase_loop_closeout(
     spec_delta_closeout: Mapping[str, Any] | SpecDeltaCloseout | None = None,
     run_mode: str = "autonomous",
     docs_freshness: Mapping[str, Any] | None = None,
+    consiliency_gates: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
@@ -137,6 +138,23 @@ def build_phase_loop_closeout(
         normalized_automation = docs_freshness_result["automation"]
         blocker_data = docs_freshness_result["blocker"]
         verification_results = list(verification_results) + docs_freshness_result["results"]
+
+    # CS-0.6 L0 `.consiliency/` gates (presence, local-integrity, layout-validity,
+    # version-skew). SOFT by construction: only ``PHASE_LOOP_CONSILIENCY_GATES=hard``
+    # (opt-in) turns a finding into a block, and it never sets human_required.
+    # A repo with no `.consiliency/manifest` (no consent) or no pre-scan threaded
+    # in is inert (`status: "skipped"`).
+    consiliency_gates_result = _apply_consiliency_gates_gate(
+        consiliency_gates=consiliency_gates,
+        terminal=terminal,
+        automation=normalized_automation,
+        blocker=blocker_data,
+    )
+    if consiliency_gates_result:
+        terminal = consiliency_gates_result["terminal"]
+        normalized_automation = consiliency_gates_result["automation"]
+        blocker_data = consiliency_gates_result["blocker"]
+        verification_results = list(verification_results) + consiliency_gates_result["results"]
 
     # Pluggable review gates (rigor-v1 P1). With zero validators registered this
     # is a no-op; gates default to `warn` (record + continue) and never set
@@ -267,6 +285,13 @@ def build_phase_loop_closeout(
         status = str(dict(docs_freshness).get("status") or "skipped")
         payload["docs_freshness"] = status
         payload["docs_freshness_detail"] = dict(docs_freshness)
+
+    # CS-0.6: surface the `.consiliency/` gate scan the same way, so a closeout
+    # record shows adoption posture (or its absence) without re-scanning.
+    if consiliency_gates is not None:
+        status = str(dict(consiliency_gates).get("status") or "skipped")
+        payload["consiliency_gates"] = status
+        payload["consiliency_gates_detail"] = dict(consiliency_gates)
 
     if source_bundle is not None:
         payload["source_bundle"]["artifact_target_root"] = source_bundle.artifact_target_root
@@ -446,6 +471,67 @@ def _apply_docs_freshness_gate(
         {
             "human_required": False,
             "blocker_class": "docs_freshness_stale",
+            "blocker_summary": summary,
+            "required_human_inputs": (),
+        }
+    )
+    return {
+        "terminal": updated_terminal,
+        "automation": updated_automation,
+        "blocker": updated_blocker,
+        "results": [record],
+    }
+
+
+def _apply_consiliency_gates_gate(
+    *,
+    consiliency_gates: Mapping[str, Any] | None,
+    terminal: dict[str, Any],
+    automation: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fold a runner-side CS-0.6 `.consiliency/` gate pre-scan into the closeout.
+
+    Modeled on :func:`_apply_docs_freshness_gate`, but soft by default: only a
+    ``blocked`` result -- which the scan itself only ever emits under the
+    opt-in ``PHASE_LOOP_CONSILIENCY_GATES=hard`` -- turns the closeout into a
+    non-human ``blocked`` outcome. ``skipped``/``passed``/``warn`` are recorded
+    as evidence but never change the outcome. Returns ``None`` when there is
+    nothing to record (no pre-scan threaded in).
+    """
+    if not consiliency_gates:
+        return None
+    result = dict(consiliency_gates)
+    status = str(result.get("status") or "skipped")
+    updated_terminal = dict(terminal)
+    updated_automation = dict(automation)
+    updated_blocker = dict(blocker)
+    record = {"kind": "consiliency_gates", **result}
+    if status != "blocked":
+        return {
+            "terminal": updated_terminal,
+            "automation": updated_automation,
+            "blocker": updated_blocker,
+            "results": [record],
+        }
+    blocking_gates = sorted(
+        name for name, gate in dict(result.get("gates") or {}).items() if isinstance(gate, Mapping) and gate.get("status") == "blocked"
+    )
+    summary = (
+        "Consiliency L0 gate(s) blocked under opt-in PHASE_LOOP_CONSILIENCY_GATES=hard: "
+        f"({', '.join(blocking_gates) if blocking_gates else 'see consiliency_gates_detail'})"
+    )
+    updated_terminal["terminal_status"] = "blocked"
+    updated_terminal["verification_status"] = "blocked"
+    updated_automation["status"] = "blocked"
+    updated_automation["verification_status"] = "blocked"
+    updated_automation["blocker_class"] = "consiliency_gate_blocked"
+    updated_automation["blocker_summary"] = summary
+    updated_automation["human_required"] = False
+    updated_blocker.update(
+        {
+            "human_required": False,
+            "blocker_class": "consiliency_gate_blocked",
             "blocker_summary": summary,
             "required_human_inputs": (),
         }

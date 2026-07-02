@@ -158,7 +158,7 @@ class ClaudeAgentViewAdapter:
 
     def launch_command(
         self,
-        prompt: str,
+        prompt: str | None,
         *,
         cwd: str | Path | None = None,
         model: str | None = None,
@@ -169,8 +169,13 @@ class ClaudeAgentViewAdapter:
         settings: str | Path | None = None,
         mcp_config: str | Path | None = None,
         add_dirs: list[str | Path] | None = None,
+        safe_mode: bool = False,
+        strict_mcp_config: bool = False,
+        tools: str | list[str] | None = None,
     ) -> list[str]:
         command = [self.claude_bin, "--bg"]
+        if safe_mode:
+            command.append("--safe-mode")
         if name:
             command.extend(["--name", name])
         if cwd is not None:
@@ -185,11 +190,20 @@ class ClaudeAgentViewAdapter:
             command.extend(["--plugin-dir", str(plugin_dir)])
         if settings is not None:
             command.extend(["--settings", str(settings)])
+        if strict_mcp_config:
+            command.append("--strict-mcp-config")
         if mcp_config is not None:
             command.extend(["--mcp-config", str(mcp_config)])
         for add_dir in add_dirs or []:
             command.extend(["--add-dir", str(add_dir)])
-        command.append(prompt)
+        if tools is not None:
+            command.append("--tools")
+            if isinstance(tools, str):
+                command.append(tools)
+            else:
+                command.extend(tools)
+        if prompt is not None:
+            command.append(prompt)
         return command
 
     def logs_command(self, agent_id: str) -> list[str]:

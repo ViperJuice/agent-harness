@@ -120,6 +120,7 @@ def run_governed_premerge_loop(
     available_legs: Sequence[str] | None = None,
     invoke: Callable[..., GateResult] = governed_planning_gate,
     spawn=None,
+    repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
 ) -> LoopResult:
     """Bounded governed pre-merge review loop.
@@ -147,14 +148,17 @@ def run_governed_premerge_loop(
     rnd = 0
     last_reason: str | None = None
     for rnd in range(1, max_rounds + 1):
-        gate = invoke(
-            artifact=current,
-            author_executor=author_executor,
-            author_vendors=author_vendors,
-            run_mode="governed",
-            available_legs=available_legs,
-            spawn=spawn,
-        )
+        invoke_kwargs = {
+            "artifact": current,
+            "author_executor": author_executor,
+            "author_vendors": author_vendors,
+            "run_mode": "governed",
+            "available_legs": available_legs,
+            "spawn": spawn,
+        }
+        if repo_dir is not None:
+            invoke_kwargs["repo_dir"] = repo_dir
+        gate = invoke(**invoke_kwargs)
         collected.extend(gate.findings)
         last_reason = gate.reason
 

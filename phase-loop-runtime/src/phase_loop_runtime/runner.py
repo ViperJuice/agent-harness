@@ -56,6 +56,7 @@ from .capability_registry import default_executor_for_work_unit, describe_dispat
 from .classifier import classify_all
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
+from .consiliency_gates import scan_consiliency_gates
 from .docs_freshness import scan_docs_freshness
 from .closeout_validation import validate_produced_gates
 from .discovery import (
@@ -1077,7 +1078,7 @@ def _governed_not_live_warning(run_mode: str) -> str | None:
             "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
             "LIVE and FAIL-CLOSED. The pre-merge gate reviews the exact staged index "
             "(git diff --cached) inside the closeout, before the commit, via the real "
-            "subscription panel (codex+gemini; claude leg deferred). A block, an "
+            "subscription panel (codex+gemini+Claude TUI when available). A block, an "
             "unparseable verdict, or no disjoint reviewer HOLDS the merge as a non-human "
             "review_gate_block. Caveat: a held phase is not auto-repaired (the "
             "findings-driven re-dispatch is the remaining thread). Track model-routing-v2."
@@ -1147,6 +1148,22 @@ def run_loop(
     if _governed_warning:
         # Fail loud, not silent (see docs/research/model-routing-v2-integration.md).
         print(_governed_warning, file=sys.stderr)
+    # CS-0.6 top-of-loop advisory: a one-shot, non-blocking notice mirroring
+    # `_governed_warning` above. A pure pre-scan (see consiliency_gates); a repo
+    # with no `.consiliency/manifest` (no consent) is silent. try/except-guarded
+    # so a bug here can never take down run_loop -- worst case it degrades to
+    # silent, never raises.
+    try:
+        _top_of_loop_consiliency_gates = scan_consiliency_gates(repo)
+    except Exception:
+        _top_of_loop_consiliency_gates = None
+    if _top_of_loop_consiliency_gates and _top_of_loop_consiliency_gates.get("status") in {"warn", "blocked"}:
+        print(
+            "phase-loop: .consiliency L0 gate findings "
+            f"(status={_top_of_loop_consiliency_gates.get('status')}; non-blocking by default; "
+            "set PHASE_LOOP_CONSILIENCY_GATES=off to silence)",
+            file=sys.stderr,
+        )
     # Baseline ledger length so the run-end review-findings summary reports only
     # events appended during THIS invocation, not the whole persisted ledger
     # across bounded `--max-phases` batches.
@@ -6351,6 +6368,7 @@ def _attach_phase_loop_closeout(
         return terminal_summary
     bundle = None if pipeline_diagnostic is not None else load_execution_phase_source_bundle(repo, plan, phase=phase, roadmap=roadmap)
     docs_freshness = scan_docs_freshness(repo, plan_path=plan, changed_paths=changed_paths)
+    consiliency_gates = scan_consiliency_gates(repo)
     closeout = build_phase_loop_closeout(
         phase_alias=phase,
         plan_path=plan,
@@ -6366,6 +6384,7 @@ def _attach_phase_loop_closeout(
         evidence_refs=terminal_summary.get("evidence_refs") if isinstance(terminal_summary.get("evidence_refs"), list) else (),
         work_unit_closeout=work_unit_closeout,
         docs_freshness=docs_freshness,
+        consiliency_gates=consiliency_gates,
     )
     if phase_loop_closeout_diagnostic(closeout) is not None:
         return terminal_summary
@@ -7317,13 +7336,24 @@ def _closeout_lane_ir_blocker(repo: Path, roadmap: Path, phase: str) -> dict[str
     remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
     if not remaining:
         return None
-    detail = ", ".join(f"{d.kind}@{d.lane_id or 'plan'}" for d in remaining)
+    # #52: name each concrete diagnostic (kind@lane + message) and the plan file.
+    # The tripping diagnostic is not always ownership (e.g. missing_producer_dependency,
+    # malformed_dependencies), so avoid the misleading "lane ownership" wording.
+    try:
+        plan_rel: object = plan.relative_to(repo)
+    except ValueError:
+        plan_rel = plan
+    detail = "; ".join(
+        f"{d.kind}@{d.lane_id or 'plan'}"
+        + (f" ({d.message})" if getattr(d, "message", None) else "")
+        for d in remaining
+    )
     return {
         "human_required": False,
         "blocker_class": "contract_bug",
         "blocker_summary": (
-            f"Lane IR diagnostics failed closed for {phase} closeout: {detail}. "
-            "Fix the plan's lane ownership before rerunning closeout."
+            f"Lane IR diagnostics failed closed for phase '{phase}' closeout ({plan_rel}): "
+            f"{detail}. Fix the named lane(s) in the phase plan, then re-run closeout."
         ),
         "required_human_inputs": (),
         "access_attempts": (),
@@ -8008,6 +8038,7 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
         author_vendors=_phase_author_vendors(repo, alias),
         run_mode="governed",
         available_legs=available_panel_legs(),
+        repo_dir=repo,
     )
     if result.promoted:
         return None
@@ -8068,6 +8099,7 @@ def _governed_premerge_review(
         run_mode="governed",
         apply_fix=None,  # review+block; the executor-driven re-dispatch is a documented thread
         available_legs=available_panel_legs(),
+        repo_dir=repo,
     )
     if result.mergeable:
         return None
@@ -8101,6 +8133,7 @@ def governed_premerge_for_run(
     apply_fix=None,
     available_legs=None,
     invoke=None,
+    repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
 ):
     """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
@@ -8120,6 +8153,7 @@ def governed_premerge_for_run(
         author_vendors=author_vendors,
         apply_fix=apply_fix,
         available_legs=available_legs,
+        repo_dir=repo_dir,
         max_rounds=max_rounds,
     )
     if invoke is not None:
@@ -8265,6 +8299,7 @@ def _write_deterministic_closeout(
         )
 
     docs_freshness = scan_docs_freshness(repo, plan_path=plan, changed_paths=changed_paths)
+    consiliency_gates = scan_consiliency_gates(repo)
     closeout = build_phase_loop_closeout(
         phase_alias=phase or "UNKNOWN",
         plan_path=plan or "",
@@ -8275,6 +8310,7 @@ def _write_deterministic_closeout(
         blocker=blocker or {},
         changed_paths=changed_paths,
         docs_freshness=docs_freshness,
+        consiliency_gates=consiliency_gates,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")

@@ -21,6 +21,7 @@ Gemini CLI, and OpenCode. Pi Agent role-style skills and governed-pipeline
 
 | Workflow | Codex | Claude Code | Gemini CLI | OpenCode |
 | --- | --- | --- | --- | --- |
+| advisor-panel | `codex-advisor-panel` | `claude-advisor-panel` | `gemini-advisor-panel` | `opencode-advisor-panel` |
 | phase-roadmap-builder | `codex-phase-roadmap-builder` | `claude-phase-roadmap-builder` | `gemini-phase-roadmap-builder` | `opencode-phase-roadmap-builder` |
 | plan-phase | `codex-plan-phase` | `claude-plan-phase` | `gemini-plan-phase` | `opencode-plan-phase` |
 | execute-phase | `codex-execute-phase` | `claude-execute-phase` | `gemini-execute-phase` | `opencode-execute-phase` |

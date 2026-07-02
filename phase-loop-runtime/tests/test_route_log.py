@@ -12,7 +12,7 @@ from phase_loop_test_utils import make_repo, write_named_roadmap
 
 
 def _sel(**kw):
-    base = dict(profile="execute", model="claude-sonnet-4-6", effort="medium",
+    base = dict(profile="execute", model="claude-sonnet-5", effort="medium",
                 source="model_policy", override_reason="shipped model_policy", model_class="implementer")
     base.update(kw)
     return ModelSelection(**base)
@@ -22,7 +22,7 @@ class RouteLogTest(unittest.TestCase):
     def test_build_route_log_fields(self):
         log = build_route_log(_sel())
         self.assertEqual(log["model_class"], "implementer")
-        self.assertEqual(log["concrete_model"], "claude-sonnet-4-6")
+        self.assertEqual(log["concrete_model"], "claude-sonnet-5")
         self.assertEqual(log["effort"], "medium")
         self.assertEqual(log["route_reason"], "shipped model_policy")
 
@@ -62,7 +62,7 @@ class RouteLogTest(unittest.TestCase):
             )
             route = read_events(repo)[-1]["metadata"]["route"]
             self.assertEqual(route["model_class"], "implementer")
-            self.assertEqual(route["concrete_model"], "claude-sonnet-4-6")
+            self.assertEqual(route["concrete_model"], "claude-sonnet-5")
             self.assertEqual(route["effort"], "medium")
 
 

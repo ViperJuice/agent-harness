@@ -27,9 +27,12 @@ build-relevant inputs — `SKILL.md` plus the harness-agnostic aux subdirs
 never reads them.
 
 The scoped skill set is exactly the phase-loop workflow pack
-(`REQUIRED_SKILLS`): `plan-phase`, `execute-phase`, `phase-roadmap-builder`,
-`phase-loop`, `plan-detailed`, `execute-detailed`, `skill-editor`,
-`skill-improvement-planner`, `task-contextualizer`.
+(`REQUIRED_SKILLS`): `advisor-panel`, `plan-phase`, `execute-phase`,
+`phase-roadmap-builder`, `phase-loop`, `plan-detailed`, `execute-detailed`,
+`skill-editor`, `skill-improvement-planner`, `task-contextualizer`.
+The `advisor-panel` skill is source-first in this repository and stays thin over
+`phase_loop_runtime.panel_invoker`; dotfiles may install or expose it during
+cutover, but dotfiles does not own a divergent advisor-panel implementation.
 
 ## The bundle pipeline
 

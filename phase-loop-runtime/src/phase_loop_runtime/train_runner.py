@@ -274,6 +274,13 @@ def _live_merge_pr(workspace: Path, branch: str) -> str:
     return sha
 
 
+def _train_reverify_enforcement_mode() -> str:
+    import os
+
+    value = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
+    return "hard" if value == "hard" else "warn"
+
+
 def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
     """Re-verify a downstream node against the injected upstream merged pin.
 
@@ -344,8 +351,7 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
         #    - Under warn (the default), treat as a trivial pass (the plan author
         #      deliberately chose not to add verification).
         if not commands and suite_command is None:
-            enforce = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
-            return enforce != "hard"
+            return _train_reverify_enforcement_mode() != "hard"
 
         # 5. Run verification against the workspace.  set_upstream_ref has
         #    already written the merged-pin file, so commands that read the
@@ -725,8 +731,15 @@ def run_train(
             upstream_edges = roadmap.edges_for_downstream(node)
             changed_upstreams = [
                 edge for edge in upstream_edges
-                if edge.upstream.node_id in rebuilt_this_run
-                or edge.upstream.node_id in out_of_band_upstreams
+                # #47: an order-only edge injects nothing — the downstream never
+                # consumed the upstream, so an upstream change does NOT make the
+                # downstream stale. Exclude order-only edges from stale-detection
+                # to avoid a spurious 'upstream_changed_downstream_pr_open' block.
+                if edge.channel.kind != "order-only"
+                and (
+                    edge.upstream.node_id in rebuilt_this_run
+                    or edge.upstream.node_id in out_of_band_upstreams
+                )
             ]
             if not changed_upstreams:
                 continue
@@ -781,6 +794,12 @@ def run_train(
             # make the "no silent skip" contract explicit and catch future refactors.
             injected_channel_paths: List[str] = []
             for edge in upstream_edges:
+                if edge.channel.kind == "order-only":
+                    # #47: an order-only edge enforces merge ORDER (via the topo
+                    # sort + sequential per-node execution) but carries no physical
+                    # channel — the downstream does not consume the upstream, so
+                    # there is nothing to inject. Skip; do not resolve a ref.
+                    continue
                 upstream_result = completed_nodes.get(edge.upstream.node_id)
                 if upstream_result is None:
                     # Defensive: topo-order + T-B validation make this
@@ -1063,6 +1082,11 @@ def run_train(
             # merge call below (forward-only: already-merged upstreams stay merged).
             try:
                 for _edge_m in _upstream_edges_m:
+                    if _edge_m.channel.kind == "order-only":
+                        # #47: order-only edges carry no channel — the merged
+                        # upstream is not injected/re-resolved. Merge order is
+                        # already enforced by the sequential topo-order merge loop.
+                        continue
                     _upstream_merged_sha = merged_shas.get(_edge_m.upstream.node_id)
                     if _upstream_merged_sha is None:
                         # Defensive: topo-order ensures upstream is processed first.

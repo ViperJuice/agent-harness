@@ -1,0 +1,478 @@
+{
+  "plans": [
+    {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-06-30T20:35:00Z",
+      "file": "plans/detailed-fix-issue-33-background-subprocess-liveness-20260630-2035.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260630-2035-open-issues-planning.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T20:35:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260630-2035-open-issues-planning.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_file": "plans/detailed-fix-issue-33-background-subprocess-liveness-20260630-2035.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "full_runtime_suite": "PYTHONPATH=src python -m pytest -q",
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_launcher_liveness.py tests/test_observability_alerting.py -q"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-issue-33-background-subprocess-liveness-20260630-2035",
+      "status": "completed",
+      "task_summary": "Detailed implementation plan for issue #33 background subprocess liveness, CPU-aware stall detection, and salvage evidence.",
+      "type": "detailed",
+      "updated_at": "2026-06-30T21:06:48Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-06-30T20:35:00Z",
+      "file": "plans/detailed-fix-issue-39-live-reverify-hard-mode-20260630-2035.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260630-2035-open-issues-planning.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T20:35:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260630-2035-open-issues-planning.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_file": "plans/detailed-fix-issue-39-live-reverify-hard-mode-20260630-2035.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "full_runtime_suite": "PYTHONPATH=src python -m pytest -q",
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_train_invariants.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_train_merge.py tests/test_train_runner.py -q"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-issue-39-live-reverify-hard-mode-20260630-2035",
+      "status": "completed",
+      "task_summary": "Detailed implementation plan for issue #39 train live reverify hard-mode fail-closed behavior.",
+      "type": "detailed",
+      "updated_at": "2026-06-30T21:06:48Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-06-30T21:35:00Z",
+      "file": "plans/phase-plan-v4-PNLFEED.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-execute-phase/20260630-2135-PNLFEED.md",
+      "if_gates_produced": [
+        "IF-0-PNLFEED-3"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T21:35:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T21:43:24Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLFEED",
+            "plan_file": "plans/phase-plan-v4-PNLFEED.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T21:43:24Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "full_runtime_suite": "PYTHONPATH=src python -m pytest -q",
+            "if_gates_produced": [
+              "IF-0-PNLFEED-3"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker_spawn.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py tests/test_governed_review.py tests/test_governed_e2e.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLFEED",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "v4-PNLFEED",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-06-30T21:43:24Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-06-30T20:35:00Z",
+      "file": "plans/phase-plan-v4-PNLFOUND.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-phase-roadmap-builder/20260630-2035-open-issues-planning.md",
+      "if_gates_produced": [
+        "IF-0-PNLFOUND-1",
+        "IF-0-PNLFOUND-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T20:35:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLFOUND",
+            "plan_file": "plans/phase-plan-v4-PNLFOUND.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T21:06:48Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "full_runtime_suite": "PYTHONPATH=src python -m pytest -q",
+            "if_gates_produced": [
+              "IF-0-PNLFOUND-1",
+              "IF-0-PNLFOUND-2"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_model_class_policy.py tests/test_governed_premerge.py tests/test_route_log.py tests/test_skills_canon_parity.py tests/test_phase_loop_launcher.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLFOUND",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "v4-PNLFOUND",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-06-30T21:06:48Z"
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-06-30T22:00:00Z",
+      "file": "plans/phase-plan-v4-PNLCLAUDE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2200-PNLCLAUDE.md",
+      "if_gates_produced": [
+        "IF-0-PNLCLAUDE-1",
+        "IF-0-PNLCLAUDE-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T22:00:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T22:18:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLCLAUDE",
+            "plan_file": "plans/phase-plan-v4-PNLCLAUDE.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T22:18:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "if_gates_produced": [
+              "IF-0-PNLCLAUDE-1",
+              "IF-0-PNLCLAUDE-2"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker_spawn.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py tests/test_governed_review.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
+              "python -m json.tool plans/manifest.json",
+              "git diff --check"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLCLAUDE",
+      "reflection_ref": null,
+      "roadmap_ref": "specs/phase-plans-v4.md",
+      "slug": "v4-PNLCLAUDE",
+      "status": "completed",
+      "task_summary": "Phase plan for repo-grounded Claude TUI advisor-panel leg.",
+      "type": "phase",
+      "updated_at": "2026-06-30T22:18:00Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-06-30T22:20:00Z",
+      "file": "plans/phase-plan-v4-PNLSKILL.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2220-PNLSKILL.md",
+      "if_gates_produced": [
+        "IF-0-PNLSKILL-4"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T22:20:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T22:36:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLSKILL",
+            "plan_file": "plans/phase-plan-v4-PNLSKILL.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T22:36:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "if_gates_produced": [
+              "IF-0-PNLSKILL-4"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_skills_canon_parity.py tests/test_skills_bundle_drift.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_skills_canon_parity.py tests/test_skills_bundle_drift.py tests/test_phase_loop_runtime_boundary.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
+              "python -m json.tool plans/manifest.json",
+              "git diff --check"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLSKILL",
+      "reflection_ref": null,
+      "roadmap_ref": "specs/phase-plans-v4.md",
+      "slug": "v4-PNLSKILL",
+      "status": "completed",
+      "task_summary": "Phase plan for canonical advisor-panel skill source and generated bundle packaging.",
+      "type": "phase",
+      "updated_at": "2026-06-30T22:36:00Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-06-30T22:40:00Z",
+      "file": "plans/phase-plan-v4-PNLREDACT.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2240-PNLREDACT.md",
+      "if_gates_produced": [
+        "IF-0-PNLREDACT-5"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T22:40:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md",
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T23:02:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLREDACT",
+            "plan_file": "plans/phase-plan-v4-PNLREDACT.md",
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T23:02:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "dotfiles_dirty_paths": [
+              "README.md",
+              "bootstrap.sh",
+              "docs/phase-loop/advisor-panel-cutover.md",
+              "docs/phase-loop/harness-skill-matrix.md",
+              "docs/phase-loop/harness-substrate-manifest.md",
+              "shared/skills/advisor-panel/SKILL.md",
+              "shared/skills/advisor-panel/references/capability-matrix.md",
+              "shared/skills/advisor-panel/scripts/run_claude_leg.sh",
+              "shared/skills/advisor-panel/scripts/run_cli_panels.sh"
+            ],
+            "if_gates_produced": [
+              "IF-0-PNLREDACT-5"
+            ],
+            "verification_commands": [
+              "bash -n bootstrap.sh",
+              "test ! -e shared/skills/advisor-panel/scripts/run_cli_panels.sh && test ! -e shared/skills/advisor-panel/scripts/run_claude_leg.sh && test ! -e shared/skills/advisor-panel/references/capability-matrix.md",
+              "if rg -n \"run_cli_panels|run_claude_leg\" shared/skills/advisor-panel; then exit 1; else echo advisor-panel-shim-has-no-standalone-script-refs; fi",
+              "PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests/test_panel_invoker_spawn.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
+              "git diff --check"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLREDACT",
+      "reflection_ref": null,
+      "roadmap_ref": "specs/phase-plans-v4.md",
+      "slug": "v4-PNLREDACT",
+      "status": "completed",
+      "task_summary": "Phase plan for dotfiles advisor-panel redaction and fleet cutover evidence.",
+      "type": "phase",
+      "updated_at": "2026-06-30T23:02:00Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-06-30T23:05:00Z",
+      "file": "plans/phase-plan-v4-PNLVERIFY.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2305-PNLVERIFY.md",
+      "if_gates_produced": [
+        "IF-0-PNLVERIFY-6"
+      ],
+      "lanes": [
+        "SL-0"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T23:05:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md",
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T23:28:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLVERIFY",
+            "plan_file": "plans/phase-plan-v4-PNLVERIFY.md",
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T23:28:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "evidence_doc": "docs/research/advisor-panel-roadmap-v4-verification.md",
+            "if_gates_produced": [
+              "IF-0-PNLVERIFY-6"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py tests/test_governed_review.py tests/test_skills_canon_parity.py tests/test_skills_bundle_drift.py tests/test_model_class_policy.py tests/test_route_log.py tests/test_phase_loop_launcher.py -q",
+              "PYTHONPATH=src python -m pytest -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
+              "python -m json.tool plans/manifest.json",
+              "git diff --check",
+              "bash -n bootstrap.sh && git diff --check && redaction checks in dotfiles worktree"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLVERIFY",
+      "reflection_ref": null,
+      "roadmap_ref": "specs/phase-plans-v4.md",
+      "slug": "v4-PNLVERIFY",
+      "status": "completed",
+      "task_summary": "Final advisor-panel roadmap verification matrix and release-closeout evidence.",
+      "type": "phase",
+      "updated_at": "2026-06-30T23:28:00Z"
+    }
+  ],
+  "schema_version": 1
+}

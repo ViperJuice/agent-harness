@@ -259,17 +259,22 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
                 f"'{edge.upstream.node_id}' which is not a declared node"
             )
 
-    # (T-C) Every edge must carry a non-none channel
+    # (T-C) Every dependency edge must declare a channel — a bare `(none)` is
+    # ambiguous (forgotten channel?). #47: an intentional ORDER-ONLY dependency
+    # (B must merge after A but does not consume A's artifact) is declared
+    # explicitly with `Channel: order-only`, which is NOT `none` and passes here.
     for edge in roadmap.edges:
         if edge.channel.kind == "none":
             errors.append(
                 f"(T-C) edge '{edge.downstream.node_id}' → '{edge.upstream.node_id}' "
-                f"has no consumption-channel descriptor; a channel (pin/submodule/workspace) "
-                f"is required for every cross-repo dependency"
+                f"has no consumption-channel descriptor; declare a channel "
+                f"(pin/submodule) if the downstream consumes the upstream, or "
+                f"'order-only' for a merge-order-only (freeze) dependency"
             )
 
-    # (T-E) Only supported channel kinds: pin (with file=) or submodule
-    _SUPPORTED_KINDS = frozenset({"pin", "submodule"})
+    # (T-E) Supported channel kinds: pin (with file=), submodule, or order-only
+    # (order-only carries no injection — it enforces merge order only, #47).
+    _SUPPORTED_KINDS = frozenset({"pin", "submodule", "order-only"})
     for edge in roadmap.edges:
         kind = edge.channel.kind
         if kind == "none":
@@ -277,8 +282,8 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
         if kind not in _SUPPORTED_KINDS:
             errors.append(
                 f"(T-E) edge '{edge.downstream.node_id}' → '{edge.upstream.node_id}' "
-                f"uses unsupported channel kind '{kind}'; only 'pin' (with file=) and "
-                f"'submodule' are supported for real consumption. "
+                f"uses unsupported channel kind '{kind}'; only 'pin' (with file=), "
+                f"'submodule', and 'order-only' are supported. "
                 f"'workspace' channels are rejected at preflight to prevent hollow injection."
             )
 

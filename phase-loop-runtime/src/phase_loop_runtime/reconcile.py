@@ -469,6 +469,16 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     )
 
 
+def _manifest_file_phase_key(entry) -> tuple[str, str]:
+    """#46: dedup identity for a manifest plan entry — normalized file path +
+    upper-cased phase alias. Matches entries pointing at the same phase plan
+    file/phase regardless of their (planner vs synthetic-import) slug, so
+    reconcile does not re-add a duplicate imported row."""
+    file_norm = str(getattr(entry, "file", "") or "").replace("\\", "/").strip().lower()
+    phase_norm = str(getattr(entry, "phase_alias", "") or "").strip().upper()
+    return (file_norm, phase_norm)
+
+
 def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) -> list[dict]:
     from .discovery import _phase_manifest_disabled
 
@@ -486,6 +496,13 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
     except Exception as exc:
         return [_ledger_warning("manifest", "", "unknown", "manifest_read_failed", value=str(exc))]
     known_slugs = {entry.slug for entry in manifest.plans}
+    # #46: also key by (normalized file, phase_alias) so an auto-import whose
+    # SYNTHETIC slug differs from a committed planner entry (e.g. import slug
+    # "v1-CORE" vs planner slug "phase-plan-v1-CORE") is not appended as a
+    # duplicate when the same phase-plan file + phase alias is already present.
+    # Dedup-by-slug-alone re-added a duplicate `imported` row (and, with it, a
+    # punctuation-variant IF gate that the planner entry never contained).
+    known_file_phase = {_manifest_file_phase_key(entry) for entry in manifest.plans}
     for entry in manifest.plans:
         if entry.type != "phase" or entry.status in {"orphaned", "completed", "failed"}:
             continue
@@ -509,11 +526,16 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
     for entry in imported.plans:
         if entry.slug in known_slugs:
             continue
+        if _manifest_file_phase_key(entry) in known_file_phase:
+            # #46: same phase-plan file + phase alias already represented by a
+            # committed entry — do not append a second `imported` row.
+            continue
         if entry.phase_alias and entry.phase_alias.upper() not in phases:
             continue
         try:
             append_entry(repo, entry)
             known_slugs.add(entry.slug)
+            known_file_phase.add(_manifest_file_phase_key(entry))
         except Exception as exc:
             warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), "imported", "manifest_auto_import_failed", value=str(exc)))
         else:
@@ -648,10 +670,26 @@ def _plan_blocker(repo: Path, roadmap: Path, phase: str) -> dict:
         remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
         if not remaining:
             return {}
+        # #52: name the concrete failing diagnostic(s) and the plan file so the
+        # repo-local repair can fix the plan instead of guessing. Previously the
+        # summary was a generic "failed closed" string with no lane/kind/location,
+        # forcing the operator to guess which lane tripped which contract rule.
+        try:
+            plan_rel: object = plan.relative_to(repo)
+        except ValueError:
+            plan_rel = plan
+        detail = "; ".join(
+            f"{d.kind}@{d.lane_id or 'plan'}"
+            + (f" ({d.message})" if getattr(d, "message", None) else "")
+            for d in remaining
+        )
         return {
             "human_required": False,
             "blocker_class": "contract_bug",
-            "blocker_summary": "Lane IR diagnostics failed closed for the current phase plan.",
+            "blocker_summary": (
+                f"Lane IR diagnostics failed closed for phase '{phase}' ({plan_rel}): "
+                f"{detail}. Fix the named lane(s) in the phase plan, then re-run."
+            ),
             "required_human_inputs": (),
             "lane_ir_diagnostics": tuple(diagnostic.to_json() for diagnostic in remaining),
         }

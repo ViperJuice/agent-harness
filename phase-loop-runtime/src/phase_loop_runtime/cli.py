@@ -12,6 +12,9 @@ from pathlib import Path
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
 from .closeout import build_phase_loop_closeout
+from .consiliency_ingest import ingest
+from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
+from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
@@ -50,7 +53,7 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     Factored out of build_parser() so the dotfiles-profile plugin (DECOUPLE SL-1)
     can attach the identical common args to the commands it registers.
     """
-    if name == "closeout-drift-audit":
+    if name in {"closeout-drift-audit", "fleet-map"}:
         sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
     else:
         sub.add_argument("--repo")
@@ -253,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -319,6 +322,34 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
             sub.add_argument("--decisions", help="Path to the repo-visible doc-decisions artifact (default: .doc-decisions.json).")
+        if name == "worktree-index":
+            sub.description = (
+                "Read-only, git-derived freshness pointer: which active worktree (or origin/main) "
+                "holds the freshest copy of a path, and whether origin/main is behind on it. "
+                "Never writes repo state."
+            )
+            sub.add_argument("--path", help="Report freshness holders for a single repo-relative path. Omit to report every path touched by an active worktree.")
+            sub.add_argument("--base", help="Diff base ref (default: origin/<default-branch>, falling back to origin/main).")
+        if name == "consiliency-lease":
+            sub.description = (
+                "CS-0.10c: local-file LeaseStore -- soft, TTL+heartbeat path-set leases so parallel "
+                "local agents don't collide. SOFT MODE ONLY (hard degrades to soft: no cross-machine "
+                "atomic acquire locally). Give-way = reroute: a conflicting acquire never blocks, it "
+                "returns the blocking lease so the caller can go work something else. The current-lease "
+                "view is a projection of the append-only .consiliency/leases/events.jsonl log only."
+            )
+            sub.add_argument("action", choices=("acquire", "renew", "release", "query"), help="The LeaseStore operation to perform.")
+            sub.add_argument("--lease-id", help="Required for acquire/renew/release.")
+            sub.add_argument("--holder", help="Required for acquire/renew/release.")
+            sub.add_argument("--ttl-seconds", type=int, default=300, help="acquire only. Default 300.")
+            sub.add_argument("--mode", choices=("soft", "hard"), default="soft", help="acquire only. Always degrades to soft on this backend.")
+            sub.add_argument(
+                "--granularity", choices=("repo", "path-set", "symbol"), default="path-set", help="acquire/query scope granularity."
+            )
+            sub.add_argument("--scope", action="append", default=[], help="acquire/query. Repeatable path-set/symbol selector entry.")
+            sub.add_argument("--lease-phase", default="", help="acquire only. The declaring phase/step label. (--phase is the roadmap-phase common arg.)")
+            sub.add_argument("--path", help="query only. Shorthand for --granularity path-set --scope <path>.")
+            sub.add_argument("--now", help="Override the current time (ISO 8601 UTC, e.g. 2026-01-01T00:00:00Z) for deterministic testing.")
         if name == "install":
             sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
             sub.add_argument("--harness", choices=("codex", "claude", "gemini", "opencode"))
@@ -341,6 +372,69 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--backup-suffix", default=".bak-before-def4-migrate")
         if name == "init":
             sub.add_argument("--install-hooks", action="store_true", help="Install opt-in local git hooks for this repo.")
+        if name == "consiliency-scaffold":
+            sub.description = (
+                "CS-0.5: first-writer scaffolder for a schema-valid `.consiliency/` layout "
+                "(manifest, contract-version status, interface declaration, and L0 presence-stub "
+                "docs for the declared archetype). Additive only: never touches `.phase-loop/` or "
+                "`.pipeline/`, and never overwrites a file that already exists."
+            )
+            sub.add_argument(
+                "--archetype",
+                action="append",
+                default=[],
+                choices=ARCHETYPE_IDS,
+                help="Repeatable. Declares an archetype (product/service/library/infra/tooling-meta/experiment/document).",
+            )
+            sub.add_argument(
+                "--modifier",
+                action="append",
+                default=[],
+                choices=MODIFIER_IDS,
+                help="Repeatable. Declares a modifier (data-bearing/public/regulated/user-facing).",
+            )
+            sub.add_argument(
+                "--baseline-only",
+                action="store_true",
+                help="Declare baseline-only mode (no archetype). Mutually exclusive with --archetype/--modifier.",
+            )
+            sub.add_argument("--repo-id", help="Override the manifest's repo.id (default: derived from the repo directory name).")
+            sub.add_argument("--display-name", help="Override the manifest's repo.display_name (default: the repo directory name).")
+        if name == "consiliency-ingest":
+            sub.description = (
+                "CS-0.11: brownfield ingestion for an existing repo. Shape-to-conform on the "
+                "first pass (delegates the base `.consiliency/` layout to consiliency-scaffold, "
+                "then adds a CS-0.12 adoption profile and a proposed governed-set allowlist) -- "
+                "verify-only on every subsequent pass (never rewrites; runs the CS-0.6 L0 gates "
+                "and labels declared documents governed/foreign/present-nonconforming). "
+                "A repo with no `.consiliency/manifest` is untouched unless --adopt is passed."
+            )
+            sub.add_argument(
+                "--adopt",
+                action="store_true",
+                help="Consent to shape an unmanaged repo (no-op without this flag when no manifest exists yet).",
+            )
+            sub.add_argument(
+                "--archetype",
+                action="append",
+                default=[],
+                choices=ARCHETYPE_IDS,
+                help="Repeatable. Declares an archetype for the shape pass (ignored on a verify pass).",
+            )
+            sub.add_argument(
+                "--modifier",
+                action="append",
+                default=[],
+                choices=MODIFIER_IDS,
+                help="Repeatable. Declares a modifier for the shape pass (ignored on a verify pass).",
+            )
+            sub.add_argument(
+                "--baseline-only",
+                action="store_true",
+                help="Declare baseline-only mode for the shape pass. Mutually exclusive with --archetype/--modifier.",
+            )
+            sub.add_argument("--repo-id", help="Override the manifest's repo.id (shape pass only).")
+            sub.add_argument("--display-name", help="Override the manifest's repo.display_name (shape pass only).")
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -437,6 +531,13 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
             sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
             sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
+        if name == "fleet-map":
+            sub.description = (
+                "CS-0.7: extract the realized cross-repo interface graph (git+ref pins, "
+                "copied-literal contract/schema drift, hard-coded host-path refs) across "
+                "--repo paths — NOT a package-lockfile scan. Also reports the lockfile-only "
+                "baseline (typically empty) alongside the realized edges for comparison."
+            )
         if name == "export-schema":
             sub.description = (
                 "Emit (or --check) the canonical phase-loop closeout schema derived from "
@@ -463,8 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
         "run-train",
         help=(
             "Run a cross-repo release train: topo-sort, preflight, per-node "
-            "draft-PR execution via the unchanged per-repo run_loop. "
-            "Stops at 'all draft PRs open + ledgered'; no merges (P4 scope)."
+            "draft-PR execution via the unchanged per-repo run_loop. Without "
+            "--governed, opens all draft PRs and stops. With --governed, holds "
+            "for a train-level review then merges sequentially, re-verifying "
+            "each downstream against the upstream merged SHA."
         ),
     )
     run_train_sub.add_argument(
@@ -526,6 +629,36 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="target",
         choices=repo_validation.ALL_TARGET_TOKENS,
         help="One of: fast, gate, full, fix, affected, doctor (check == doctor).",
+    )
+    # train-status: non-mutating inspection of the cross-repo train ledger (#45).
+    # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
+    train_status_sub = subparsers.add_parser(
+        "train-status",
+        help=(
+            "Inspect the cross-repo release-train ledger WITHOUT modifying state: "
+            "per-node status, branch, PR URL, merge order, and merged SHA."
+        ),
+    )
+    train_status_sub.add_argument(
+        "--train",
+        dest="train_file",
+        required=False,
+        metavar="FILE",
+        help="Path to the cross-repo release-train roadmap (same file as run-train).",
+    )
+    train_status_sub.add_argument(
+        "--ledger-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory of the coordinator-side train ledger. "
+            "Default: <train-file-parent>/.train-ledger/ (same as run-train)."
+        ),
+    )
+    train_status_sub.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the ledger state as JSON.",
     )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
@@ -606,6 +739,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
+    if command == "train-status":
+        return _run_train_status_command(parser=parser, args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -626,6 +761,25 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                     ".doc-decisions.json (a release-class surface needs a real, relevant doc change)."
                 )
         return report.exit_code
+    if command == "worktree-index":
+        from . import worktree_index
+
+        repo_arg = args.repo or "."
+        if isinstance(repo_arg, list):
+            repo_arg = repo_arg[0] if repo_arg else "."
+        repo = resolve_repo(repo_arg)
+        report = worktree_index.build_index(repo, base_ref=getattr(args, "base", None), path=getattr(args, "path", None))
+        if bool(args.json):
+            print(json.dumps(report.to_json(), indent=2))
+        else:
+            print(worktree_index.render_human(report))
+        return 0
+    if command == "consiliency-lease":
+        repo_arg = args.repo or "."
+        if isinstance(repo_arg, list):
+            repo_arg = repo_arg[0] if repo_arg else "."
+        repo = resolve_repo(repo_arg)
+        return _consiliency_lease_command(repo=repo, args=args, as_json=bool(args.json))
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
         if args.roadmap:
@@ -636,6 +790,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 audit_repo = resolve_repo(repo_arg)
                 _warn_roadmap_validation(select_roadmap(audit_repo, args.roadmap))
         return _closeout_drift_audit_command(args=args, as_json=as_json)
+    if command == "fleet-map":
+        return _fleet_map_command(args=args, as_json=as_json)
     repo = resolve_repo(args.repo or ".")
     # DECOUPLE SL-1: profile-plugin commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) register a `func` default and are dispatched here,
@@ -645,6 +801,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return profile_func(repo=repo, args=args, as_json=as_json)
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
+    if command == "consiliency-scaffold":
+        return _consiliency_scaffold_command(repo=repo, args=args, as_json=as_json)
+    if command == "consiliency-ingest":
+        return _consiliency_ingest_command(repo=repo, args=args, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -1432,6 +1592,155 @@ def _init_command(*, repo: Path, dry_run: bool, as_json: bool, install_hooks: bo
     return 0
 
 
+def _consiliency_scaffold_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    archetypes = tuple(dict.fromkeys(getattr(args, "archetype", None) or ()))
+    modifiers = tuple(dict.fromkeys(getattr(args, "modifier", None) or ()))
+    baseline_only = bool(getattr(args, "baseline_only", False))
+    if baseline_only and (archetypes or modifiers):
+        print("phase-loop consiliency-scaffold: --baseline-only is mutually exclusive with --archetype/--modifier", file=sys.stderr)
+        return 2
+    if not baseline_only and not archetypes:
+        print("phase-loop consiliency-scaffold: pass --archetype <name> (repeatable) or --baseline-only", file=sys.stderr)
+        return 2
+    try:
+        result = scaffold(
+            repo,
+            mode="baseline-only" if baseline_only else "archetyped",
+            archetypes=archetypes,
+            modifiers=modifiers,
+            repo_id=getattr(args, "repo_id", None),
+            display_name=getattr(args, "display_name", None),
+            dry_run=bool(args.dry_run),
+        )
+    except ScaffoldError as exc:
+        print(f"phase-loop consiliency-scaffold: {exc}", file=sys.stderr)
+        return 2
+    payload = result.to_json()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        mode = "would scaffold" if result.dry_run else ("already present" if result.already_present else "scaffolded")
+        print(f"phase-loop consiliency-scaffold: {mode} {result.manifest_path}")
+        for created in result.created_paths:
+            print(f"  created: {created}")
+        for referenced in result.referenced_paths:
+            print(f"  referenced (already existed): {referenced}")
+        for missing in result.declared_missing_paths:
+            print(f"  declared, not authored (no fake content -- see presence gate): {missing}")
+    return 0
+
+
+def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    archetypes = tuple(dict.fromkeys(getattr(args, "archetype", None) or ()))
+    modifiers = tuple(dict.fromkeys(getattr(args, "modifier", None) or ()))
+    baseline_only = bool(getattr(args, "baseline_only", False))
+    if baseline_only and (archetypes or modifiers):
+        print("phase-loop consiliency-ingest: --baseline-only is mutually exclusive with --archetype/--modifier", file=sys.stderr)
+        return 2
+    try:
+        result = ingest(
+            repo,
+            adopt=bool(getattr(args, "adopt", False)),
+            mode="baseline-only" if baseline_only else "archetyped",
+            archetypes=archetypes,
+            modifiers=modifiers,
+            repo_id=getattr(args, "repo_id", None),
+            display_name=getattr(args, "display_name", None),
+            dry_run=bool(args.dry_run),
+        )
+    except ScaffoldError as exc:
+        print(f"phase-loop consiliency-ingest: {exc}", file=sys.stderr)
+        return 2
+    payload = result.to_json()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"phase-loop consiliency-ingest: {result.mode} {result.manifest_path}")
+        if result.mode == "skipped":
+            print("  no .consiliency/manifest and --adopt was not passed; repo left untouched")
+        if result.mode == "shape":
+            created = (result.scaffold or {}).get("created_paths", [])
+            print(f"  scaffolded {len(created)} doc(s); proposed governed_set entries: {len(result.governed_set)}")
+        if result.mode == "verify" and result.gate_scan is not None:
+            print(f"  gate scan: {result.gate_scan.get('status')}")
+            for finding in result.findings:
+                print(f"  finding: {finding.get('code')} ({finding.get('path')})")
+    return 0
+
+
+def _consiliency_lease_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    from .lease_store import LeaseStore
+
+    action = args.action
+    store = LeaseStore(repo)
+    now = getattr(args, "now", None)
+
+    if action in ("acquire", "renew", "release") and not (args.lease_id and args.holder):
+        print(f"phase-loop consiliency-lease {action}: --lease-id and --holder are required", file=sys.stderr)
+        return 2
+
+    if action == "acquire":
+        scope = {"granularity": args.granularity, "selector": list(args.scope)}
+        result = store.acquire(
+            lease_id=args.lease_id,
+            holder=args.holder,
+            ttl_seconds=args.ttl_seconds,
+            mode=args.mode,
+            scope=scope,
+            phase=args.lease_phase,
+            now=now,
+        )
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.granted:
+            note = " (degraded to soft)" if result.degraded else ""
+            print(f"phase-loop consiliency-lease acquire: granted{note} {args.lease_id} to {args.holder}")
+        else:
+            conflict = result.conflict or {}
+            print(
+                f"phase-loop consiliency-lease acquire: conflict -- give_way={result.give_way} "
+                f"held by {conflict.get('holder')} (lease {conflict.get('lease_id')})"
+            )
+        return 0 if result.granted else 1
+
+    if action == "renew":
+        result = store.renew(lease_id=args.lease_id, holder=args.holder, now=now)
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.renewed:
+            print(f"phase-loop consiliency-lease renew: renewed {args.lease_id}")
+        else:
+            print(f"phase-loop consiliency-lease renew: rejected ({result.reason})")
+        return 0 if result.renewed else 1
+
+    if action == "release":
+        result = store.release(lease_id=args.lease_id, holder=args.holder, now=now)
+        payload = result.to_json()
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif result.released:
+            print(f"phase-loop consiliency-lease release: released {args.lease_id}")
+        else:
+            print(f"phase-loop consiliency-lease release: rejected ({result.reason})")
+        return 0 if result.released else 1
+
+    # action == "query"
+    scope = {"granularity": args.granularity, "selector": list(args.scope)} if args.scope else None
+    if not (args.lease_id or args.path or scope):
+        print("phase-loop consiliency-lease query: pass --lease-id, --path, or --scope", file=sys.stderr)
+        return 2
+    current = store.query(lease_id=args.lease_id, path=args.path, scope=scope, now=now)
+    if as_json:
+        print(json.dumps(current, indent=2, sort_keys=True))
+    elif current is None:
+        print("phase-loop consiliency-lease query: free")
+    else:
+        print(f"phase-loop consiliency-lease query: held by {current['holder']} (lease {current['lease_id']}, mode {current['mode']})")
+    return 0
+
+
 def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_json: bool) -> int:
     """Synthesize a v28-shape manual_repair event for --phase from current git state.
 
@@ -1888,6 +2197,24 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
     return 1 if result.has_drift() else 0
 
 
+def _fleet_map_command(*, args: argparse.Namespace, as_json: bool) -> int:
+    from .fleet_map import build_fleet_map
+
+    repo_args = args.repo or ["."]
+    if isinstance(repo_args, str):
+        repos = [repo_args]
+    else:
+        repos = repo_args
+    result = build_fleet_map(repos)
+    if as_json:
+        print(json.dumps(result.to_json(), indent=2))
+    else:
+        print(result.render_text())
+    # Informational extractor, not a gate: edges are the expected, useful
+    # output, so only a setup problem (missing repo path) is an error.
+    return 2 if result.has_setup_errors() else 0
+
+
 def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     """Handle the 'run-train' subcommand (#29 P3+P4).
 
@@ -2107,6 +2434,90 @@ def _direct_invocation_blocker(
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")
     print(render_status(snapshot, as_json=as_json))
     return 1
+
+
+def _run_train_status_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """train-status (#45): non-mutating inspection of the cross-repo train ledger.
+
+    Reads the SAME default ledger path as ``run-train`` and prints per-node status
+    (status, branch, PR URL, merge order, merged SHA). Never writes — safe to run
+    between draft-PR creation, review, and merge/reverify.
+    """
+    import json as _json
+
+    from .train_ledger import default_ledger_path, read_ledger
+
+    train_file = getattr(args, "train_file", None)
+    if not train_file:
+        parser.error("train-status requires --train <file>")
+        return 2
+    train_path = Path(train_file)
+    if not train_path.exists():
+        print(f"train-status: train file not found: {train_path}", file=sys.stderr)
+        return 1
+
+    ledger_dir_arg = getattr(args, "ledger_dir", None)
+    ledger_dir = Path(ledger_dir_arg) if ledger_dir_arg else train_path.parent / ".train-ledger"
+    ledger_path = default_ledger_path(ledger_dir, train_path.stem)
+
+    try:
+        state = read_ledger(ledger_path)
+    except Exception as exc:
+        print(f"train-status: failed to read ledger at {ledger_path}: {exc}", file=sys.stderr)
+        return 1
+
+    # Prefer the train roadmap's topo order (also surfaces not-yet-run nodes as
+    # 'pending'); fall back to ledger order if the train can't be parsed.
+    node_order: list[str] = []
+    try:
+        from .train_roadmap import parse_train_roadmap
+
+        roadmap = parse_train_roadmap(train_path.read_text(encoding="utf-8"))
+        node_order = [node.node_id for node in roadmap.topo_order()]
+    except Exception:
+        node_order = sorted(
+            state.keys(),
+            key=lambda nid: (
+                state[nid].merge_order if state[nid].merge_order is not None else 1 << 30,
+                nid,
+            ),
+        )
+    for nid in state:  # defensive: any ledger node absent from the roadmap
+        if nid not in node_order:
+            node_order.append(nid)
+
+    rows = []
+    for nid in node_order:
+        rec = state.get(nid)
+        rows.append(
+            {
+                "node_id": nid,
+                "status": rec.status if rec else "pending",
+                "branch": rec.branch if rec else None,
+                "pr_url": rec.pr_url if rec else None,
+                "merge_order": rec.merge_order if rec else None,
+                "merged_sha": rec.upstream_merge_sha if rec else None,
+            }
+        )
+
+    if bool(getattr(args, "json", False)):
+        print(_json.dumps({"ledger_path": str(ledger_path), "nodes": rows}, indent=2))
+        return 0
+
+    print(f"train-status: {ledger_path}")
+    if not rows:
+        print("  (no ledger records yet — run-train has not run, or the ledger path differs)")
+        return 0
+    for row in rows:
+        line = f"  [{row['status']}] {row['node_id']}"
+        if row["merge_order"] is not None:
+            line += f" (order {row['merge_order']})"
+        print(line)
+        if row["pr_url"]:
+            print(f"        PR: {row['pr_url']}  branch={row['branch']}")
+        if row["merged_sha"]:
+            print(f"        merged: {row['merged_sha']}")
+    return 0
 
 
 def render_handoff_json(path: Path, repo: Path) -> str:

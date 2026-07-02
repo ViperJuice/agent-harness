@@ -30,7 +30,7 @@ def _scripted_invoke(results):
 class ImplementerDispatchTest(unittest.TestCase):
     def test_execute_resolves_to_implementer(self):
         self.assertEqual(shipped_model_policy_rule("execute").model_class, "implementer")
-        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-4-6")
+        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.4")
 
 
@@ -120,6 +120,24 @@ class PremergeLoopTest(unittest.TestCase):
         self.assertFalse(r.mergeable)
         self.assertEqual(r.terminal_blocker["blocker_class"], "review_gate_block")
         self.assertFalse(r.terminal_blocker["human_required"])
+
+    def test_repo_dir_is_forwarded_to_each_review_round(self):
+        captured = []
+
+        def invoke(**kwargs):
+            captured.append(kwargs)
+            return _gate(promoted=True)
+
+        r = run_governed_premerge_loop(
+            artifact="A",
+            author_executor="claude",
+            run_mode="governed",
+            invoke=invoke,
+            repo_dir="/tmp/repo-under-review",
+        )
+
+        self.assertTrue(r.mergeable)
+        self.assertEqual(captured[0]["repo_dir"], "/tmp/repo-under-review")
 
 
 class RunnerWiringTest(unittest.TestCase):

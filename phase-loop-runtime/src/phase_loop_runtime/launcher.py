@@ -287,6 +287,24 @@ class AuthPreflightResult:
     demoted_to: str | None = None
 
 
+# Codex CLI reasoning-effort ceiling is 'xhigh'. The internal 'max' tier (codex's
+# top tier, used by the max-effort planner of record) must be emitted to the CLI
+# as 'xhigh' — emitting 'max' verbatim is rejected ("Invalid value: 'max'. Supported
+# values are: 'none', 'minimal', 'low', 'medium', 'high', and 'xhigh'"). #49.
+# Translating here (the CLI boundary) keeps codex max-ELIGIBLE in the policy/tier
+# layer: a 'max' planner request is honored, at the codex CLI's real ceiling.
+_CODEX_CLI_EFFORT_OVERRIDES = {"max": "xhigh"}
+
+
+def _codex_cli_effort(effort: str) -> str:
+    """Map an internal effort tier to a codex-CLI-supported value (#49).
+
+    The codex CLI accepts none/minimal/low/medium/high/xhigh; the internal 'max'
+    tier maps to 'xhigh' (codex's ceiling). Every other tier passes through.
+    """
+    return _CODEX_CLI_EFFORT_OVERRIDES.get(effort, effort)
+
+
 def build_codex_command(
     repo: Path,
     selection: ModelSelection,
@@ -303,7 +321,7 @@ def build_codex_command(
         "--model",
         selection.model,
         "-c",
-        f'model_reasoning_effort="{selection.effort}"',
+        f'model_reasoning_effort="{_codex_cli_effort(selection.effort)}"',
     ]
     if bypass_approvals:
         command.append("--dangerously-bypass-approvals-and-sandbox")
@@ -1799,6 +1817,7 @@ def launch(
         interrupted = False
         stalled = False
         cleanup_evidence: dict[str, Any] | None = None
+        last_heartbeat_summary: dict[str, Any] | None = None
         while True:
             try:
                 try:
@@ -1824,7 +1843,9 @@ def launch(
                         quiet_blocker_seconds=quiet_blocker_seconds,
                         command=command,
                         returncode=process.poll(),
+                        process_group_id=process_group_id,
                     )
+                    last_heartbeat_summary = heartbeat
                     write_run_heartbeat(heartbeat_path, heartbeat)
                     if stream_output and heartbeat.get("quiet_level") != "active":
                         print(
@@ -1836,20 +1857,32 @@ def launch(
                             flush=True,
                         )
                     last_heartbeat = now
-                    # Act on a stale heartbeat: a child that goes silent past
-                    # quiet_blocker_seconds (quiet_level "stale" — no log update for
-                    # the blocker threshold) while still running, e.g. stalled after
-                    # logging its verification pass but before emitting
-                    # terminal-summary.json, would otherwise spin forever, because
-                    # launch_timeout_seconds is runner-managed and frequently None.
-                    # Tear down the process group and surface the stall loudly via
-                    # stalled_child_observation instead of hanging silently.
-                    if heartbeat.get("quiet_level") == "stale" and process.poll() is None:
+                    if heartbeat.get("stalled_suspect") and process.poll() is None:
                         stalled = True
+                        salvage = _salvage_snapshot(
+                            command=command,
+                            cwd=cwd,
+                            log_path=log_path,
+                            heartbeat=heartbeat,
+                            process=process,
+                            process_group_id=process_group_id,
+                            reason="stalled",
+                        )
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
+                        cleanup_evidence["salvage_snapshot"] = salvage
                 if timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
                     timed_out = True
+                    salvage = _salvage_snapshot(
+                        command=command,
+                        cwd=cwd,
+                        log_path=log_path,
+                        heartbeat=last_heartbeat_summary,
+                        process=process,
+                        process_group_id=process_group_id,
+                        reason="timeout",
+                    )
                     cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
+                    cleanup_evidence["salvage_snapshot"] = salvage
                 if process.poll() is not None:
                     while True:
                         try:
@@ -1886,6 +1919,7 @@ def launch(
             quiet_blocker_seconds=quiet_blocker_seconds,
             command=command,
             returncode=returncode,
+            process_group_id=process_group_id,
         )
         write_run_heartbeat(heartbeat_path, heartbeat_summary)
     return LaunchResult(
@@ -2586,6 +2620,56 @@ def _process_group_id(pid: int) -> int | None:
         return os.getpgid(pid)
     except OSError:
         return None
+
+
+def _salvage_snapshot(
+    *,
+    command: list[str],
+    cwd: str | Path | None,
+    log_path: Path | None,
+    heartbeat: dict[str, Any] | None,
+    process: subprocess.Popen,
+    process_group_id: int | None,
+    reason: str,
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "reason": reason,
+        "captured_at": _utc_now(),
+        "process_pid": process.pid,
+        "process_group_id": process_group_id,
+        "command": metadata_command(command),
+    }
+    if cwd is not None:
+        snapshot["cwd"] = str(cwd)
+    if log_path is not None:
+        snapshot["log_path"] = str(log_path)
+        try:
+            stat = log_path.stat()
+        except OSError:
+            snapshot["log_exists"] = False
+        else:
+            snapshot.update(
+                {
+                    "log_exists": True,
+                    "log_size": stat.st_size,
+                    "log_mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+                }
+            )
+    if heartbeat:
+        heartbeat_fields = (
+            "heartbeat_path",
+            "heartbeat_status",
+            "quiet_level",
+            "liveness_class",
+            "stalled_suspect",
+            "cpu_percent",
+            "elapsed_seconds",
+            "seconds_since_log_update",
+            "last_log_excerpt",
+            "last_log_excerpt_hash",
+        )
+        snapshot["heartbeat"] = {key: heartbeat[key] for key in heartbeat_fields if key in heartbeat}
+    return snapshot
 
 
 def _cleanup_process_group(process: subprocess.Popen, process_group_id: int | None, *, reason: str) -> dict[str, Any]:

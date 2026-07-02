@@ -4,6 +4,131 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## Unreleased
+- **Self-ingest: agent-harness adopts its own `.consiliency/`.** First governed repo — archetype `tooling-meta` + `public` modifier, adopted scope `[layout, gates]`, vendoring `@consiliency/contract` 0.3.0. Additive (`.phase-loop/` untouched); all L0 gates pass (presence/local-integrity/layout/version-skew). Docs are L0 presence-stubs to be filled at L1.
+
+- Bumped the vendored `consiliency-contract` pin from `>=0.2.1,<0.3.0` to
+  `>=0.3.0,<0.4.0`. 0.3.0 rebalances the required-documents registry: the
+  baseline shrinks from ~13 governed docs down to 6 universal ones (`readme`,
+  `doc-contract-index`, `contract-version-status`, `glossary`,
+  `interface-declaration`, `codeowners`); `service-catalog-ownership`, `sbom`,
+  `adr-index`, `dev-setup`, and `changelog` move onto the code archetypes
+  (`product`/`service`/`library`/`infra`/`tooling-meta`) that actually need
+  them; and `contributing`/`license` move onto the (opt-in) `public` modifier.
+  No `phase_loop_runtime` code changes — the scaffolder/gates/ingest modules
+  already compose the required-document set purely from the vendored
+  registry at runtime — but the consiliency test suite's fixtures/assertions
+  are updated to the new baseline: scaffolding a bare archetype (no `public`
+  modifier) no longer has a LICENSE gap to exercise, so
+  `test_consiliency_gates.py`'s `_scaffolded_repo` and
+  `test_consiliency_scaffold.py`'s fabrication test now request the `public`
+  modifier explicitly to keep covering a real `l0_stub_allowed: false` gap,
+  and `test_consiliency_ingest.py`'s second-verify-pass test now asserts a
+  genuinely clean (`passed`) gate scan instead of the LICENSE-driven `warn`
+  it exercised under the old, larger baseline.
+
+## v0.1.13
+
+- **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,
+  purely git-derived command that answers "where is the freshest working copy
+  of a path, and who's touching it": enumerates active worktrees (`git
+  worktree list --porcelain`), diffs each worktree's branch against
+  `origin/<default-branch>` (falling back to `origin/main`), and reports the
+  holders (worktree path, branch, last commit) for a queried path — or every
+  touched path when none is given — plus whether `origin/main` is behind on
+  it. No new persistent state; a repo with no divergent worktrees answers
+  `origin/main`. `phase_loop_runtime.worktree_index` is the module; never
+  writes repo state.
+- **CS-0.7 — realized-edge / fleet-map v0 extractor.** Between the core
+  Consiliency-standardization repos there are ~zero package-level deps, so a
+  package-lockfile scan renders the real cross-repo interface graph
+  invisible; the actual edges are git+ref pins, copied-literal (vendored)
+  contract/schema drift, and hard-coded host-path refs in source. New
+  `phase-loop fleet-map --repo <path> [--repo <path> ...] [--json]` (module
+  `phase_loop_runtime.fleet_map`) statically extracts those three edge kinds
+  across a set of repo paths and emits an interface-graph artifact — each
+  edge `{from_repo, to_repo, kind, evidence, maturity_label}` — alongside a
+  package-lockfile-only baseline for comparison (typically empty even over
+  repos with ordinary, unrelated third-party manifest deps). v0: no network
+  calls or git remote resolution, static file inspection only.
+- **CS-0.10c — local-file `LeaseStore` + soft leases.** New
+  `phase_loop_runtime.lease_store`: a local-file backend for the CS-0.10b
+  `LeaseStore` contract (`consiliency_contract`'s `lease.schema.json` /
+  `lease-event.schema.json` / `lease-store-protocol.schema.json`) so parallel
+  local agents can claim path-sets without stepping on each other. SOFT MODE
+  ONLY — this backend never declares an atomic backend, so a requested hard
+  lease always degrades to soft (no cross-machine atomic acquire locally;
+  that needs the off-device backend, CS-0.10d). TTL + heartbeat +
+  auto-expiry: an unrenewed lease past `heartbeat_at + ttl_seconds`
+  (exclusive boundary) is free, so a dead holder can never freeze a path.
+  Give-way policy is REROUTE, not block: an `acquire()` colliding with an
+  active lease (same `lease_id`, or an overlapping path-set scope held by
+  someone else) returns the blocking lease instead of raising or waiting.
+  The current-lease view (`query()`) is a pure projection of the append-only
+  `.consiliency/leases/events.jsonl` event log ONLY — the module has no
+  parameter a coordination-channel message could occupy, so the sole-truth
+  guardrail (the inbox is never authoritative for lease state) is structural,
+  not a runtime check. New `phase-loop consiliency-lease
+  acquire|renew|release|query --repo <path> ...` CLI. Vector-tested against
+  every `lease-*`/`coordination-*` conformance vector the vendored
+  `consiliency_contract` (>=0.2.0) ships.
+- **CS-0.8 — agent-runtime provider seam.** New `phase_loop_runtime.agent_runtime_provider`:
+  an `AgentRuntimeProvider` Protocol (matching omniagent-plus core-contracts) +
+  `HomebrewAgentRuntimeProvider` degraded profile — a one-shot CLI spawn presented as a
+  single-turn, buffered-replay session, `cancel_turn` = process kill, unsupported
+  capabilities declared via `health()`. The panel spawn path routes through the seam
+  (behavior unchanged; the existing panel tests are the regression guard). Lets a future
+  Omnigent-backed provider drop in without a caller change.
+- **CS-0.11 — brownfield ingestion (shape-to-conform, then verify).** New
+  `phase-loop consiliency-ingest --repo <path> [--adopt]`: first pass (no manifest) shapes a
+  compliant `.consiliency/` via the CS-0.5 scaffolder + a CS-0.12 adoption profile + a
+  conservative governed-set proposal (consent-gated on `--adopt`; unflagged repos untouched;
+  scratch/other-harness namespaces never claimed); every subsequent pass verifies via the
+  CS-0.6 L0 gates + `evaluate_governance_scope` (governed / foreign / present-nonconforming
+  labels), never rewriting. Detection = manifest presence. The repo-library on-ramp.
+
+- **CS-0.5 — `.consiliency/` scaffolder (first-writer).** New
+  `phase-loop consiliency-scaffold --repo <path> --archetype <name>` (repeatable
+  `--archetype`/`--modifier`, or `--baseline-only`) writes a schema-valid
+  `.consiliency/` layout: `manifest.json` (declaring archetype(s)/modifier(s) +
+  the composed governed-doc allowlist), `status.json` (contract-version-status)
+  and `interfaces.json` (interface declaration) as real minimal artifacts, and
+  L0 presence-stub docs — each an honest "unauthored, tracked" marker with an
+  explicit authored zone, never a fabricated projection — for every doc the
+  vendored `consiliency_contract` required-documents registry demands.
+  Additive/first-writer: never touches `.phase-loop/`/`.pipeline/`, never
+  overwrites a file that already exists (re-running is a safe no-op), and
+  docs marked `l0_stub_allowed: false` (`readme`, `license`, `document-index`)
+  are never fabricated — referenced if present, otherwise just declared for
+  the presence gate to flag. `phase_loop_runtime.consiliency_scaffold` /
+  `phase_loop_runtime.consiliency_layout` are the modules.
+- **CS-0.6 — `.consiliency/` L0 gates.** Four gates — `presence`,
+  `local-integrity` (git-scoped hash snapshot; a forward-compatible no-op
+  today since Phase 0 floors every doc at `presence-only`), `layout-validity`
+  (manifest/status/interfaces validate against the vendored schemas), and
+  `version-skew` (repo `contract_version` vs the installed
+  `consiliency-contract` package) — wired at top-of-loop (a non-blocking
+  advisory notice, mirroring the existing governed-mode notice) and closeout
+  (threaded into `build_phase_loop_closeout` alongside `docs_freshness`, new
+  `consiliency_gates`/`consiliency_gates_detail` closeout fields). SOFT/warn
+  by default; `PHASE_LOOP_CONSILIENCY_GATES=hard` opts into blocking (new
+  `consiliency_gate_blocked` frozen blocker literal), never sets
+  `human_required`, and the version-skew gate never blocks even under `hard`
+  (Phase 0 severity is normatively `warn`). CONSENT-GATED: a repo without a
+  `.consiliency/manifest` is a pure no-op. `phase_loop_runtime.consiliency_gates`
+  is the module.
+- Added `consiliency-contract` (the published shared Consiliency contract
+  package) and `jsonschema` as runtime dependencies; all `.consiliency/`
+  schemas/registries are read from the vendored package, never copied.
+
+## v0.1.12
+
+- **CS-0.4 release floor.** Bumped `phase-loop-runtime` to `0.1.12` for the
+  Consiliency standardization release floor. No bridge-contract or behavior
+  changes; `phaseLoopBridgeContract.v1` remains unchanged.
+- Updated the public `install-agent-harness.sh` default ref to `v0.1.12` so
+  off-tailnet installs resolve the same release by default.
+
 ## v0.1.11
 
 - **Harness-neutral repo-validation contract.** `phase-loop repo-validate
@@ -19,7 +144,65 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   optional, repo-owned posture (open-source Engine, no Dagger Cloud). Contract
   spec: `docs/repo-validation-contract.md`. Scope is the contract + neutral
   resolver + tests; per-repo checks and Dagger modules belong to consuming repos.
+- **#66 — advisor-panel per-leg model override.** Each leg's model was hardcoded (`CLAUDE_IMPLEMENTER_MODEL`, `gpt-5.5`, `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
+  `claude-fable-5` required monkeypatching a module constant. `invoke_panel(..., models={"claude":
+  "claude-fable-5"})` now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
 
+- **#63 — advisor-panel advisory mode.** `panel_invoker` was hardcoded to a pre-merge
+  code-review framing, so the three-model panel couldn't be used for general adversarial/advisory
+  analysis (architecture, product, red-teaming a plan) — 2/3 legs replied "nothing to review".
+  `invoke_panel(artifact, legs, mode="advisory")` now reuses all the leg-spawn machinery but swaps
+  the framing and drops the AGREE/DISAGREE requirement (substantial prose is a real leg);
+  `mode="review"` stays the default (back-compat, byte-identical behavior).
+
+- **#64 — advisor-panel leg auth preflight + soft-empty-turn retry.** A logged-out CLI made the
+  codex leg fail obliquely (an `rc=0` empty-turn, then rate-limit errors), so the panel silently
+  degraded and the failure was misdiagnosed. `_exec_leg` now runs a cheap auth preflight
+  (`codex login status`) before the expensive leg — a de-authed leg fails fast and classifies
+  `DEGRADED` (never a silent empty leg) — and retries a transient soft empty-turn (`rc=0` + empty
+  output) once, while never retrying a hard failure (`rc!=0`).
+
+- **#48 — Advisor-panel Claude TUI leg no longer hangs on child exit.** The TUI read loop now
+  treats PTY EOF (`os.read` → empty) as terminal: when the child CLI and its descendants close
+  the pty, the leg returns a structured result (verdict if one landed, else an `ERROR`-classified
+  `claude_tui_pty_eof_no_output`) instead of busy-spinning to the input-scaled (up to 30-min)
+  deadline. Previously a lingering wrapper parent kept `proc.poll()` from firing while the EOF fd
+  stayed "readable", hanging the panel indefinitely. On EOF the canonical review **file** is the
+  only OK path; a transcript-scraped verdict is salvage evidence only (non-zero rc, fail-closed) —
+  never promoted to OK, matching the sibling exit paths.
+- **#52 — Actionable lane-IR closeout refusals.** When closeout/status fails closed on an
+  unresolved Lane IR diagnostic, the `blocker_summary` now names the concrete diagnostic
+  (`kind@lane` + message) and the phase-plan file location, instead of the opaque "Lane IR
+  diagnostics failed closed for the current phase plan". The operator can repair the exact
+  lane/contract (e.g. `missing_producer_dependency@SL-4: SL-4 consumes … without depending on
+  it`) without guessing. The fail-closed contract is unchanged — diagnostics still block; they
+  are just legible now.
+- **#49 — Codex effort `max` → CLI `xhigh`.** The internal `max` effort tier (codex's top
+  tier, used by the max-effort planner of record) is now translated to `xhigh` at the codex CLI
+  boundary (`build_codex_command`). Previously `model_reasoning_effort="max"` was emitted verbatim
+  and rejected by the codex CLI ("Invalid value: 'max'"), which misclassified the phase as
+  `account_or_billing_setup`. Codex remains max-*eligible* in the policy/tier layer; only the CLI
+  value is clamped to codex's real ceiling.
+- **#47 — order-only cross-repo train dependencies.** `**Channel:** order-only` declares a
+  merge-order (freeze) dependency with no channel injection — see the authoring guide.
+- **#45 — `phase-loop train-status` command.** Non-mutating inspection of the cross-repo
+  train ledger (`train-status --train <file> [--ledger-dir DIR] [--json]`) — the command the
+  v0.1.11 run-train docs/skills already referenced but which did not exist. Resolves the same
+  default ledger path as `run-train` and prints per-node status/branch/PR/merge-order/merged-SHA
+  in topo order (pending nodes surfaced). Also corrects the stale `run-train --help` (the P4
+  governed review + sequential merge path is implemented behind `--governed`).
+- **#36 / dotfiles #135 — Advisor panel ownership and staged review packets.**
+  `agent-harness` now owns the advisor-panel runtime primitive and harness-prefixed
+  skill source. Codex and Gemini receive compact prompts that point to staged
+  `review-instructions.md` / `review-bundle.md` files instead of embedded artifact
+  bodies; Claude uses a Claude Code TUI session with `claude-sonnet-5`, max effort,
+  subscription-safe env stripping, no `claude -p`, and a canonical scratch
+  `panel-claude.txt` output file. Dotfiles can now reduce its
+  unprefixed `advisor-panel` skill to compatibility guidance over this packaged source.
+- **#33 / #39 — Runner hardening.** Background subprocess monitoring now preserves
+  salvage evidence and bounds stale `quiet_unknown` children after a grace period when
+  CPU sampling is unavailable, while still avoiding cleanup for CPU-active quiet work.
+  Cross-repo live reverify honors hard-mode verification enforcement.
 - **#29 — Cross-repo release-train coordinator.** `phase-loop run-train --train
   <roadmap>` orchestrates multi-repo changes in a single atomic train: draft PRs
   open across all nodes in topo order (P3), a train-level governed review gates
