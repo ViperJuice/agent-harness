@@ -4,6 +4,14 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## v0.1.12
+
+- **CS-0.4 release floor.** Bumped `phase-loop-runtime` to `0.1.12` for the
+  Consiliency standardization release floor. No bridge-contract or behavior
+  changes; `phaseLoopBridgeContract.v1` remains unchanged.
+- Updated the public `install-agent-harness.sh` default ref to `v0.1.12` so
+  off-tailnet installs resolve the same release by default.
+
 ## v0.1.11
 
 - **#66 — advisor-panel per-leg model override.** Each leg's model was hardcoded (`CLAUDE_IMPLEMENTER_MODEL`, `gpt-5.5`, `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
