@@ -49,7 +49,7 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     Factored out of build_parser() so the dotfiles-profile plugin (DECOUPLE SL-1)
     can attach the identical common args to the commands it registers.
     """
-    if name == "closeout-drift-audit":
+    if name in {"closeout-drift-audit", "fleet-map"}:
         sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
     else:
         sub.add_argument("--repo")
@@ -252,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -436,6 +436,13 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
             sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
             sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
+        if name == "fleet-map":
+            sub.description = (
+                "CS-0.7: extract the realized cross-repo interface graph (git+ref pins, "
+                "copied-literal contract/schema drift, hard-coded host-path refs) across "
+                "--repo paths — NOT a package-lockfile scan. Also reports the lockfile-only "
+                "baseline (typically empty) alongside the realized edges for comparison."
+            )
         if name == "export-schema":
             sub.description = (
                 "Emit (or --check) the canonical phase-loop closeout schema derived from "
@@ -641,6 +648,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 audit_repo = resolve_repo(repo_arg)
                 _warn_roadmap_validation(select_roadmap(audit_repo, args.roadmap))
         return _closeout_drift_audit_command(args=args, as_json=as_json)
+    if command == "fleet-map":
+        return _fleet_map_command(args=args, as_json=as_json)
     repo = resolve_repo(args.repo or ".")
     # DECOUPLE SL-1: profile-plugin commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) register a `func` default and are dispatched here,
@@ -1891,6 +1900,24 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
     if result.has_setup_errors():
         return 2
     return 1 if result.has_drift() else 0
+
+
+def _fleet_map_command(*, args: argparse.Namespace, as_json: bool) -> int:
+    from .fleet_map import build_fleet_map
+
+    repo_args = args.repo or ["."]
+    if isinstance(repo_args, str):
+        repos = [repo_args]
+    else:
+        repos = repo_args
+    result = build_fleet_map(repos)
+    if as_json:
+        print(json.dumps(result.to_json(), indent=2))
+    else:
+        print(result.render_text())
+    # Informational extractor, not a gate: edges are the expected, useful
+    # output, so only a setup problem (missing repo path) is an error.
+    return 2 if result.has_setup_errors() else 0
 
 
 def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

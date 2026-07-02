@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.12
 
+- **CS-0.7 — realized-edge / fleet-map v0 extractor.** Between the core
+  Consiliency-standardization repos there are ~zero package-level deps, so a
+  package-lockfile scan renders the real cross-repo interface graph
+  invisible; the actual edges are git+ref pins, copied-literal (vendored)
+  contract/schema drift, and hard-coded host-path refs in source. New
+  `phase-loop fleet-map --repo <path> [--repo <path> ...] [--json]` (module
+  `phase_loop_runtime.fleet_map`) statically extracts those three edge kinds
+  across a set of repo paths and emits an interface-graph artifact — each
+  edge `{from_repo, to_repo, kind, evidence, maturity_label}` — alongside a
+  package-lockfile-only baseline for comparison (typically empty even over
+  repos with ordinary, unrelated third-party manifest deps). v0: no network
+  calls or git remote resolution, static file inspection only.
 - **CS-0.4 release floor.** Bumped `phase-loop-runtime` to `0.1.12` for the
   Consiliency standardization release floor. No bridge-contract or behavior
   changes; `phaseLoopBridgeContract.v1` remains unchanged.

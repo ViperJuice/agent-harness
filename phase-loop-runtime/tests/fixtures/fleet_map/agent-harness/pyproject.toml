@@ -1,0 +1,6 @@
+[project]
+name = "agent-harness-fixture"
+version = "0.0.0"
+dependencies = [
+    "pydantic>=2,<3",
+]
