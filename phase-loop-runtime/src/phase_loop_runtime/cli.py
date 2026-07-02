@@ -12,6 +12,7 @@ from pathlib import Path
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
 from .closeout import build_phase_loop_closeout
+from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
@@ -254,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -378,6 +379,41 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--repo-id", help="Override the manifest's repo.id (default: derived from the repo directory name).")
             sub.add_argument("--display-name", help="Override the manifest's repo.display_name (default: the repo directory name).")
+        if name == "consiliency-ingest":
+            sub.description = (
+                "CS-0.11: brownfield ingestion for an existing repo. Shape-to-conform on the "
+                "first pass (delegates the base `.consiliency/` layout to consiliency-scaffold, "
+                "then adds a CS-0.12 adoption profile and a proposed governed-set allowlist) -- "
+                "verify-only on every subsequent pass (never rewrites; runs the CS-0.6 L0 gates "
+                "and labels declared documents governed/foreign/present-nonconforming). "
+                "A repo with no `.consiliency/manifest` is untouched unless --adopt is passed."
+            )
+            sub.add_argument(
+                "--adopt",
+                action="store_true",
+                help="Consent to shape an unmanaged repo (no-op without this flag when no manifest exists yet).",
+            )
+            sub.add_argument(
+                "--archetype",
+                action="append",
+                default=[],
+                choices=ARCHETYPE_IDS,
+                help="Repeatable. Declares an archetype for the shape pass (ignored on a verify pass).",
+            )
+            sub.add_argument(
+                "--modifier",
+                action="append",
+                default=[],
+                choices=MODIFIER_IDS,
+                help="Repeatable. Declares a modifier for the shape pass (ignored on a verify pass).",
+            )
+            sub.add_argument(
+                "--baseline-only",
+                action="store_true",
+                help="Declare baseline-only mode for the shape pass. Mutually exclusive with --archetype/--modifier.",
+            )
+            sub.add_argument("--repo-id", help="Override the manifest's repo.id (shape pass only).")
+            sub.add_argument("--display-name", help="Override the manifest's repo.display_name (shape pass only).")
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -712,6 +748,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
     if command == "consiliency-scaffold":
         return _consiliency_scaffold_command(repo=repo, args=args, as_json=as_json)
+    if command == "consiliency-ingest":
+        return _consiliency_ingest_command(repo=repo, args=args, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -1534,6 +1572,44 @@ def _consiliency_scaffold_command(*, repo: Path, args: argparse.Namespace, as_js
             print(f"  referenced (already existed): {referenced}")
         for missing in result.declared_missing_paths:
             print(f"  declared, not authored (no fake content -- see presence gate): {missing}")
+    return 0
+
+
+def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    archetypes = tuple(dict.fromkeys(getattr(args, "archetype", None) or ()))
+    modifiers = tuple(dict.fromkeys(getattr(args, "modifier", None) or ()))
+    baseline_only = bool(getattr(args, "baseline_only", False))
+    if baseline_only and (archetypes or modifiers):
+        print("phase-loop consiliency-ingest: --baseline-only is mutually exclusive with --archetype/--modifier", file=sys.stderr)
+        return 2
+    try:
+        result = ingest(
+            repo,
+            adopt=bool(getattr(args, "adopt", False)),
+            mode="baseline-only" if baseline_only else "archetyped",
+            archetypes=archetypes,
+            modifiers=modifiers,
+            repo_id=getattr(args, "repo_id", None),
+            display_name=getattr(args, "display_name", None),
+            dry_run=bool(args.dry_run),
+        )
+    except ScaffoldError as exc:
+        print(f"phase-loop consiliency-ingest: {exc}", file=sys.stderr)
+        return 2
+    payload = result.to_json()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"phase-loop consiliency-ingest: {result.mode} {result.manifest_path}")
+        if result.mode == "skipped":
+            print("  no .consiliency/manifest and --adopt was not passed; repo left untouched")
+        if result.mode == "shape":
+            created = (result.scaffold or {}).get("created_paths", [])
+            print(f"  scaffolded {len(created)} doc(s); proposed governed_set entries: {len(result.governed_set)}")
+        if result.mode == "verify" and result.gate_scan is not None:
+            print(f"  gate scan: {result.gate_scan.get('status')}")
+            for finding in result.findings:
+                print(f"  finding: {finding.get('code')} ({finding.get('path')})")
     return 0
 
 

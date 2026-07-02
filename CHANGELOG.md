@@ -5,6 +5,20 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **CS-0.8 — agent-runtime provider seam.** New `phase_loop_runtime.agent_runtime_provider`:
+  an `AgentRuntimeProvider` Protocol (matching omniagent-plus core-contracts) +
+  `HomebrewAgentRuntimeProvider` degraded profile — a one-shot CLI spawn presented as a
+  single-turn, buffered-replay session, `cancel_turn` = process kill, unsupported
+  capabilities declared via `health()`. The panel spawn path routes through the seam
+  (behavior unchanged; the existing panel tests are the regression guard). Lets a future
+  Omnigent-backed provider drop in without a caller change.
+- **CS-0.11 — brownfield ingestion (shape-to-conform, then verify).** New
+  `phase-loop consiliency-ingest --repo <path> [--adopt]`: first pass (no manifest) shapes a
+  compliant `.consiliency/` via the CS-0.5 scaffolder + a CS-0.12 adoption profile + a
+  conservative governed-set proposal (consent-gated on `--adopt`; unflagged repos untouched;
+  scratch/other-harness namespaces never claimed); every subsequent pass verifies via the
+  CS-0.6 L0 gates + `evaluate_governance_scope` (governed / foreign / present-nonconforming
+  labels), never rewriting. Detection = manifest presence. The repo-library on-ramp.
 
 - **CS-0.5 — `.consiliency/` scaffolder (first-writer).** New
   `phase-loop consiliency-scaffold --repo <path> --archetype <name>` (repeatable
