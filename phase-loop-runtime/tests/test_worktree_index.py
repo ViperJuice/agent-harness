@@ -63,18 +63,34 @@ class WorktreeIndexTest(unittest.TestCase):
         )
         _configure(self.worktree_path)
         self.touch_sha = _commit(self.worktree_path, "touch a file", {"docs/touched.txt": "new\n"})
+        self.edit_sha = _commit(self.worktree_path, "edit an existing file", {"README.md": "hi\nedited\n"})
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_untouched_path_returns_origin_main_only(self):
-        report = wi.build_index(self.repo, path="README.md")
+        report = wi.build_index(self.repo, path="keep/untouched.txt")
         self.assertEqual(len(report.paths), 1)
         pf = report.paths[0]
-        self.assertEqual(pf.path, "README.md")
+        self.assertEqual(pf.path, "keep/untouched.txt")
         self.assertFalse(pf.main_behind)
         self.assertEqual(len(pf.holders), 1)
         self.assertEqual(pf.holders[0].worktree, "origin/main")
+
+    def test_edited_existing_path_returns_both_baseline_and_branch_holder(self):
+        # Acceptance case: branch B EDITS a file that already exists on origin/main
+        # (not a brand-new file) — holders must include both the origin/main
+        # baseline copy and B, with main flagged behind.
+        report = wi.build_index(self.repo, path="README.md")
+        self.assertEqual(len(report.paths), 1)
+        pf = report.paths[0]
+        self.assertTrue(pf.main_behind)
+        holder_by_branch = {h.branch: h for h in pf.holders}
+        self.assertIn("origin/main", holder_by_branch)
+        self.assertIn("feat/touch", holder_by_branch)
+        branch_holder = holder_by_branch["feat/touch"]
+        self.assertEqual(branch_holder.worktree, str(self.worktree_path))
+        self.assertEqual(branch_holder.last_commit_sha, self.edit_sha)
 
     def test_touched_path_returns_worktree_holder_and_flags_main_behind(self):
         report = wi.build_index(self.repo, path="docs/touched.txt")
@@ -98,7 +114,7 @@ class WorktreeIndexTest(unittest.TestCase):
     def test_no_query_reports_every_touched_path(self):
         report = wi.build_index(self.repo)
         touched = {pf.path for pf in report.paths}
-        self.assertEqual(touched, {"docs/touched.txt"})
+        self.assertEqual(touched, {"docs/touched.txt", "README.md"})
 
     def test_repo_with_no_extra_worktrees_answers_origin_main(self):
         with TemporaryDirectory() as td2:
