@@ -1,0 +1,5 @@
+{
+  "contractName": "exampleContract",
+  "version": "1.0.1",
+  "fields": ["alpha", "beta", "gamma"]
+}
