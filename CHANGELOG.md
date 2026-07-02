@@ -5,6 +5,18 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **CI: publish `phase-loop-runtime` to PyPI on tag.** New
+  `.github/workflows/publish-pypi.yml`, tag- and `workflow_dispatch`-triggered,
+  builds sdist+wheel and publishes via PyPI Trusted Publishing (OIDC) — no
+  token stored in the repo. Verifies the pushed tag matches
+  `phase-loop-runtime`'s `pyproject.toml` version before building. Also flags
+  in the README and `pyproject.toml` that the PyPI dist name is
+  `phase-loop-runtime`, not `agent-harness` (an unrelated third-party PyPI
+  project). One-time PyPI setup required before the first tag publish: claim
+  project `phase-loop-runtime` and add a Trusted Publisher (owner
+  `ViperJuice`, repo `agent-harness`, workflow `publish-pypi.yml`, environment
+  `pypi`).
+
 - **Self-ingest: agent-harness adopts its own `.consiliency/`.** First governed repo — archetype `tooling-meta` + `public` modifier, adopted scope `[layout, gates]`, vendoring `@consiliency/contract` 0.3.0. Additive (`.phase-loop/` untouched); all L0 gates pass (presence/local-integrity/layout/version-skew). Docs are L0 presence-stubs to be filled at L1.
 
 - Bumped the vendored `consiliency-contract` pin from `>=0.2.1,<0.3.0` to

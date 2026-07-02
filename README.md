@@ -33,6 +33,13 @@ wheel, so `phase-loop run`/`dry-run` resolve their skill packs with no dotfiles
 checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you set one, must
 return **absolute** roots.)
 
+> [!IMPORTANT]
+> **PyPI package name is `phase-loop-runtime` — not `agent-harness`.** The
+> `agent-harness` project on PyPI is an **unrelated third party** (coincidentally
+> similar version numbers); do **not** publish this runtime there, and do **not**
+> `pip install agent-harness` expecting this CLI. The published wheel is
+> `pip install phase-loop-runtime==X.Y.Z` (built by `.github/workflows/publish-pypi.yml`).
+
 ## Autonomy & review gates
 
 The runner is built to drive phases **unattended**. Closeout review gates

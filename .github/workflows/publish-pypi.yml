@@ -1,0 +1,52 @@
+name: publish-pypi
+
+# Publish phase-loop-runtime to PyPI on a version tag, via PyPI Trusted
+# Publishing (OIDC) — no API token is stored in the repo. One-time setup on
+# PyPI: create/claim project "phase-loop-runtime" and add a Trusted Publisher:
+#   owner=ViperJuice  repo=agent-harness  workflow=publish-pypi.yml  environment=pypi
+on:
+  push:
+    tags: [v*]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches phase-loop-runtime version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(python -c 'import tomllib; print(tomllib.load(open("phase-loop-runtime/pyproject.toml","rb"))["project"]["version"])')"
+          echo "tag=$tag  pyproject=$ver"
+          [ "$tag" = "$ver" ] || { echo "::error::tag v$tag does not match pyproject version $ver"; exit 1; }
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel --outdir dist phase-loop-runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI (trusted publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
