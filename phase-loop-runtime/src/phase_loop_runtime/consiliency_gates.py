@@ -62,7 +62,7 @@ CONSILIENCY_GATES_ENV = "PHASE_LOOP_CONSILIENCY_GATES"
 CONSILIENCY_GATES_MODES: tuple[str, ...] = ("off", "warn", "hard")
 DEFAULT_CONSILIENCY_GATES_MODE = "warn"
 
-_GATE_NAMES = ("presence", "local_integrity", "layout_validity", "version_skew")
+_GATE_NAMES = ("presence", "local_integrity", "layout_validity", "version_skew", "git_discipline")
 
 
 def resolve_consiliency_gates_mode(env: Mapping[str, str] | None = None) -> str:
@@ -117,6 +117,7 @@ def scan_consiliency_gates(
         "local_integrity": _gate_local_integrity(repo_path, manifest, mode=mode),
         "layout_validity": _gate_layout_validity(repo_path, manifest, mode=mode),
         "version_skew": _gate_version_skew(manifest, mode=mode),
+        "git_discipline": _gate_git_discipline(repo_path, mode=mode),
     }
     if any(g["status"] == "blocked" for g in gates.values()):
         overall = "blocked"
@@ -260,6 +261,41 @@ def _gate_layout_validity(repo: Path, manifest: Mapping[str, Any], *, mode: str)
                 for err in Draft202012Validator(interface_declaration_schema()).iter_errors(interfaces_doc):
                     findings.append({"code": "interfaces_schema_invalid", "message": err.message, "path": list(err.absolute_path)})
 
+    return {"status": _gate_status(findings, mode=mode), "maturity": "presence-only", "findings": findings}
+
+
+def _gate_git_discipline(repo: Path, *, mode: str) -> dict[str, Any]:
+    """Slice-G git-discipline guardrail: classify the repo's refs against the
+    neutral contract's ``pipeline_ref_classes`` registry and check the
+    write-footprint / branch-naming invariants. Consumes the contract, does not
+    reinvent it.
+
+    Contract-absent degrade: when the installed ``consiliency_contract`` predates
+    the git-discipline contract (< 0.4), this is a NEUTRAL no-op (``passed`` with
+    a note), NOT a warning -- so existing governed scans are unaffected until the
+    carrying contract ships. Unlike ``version_skew`` this gate honours ``hard``
+    (``capped_warn=False``): the guardrail is a legitimate block-opt-in.
+    """
+    from . import git_discipline as gd
+
+    registry = gd.load_ref_classes()
+    if not gd.available(registry):
+        return {
+            "status": "passed",
+            "maturity": "presence-only",
+            "findings": [],
+            "note": "installed consiliency_contract lacks the git-discipline contract (<0.4); guardrail latent",
+        }
+    assert registry is not None
+    protocol = gd.load_protocol()
+    facts = gd.gather_repo_ref_facts(repo)
+    findings = gd.evaluate_git_discipline(
+        current_branch=facts["current_branch"],
+        dirty_paths=facts["dirty_paths"],
+        local_branches=facts["local_branches"],
+        registry=registry,
+        protocol=protocol,
+    )
     return {"status": _gate_status(findings, mode=mode), "maturity": "presence-only", "findings": findings}
 
 
