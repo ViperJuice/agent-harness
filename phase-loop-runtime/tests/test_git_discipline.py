@@ -224,6 +224,27 @@ class ContractAbsentDegradeTest(unittest.TestCase):
         self.assertEqual(result["reason"], "contract-absent")
 
 
+class SelfHealConsentTest(unittest.TestCase):
+    """Design §11.5: even with the contract installed, a repo that has NOT
+    opted in (no `.consiliency/manifest.json`) is a pure no-op -- no
+    classification, no advisories, no `git worktree prune`."""
+
+    def setUp(self):
+        self._orig = gd.load_ref_classes
+        gd.load_ref_classes = lambda: REGISTRY  # simulate contract present (>=0.4)
+
+    def tearDown(self):
+        gd.load_ref_classes = self._orig
+
+    def test_self_heal_skips_ungoverned_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))  # no .consiliency/manifest.json
+            result = gd.reconcile_git_discipline(repo, execute_prune=True)
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "no-consent")
+            self.assertEqual(result["findings"], [])
+
+
 class ApplyDeletionGuardTest(unittest.TestCase):
     def setUp(self):
         self._orig = gd.load_ref_classes

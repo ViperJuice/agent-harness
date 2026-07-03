@@ -396,10 +396,24 @@ def reconcile_git_discipline(
     "findings": [...]}``. ``findings`` are advisory, ``human_required=False``.
     Never raises.
     """
+    # Contract-absent: git-discipline is entirely latent when the installed
+    # contract predates it (< 0.4) -- nothing to consent to or enforce.
     reg = load_ref_classes() if registry is None else registry
     if not available(reg):
         return {"status": "skipped", "reason": "contract-absent", "findings": []}
     assert reg is not None  # narrowed by available()
+
+    # Consent gate (design §11.5): the git-discipline contract is post-ingestion
+    # and opt-in. A repo without a `.consiliency/manifest.json` is a pure no-op --
+    # no classification, no advisories, no `git worktree prune`. This mirrors
+    # `scan_consiliency_gates`, which the guardrail gate already rides.
+    try:
+        from .consiliency_layout import find_consiliency_manifest
+
+        if find_consiliency_manifest(Path(repo)) is None:
+            return {"status": "skipped", "reason": "no-consent", "findings": []}
+    except Exception:
+        return {"status": "skipped", "reason": "no-consent", "findings": []}
 
     states = (
         list(ref_states)
