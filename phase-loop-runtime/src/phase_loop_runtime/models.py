@@ -1996,6 +1996,54 @@ class Blocker:
         return clean_dict(asdict(self))
 
 
+# CS-2.1 SA — fleet-metric ledger event types. These populate the three
+# LEDGER-FAITHFUL named fleet-trend metrics (velocity / burn_down /
+# promise_broken_duration) reserved by the CS-2.1 spine. They are emitted to a
+# SEPARATE append-only sibling ledger (``.phase-loop/fleet-metrics.jsonl``) so
+# the existing ``events.jsonl`` bytes and reconcile semantics stay untouched.
+FLEET_METRIC_SCHEMA = "fleet_metric.v1"
+FLEET_METRIC_KINDS = (
+    "velocity",           # throughput: cumulative completed phases + timestamp
+    "burn_down",          # remaining-vs-completed scope trajectory
+    "promise_broken",     # an IF-gate promise declared-but-not-produced (break)
+    "promise_repaired",   # a previously-broken IF-gate promise later produced
+)
+
+
+@dataclass(frozen=True)
+class FleetMetricEvent:
+    """One append to the fleet-metric ledger (CS-2.1 SA).
+
+    ``event_kind`` is fixed to ``fleet_metric`` and ``metric_kind`` selects the
+    series. ``payload`` carries only the small numeric/label fields that series
+    needs (never a filesystem path, secret, or session internal — the export
+    bridge re-asserts that before anything leaves the enforcement side).
+    """
+
+    metric_kind: str
+    timestamp: str = field(default_factory=utc_now)
+    phase: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+    schema: str = FLEET_METRIC_SCHEMA
+
+    def __post_init__(self) -> None:
+        require_literal(self.metric_kind, FLEET_METRIC_KINDS, "fleet metric kind")
+        if self.schema != FLEET_METRIC_SCHEMA:
+            raise ValueError(f"invalid fleet metric schema: {self.schema}")
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(
+            {
+                "event_kind": "fleet_metric",
+                "schema": self.schema,
+                "metric_kind": self.metric_kind,
+                "timestamp": self.timestamp,
+                "phase": self.phase,
+                "payload": self.payload,
+            }
+        )
+
+
 @dataclass(frozen=True)
 class LoopEvent:
     timestamp: str

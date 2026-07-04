@@ -92,6 +92,7 @@ from .discovery import (
 )
 from .dispatch_lock import DispatchLock, DispatchLockContention
 from .events import append_event, event_path, read_events
+from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
@@ -3299,8 +3300,12 @@ def run_loop(
                     child_automation["original_returncode"] = failed_launch_closeout_override.get("original_returncode")
                 automation_status = child_automation.get("automation_status")
                 validation_plan = post_launch_plan or plan
+                fleet_missing_gates: tuple[str, ...] = ()
+                fleet_produced_gates: tuple[str, ...] = ()
                 if validation_plan is not None and child_automation:
                     gate_validation = validate_produced_gates(validation_plan, child_automation)
+                    fleet_missing_gates = tuple(str(g) for g in gate_validation.missing_gates)
+                    fleet_produced_gates = tuple(str(g) for g in gate_validation.produced_gates)
                     if gate_validation.warning:
                         child_automation["produced_gates_warning"] = gate_validation.warning
                         child_automation["produced_gates_validation"] = gate_validation.to_json()
@@ -3359,6 +3364,18 @@ def run_loop(
                             )
                             event_blocker = tier3_audit["blocker"]
                             automation_status = status_after_launch
+                # CS-2.1 SA — emit the ledger-faithful fleet-metric events for this
+                # closeout (velocity/burn_down on completion; promise break/repair
+                # from the produced-gates diff). Best-effort: observability must
+                # never break the enforcement loop, so failures are swallowed.
+                _record_fleet_metrics_best_effort(
+                    repo,
+                    roadmap,
+                    phase=alias,
+                    completed=_phase_status_literal(automation_status) == "complete",
+                    missing_gates=fleet_missing_gates,
+                    produced_gates=fleet_produced_gates,
+                )
                 if not automation_status and launch_action == "plan" and post_launch_plan is not None:
                     artifact_automation = _parsed_artifact_automation(post_launch_plan, spec)
                     artifact_status = artifact_automation.get("automation_status")
@@ -6966,6 +6983,51 @@ def _terminal_verification_status(terminal_status: str, blocker: dict | None) ->
     if terminal_status == "complete":
         return "passed"
     return "not_run"
+
+
+def _record_fleet_metrics_best_effort(
+    repo: Path,
+    roadmap: Path,
+    *,
+    phase: str,
+    completed: bool,
+    missing_gates: tuple[str, ...],
+    produced_gates: tuple[str, ...],
+) -> None:
+    """CS-2.1 SA fleet-metric emission wrapper — never raises into the loop.
+
+    Computes velocity/burn_down scope (total roadmap phases vs completed) from a
+    fresh reconcile and appends the fleet-metric events to the sibling ledger.
+    Any failure (missing roadmap, read error) is swallowed: this is additive
+    observability and must not affect enforcement outcomes.
+    """
+    try:
+        snapshot = reconcile(repo, roadmap)
+        total_scope = len(parse_roadmap_phases(roadmap))
+        # The hook fires mid-closeout — a fresh reconcile may not yet reflect this
+        # phase's completion event. Union the just-completed phase into the set so
+        # completed_count includes it regardless of append ordering (idempotent:
+        # a no-op if reconcile already counted it). Without this, burn_down's
+        # `remaining` would never reach 0 and velocity would always lag by one.
+        completed_phases = {
+            str(name).upper()
+            for name, status in snapshot.phases.items()
+            if status == "complete"
+        }
+        if completed:
+            completed_phases.add(str(phase).upper())
+        completed_count = len(completed_phases)
+        record_phase_fleet_metrics(
+            repo,
+            phase=phase,
+            completed=completed,
+            total_scope=total_scope,
+            completed_count=completed_count,
+            missing_gates=missing_gates,
+            produced_gates=produced_gates,
+        )
+    except Exception:  # pragma: no cover - defensive: observability is best-effort
+        return
 
 
 def _terminal_next_action(terminal_status: str, blocker: dict | None, dirty_summary: dict[str, object]) -> str:

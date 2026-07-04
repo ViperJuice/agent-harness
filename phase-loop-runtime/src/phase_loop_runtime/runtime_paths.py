@@ -148,6 +148,28 @@ def phase_loop_event_read_files(repo: Path) -> tuple[Path, ...]:
     return (canonical,)
 
 
+def phase_loop_fleet_metrics_file(repo: Path) -> Path:
+    """Append-only sibling ledger for CS-2.1 SA fleet-metric events.
+
+    Kept as a SEPARATE file from ``events.jsonl`` so the existing event ledger's
+    bytes and reconcile/fold semantics are provably untouched by this additive
+    observability slice. Enforcement-owned (inside ``.phase-loop/``); the Portal
+    wall forbids Portal from ever reading it — the sanitized aggregates are
+    PUSHED to Portal, never pulled.
+    """
+    return phase_loop_dir(repo) / "fleet-metrics.jsonl"
+
+
+def phase_loop_fleet_metrics_read_files(repo: Path) -> tuple[Path, ...]:
+    canonical = phase_loop_fleet_metrics_file(repo)
+    legacy = legacy_phase_loop_dir(repo) / "fleet-metrics.jsonl"
+    if canonical.exists():
+        return (canonical,)
+    if legacy.exists():
+        return (legacy,)
+    return (canonical,)
+
+
 def phase_loop_active_loop_file(repo: Path) -> Path:
     return phase_loop_dir(repo) / "active-loop.json"
 
