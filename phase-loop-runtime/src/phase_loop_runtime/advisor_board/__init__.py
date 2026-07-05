@@ -17,7 +17,14 @@ Frozen gates (see ``CONTRACTS.md``):
 * IF-0-ABDFREEZE-4 — back-compat: the ``default`` board reproduces today's 3-leg
   behavior (``fixtures.DEFAULT_BOARD`` + the golden-test scaffold).
 * IF-0-ABDFREEZE-5 — internal advisor-board event envelope + best-effort
-  forwarding (``events``).
+  forwarding (``events``); its concrete sink mapping lands in ABDOBS.
+
+ABDOBS (Phase 6) then adds ``observability``: the envelope → omniagent-plus
+state-ledger (``state_ledger_record.v0.1`` / ``runtime_event.v0.1``) mapping, an
+:class:`~observability.AsyncForwardingSink` for off-thread best-effort dispatch,
+and the ``LedgerWriter`` cross-language transport seam. This is the one place the
+package touches ``panel_invoker`` — an OPT-IN ``sink=`` on ``invoke_board``;
+``sink=None`` stays byte-neutral.
 """
 from __future__ import annotations
 
@@ -97,6 +104,22 @@ from .events import (
     EventSink,
     NullSink,
     best_effort_forward,
+)
+from .observability import (
+    LEDGER_RECORD_KIND,
+    LEDGER_RECORD_SCHEMA,
+    RUNTIME_EVENT_SCHEMA,
+    WORKLOAD_BOARD,
+    WORKLOAD_PHASE_EXECUTION,
+    AsyncForwardingSink,
+    BoardObserver,
+    CollectingSink,
+    JsonlLedgerWriter,
+    LedgerWriter,
+    StateLedgerSink,
+    map_event_to_ledger_record,
+    map_event_to_runtime_event,
+    new_session_id,
 )
 from .fixtures import (
     CANONICAL_INVALID_PAIRS,
@@ -197,6 +220,21 @@ __all__ = [
     "best_effort_forward",
     "EVENT_KINDS",
     "EVENT_SCHEMA_VERSION",
+    # observability (ABDOBS)
+    "WORKLOAD_BOARD",
+    "WORKLOAD_PHASE_EXECUTION",
+    "LEDGER_RECORD_SCHEMA",
+    "RUNTIME_EVENT_SCHEMA",
+    "LEDGER_RECORD_KIND",
+    "new_session_id",
+    "map_event_to_runtime_event",
+    "map_event_to_ledger_record",
+    "LedgerWriter",
+    "JsonlLedgerWriter",
+    "StateLedgerSink",
+    "CollectingSink",
+    "AsyncForwardingSink",
+    "BoardObserver",
     # fixtures
     "DEFAULT_BOARD",
     "DEFAULT_SEATS",

@@ -102,3 +102,54 @@ equivalence is proven by a test (not asserted in prose).
   `NullSink` keeps the default board a no-op. The mapping to a concrete sink
   (Omnigent v0.4.0 endpoint, or omniagent-plus ui-read-model/state-ledger) is
   deferred to ABDOBS — do not freeze against a guessed upstream schema.
+
+## ABDOBS — Observability forwarding (Phase 6) · `observability.py`, `panel_invoker.invoke_board`
+
+Builds the mapping ABDFREEZE-5 deferred. **Confirmed sink:** omniagent-plus's own
+`state-ledger` / `ui-read-model` (we control it) — NOT an Omnigent HTTP ingestion
+endpoint. v0.4.0's HTTP surface is launcher-centric and exposes **no** ingestion
+endpoint for an externally-launched (native) session, so a native leg is
+*observed*, never relaunched.
+
+- **Envelope → sink mapping** — `map_event_to_runtime_event(event, session_id)`
+  and `map_event_to_ledger_record(event, session_id)` project our
+  `AdvisorBoardEvent` onto omniagent-plus's *own frozen* wire shapes:
+  `runtime_event.v0.1` (`core-contracts/src/events.ts`) inside a
+  `state_ledger_record.v0.1`, kind `runtime_event` (`core-contracts/src/state-ledger.ts`)
+  — exactly what `AuditLedger.appendRuntimeEvent` (`state-ledger/src/audit-ledger.ts`)
+  writes. **A board run projects to a session; each seat projects to a turn.** A
+  per-run `sessionId` is minted (`new_session_id()` — never the board name);
+  `turnId` derives from the seat's frozen `seat_key` label. `redaction` is
+  `metadata_only` (never a raw key; `content_allowed` only for a text delta).
+- **Cross-language transport seam** — the ledger is TypeScript, the emit is
+  Python, so the boundary is `LedgerWriter` (a Protocol a real omniagent-plus
+  binding implements over IPC/HTTP/a shared file) + `JsonlLedgerWriter`, a
+  reference transport appending the exact `state_ledger_record.v0.1` records the TS
+  `AppendOnlyStore` ingests. We do **not** reimplement ledger internals
+  (retention / replay / compaction stay TS-side). This is the integration seam.
+- **Async / best-effort (never delays or fails the native leg)** —
+  `AsyncForwardingSink.emit` does a NON-BLOCKING put and returns; a background
+  daemon thread does the real (slow / failing) write via `best_effort_forward`.
+  The never-**raise** guarantee is frozen in `events.py`; the never-**delay**
+  guarantee is here (unbounded queue; a bounded queue drops on full). `BoardObserver`
+  wraps construct+map+enqueue in a swallow-all, so even a bad kind / full queue
+  never touches the leg. `flush()` / `close()` drain deterministically (tests /
+  graceful shutdown only — never on the leg's critical path).
+- **launcher ≠ observability-plane, in code** — every sink here is structurally
+  emit-only (no `create_session` / `send_turn`), so the observability path
+  *cannot* launch a leg. Combined with the frozen `enforce_native_host_leg`
+  (which hard-raises on a gatewayed host leg), the native host leg is observed,
+  never relaunched.
+- **Per-workload boundary (documented + enforced)** — `WORKLOAD_BOARD` =
+  native launch **+ optional forward** (this path); `WORKLOAD_PHASE_EXECUTION` =
+  Omnigent-as-launcher (CS-2.2, out of scope here). `invoke_board(sink=...)` is
+  the ONLY opt-in; `sink=None` builds no envelope (default board byte-neutral).
+  `invoke_panel` is untouched, so the live default panel is byte-neutral by
+  construction.
+- **Key-file note (reviewers):** the phase plan lists
+  `agent_runtime_provider.py`; the emit lands in `panel_invoker.invoke_board`
+  instead, because the envelope's vocabulary is `board.*` / `seat.*` (with
+  `seat_key` / `vendor_family` / `harness`) which only the board seam knows — the
+  provider only knows sessions/turns and cannot populate it. `observability.py`
+  maps our envelope onto the provider-mirrored `runtime_event.v0.1` shape, so the
+  provider layer is still the wire target, just not the emit site.

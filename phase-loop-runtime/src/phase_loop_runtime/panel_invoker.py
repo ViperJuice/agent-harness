@@ -35,7 +35,9 @@ from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
 from .advisor_board.backing import resolve_seat_env, select_backing
 from .advisor_board.harness_mapping import EffortMappingError, render_seat_invocation
+from .advisor_board.events import EventSink
 from .advisor_board.matrix import default_matrix
+from .advisor_board.observability import BoardObserver
 from .advisor_board.registries import CompatibilityMatrix
 from .advisor_board.schema import (
     BACKING_HOMEBREW,
@@ -1351,6 +1353,7 @@ def invoke_board(
     mode: str = "review",
     base_env: Mapping[str, str] | None = None,
     matrix: CompatibilityMatrix | None = None,
+    sink: EventSink | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1375,9 +1378,19 @@ def invoke_board(
     The ``default`` board reproduces today's 3-leg panel byte-for-byte: each
     subscription/homebrew built-3 seat renders to today's exact model + effort
     literals and scrubs to exactly ``_subscription_env()``.
+
+    **Observability (ABDOBS).** When ``sink`` is given, the natively-launched
+    board *emits* its runtime events as the frozen ``AdvisorBoardEvent`` envelope
+    (:mod:`advisor_board.events`) to that sink — async/best-effort, so a
+    forwarding failure can never delay or fail a leg (wrap it in an
+    :class:`~advisor_board.observability.AsyncForwardingSink` for off-thread
+    dispatch). The native host leg is OBSERVED, never relaunched through the
+    gateway for observability's sake. ``sink=None`` (the default) is a no-op — no
+    envelope is built — so the ``default`` board stays byte-neutral.
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
     # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
@@ -1390,6 +1403,8 @@ def invoke_board(
             leg=leg, status="UNAVAILABLE", text="", detail=detail, seat_key=seat.seat_key
         )
 
+    if observer is not None:
+        observer.board_started()
     results: list[PanelLegResult] = []
     for seat in board.seats:
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
@@ -1439,4 +1454,12 @@ def invoke_board(
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
         results.append(PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key))
+    # Observability emit is a SEPARATE pass over the (unchanged) run results, in
+    # seat order — 1 result per seat — so the run control-flow above is untouched
+    # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
+    if observer is not None:
+        for seat, result in zip(board.seats, results):
+            observer.seat_started(seat)
+            observer.seat_result(seat, result)
+        observer.board_completed(results)
     return PanelResult(legs=tuple(results))
