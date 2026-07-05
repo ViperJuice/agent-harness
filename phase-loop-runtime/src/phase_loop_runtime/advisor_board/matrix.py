@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .backing import VENDOR_API_KEY_VARS
 from .registries import (
@@ -70,8 +70,8 @@ class DefaultCompatibilityMatrix:
     and the subscription lane ONLY when the harness CLI is on PATH.
     """
 
-    harnesses: HarnessRegistry = DEFAULT_HARNESS_REGISTRY
-    models: ModelRegistry = DEFAULT_MODEL_REGISTRY
+    harnesses: HarnessRegistry = field(default_factory=lambda: DEFAULT_HARNESS_REGISTRY)
+    models: ModelRegistry = field(default_factory=lambda: DEFAULT_MODEL_REGISTRY)
     env: Mapping[str, str] | None = None
 
     def _env(self) -> Mapping[str, str]:
