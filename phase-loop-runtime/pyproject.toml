@@ -29,6 +29,10 @@ dependencies = [
     # neutral no-op); it auto-adopts the git-discipline contract once 0.4.x ships.
     "consiliency-contract>=0.3.0,<0.5.0",
     "jsonschema>=4,<5",
+    # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
+    # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in
+    # the tomli backport there (import shim in advisor_board/config.py).
+    "tomli>=2,<3; python_version < '3.11'",
 ]
 
 [project.urls]
