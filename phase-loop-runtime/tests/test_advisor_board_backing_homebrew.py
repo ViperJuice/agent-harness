@@ -97,6 +97,26 @@ class EffortReachesEachCliTests(unittest.TestCase):
         self.assertIn("--effort", cmd)
         self.assertEqual(cmd[cmd.index("--effort") + 1], "high")
 
+    def test_off_host_agent_view_leg_threads_effort(self) -> None:
+        # The Agent-View (off-host TUI) leg is one of the named built-3; it is
+        # currently dormant (no caller today — the live claude leg uses the local
+        # TUI route), but its per-seat effort must plumb through for when Agent-View
+        # is re-enabled. Prove the effort reaches the adapter's launch command.
+        captured: dict = {}
+
+        class _FakeAdapter:
+            def launch_command(self, _prompt, **kwargs):
+                captured["effort"] = kwargs.get("effort")
+                return ["claude", "--effort", kwargs.get("effort", "")]
+
+        with patch.object(subprocess, "run", side_effect=FileNotFoundError), \
+                tempfile.TemporaryDirectory() as rd:
+            status, _ = pi._exec_claude_agent_view_attempt(
+                _FakeAdapter(), review_dir=Path(rd), timeout_s=600, prompt="p", env={}, effort="low"
+            )
+        self.assertEqual(captured["effort"], "low")
+        self.assertEqual(status, "UNAVAILABLE")  # missing CLI → fail-closed, effort still threaded
+
 
 class DefaultBoardByteEquivalenceTests(unittest.TestCase):
     """The default board THROUGH the seam renders each built-3 leg to the exact
@@ -196,6 +216,14 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         self.assertEqual(captured["env"]["OPENAI_API_KEY"], "secret")
         self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
         self.assertNotIn("GEMINI_API_KEY", captured["env"])
+
+    def test_gemini_launcher_subscription_scrubs_every_key(self) -> None:
+        env = resolve_seat_env(self._gemini_seat("subscription"), self._all_keys_base())
+        captured, fake = _capture_run(stdout="AGREE")
+        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+            pi._exec_leg("gemini", Path(rd), Path(od), effort="high", model="Gemini 3.1 Pro", env=env)
+        for var in pi._API_KEY_VARS:
+            self.assertNotIn(var, captured["env"])
 
     def test_gemini_launcher_api_key_injects_only_google_vars(self) -> None:
         env = resolve_seat_env(self._gemini_seat(AUTH_API_KEY), self._all_keys_base(),
