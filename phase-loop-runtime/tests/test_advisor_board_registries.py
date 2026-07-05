@@ -65,5 +65,56 @@ class StubTests(unittest.TestCase):
         self.assertTrue(avail.subscription)
 
 
+class PopulatedRegistryTests(unittest.TestCase):
+    """ABDREG: the populated six-harness / model registries (the frozen stubs
+    above still raise — that contract is unchanged)."""
+
+    def test_six_harnesses_registered_with_cli_and_backing(self) -> None:
+        from phase_loop_runtime.advisor_board import DefaultHarnessRegistry
+
+        reg = DefaultHarnessRegistry()
+        names = tuple(h.name for h in reg.list_harnesses())
+        self.assertEqual(names, ("claude", "codex", "gemini", "opencode", "pi", "cursor"))
+        # built-3 are homebrew; breadth (opencode/pi/cursor) default to omnigent.
+        by = {h.name: h for h in reg.list_harnesses()}
+        for built in ("claude", "codex", "gemini"):
+            self.assertEqual(by[built].backing, "homebrew")
+        for breadth in ("opencode", "pi", "cursor"):
+            self.assertEqual(by[breadth].backing, "omnigent")
+        # probe binaries reflect reality: gemini -> agy, cursor -> cursor-agent.
+        self.assertEqual(by["gemini"].cli, "agy")
+        self.assertEqual(by["cursor"].cli, "cursor-agent")
+
+    def test_cursor_availability_is_gated_on_cursor_agent_binary(self) -> None:
+        from phase_loop_runtime.advisor_board import DefaultHarnessRegistry
+
+        present = DefaultHarnessRegistry(probe=lambda cli: cli == "cursor-agent")
+        self.assertTrue(present.is_available("cursor"))
+        absent = DefaultHarnessRegistry(probe=lambda cli: False)
+        self.assertFalse(absent.is_available("cursor"))
+
+    def test_unknown_harness_raises_with_known_list(self) -> None:
+        from phase_loop_runtime.advisor_board import DefaultHarnessRegistry, UnknownHarnessError
+
+        with self.assertRaises(UnknownHarnessError):
+            DefaultHarnessRegistry().get("amp")
+
+    def test_model_default_lane_pins_gpt55_to_codex_not_opencode(self) -> None:
+        # gpt-5.5 is runnable_by both codex and opencode, but a bare seat MUST
+        # resolve onto the built-3 codex leg (default-board back-compat).
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-5.5")
+        self.assertEqual(spec.default_lane, "codex")
+        self.assertEqual(spec.runnable_by, ("codex", "opencode"))
+        self.assertEqual(spec.vendor_family, "codex")  # derived from schema.vendor_family
+
+    def test_unknown_model_raises_with_known_list(self) -> None:
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError
+
+        with self.assertRaises(UnknownModelError):
+            DEFAULT_MODEL_REGISTRY.default_lane("gpt-9-imaginary")
+
+
 if __name__ == "__main__":
     unittest.main()
