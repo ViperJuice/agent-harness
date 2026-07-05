@@ -1,0 +1,92 @@
+{
+  "schema": "omnigent.source_metadata.v1",
+  "redaction": "metadata_only",
+  "captured_at": "2026-07-05T01:00:26Z",
+  "repo": "omnigent-ai/omnigent",
+  "freeze_target": {
+    "tag": "v0.4.0",
+    "commit": "31669e1b413216c865d0ed7dfb469fb142c889f5",
+    "published_at": "2026-07-03T01:36:56Z",
+    "package_version": "0.4.0",
+    "requires_python": ">=3.12"
+  },
+  "head_probe": {
+    "branch": "main",
+    "commit": "b9332cc655b2ad7dbe70d2ad5b9cd78214dd3e17",
+    "observed_at": "2026-07-05T01:00:26Z",
+    "authority": "latest remote head probe only; not part of IF-0-CONTRACT-1"
+  },
+  "previous_probe": {
+    "tag": "v0.4.0dev0",
+    "commit": "3f4d1c8e0b3742579c5c96742086db9e0bd36def",
+    "observed_at": "2026-07-02T07:15:35Z",
+    "authority": "historical prerelease probe only; superseded by official v0.4.0 freeze target"
+  },
+  "local_cli_probe": {
+    "omnigent_on_path": false,
+    "omni_on_path": false
+  },
+  "preflight_confirmation": {
+    "observed_at": "2026-07-05T01:00:26Z",
+    "openapi_has_harnesses": true,
+    "openapi_has_read_state": true,
+    "session_response_has_active_response_id": true
+  },
+  "provenance": [
+    {
+      "kind": "release_metadata",
+      "source": "github release metadata",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "package_metadata",
+      "source": "PyPI omnigent 0.4.0 metadata",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "pyproject.toml",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "openapi.json",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/API.md",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/routes/harnesses.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/harness_plugins.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/schemas.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "sdks/python-client/omnigent_client/_sessions.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "sdks/python-client/omnigent_client/_events.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "remote_head_probe",
+      "path": "refs/heads/main",
+      "ref": "b9332cc655b2ad7dbe70d2ad5b9cd78214dd3e17"
+    }
+  ]
+}
