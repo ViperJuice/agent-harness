@@ -113,9 +113,18 @@ class PanelLegResult:
     status: str         # one of LEG_STATUSES
     text: str = ""
     detail: str | None = None
+    # ABDRESOLVE leg->seat re-key: `leg` alone keys by vendor, so a board with two
+    # same-vendor seats (two openai seats on codex and opencode) was inexpressible.
+    # `seat_key` is the stable per-seat identity (advisor_board.Seat.seat_key) that
+    # tells them apart. It defaults to `leg` so every existing caller and the
+    # default 3-leg board stay byte-for-byte identical (one seat per vendor ==
+    # seat_key == leg). ABDHOME wires the per-seat spawn; this freezes the identity.
+    seat_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
+        if self.seat_key is None:
+            object.__setattr__(self, "seat_key", self.leg)
 
     @property
     def usable(self) -> bool:
@@ -1161,3 +1170,31 @@ def invoke_panel(
             status = "EMPTY"
         results.append(PanelLegResult(leg=leg, status=status, text=str(text)))
     return PanelResult(legs=tuple(results))
+
+
+def invoke_panel_request(
+    request: PanelRequest,
+    *,
+    spawn: SpawnFn | None = None,
+    repo_dir: Path | str | None = None,
+    mode: str = "review",
+    models: Mapping[str, str] | None = None,
+) -> PanelResult:
+    """Run a panel from a ``PanelRequest`` value object (documented skill entry point).
+
+    ``PanelRequest`` was documented in the advisor-board skill as an entry point but
+    was never accepted by ``invoke_panel`` — this reconciles it: the request's
+    ``artifact`` and ``legs`` drive an ``invoke_panel`` call, so the request object
+    is a real, usable entry point instead of a dangling reference. ``invoke_panel``'s
+    own signature is unchanged (ABDFREEZE-4 back-compat anchor); this is an additive
+    sibling. The request's ``metadata_only`` redaction posture is enforced at
+    ``PanelRequest`` construction.
+    """
+    return invoke_panel(
+        request.artifact,
+        request.legs,
+        spawn=spawn,
+        repo_dir=repo_dir,
+        mode=mode,
+        models=models,
+    )

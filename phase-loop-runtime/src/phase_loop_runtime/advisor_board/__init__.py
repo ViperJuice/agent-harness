@@ -112,6 +112,24 @@ from .fixtures import (
     DEFAULT_SEATS,
     TWO_SAME_VENDOR_BOARD,
 )
+from .resolver import (
+    BOARD_ALIASES,
+    STANDIN_BOARDS,
+    BoardResolutionError,
+    BoardResolver,
+    SeatSpecError,
+    key_results_by_seat,
+    parse_seat_spec,
+    parse_seats,
+    resolve_board,
+    seat_result_key,
+)
+from .validation import (
+    SeatValidationError,
+    SeatVerdict,
+    validate_board,
+    validate_seat,
+)
 
 __all__ = [
     # schema
@@ -196,4 +214,20 @@ __all__ = [
     "CANONICAL_VALID_PAIRS",
     "CANONICAL_INVALID_PAIRS",
     "TWO_SAME_VENDOR_BOARD",
+    # resolver (ABDRESOLVE)
+    "BoardResolver",
+    "resolve_board",
+    "parse_seat_spec",
+    "parse_seats",
+    "SeatSpecError",
+    "BoardResolutionError",
+    "BOARD_ALIASES",
+    "STANDIN_BOARDS",
+    "seat_result_key",
+    "key_results_by_seat",
+    # validation (ABDRESOLVE)
+    "validate_seat",
+    "validate_board",
+    "SeatValidationError",
+    "SeatVerdict",
 ]
