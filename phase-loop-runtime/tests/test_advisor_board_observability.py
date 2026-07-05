@@ -210,6 +210,25 @@ class EnvelopeToLedgerMappingTests(unittest.TestCase):
             self.assertTrue(rt["type"].startswith("runtime."))
             self.assertEqual(rt["terminal"], kind in terminal)
 
+    def test_seat_failed_payload_conforms_to_runtime_failure_schema(self) -> None:
+        # Upstream runtime_failure.v0.1 (errors.ts) requires ALL of
+        # schema/category/retryable/actor/scope/message — a bare {"reason": ...}
+        # would fail zod. Prove the mapping emits the full, valid object.
+        ev = AdvisorBoardEvent(
+            kind="seat.failed", board="b", sequence=2, occurred_at="2026-07-05T00:00:00+00:00",
+            seat_key="codex|gpt-5.5|max", payload={"status": "DEGRADED", "failure": {"reason": "boom"}},
+        )
+        rt = obs.map_event_to_runtime_event(ev, session_id="s1")
+        failure = rt["payload"]["failure"]
+        self.assertEqual(failure["schema"], "runtime_failure.v0.1")
+        for req in ("category", "retryable", "actor", "scope", "message"):
+            self.assertIn(req, failure)
+        self.assertEqual(failure["scope"], "turn")
+        self.assertEqual(failure["actor"], "harness")
+        self.assertIsInstance(failure["retryable"], bool)
+        self.assertTrue(failure["message"])  # zod: min length 1
+        self.assertEqual(rt["payload"]["outcome"], "failed")
+
     def test_redaction_never_content_redacted_and_no_raw_key(self) -> None:
         for kind in EVENT_KINDS:
             ev = AdvisorBoardEvent(kind=kind, board="b", sequence=1,

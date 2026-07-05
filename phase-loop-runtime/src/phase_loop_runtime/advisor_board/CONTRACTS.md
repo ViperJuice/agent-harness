@@ -120,7 +120,13 @@ endpoint for an externally-launched (native) session, so a native leg is
   writes. **A board run projects to a session; each seat projects to a turn.** A
   per-run `sessionId` is minted (`new_session_id()` — never the board name);
   `turnId` derives from the seat's frozen `seat_key` label. `redaction` is
-  `metadata_only` (never a raw key; `content_allowed` only for a text delta).
+  `metadata_only` (never a raw key; `content_allowed` only for a text delta). A
+  `seat.failed` payload conforms to the full `runtime_failure.v0.1` (`errors.ts`)
+  — all of schema/category/retryable/actor/scope/message are required upstream.
+  NB: the record-level `recordId` / `sequence` are meaningful only for the
+  reference `JsonlLedgerWriter`; the real TS `AppendOnlyStore` ASSIGNS them on
+  append (its `AppendRecordInput` has no `sequence`), so a real binding overrides
+  them. The authoritative, per-session sequence is the `runtime_event` payload's.
 - **Cross-language transport seam** — the ledger is TypeScript, the emit is
   Python, so the boundary is `LedgerWriter` (a Protocol a real omniagent-plus
   binding implements over IPC/HTTP/a shared file) + `JsonlLedgerWriter`, a

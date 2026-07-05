@@ -61,6 +61,7 @@ WORKLOAD_PHASE_EXECUTION = "phase_execution"
 # omniagent-plus wire schemas we target (owned by us; frozen upstream).
 LEDGER_RECORD_SCHEMA = "state_ledger_record.v0.1"  # packages/core-contracts state-ledger.ts
 RUNTIME_EVENT_SCHEMA = "runtime_event.v0.1"        # packages/core-contracts events.ts
+RUNTIME_FAILURE_SCHEMA = "runtime_failure.v0.1"    # packages/core-contracts errors.ts
 LEDGER_RECORD_KIND = "runtime_event"               # AuditLedger.appendRuntimeEvent kind
 
 # Our envelope kind -> the omniagent runtime.* event type it maps to. A board run
@@ -125,7 +126,23 @@ def _runtime_payload(event: AdvisorBoardEvent) -> dict[str, Any]:
             out["outputSummary"] = str(p["outputSummary"])
         return out
     if kind == "seat.failed":
-        return {"outcome": "failed", "failure": p.get("failure", {"reason": p.get("status", "failed")})}
+        # Conform to the upstream `runtime_failure.v0.1` (errors.ts): all of
+        # schema/category/retryable/actor/scope/message are REQUIRED, so a bare
+        # {"reason": ...} would fail zod. A board-seat failure is a non-retryable,
+        # harness-scoped, turn-level failure; the message is the leg's detail.
+        raw = dict(p.get("failure") or {})
+        message = str(raw.get("message") or raw.get("reason") or p.get("status") or "failed") or "failed"
+        return {
+            "outcome": "failed",
+            "failure": {
+                "schema": RUNTIME_FAILURE_SCHEMA,
+                "category": "internal",
+                "retryable": False,
+                "actor": "harness",
+                "scope": "turn",
+                "message": message,
+            },
+        }
     if kind == "seat.skipped":
         return {"outcome": "cancelled", "reason": str(p.get("reason", "skipped"))}
     return p  # pragma: no cover - kinds are exhaustive (EVENT_KINDS)
