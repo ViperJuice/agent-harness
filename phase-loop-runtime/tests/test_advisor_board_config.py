@@ -226,10 +226,12 @@ purpose = "x"
 
 class ShippedExampleFixtureTests(unittest.TestCase):
     def test_frozen_example_toml_parses_and_validates(self) -> None:
-        example = (
-            Path(__file__).resolve().parents[1]
-            / "src/phase_loop_runtime/advisor_board/fixtures/advisor-boards.example.toml"
-        )
+        # Resolve via the INSTALLED package (works from source AND from the
+        # standalone-from-wheel clean room, where only tests/ is copied and the
+        # package lives in site-packages — a source-tree-relative path fails there).
+        import phase_loop_runtime.advisor_board as _ab
+
+        example = Path(_ab.__file__).resolve().parent / "fixtures" / "advisor-boards.example.toml"
         self.assertTrue(example.exists(), example)
         cfg = load_boards(example, matrix=_MATRIX)
         # the example defines default + code-review; presets fill the rest.
