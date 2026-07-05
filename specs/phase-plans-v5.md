@@ -10,6 +10,8 @@ This roadmap evolves the fixed 3-vendor `advisor-panel` (v4: *Cross-Vendor Advis
 
 Design source: `DESIGN-advisor-board.md`. The panel is already a single runtime-owned primitive (`phase_loop_runtime.panel_invoker`); the standalone `advisor-panel` skill and the embedded governed gates in `execute-phase`/`plan-phase` both call it, so this refactor has one implementation surface, not two. The runtime already supports overridable legs + per-leg model (`invoke_panel(models={…})`, panel_invoker.py:49-53,1114-1121), and the CS-0.8 provider seam (`agent_runtime_provider.py`) already mirrors omniagent-plus's `core-contracts/src/provider.ts` and is LIVE (the default path routes every leg through `HomebrewAgentRuntimeProvider`) — so the provider-backing work activates an existing seam rather than inventing one.
 
+**v0.4.0 landed (2026-07-05, verified on omniagent-plus origin/main `744420d`):** the Omnigent v0.4.0 adaptation is MERGED (PR #1 `omnigent-v0-4-adaptation`) — freeze target is `v0.4.0`, capability probe asserts `0.4.0`, `GET /v1/harnesses` (dynamic harness catalog) exists. So **ABDOMNI and ABDOBS are NO LONGER externally gated** — the earlier "gated on v0.4.0" annotation is removed. They still depend on ABDHOME (a real code dependency: the seam), so the DAG order is unchanged, but nothing waits on external work. One confirmed nuance: v0.4.0's HTTP surface is launcher-centric (no ingestion endpoint for externally-launched sessions), so ABDOBS observability of a NATIVE leg retargets at omniagent-plus's own `state-ledger`/`ui-read-model` (which we control) — this is now the confirmed sink, not a "verify an ingestion surface that may not exist."
+
 **Panel-verified corrections (v5, three-agent panel incl. Fable code-verification):** (a) per-leg **effort is NOT supported today** — it is hard-coded per leg (claude `--effort max` :324, codex `xhigh` :992) and for the agy/gemini leg **effort is baked into the model-name string** (`"Gemini 3.1 Pro (High)"` :51/:1016), so the model-first `{model, effort}` split needs a per-harness model/effort mapping that is NEW work scheduled here. (b) The governed gates key reviewer≠author disjointness on **vendor-leg identity** (`governed_review.py:45-52,88-103`; `governed_premerge.py`); model-first breaks the `leg==vendor` assumption, so a seat→vendor-family projection is frozen and those call sites are updated, or custom boards silently corrupt reviewer-disjointness. (c) omniagent-plus integrates **opencode/pi/codex/claude-code/gemini-antigravity only** (`core-contracts/src/types.ts:10-17`) — **cursor and amp are NOT present**; breadth via Omnigent is scoped to opencode/pi, with a named contract-extension work item for cursor/amp.
 
 The work is roadmap-sized (not a single detailed plan) because it spans schema, registries, a compatibility matrix, board resolution, a rename, two provider backings, and an observability plane — with a natural interface-freeze boundary up front that lets almost everything else fan out in parallel, and a gated tail that rides the in-flight omniagent-plus Omnigent v0.4.0 adaptation.
@@ -186,17 +188,17 @@ No Omnigent backing, no observability forwarding, no hand-written breadth adapte
 ### Phase 5 — Omnigent Backing (ABDOMNI)
 
 **Objective**
-Add the `omnigent` provider backing so breadth harnesses route through omniagent-plus to Omnigent v0.4.0, opt-in and fail-closed, coordinating with the in-flight v0.4.0 adaptation rather than forking the transport. Scoped to the harnesses omniagent-plus actually integrates today (**opencode/pi**); cursor/amp require a named contract-extension work item first. Gated on Omnigent v0.4.0.
+Add the `omnigent` provider backing so breadth harnesses route through omniagent-plus to Omnigent v0.4.0, opt-in and fail-closed, coordinating with the in-flight v0.4.0 adaptation rather than forking the transport. Scoped to the harnesses omniagent-plus integrates today (**opencode/pi**). v0.4.0 has LANDED (freeze target v0.4.0, `GET /v1/harnesses` present), so this is buildable now (depends on ABDHOME, not on external work). cursor/amp availability is checked dynamically via the live `GET /v1/harnesses` catalog; routing them needs only the upstream Omnigent catalog to report them, not a code gate.
 
 **Exit criteria**
 - [ ] The `omnigent` backing is implemented against the shared seam, targeting Omnigent v0.4.0 via omniagent-plus's provider.
 - [ ] Opt-in **opencode/pi** seats route through Omnigent as the primary lane; unavailable = skip-with-warning (no hand-written homebrew breadth fallback).
-- [ ] **cursor/amp** are tracked as an explicit omniagent-plus contract-extension work item (they are absent from `core-contracts/src/types.ts:10-17`); no cursor/amp omnigent routing is claimed until that lands or the v0.4.0 dynamic harness catalog (`GET /v1/harnesses`) is verified to expose them.
+- [ ] cursor/amp routing is gated on the live `GET /v1/harnesses` catalog reporting them (the v0.4.0 dynamic catalog exists); registered as harnesses regardless, routed through Omnigent only when the catalog exposes them.
 - [ ] Gateway auth resolution maps subscription-default/api-key-opt-in/never-silent to the gateway-bearer lane, and the gateway reports which auth lane a session actually used (so no-silent-key is testable for omnigent seats, not just asserted).
 - [ ] A gateway-down condition degrades an omnigent seat to skip-with-warning; native and built-3 seats are unaffected.
 
 **Scope notes**
-Decompose into three lanes: omnigent-provider-adapter lane, breadth-routing (opencode/pi) lane, and gateway-auth-resolution lane. Gated on the Omnigent v0.4.0 adaptation landing; coordinate, do not fork. cursor/amp are out of this phase's routing scope pending the contract extension.
+Decompose into three lanes: omnigent-provider-adapter lane, breadth-routing (opencode/pi) lane, and gateway-auth-resolution lane. v0.4.0 has landed; coordinate with omniagent-plus main, do not fork. cursor/amp route only when the live harness catalog exposes them.
 
 **Non-goals**
 No native-host-leg routing through the gateway; no observability work (that is ABDOBS).
@@ -216,16 +218,16 @@ No native-host-leg routing through the gateway; no observability work (that is A
 ### Phase 6 — Observability Forwarding (ABDOBS)
 
 **Objective**
-Emit a natively-launched leg's runtime events as the frozen internal advisor-board envelope, then MAP that envelope to a verified sink (observed, not relaunched); document/enforce the per-workload boundary. Gated on a VERIFIED ingestion surface.
+Emit a natively-launched leg's runtime events as the frozen internal advisor-board envelope, then MAP that envelope to omniagent-plus's own `state-ledger`/`ui-read-model` sink (which we control; v0.4.0's HTTP surface has no external-session ingestion endpoint, so this is the confirmed path — observed, not relaunched); document/enforce the per-workload boundary. Buildable now.
 
 **Exit criteria**
 - [ ] A natively-launched leg emits its runtime events as the internal advisor-board event envelope (IF-0-ABDFREEZE-5), async/best-effort, never delaying or failing the native leg.
-- [ ] The envelope maps to a VERIFIED sink: either a confirmed Omnigent v0.4.0 ingestion endpoint for externally-launched sessions (the frozen contract `omnigent-contract.md:52-62` has NONE — verify one exists in v0.4.0 first), OR omniagent-plus's own `ui-read-model`/`state-ledger` (which we control) as the retarget.
+- [ ] The envelope maps to omniagent-plus's own `state-ledger`/`ui-read-model` (append-only-store/audit-ledger/evidence-store) — confirmed sink, since v0.4.0's launcher-centric HTTP surface exposes no ingestion endpoint for externally-launched sessions.
 - [ ] A natively-launched Claude host leg appears in the chosen plane without being routed through the gateway.
 - [ ] The per-workload boundary is documented and enforced: Board = native + optional forward; phase-execution = Omnigent-as-launcher.
 
 **Scope notes**
-Decompose into two lanes: envelope-emit (async/best-effort) lane and envelope→verified-sink mapping lane. Gated on a VERIFIED ingestion surface (Omnigent v0.4.0 endpoint confirmed, or retarget at omniagent-plus ui-read-model/state-ledger) — do NOT freeze against a guessed upstream schema.
+Decompose into two lanes: envelope-emit (async/best-effort) lane and envelope→verified-sink mapping lane. Sink is omniagent-plus's own state-ledger/ui-read-model (we control it); no external gate. The internal envelope is frozen in ABDFREEZE-5; do NOT depend on a nonexistent upstream ingestion endpoint.
 
 **Non-goals**
 No relaunching of the native host leg for observability; no phase-execution agent-spawning (CS-2.2).
@@ -311,8 +313,8 @@ ABDREG           ABDRESOLVE         ABDHOME
                               v
                         ABDVERIFY  (serial integrate+verify)
 
-* ABDOMNI, ABDOBS DEPEND ON ABDHOME (the seam) and are gated on Omnigent v0.4.0
-  (ABDOBS additionally on a verified ingestion surface). They join ABDVERIFY when ungated.
+* ABDOMNI, ABDOBS DEPEND ON ABDHOME (the seam) — a code dependency, NOT an external gate.
+  Omnigent v0.4.0 has landed; ABDOBS's sink is our own state-ledger. Nothing waits on external work.
   ABDREG/ABDRESOLVE/ABDHOME are buildable now and run in parallel; ABDFREEZE ships the
   shared canonical fixtures so ABDRESOLVE/ABDHOME don't diverge from ABDREG (no big-bang).
 ```
@@ -320,7 +322,7 @@ ABDREG           ABDRESOLVE         ABDHOME
 ## Parallelism summary
 
 - **1 front serial gate** (ABDFREEZE) unblocks a **3-way buildable-now fan-out** (ABDREG, ABDRESOLVE, ABDHOME) — independent file footprints, each with 2-3 internal lanes (~8 lanes live at once), all coding against ABDFREEZE's shared canonical fixtures.
-- **A gated 2-way second wave** (ABDOMNI, ABDOBS) that **depends on ABDHOME** (the seam) and rides Omnigent v0.4.0; the two run in parallel with each other once unblocked.
+- **A 2-way second wave** (ABDOMNI, ABDOBS) that **depends on ABDHOME** (the seam, a code dependency — NOT an external gate; v0.4.0 has landed); the two run in parallel with each other once ABDHOME is wired.
 - **1 back serial gate** (ABDVERIFY) integrates.
 - **Buildable-now critical path**: ABDFREEZE → max(ABDREG, ABDRESOLVE, ABDHOME) → ABDVERIFY = **3 phases deep**.
-- **Full critical path with v0.4.0 ready**: ABDFREEZE → ABDHOME → max(ABDOMNI, ABDOBS) → ABDVERIFY = **4 phases deep** (the second wave is not a flat fan-out — corrected from an earlier overstatement).
+- **Full critical path** (all buildable now, v0.4.0 landed): ABDFREEZE → ABDHOME → max(ABDOMNI, ABDOBS) → ABDVERIFY = **4 phases deep** (the second wave is a code dependency on ABDHOME, not a flat fan-out).
