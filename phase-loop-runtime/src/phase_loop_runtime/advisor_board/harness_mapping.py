@@ -73,9 +73,13 @@ _GEMINI_EFFORT_WORD: dict[str, str] = {
     "max": "Max",
 }
 
-# strip a trailing ``" (Word)"`` effort embed so re-rendering is idempotent when a
-# caller passes an already-baked model string (e.g. ``"Gemini 3.1 Pro (High)"``).
-_GEMINI_EMBED_RE = re.compile(r"\s*\([A-Za-z][A-Za-z -]*\)\s*$")
+# strip a trailing ``" (Effort)"`` embed so re-rendering is idempotent when a caller
+# passes an already-baked model string (e.g. ``"Gemini 3.1 Pro (High)"``). Matches
+# ONLY the four canonical effort words (the Title-case tokens ``render_gemini_model``
+# emits) — a model whose name genuinely ends in a parenthetical (e.g.
+# ``"Gemini 3.1 Pro (Preview)"``) is a DIFFERENT model and must be left untouched,
+# never silently rewritten to a lower effort.
+_GEMINI_EMBED_RE = re.compile(r"\s*\((?:Low|Medium|High|Max)\)\s*$")
 
 
 def gemini_base_model(model: str) -> str:

@@ -39,7 +39,9 @@ from phase_loop_runtime.advisor_board import (
     Seat,
     resolve_seat_env,
 )
+from phase_loop_runtime.advisor_board import SeatValidationError, resolve_board
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, TWO_SAME_VENDOR_BOARD
+from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
 
 
 def _capture_run(stdout: str = ""):
@@ -369,6 +371,74 @@ class SkipWithWarningTests(unittest.TestCase):
         res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
         self.assertEqual(res.legs[0].status, "OK")
         self.assertEqual(res.legs[1].status, "UNAVAILABLE")
+
+
+class BoardSeamValidationTests(unittest.TestCase):
+    """CR findings 4/6/7 — the ad-hoc/seam board is lane-resolved, matrix-validated
+    before spawn, and every result carries a per-seat key."""
+
+    def test_bare_seat_runs_on_its_default_lane_not_skip(self) -> None:
+        # finding 6: a bare seat (harness=None) must resolve to its default lane
+        # (claude-sonnet-5 -> claude) and RUN, not skip on an empty ('') lane.
+        board = Board(name="bare", purpose="x", seats=(Seat(model="claude-sonnet-5", effort="max"),))
+        res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        self.assertEqual(res.legs[0].leg, "claude")
+        self.assertEqual(res.legs[0].status, "OK")
+
+    def test_invalid_pairing_rejects_before_any_spawn(self) -> None:
+        # finding 7: gpt-5.5 on the claude lane must reject, never spawn
+        # `claude --model gpt-5.5`.
+        spawned: list[str] = []
+
+        def _spawn(leg, art):
+            spawned.append(leg)
+            return ("OK", "x")
+
+        board = Board(name="bad", purpose="x", seats=(Seat(model="gpt-5.5", effort="max", harness="claude"),))
+        with self.assertRaises(SeatValidationError):
+            pi.invoke_board(board, "artifact", spawn=_spawn)
+        self.assertEqual(spawned, [])  # rejected before spawn
+
+    def test_ad_hoc_resolve_board_invalid_pairing_rejects_before_spawn(self) -> None:
+        # finding 7: the same invariant on the resolve_board(seats=...) ad-hoc path.
+        board = resolve_board(seats="gpt-5.5:max:claude", matrix=pi.default_matrix())
+        spawned: list[str] = []
+
+        def _spawn(leg, art):
+            spawned.append(leg)
+            return ("OK", "x")
+
+        with self.assertRaises(SeatValidationError):
+            pi.invoke_board(board, "artifact", spawn=_spawn)
+        self.assertEqual(spawned, [])
+
+    def test_every_result_carries_a_seat_key(self) -> None:
+        # finding 4: both OK and skip results carry seat_key.
+        res = pi.invoke_board(TWO_SAME_VENDOR_BOARD, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        self.assertTrue(all(l.seat_key for l in res.legs))
+
+    def test_two_same_lane_seats_are_distinguishable_by_seat_key(self) -> None:
+        # finding 4: two claude seats differing only by lens share a leg but get
+        # distinct seat_keys (the whole point of carrying seat_key through the seam).
+        board = Board(name="twolens", purpose="x", seats=(
+            Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial"),
+            Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="supportive"),
+        ))
+        res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", "AGREE"))
+        self.assertEqual([l.leg for l in res.legs], ["claude", "claude"])
+        self.assertNotEqual(res.legs[0].seat_key, res.legs[1].seat_key)
+
+
+class GeminiEffortEmbedTests(unittest.TestCase):
+    """CR finding 5 — only the four canonical effort words are stripped from a
+    gemini model name; a real parenthetical (e.g. ``(Preview)``) is preserved."""
+
+    def test_preview_parenthetical_is_not_mistaken_for_effort(self) -> None:
+        out = render_gemini_model("Gemini 3.1 Pro (Preview)", "high")
+        self.assertEqual(out, "Gemini 3.1 Pro (Preview) (High)")
+
+    def test_effort_word_is_still_stripped_for_idempotency(self) -> None:
+        self.assertEqual(render_gemini_model("Gemini 3.1 Pro (High)", "max"), "Gemini 3.1 Pro (Max)")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -35,6 +35,8 @@ from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
 from .advisor_board.backing import resolve_seat_env, select_backing
 from .advisor_board.harness_mapping import EffortMappingError, render_seat_invocation
+from .advisor_board.matrix import default_matrix
+from .advisor_board.registries import CompatibilityMatrix
 from .advisor_board.schema import (
     BACKING_HOMEBREW,
     BACKING_OMNIGENT,
@@ -43,6 +45,7 @@ from .advisor_board.schema import (
     Seat,
     identify_host_leg,
 )
+from .advisor_board.validation import validate_seat
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
@@ -1310,6 +1313,33 @@ def enforce_native_host_leg(board: Board, host: HostContext | None) -> Seat | No
     return host_seat
 
 
+def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Board:
+    """Resolve each seat's lane and validate it against the matrix BEFORE any spawn.
+
+    This extends the config-time "reject an inexpressible seat" invariant to the
+    ad-hoc / seam path (a hand-built board or ``resolve_board(seats=...)`` never
+    passes through ``config.load_boards``). For every seat it runs the canonical
+    ``validate_seat``, which:
+
+    * resolves a BARE seat's lane via ``matrix.default_lane(model)`` (so a bare
+      ``claude-sonnet-5`` seat runs on ``claude`` instead of skipping on lane
+      ``''``), returned as ``verdict.harness``;
+    * REJECTS an inexpressible seat — unknown model, cross-vendor pairing (e.g.
+      ``gpt-5.5`` on ``claude``), or an over-ceiling effort — by raising
+      ``SeatValidationError`` before a single subprocess is spawned (so
+      ``resolve_board(seats="gpt-5.5:max:claude")`` can never launch
+      ``claude --model gpt-5.5``).
+
+    Returns a board whose seats all carry a concrete harness lane. The ``default``
+    board (every seat already lane-concrete and valid) is returned byte-equivalent.
+    """
+    resolved: list[Seat] = []
+    for seat in board.seats:
+        verdict = validate_seat(seat, matrix)
+        resolved.append(seat if seat.harness else replace(seat, harness=verdict.harness))
+    return replace(board, seats=tuple(resolved))
+
+
 def invoke_board(
     board: Board,
     artifact: str,
@@ -1320,6 +1350,7 @@ def invoke_board(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     base_env: Mapping[str, str] | None = None,
+    matrix: CompatibilityMatrix | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1347,25 +1378,33 @@ def invoke_board(
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
+    # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
+    # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
+    board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
     enforce_native_host_leg(board, host)
     env_source: Mapping[str, str] = os.environ if base_env is None else base_env
 
-    def _skip(leg: str, detail: str) -> PanelLegResult:
-        return PanelLegResult(leg=leg, status="UNAVAILABLE", text="", detail=detail)
+    def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
+        return PanelLegResult(
+            leg=leg, status="UNAVAILABLE", text="", detail=detail, seat_key=seat.seat_key
+        )
 
     results: list[PanelLegResult] = []
     for seat in board.seats:
+        # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
+        # runs on its default lane instead of skipping on an empty ('') lane.
         leg = (seat.harness or "").lower()
         decision = select_backing(seat, gateway_available=gateway_available)
         if decision.skip:
-            results.append(_skip(leg, f"skip: {decision.reason}"))
+            results.append(_skip(seat, leg, f"skip: {decision.reason}"))
             continue
         if decision.backing != BACKING_HOMEBREW:
             # An omnigent seat that did NOT skip is ABDOMNI's transport, not ABDHOME's.
-            results.append(_skip(leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
+            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
             continue
         if leg not in _HOMEBREW_BUILT3:
-            results.append(_skip(leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
+            results.append(_skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
             continue
         # Render effort (proves the mapping is frozen for this lane) + resolve the
         # actively-scrubbed env BEFORE spawning. A breadth lane raises
@@ -1377,10 +1416,10 @@ def invoke_board(
                 seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
             )
         except EffortMappingError as exc:
-            results.append(_skip(leg, f"skip: {exc}"))
+            results.append(_skip(seat, leg, f"skip: {exc}"))
             continue
         except ValueError as exc:  # never-silent-key
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
             continue
         try:
             if spawn is not None:
@@ -1391,7 +1430,7 @@ def invoke_board(
                     model=seat.model, effort=seat.effort, env=seat_env,
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
             continue
         try:
             status = normalize_leg_status(status)
@@ -1399,5 +1438,5 @@ def invoke_board(
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        results.append(PanelLegResult(leg=leg, status=status, text=str(text)))
+        results.append(PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key))
     return PanelResult(legs=tuple(results))
