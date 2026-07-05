@@ -97,6 +97,18 @@ from .backing import (
     resolve_seat_env,
     select_backing,
 )
+from .backing_omnigent import (
+    OMNIGENT_FREEZE_TARGET,
+    HARNESS_ENDPOINT,
+    SESSION_ENDPOINTS,
+    VENDOR_KEY_HEADER_PREFIX,
+    OmnigentBacking,
+    OmnigentGatewayUnavailable,
+    OmnigentHttpClient,
+    OmnigentHttpError,
+    SeatRunOutcome,
+    classify_http_failure,
+)
 from .events import (
     EVENT_KINDS,
     EVENT_SCHEMA_VERSION,
@@ -214,6 +226,17 @@ __all__ = [
     "BackingDecision",
     "select_backing",
     "resolve_seat_env",
+    # backing — omnigent transport (ABDOMNI)
+    "OMNIGENT_FREEZE_TARGET",
+    "HARNESS_ENDPOINT",
+    "SESSION_ENDPOINTS",
+    "VENDOR_KEY_HEADER_PREFIX",
+    "OmnigentBacking",
+    "OmnigentHttpClient",
+    "OmnigentHttpError",
+    "OmnigentGatewayUnavailable",
+    "SeatRunOutcome",
+    "classify_http_failure",
     # events
     "AdvisorBoardEvent",
     "EventSink",

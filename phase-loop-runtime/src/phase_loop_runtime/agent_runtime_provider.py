@@ -42,7 +42,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterator, Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Protocol, runtime_checkable
+
+if TYPE_CHECKING:  # avoid a runtime import cycle (backing_omnigent imports THIS module)
+    from .advisor_board.backing_omnigent import OmnigentHttpClient
 
 # ---------------------------------------------------------------------------
 # Identifiers (open strings, not closed enums: `runtime.ts` reserves the closed
@@ -50,6 +53,13 @@ from typing import Any, Callable, Iterator, Mapping, Protocol, runtime_checkable
 # closed set here would break the moment that provider drops in).
 
 RUNTIME_HOMEBREW = "homebrew"
+RUNTIME_OMNIGENT = "omnigent"
+
+# Reserved ``CreateSessionRequest.metadata`` key carrying the per-seat vendor-key
+# HTTP headers (the never-silent-key auth material) through to the omnigent create
+# call — metadata is the seam's documented pass-through for transport-specific
+# fields, so no new request field is needed.
+OMNIGENT_VENDOR_KEY_HEADERS_META = "_omnigent_vendor_key_headers"
 
 AGENT_SESSION_STATES: tuple[str, ...] = (
     "created", "starting", "idle", "turn_active",
@@ -448,6 +458,194 @@ class HomebrewAgentRuntimeProvider:
                 "multi_turn_sessions",
             ),
             notes=("homebrew degraded profile: one-shot CLI spawn presented as a single-turn, buffered-replay session",),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Omnigent-backed implementation (ABDOMNI). The `["omnigent"]` runtime this
+# module's header reserves, now filled: the sibling of HomebrewAgentRuntimeProvider
+# on the SAME AgentRuntimeProvider seam. Template: omniagent-plus's
+# `omnigent-transport/http-provider.ts` (`OmnigentHttpProvider implements
+# AgentRuntimeProvider`), ported method-for-method over the frozen v0.4.0 HTTP
+# surface. The transport itself lives in `advisor_board.backing_omnigent`
+# (`OmnigentHttpClient`); this class is the Protocol adaptation, exactly as
+# HomebrewAgentRuntimeProvider adapts a one-shot CLI spawn.
+
+
+def _map_omnigent_state(status: Any) -> str:
+    return {
+        "launching": "starting",
+        "running": "turn_active",
+        "waiting": "turn_active",
+        "failed": "failed",
+        "idle": "idle",
+    }.get(str(status), "idle")
+
+
+class OmnigentAgentRuntimeProvider:
+    """Presents Omnigent v0.4.0 (over ``OmnigentHttpClient``) as an
+    ``AgentRuntimeProvider``. Single-turn/buffered-replay degraded profile, like
+    the homebrew provider: the public transport surface is driven per-turn and the
+    SSE stream is replayed from history rather than held open, and child-session /
+    public harness-override capabilities are declared unsupported in ``health()``
+    (mirroring http-provider.ts's notes)."""
+
+    def __init__(self, client: "OmnigentHttpClient", *, backend: str = "omnigent-http") -> None:
+        self._client = client
+        self._backend = backend
+        self._sessions: dict[str, AgentSessionInfo] = {}
+        self._turns: dict[str, TurnHandle] = {}
+
+    # -- session lifecycle -----------------------------------------------------
+
+    def create_session(self, request: CreateSessionRequest) -> AgentSessionInfo:
+        headers = dict(request.metadata).get(OMNIGENT_VENDOR_KEY_HEADERS_META) or None
+        snapshot = self._client.create_session(
+            target_harness=request.target_harness,
+            idempotency_key=request.idempotency_key,
+            title=request.title,
+            vendor_key_headers=headers,
+        )
+        info = self._to_info(request, snapshot)
+        self._sessions[info.id] = info
+        return info
+
+    def _to_info(self, request: CreateSessionRequest, snapshot: Mapping[str, Any]) -> AgentSessionInfo:
+        now = _now()
+        return AgentSessionInfo(
+            id=str(snapshot.get("id")),
+            runtime=RUNTIME_OMNIGENT,
+            target_harness=request.target_harness,
+            title=str(snapshot.get("title", request.title)),
+            state=_map_omnigent_state(snapshot.get("status")),
+            created_at=str(snapshot.get("createdAt", now)),
+            updated_at=str(snapshot.get("updatedAt", now)),
+            correlation_id=request.correlation_id,
+            repo_root=request.repo_root,
+            metadata=dict(snapshot.get("metadata") or {}),
+        )
+
+    def send_turn(self, request: SendTurnRequest) -> TurnHandle:
+        key = f"{request.session_id}:{request.idempotency_key}"
+        ack = self._client.send_turn(request.session_id, request.message)
+        now = _now()
+        handle = TurnHandle(
+            session_id=request.session_id,
+            turn_id=str(ack.get("turnId")),
+            idempotency_key=request.idempotency_key,
+            state="queued" if ack.get("queued") else "running",
+            created_at=now,
+            updated_at=now,
+        )
+        self._turns[key] = handle
+        info = self._sessions.get(request.session_id)
+        if info is not None:
+            info.active_turn_id = handle.turn_id
+            info.state = "turn_active"
+            info.updated_at = now
+        return handle
+
+    # -- history / replay ------------------------------------------------------
+
+    def _map_history(self, session_id: str, items: list[Any]) -> list[RuntimeEvent]:
+        events: list[RuntimeEvent] = []
+        for index, item in enumerate(items):
+            raw = item.get("event", item) if isinstance(item, Mapping) else {}
+            events.append(
+                RuntimeEvent(
+                    sequence=index + 1,
+                    session_id=session_id,
+                    type=str(raw.get("type", "")),
+                    occurred_at=str(raw.get("occurredAt", _now())),
+                    payload={
+                        k: raw.get(k)
+                        for k in ("delta", "outputText", "reason", "status", "message")
+                        if raw.get(k) is not None
+                    },
+                    turn_id=raw.get("turnId"),
+                    terminal=bool(raw.get("terminal")),
+                )
+            )
+        return events
+
+    def read_history(
+        self, session_id: str, *, after_sequence: int = 0, limit: int | None = None
+    ) -> SessionHistory:
+        events = [
+            e for e in self._map_history(session_id, self._client.get_history(session_id))
+            if e.sequence > after_sequence
+        ]
+        if limit is not None:
+            events = events[:limit]
+        next_cursor = events[-1].sequence if events else (after_sequence or None)
+        return SessionHistory(session_id=session_id, events=tuple(events), next_cursor=next_cursor)
+
+    def stream_events(self, session_id: str, *, after_sequence: int = 0) -> Iterator[RuntimeEvent]:
+        # No held-open stream in the degraded profile — replay the buffer (same as
+        # the homebrew provider; the per-turn call is already complete).
+        for event in self.read_history(session_id).events:
+            if event.sequence > after_sequence:
+                yield event
+
+    # -- cancellation / close --------------------------------------------------
+
+    def cancel_turn(self, handle: TurnHandle, reason: str = "user_request") -> TurnHandle:
+        self._client.interrupt(handle.session_id, reason)
+        handle.state = "cancelled"
+        handle.updated_at = _now()
+        info = self._sessions.get(handle.session_id)
+        if info is not None:
+            info.active_turn_id = None
+            info.state = "idle"
+            info.updated_at = handle.updated_at
+        return handle
+
+    def close_session(self, session_id: str) -> None:
+        self._client.delete_session(session_id)
+        info = self._sessions.get(session_id)
+        if info is not None:
+            info.state = "closed"
+            info.active_turn_id = None
+            info.updated_at = _now()
+
+    def get_session_info(self, session_id: str) -> AgentSessionInfo:
+        snapshot = self._client.get_session(session_id)
+        existing = self._sessions.get(session_id)
+        info = AgentSessionInfo(
+            id=str(snapshot.get("id", session_id)),
+            runtime=RUNTIME_OMNIGENT,
+            target_harness=existing.target_harness if existing else "",
+            title=str(snapshot.get("title", existing.title if existing else "")),
+            state="closed" if (existing and existing.state == "closed") else _map_omnigent_state(snapshot.get("status")),
+            created_at=str(snapshot.get("createdAt", existing.created_at if existing else _now())),
+            updated_at=str(snapshot.get("updatedAt", _now())),
+            correlation_id=existing.correlation_id if existing else None,
+            repo_root=existing.repo_root if existing else None,
+            metadata=dict(snapshot.get("metadata") or {}),
+        )
+        self._sessions[session_id] = info
+        return info
+
+    def health(self) -> ProviderHealth:
+        try:
+            self._client.list_harnesses()
+            available = True
+        except Exception:  # any transport failure → not available
+            available = False
+        return ProviderHealth(
+            runtime=RUNTIME_OMNIGENT,
+            backend=self._backend,
+            available=available,
+            active_sessions=sum(1 for i in self._sessions.values() if i.state != "closed"),
+            unsupported_capabilities=(
+                "child_session_creation",
+                "public_harness_override",
+                "held_open_event_streaming",
+            ),
+            notes=(
+                "omnigent v0.4.0 public transport: single-turn board leg presented as a "
+                "buffered-replay session; logical close via DELETE",
+            ),
         )
 
 

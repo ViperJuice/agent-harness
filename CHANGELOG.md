@@ -5,6 +5,42 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **Advisor Board Omnigent backing (Phase 5 ABDOMNI).** Adds the `omnigent`
+  provider transport so opt-in breadth seats route through omniagent-plus →
+  Omnigent **v0.4.0** over the frozen HTTP surface, opt-in and fail-closed — the
+  sibling of ABDHOME's `homebrew` backing, never a hand-written per-harness adapter.
+  Implemented **on the shared provider seam**: `agent_runtime_provider.py` gains
+  `OmnigentAgentRuntimeProvider` — an `AgentRuntimeProvider` sibling of
+  `HomebrewAgentRuntimeProvider` (filling the `["omnigent"]` runtime the module
+  reserves), ported method-for-method from omniagent-plus `http-provider.ts` over the
+  frozen v0.4.0 surface. `advisor_board/backing_omnigent.py` supplies the transport
+  (`OmnigentHttpClient`, stdlib-only) and the `OmnigentBacking` adapter
+  (`from_env`/`from_config` factories) whose `run_seat` drives the seam provider
+  (`create_session`→`send_turn`→`get_session_info`→`read_history`→`close_session`),
+  exactly as the homebrew path drives its provider. `panel_invoker.invoke_board` gains an
+  additive `omnigent=None` param and a tri-state `gateway_available` (`None` probes
+  the wired backing): an `omnigent` seat routes iff a backing is wired AND the live
+  `GET /v1/harnesses` catalog reports its harness; with no backing it stays the
+  ABDHOME no-provider skip ("not served by homebrew (ABDOMNI)"), so the default
+  board + built-3 stay byte-neutral. Opt-in opencode/pi seats route through
+  Omnigent as the primary lane; cursor/amp route ONLY when the live catalog exposes
+  them (a dynamic per-seat gate, no code gate). Two DISTINCT fail-closed skips —
+  gateway-unreachable (via `select_backing`) and harness-not-in-catalog — each with
+  its own reason; the native-host-leg invariant is preserved (a host-leg `omnigent`
+  seat is still a hard raise even with a backing wired). Auth reuses the frozen
+  no-silent-key contract: the SAME `resolve_seat_env` scrub that governs the
+  homebrew subprocess env governs the wire, so a subscription seat transmits ZERO
+  vendor-key material and an api-key opt-in seat transmits EXACTLY the seat vendor's
+  key; the gateway DERIVES and REPORTS the resolved auth lane
+  (`session.metadata.auth_lane`), read back by the backing, so no-silent-key is
+  TESTABLE on the recorded request — not asserted. HTTP rejections map through the
+  omniagent-plus `failure-mapper` categories (429→rate_limit, 403 auth/billing/
+  policy) to a DEGRADED seat that never blocks the board. "We did not fork the
+  transport" is a checked invariant: the frozen v0.4.0 `http-surface.json` +
+  `source-metadata.json` are vendored (`tests/fixtures/omnigent_contract/`, from
+  omniagent-plus `744420d`) and a conformance test asserts every endpoint the
+  client issues appears in that surface and the freeze target is `0.4.0`. See
+  `specs/phase-plans-v5.md` (Phase 5 ABDOMNI).
 - **Advisor Board registries + matrix + presets (Phase 2 ABDREG).** Populates the
   real data behind the frozen ABDFREEZE interfaces (no frozen type/stub changed —
   the stubs still raise; `panel_invoker` untouched). Adds: the six-harness

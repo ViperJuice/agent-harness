@@ -1,0 +1,160 @@
+{
+  "schema": "omnigent.http_surface.v1",
+  "redaction": "metadata_only",
+  "captured_at": "2026-07-05T01:00:26Z",
+  "session_endpoints": [
+    {
+      "method": "POST",
+      "path": "/v1/sessions",
+      "purpose": "create_session"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/sessions",
+      "purpose": "list_sessions"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/sessions/{session_id}",
+      "purpose": "snapshot"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v1/sessions/{session_id}",
+      "purpose": "bind_runner_or_mutate_session"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/sessions/{session_id}",
+      "purpose": "destructive_delete"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/sessions/{session_id}/items",
+      "purpose": "read_history"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/sessions/{session_id}/stream",
+      "purpose": "stream_events"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions/{session_id}/events",
+      "purpose": "send_turn_or_interrupt"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/sessions/{session_id}/child_sessions",
+      "purpose": "observe_child_sessions"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions/{source_id}/fork",
+      "purpose": "fork_session"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions/{session_id}/switch-agent",
+      "purpose": "switch_bound_agent"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/sessions/{session_id}/read-state",
+      "purpose": "update_viewer_read_state"
+    }
+  ],
+  "harness_endpoints": [
+    {
+      "method": "GET",
+      "path": "/v1/harnesses",
+      "purpose": "read_only_harness_catalog"
+    }
+  ],
+  "session_snapshot_fields": {
+    "active_response_id": "optional reconnect hint for active in-flight response",
+    "background_task_count": "optional native terminal shell count",
+    "viewer_last_seen": "session list read-state marker",
+    "viewer_unread": "session list read-state marker"
+  },
+  "session_status_contract": {
+    "api_md": [
+      "idle",
+      "running",
+      "waiting",
+      "failed"
+    ],
+    "openapi_session_response": [
+      "idle",
+      "running",
+      "waiting",
+      "failed"
+    ],
+    "sse_status_event": [
+      "launching",
+      "running",
+      "waiting",
+      "idle",
+      "failed"
+    ],
+    "tolerated_raw_edge": [
+      "launching"
+    ],
+    "note": "v0.4.0 resolves the previous waiting OpenAPI drift; launching remains tolerated from session.status edges and maps to starting."
+  },
+  "response_status_contract": [
+    "queued",
+    "in_progress",
+    "completed",
+    "failed",
+    "incomplete",
+    "cancelled"
+  ],
+  "stream_contract": {
+    "mode": "live_tail_only",
+    "done_sentinel": "[DONE]",
+    "replay": false,
+    "reconnect_steps": [
+      "open_stream",
+      "get_snapshot",
+      "dedupe_by_item_id"
+    ],
+    "event_families": [
+      "session",
+      "response",
+      "turn"
+    ],
+    "official_v0_4_event_count": 48
+  },
+  "child_session_public_surface": {
+    "observe": [
+      "GET /v1/sessions/{session_id}/child_sessions",
+      "session.created",
+      "session.child_session.updated"
+    ],
+    "create_under_parent": false,
+    "fork_available": true
+  },
+  "provenance": [
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/API.md",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "openapi.json",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/routes/harnesses.py",
+      "ref": "v0.4.0"
+    },
+    {
+      "kind": "tagged_source",
+      "path": "omnigent/server/schemas.py",
+      "ref": "v0.4.0"
+    }
+  ]
+}
