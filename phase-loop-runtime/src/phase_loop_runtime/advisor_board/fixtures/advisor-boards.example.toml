@@ -1,0 +1,58 @@
+# Advisor Board config — FROZEN FORMAT (IF-0-ABDFREEZE-1).
+#
+# Location: $XDG_CONFIG_HOME/agent-harness/advisor-boards.toml
+#           (default ~/.config/agent-harness/advisor-boards.toml)
+#
+# This is the on-disk shape ABDREG's loader parses. It is a fixture only — the
+# loader, board presets, and unknown-key validation land in ABDREG (Phase 2).
+# A board is a named, purpose-tagged, OPEN-ENDED list of seats. A seat is a
+# cognition {model, effort, harness?, lens?, auth?, backing?}, model-first: the
+# harness is a defaulted-but-overridable execution lane.
+
+# Optional: the board a bare `advisor-board` invocation resolves to.
+default_board = "default"
+
+# The default board reproduces today's 3-leg panel (byte-for-byte back-compat).
+# Its three seats, in panel-leg order, render to today's exact CLI invocations:
+#   codex  gpt-5.5          effort=max  -> -c model_reasoning_effort=xhigh
+#   gemini "Gemini 3.1 Pro" effort=high -> model "Gemini 3.1 Pro (High)"
+#   claude claude-sonnet-5  effort=max  -> --effort max
+[[boards]]
+name = "default"
+purpose = "premerge-review"
+allow_api_key_fallback = false
+
+  [[boards.seats]]
+  model = "gpt-5.5"
+  effort = "max"
+  harness = "codex"        # optional; omit to resolve via default_lane(model)
+  auth = "subscription"    # subscription (default) | api_key
+  backing = "homebrew"     # homebrew (default) | omnigent
+
+  [[boards.seats]]
+  model = "Gemini 3.1 Pro"
+  effort = "high"
+  harness = "gemini"
+
+  [[boards.seats]]
+  model = "claude-sonnet-5"
+  effort = "max"
+  harness = "claude"
+
+# A purpose-tagged preset with an open-ended seat list (ABDREG ships the real
+# presets: default, code-review, brainstorm, doc-edit).
+[[boards]]
+name = "code-review"
+purpose = "code-review"
+allow_api_key_fallback = false
+
+  [[boards.seats]]
+  model = "gpt-5.5"
+  effort = "max"
+  harness = "codex"
+
+  [[boards.seats]]
+  model = "claude-sonnet-5"
+  effort = "max"
+  harness = "claude"
+  lens = "adversarial"     # optional review lens/persona

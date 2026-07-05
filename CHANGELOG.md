@@ -5,6 +5,24 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **Advisor Board contract freeze (Phase 1 ABDFREEZE).** New additive,
+  behavior-neutral `phase_loop_runtime.advisor_board` package freezing the
+  model-first Advisor Board interfaces the parallel fan-out (ABDREG / ABDRESOLVE
+  / ABDHOME) builds against — no change to the running `panel_invoker` path (the
+  `default` board reproduces today's 3-leg behavior byte-for-byte). Freezes:
+  `Seat{model, effort, harness?, lens?, auth?, backing?, host_leg?}` + `Board`
+  schema and the `~/.config/agent-harness/advisor-boards.toml` config format
+  (`schema.py`, `fixtures/advisor-boards.example.toml`); the per-harness
+  model/effort mapping incl. the agy leg's effort-in-model-name special case
+  (`harness_mapping.py`); the seat→vendor-family projection that keeps the
+  governed reviewer≠author disjointness intact under model-first (byte-consistent
+  with `governed_review`); host-leg identity; registry + `(model × harness)`
+  compatibility/auth-availability matrix interfaces with importable stubs
+  (`registries.py`); the provider-backing selector + active-env-scrubbing
+  no-silent-key auth contract (`backing.py`); the internal advisor-board event
+  envelope + best-effort forwarding (`events.py`); and shared canonical fixtures
+  (`fixtures.py`). Contracts documented in `advisor_board/CONTRACTS.md`.
+  Produces IF-0-ABDFREEZE-1..5. See `specs/phase-plans-v5.md`.
 - **CI: publish `phase-loop-runtime` to PyPI on tag.** New
   `.github/workflows/publish-pypi.yml`, tag- and `workflow_dispatch`-triggered,
   builds sdist+wheel and publishes via PyPI Trusted Publishing (OIDC) — no
