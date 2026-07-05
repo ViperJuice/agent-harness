@@ -104,17 +104,27 @@ class InvokePanelApiStabilityTests(unittest.TestCase):
 
 
 class DeferredGoldenDimensionsScaffold(unittest.TestCase):
-    """Placeholder marking the golden dimensions whose FULL assertions are
-    ABDVERIFY's (launch order, payloads, env/auth, timeout/retry, result keys,
-    output formatting, failure semantics). Kept as an explicit, named scaffold so
-    the deferral is visible and ABDVERIFY has a home to fill in."""
+    """The golden dimensions this scaffold deferred are now PROVEN in ABDVERIFY —
+    ``tests/test_advisor_board_golden.py``. This map is kept so the ABDFREEZE→
+    ABDVERIFY hand-off stays legible: each deferred dimension names the golden test
+    that now carries its full assertion (no dimension was dropped)."""
 
-    def test_scaffold_present(self) -> None:
-        deferred = {
-            "launch_order", "prompt_payloads", "env_auth", "timeout_retry",
-            "result_keys", "output_formatting", "failure_semantics",
-        }
-        self.assertEqual(len(deferred), 7)  # documented, assertions land in ABDVERIFY
+    #: deferred dimension -> the ABDVERIFY golden test that now asserts it.
+    LANDED_IN_ABDVERIFY = {
+        "launch_order": "GoldenWholeBoardBehaviorTests.test_launch_order_is_codex_gemini_claude_both_paths",
+        "prompt_payloads": "GoldenWholeBoardBehaviorTests.test_launch_order_* (same artifact fed to every leg)",
+        "env_auth": "GoldenPerLegLaunchTests.test_*_argv_env_and_timeout_equal_legacy",
+        "timeout_retry": "GoldenPerLegLaunchTests.test_per_leg_timeout_is_a_pure_function_of_the_staged_artifact",
+        "result_keys": "GoldenWholeBoardBehaviorTests.test_seat_key_is_the_sole_documented_delta",
+        "output_formatting": "GoldenWholeBoardBehaviorTests.test_ok_results_are_byte_identical_except_seat_key",
+        "failure_semantics": "GoldenWholeBoardBehaviorTests.test_failure_semantics_* / test_mixed_per_leg_outcomes_classify_identically",
+    }
+
+    def test_every_deferred_dimension_landed(self) -> None:
+        # The scaffold enumerated 7 deferred dimensions; each now maps to a real
+        # ABDVERIFY golden assertion.
+        self.assertEqual(len(self.LANDED_IN_ABDVERIFY), 7)
+        self.assertTrue(all(self.LANDED_IN_ABDVERIFY.values()))
 
 
 if __name__ == "__main__":
