@@ -1348,6 +1348,7 @@ def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Bo
 
 def _route_omnigent_seat(
     omnigent: OmnigentBacking,
+    catalog: frozenset[str],
     seat: Seat,
     leg: str,
     artifact: str,
@@ -1357,20 +1358,17 @@ def _route_omnigent_seat(
 ) -> PanelLegResult:
     """Route one omnigent seat through Omnigent v0.4.0, fail-closed.
 
-    Order of the fail-closed gates (each a DISTINCT, testable reason):
+    ``catalog`` is the once-fetched live ``GET /v1/harnesses`` harness set (the
+    gateway-down skip already fired in ``invoke_board`` if the fetch failed, via
+    ``select_backing``). The fail-closed gates here, each a DISTINCT testable reason:
 
-    1. live-catalog gate — the seat's harness must appear in ``GET /v1/harnesses``
-       (the dynamic cursor/amp gate). A catalog fetch that cannot reach the gateway
-       degrades skip-with-warning (gateway down); a reachable catalog that omits the
-       harness degrades skip-with-warning (not-in-catalog) — a SEPARATE reason.
+    1. live-catalog gate — the seat's harness must appear in the catalog (the
+       dynamic cursor/amp gate); a reachable catalog that omits it degrades
+       skip-with-warning (not-in-catalog) — SEPARATE from the gateway-down skip.
     2. never-silent-key — an api-key seat without the board opt-in raises inside
        ``run_seat`` (``resolve_seat_env``) → DEGRADED, exactly like the homebrew leg.
     3. gateway drops mid-run → skip-with-warning (gateway down).
     """
-    try:
-        catalog = omnigent.catalog_harnesses()
-    except OmnigentGatewayUnavailable:
-        return skip(seat, leg, "skip: omnigent gateway unavailable")
     if leg not in catalog:
         return skip(seat, leg, f"skip: harness {leg!r} not in live Omnigent catalog")
     try:
@@ -1453,11 +1451,21 @@ def invoke_board(
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
-    # Tri-state gateway availability: an explicit bool wins; otherwise probe the
-    # supplied omnigent backing (a gateway-down probe → False → select_backing
-    # degrades omnigent seats skip-with-warning), or False when none is wired.
+    # Tri-state gateway availability + a SINGLE catalog fetch. ``catalog_harnesses``
+    # is itself the reachability probe (a successful fetch ⇒ gateway up), so fetch it
+    # once here and reuse it for the per-seat catalog gate — not N+1 round-trips. An
+    # explicit ``gateway_available`` bool wins for the skip decision; a gateway that is
+    # actually down (fetch raises) is ground truth and forces False.
+    omnigent_catalog: frozenset[str] | None = None
+    if omnigent is not None and gateway_available is not False:
+        try:
+            omnigent_catalog = omnigent.catalog_harnesses()
+            if gateway_available is None:
+                gateway_available = True
+        except OmnigentGatewayUnavailable:
+            gateway_available = False
     if gateway_available is None:
-        gateway_available = omnigent.gateway_available() if omnigent is not None else False
+        gateway_available = False
     # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
@@ -1489,7 +1497,8 @@ def invoke_board(
             if omnigent is None:
                 results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
                 continue
-            results.append(_route_omnigent_seat(omnigent, seat, leg, artifact, env_source, board, _skip))
+            results.append(_route_omnigent_seat(
+                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip))
             continue
         if decision.backing != BACKING_HOMEBREW:
             results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"))

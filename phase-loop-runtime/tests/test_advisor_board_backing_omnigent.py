@@ -356,6 +356,22 @@ class GatewayDownTests(unittest.TestCase):
     def test_gateway_probe_returns_false_when_down(self) -> None:
         self.assertFalse(OmnigentBacking.from_config(base_url="http://127.0.0.1:1").gateway_available())
 
+    def test_gateway_down_degrades_omnigent_but_built3_unaffected(self) -> None:
+        # The paired half of the exit criterion: gateway-down skips the omnigent
+        # seat AND leaves the built-3 (codex homebrew) untouched.
+        board = _board(
+            Seat(model="gpt-5.5", effort="max", harness="codex", backing=BACKING_HOMEBREW),
+            _opencode_seat(),
+        )
+        backing = OmnigentBacking.from_config(base_url="http://127.0.0.1:1")  # nothing listening
+        res = pi.invoke_board(board, "review", omnigent=backing, base_env={},
+                              spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        by_leg = {l.leg: l for l in res.legs}
+        self.assertEqual(by_leg["codex"].status, "OK")
+        self.assertEqual(by_leg["codex"].text, "codex\nAGREE")
+        self.assertEqual(by_leg["opencode"].status, "UNAVAILABLE")
+        self.assertIn("gateway unavailable", by_leg["opencode"].detail or "")
+
 
 class DynamicCatalogGateTests(unittest.TestCase):
     """The dynamic per-seat catalog gate: an omnigent seat routes iff the LIVE
@@ -481,6 +497,40 @@ class FailureMappingTests(unittest.TestCase):
                 leg = self._run_with_rejection(rejection)
                 self.assertEqual(leg.status, "DEGRADED")
                 self.assertIn(category, leg.detail or "")
+
+
+class SharedSeamTests(unittest.TestCase):
+    """The omnigent backing routes through the SHARED provider seam, exactly as
+    the homebrew backing does — not a bespoke side channel."""
+
+    def test_provider_satisfies_agent_runtime_provider_protocol(self) -> None:
+        from phase_loop_runtime.agent_runtime_provider import (
+            AgentRuntimeProvider,
+            OmnigentAgentRuntimeProvider,
+        )
+        with FakeOmnigentServer() as srv:
+            provider = OmnigentAgentRuntimeProvider(srv.backing().client)
+            self.assertIsInstance(provider, AgentRuntimeProvider)
+
+    def test_provider_drives_a_full_session_lifecycle_over_the_seam(self) -> None:
+        from phase_loop_runtime.agent_runtime_provider import (
+            CreateSessionRequest,
+            OmnigentAgentRuntimeProvider,
+            RUNTIME_OMNIGENT,
+            SendTurnRequest,
+        )
+        with FakeOmnigentServer() as srv:
+            provider = OmnigentAgentRuntimeProvider(srv.backing().client)
+            info = provider.create_session(CreateSessionRequest(
+                target_harness="opencode", idempotency_key="k1",
+                title="t", runtime=RUNTIME_OMNIGENT))
+            self.assertEqual(info.runtime, RUNTIME_OMNIGENT)
+            provider.send_turn(SendTurnRequest(
+                session_id=info.id, idempotency_key="t1", message="hi"))
+            history = provider.read_history(info.id)
+            self.assertTrue(any(e.type == "response.completed" for e in history.events))
+            self.assertTrue(provider.health().available)
+            provider.close_session(info.id)
 
 
 if __name__ == "__main__":

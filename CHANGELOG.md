@@ -8,10 +8,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Advisor Board Omnigent backing (Phase 5 ABDOMNI).** Adds the `omnigent`
   provider transport so opt-in breadth seats route through omniagent-plus →
   Omnigent **v0.4.0** over the frozen HTTP surface, opt-in and fail-closed — the
-  sibling of ABDHOME's `homebrew` backing, never a hand-written per-harness adapter
-  (`advisor_board/backing_omnigent.py`: a stdlib-only faithful port of the v0.4.0
-  transport — `OmnigentHttpClient` + the `OmnigentBacking` adapter with
-  `from_env`/`from_config` factories). `panel_invoker.invoke_board` gains an
+  sibling of ABDHOME's `homebrew` backing, never a hand-written per-harness adapter.
+  Implemented **on the shared provider seam**: `agent_runtime_provider.py` gains
+  `OmnigentAgentRuntimeProvider` — an `AgentRuntimeProvider` sibling of
+  `HomebrewAgentRuntimeProvider` (filling the `["omnigent"]` runtime the module
+  reserves), ported method-for-method from omniagent-plus `http-provider.ts` over the
+  frozen v0.4.0 surface. `advisor_board/backing_omnigent.py` supplies the transport
+  (`OmnigentHttpClient`, stdlib-only) and the `OmnigentBacking` adapter
+  (`from_env`/`from_config` factories) whose `run_seat` drives the seam provider
+  (`create_session`→`send_turn`→`get_session_info`→`read_history`→`close_session`),
+  exactly as the homebrew path drives its provider. `panel_invoker.invoke_board` gains an
   additive `omnigent=None` param and a tri-state `gateway_available` (`None` probes
   the wired backing): an `omnigent` seat routes iff a backing is wired AND the live
   `GET /v1/harnesses` catalog reports its harness; with no backing it stays the

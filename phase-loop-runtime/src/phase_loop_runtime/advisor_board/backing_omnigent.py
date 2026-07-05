@@ -188,6 +188,10 @@ class OmnigentHttpClient:
         path = f"/v1/sessions/{_quote(session_id)}/events"
         return self._request("POST", path, body={"type": "message", "data": {"message": message}})
 
+    def interrupt(self, session_id: str, reason: str = "user_request") -> Mapping[str, Any]:
+        path = f"/v1/sessions/{_quote(session_id)}/events"
+        return self._request("POST", path, body={"type": "interrupt", "data": {"reason": reason}})
+
     def get_session(self, session_id: str) -> Mapping[str, Any]:
         return self._request("GET", f"/v1/sessions/{_quote(session_id)}")
 
@@ -226,9 +230,11 @@ _FAILED = {"response.failed", "turn.failed"}
 _CANCELLED = {"response.cancelled", "turn.cancelled"}
 
 
-def _extract_text_and_status(history: list[Any]) -> tuple[str, str]:
-    """Fold an Omnigent history (``GET .../items``) into ``(text, leg_status)``.
+def _extract_text_and_status(events: "tuple[Any, ...]") -> tuple[str, str]:
+    """Fold a seam ``SessionHistory.events`` stream into ``(text, leg_status)``.
 
+    Operates on the ``AgentRuntimeProvider`` history (``RuntimeEvent`` with ``.type``
+    + ``.payload``), so the mapping runs on what the SEAM returns — not raw HTTP.
     Text is the concatenation of ``response.output_text.delta`` deltas plus any
     ``response.completed`` ``outputText`` (mirrors event-mapper.ts's text handling).
     Status keys on the terminal marker: completed -> OK/EMPTY, failed -> ERROR,
@@ -236,13 +242,13 @@ def _extract_text_and_status(history: list[Any]) -> tuple[str, str]:
     """
     parts: list[str] = []
     completed = failed = cancelled = False
-    for item in history:
-        event = item.get("event", item) if isinstance(item, Mapping) else {}
-        etype = event.get("type")
-        if etype == _TEXT_DELTA and event.get("delta"):
-            parts.append(str(event["delta"]))
-        elif etype == "response.completed" and event.get("outputText"):
-            parts.append(str(event["outputText"]))
+    for event in events:
+        etype = event.type
+        payload = event.payload
+        if etype == _TEXT_DELTA and payload.get("delta"):
+            parts.append(str(payload["delta"]))
+        elif etype == "response.completed" and payload.get("outputText"):
+            parts.append(str(payload["outputText"]))
         if etype in _COMPLETED:
             completed = True
         elif etype in _FAILED:
@@ -355,7 +361,23 @@ class OmnigentBacking:
         (the caller degrades it skip-with-warning) and ``ValueError`` for a
         never-silent-key violation (an api-key seat without the board opt-in — the
         caller maps it to DEGRADED, exactly like the homebrew path).
+
+        Routes through the SHARED provider seam: it drives an
+        :class:`~phase_loop_runtime.agent_runtime_provider.OmnigentAgentRuntimeProvider`
+        (an ``AgentRuntimeProvider``) via ``create_session`` -> ``send_turn`` ->
+        ``get_session_info`` -> ``read_history`` -> ``close_session`` — exactly as
+        the homebrew path drives ``HomebrewAgentRuntimeProvider``.
         """
+        # Import here to avoid a module-load cycle (agent_runtime_provider TYPE-imports
+        # this module's client for annotations only).
+        from ..agent_runtime_provider import (
+            OMNIGENT_VENDOR_KEY_HEADERS_META,
+            RUNTIME_OMNIGENT,
+            CreateSessionRequest,
+            OmnigentAgentRuntimeProvider,
+            SendTurnRequest,
+        )
+
         # 1) Frozen no-silent-key contract: the SAME env-scrub that governs the
         #    homebrew subprocess env governs what rides to the gateway. A
         #    subscription seat ends with zero vendor keys; an api-key opt-in seat
@@ -368,31 +390,40 @@ class OmnigentBacking:
             if var in seat_env
         }
 
-        idem = uuid.uuid4().hex
+        provider = OmnigentAgentRuntimeProvider(self.client)
         title = f"{self.title_prefix}:{seat.seat_key}"
+        metadata: dict[str, Any] = (
+            {OMNIGENT_VENDOR_KEY_HEADERS_META: vendor_key_headers} if vendor_key_headers else {}
+        )
         try:
-            snapshot = self.client.create_session(
-                target_harness=seat.harness or "",
-                idempotency_key=idem,
-                title=title,
-                vendor_key_headers=vendor_key_headers or None,
+            info = provider.create_session(
+                CreateSessionRequest(
+                    target_harness=seat.harness or "",
+                    idempotency_key=uuid.uuid4().hex,
+                    title=title,
+                    runtime=RUNTIME_OMNIGENT,
+                    metadata=metadata,
+                )
             )
-            session_id = str(snapshot.get("id"))
-            self.client.send_turn(session_id, artifact)
-            # Re-read the snapshot: the gateway reports the resolved auth lane in
-            # session metadata (so no-silent-key is observable, not asserted).
-            snapshot = self.client.get_session(session_id)
-            history = self.client.get_history(session_id)
+            provider.send_turn(
+                SendTurnRequest(
+                    session_id=info.id, idempotency_key=uuid.uuid4().hex, message=artifact
+                )
+            )
+            # Re-read the snapshot through the seam: the gateway reports the resolved
+            # auth lane in session metadata (so no-silent-key is observable).
+            info = provider.get_session_info(info.id)
+            history = provider.read_history(info.id)
         except OmnigentHttpError as exc:
             status, category = classify_http_failure(exc.status_code, _body_text(exc.body))
             return SeatRunOutcome(status=status, detail=f"omnigent {category}: HTTP {exc.status_code}")
 
-        auth_lane = _reported_auth_lane(snapshot)
-        text, status = _extract_text_and_status(history)
+        auth_lane = _reported_auth_lane(info.metadata)
+        text, status = _extract_text_and_status(history.events)
         detail = f"omnigent v{OMNIGENT_FREEZE_TARGET} lane={auth_lane}" if auth_lane else ""
-        # Best-effort close; never let cleanup failure change the seat's verdict.
+        # Best-effort close through the seam; never let cleanup change the verdict.
         try:
-            self.client.delete_session(session_id)
+            provider.close_session(info.id)
         except (OmnigentHttpError, OmnigentGatewayUnavailable):
             pass
         return SeatRunOutcome(status=status, text=text, detail=detail, auth_lane=auth_lane)
@@ -445,9 +476,8 @@ def _body_text(body: Any) -> str:
         return str(body)
 
 
-def _reported_auth_lane(snapshot: Mapping[str, Any]) -> str | None:
+def _reported_auth_lane(metadata: Mapping[str, Any] | None) -> str | None:
     """The auth lane the gateway reports it resolved (``metadata.auth_lane``)."""
-    metadata = snapshot.get("metadata") if isinstance(snapshot, Mapping) else None
     if isinstance(metadata, Mapping):
         lane = metadata.get("auth_lane")
         return str(lane) if lane is not None else None
