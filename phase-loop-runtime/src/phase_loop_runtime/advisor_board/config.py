@@ -89,6 +89,23 @@ def _reject_unknown(keys, allowed: frozenset[str], where: str) -> None:
         )
 
 
+def _require_bool(raw: Mapping[str, Any], key: str, default: bool, where: str) -> bool:
+    """Read a boolean config key STRICTLY: an absent key yields ``default``, a
+    present key MUST be a literal TOML boolean. Never coerce a non-bool scalar —
+    ``bool("false")`` is ``True``, so coercion would silently flip an opt-in gate
+    (e.g. a quoted ``allow_api_key_fallback = "false"`` would enable the api-key
+    fallback). A wrong-typed value is a hard ``BoardConfigError`` naming the key."""
+    if key not in raw:
+        return default
+    value = raw[key]
+    if not isinstance(value, bool):
+        raise BoardConfigError(
+            f"{where}: {key!r} must be a boolean (true/false), got "
+            f"{type(value).__name__} {value!r}"
+        )
+    return value
+
+
 def _parse_seat(raw: Mapping[str, Any], where: str) -> Seat:
     if not isinstance(raw, Mapping):
         raise BoardConfigError(f"{where} must be a table, got {type(raw).__name__}")
@@ -107,7 +124,7 @@ def _parse_seat(raw: Mapping[str, Any], where: str) -> Seat:
             lens=(str(raw["lens"]) if raw.get("lens") is not None else None),
             auth=str(auth),
             backing=str(backing),
-            host_leg=bool(raw.get("host_leg", False)),
+            host_leg=_require_bool(raw, "host_leg", False, where),
         )
     except (ValueError, TypeError) as exc:
         # Seat.__post_init__ fail-closed validation (bad effort/auth/backing) ->
@@ -134,7 +151,9 @@ def _parse_board(raw: Mapping[str, Any], index: int) -> Board:
             name=name,
             purpose=str(raw.get("purpose", "")),
             seats=seats,
-            allow_api_key_fallback=bool(raw.get("allow_api_key_fallback", False)),
+            allow_api_key_fallback=_require_bool(
+                raw, "allow_api_key_fallback", False, where
+            ),
         )
     except (ValueError, TypeError) as exc:
         # Board.__post_init__ (e.g. api_key seat without opt-in) -> config error.

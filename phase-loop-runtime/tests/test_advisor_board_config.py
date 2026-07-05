@@ -141,6 +141,70 @@ purpose = "y"
         self.assertIn("temperature", str(ctx.exception))
 
 
+class StrictBoolParseTests(unittest.TestCase):
+    """A boolean config key is read STRICTLY — a present value MUST be a literal
+    TOML boolean, never coerced. Coercion would silently flip an opt-in gate:
+    ``bool("false")`` is ``True``, so a quoted ``allow_api_key_fallback = "false"``
+    would enable the api-key fallback (a no-silent-key hole)."""
+
+    def test_quoted_false_allow_api_key_fallback_is_rejected_not_coerced(self) -> None:
+        # The hole: the string "false" is truthy under bool(), so coercion would
+        # ENABLE the fallback the author meant to disable. Strict parse rejects it.
+        body = """
+[[boards]]
+name = "leaky"
+purpose = "x"
+allow_api_key_fallback = "false"
+  [[boards.seats]]
+  model = "gpt-5.5"
+  effort = "high"
+  harness = "codex"
+"""
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(BoardConfigError) as ctx:
+                load_boards(_write(tmp, body), matrix=_MATRIX)
+        msg = str(ctx.exception)
+        self.assertIn("allow_api_key_fallback", msg)
+        self.assertIn("boolean", msg)
+
+    def test_nonbool_host_leg_is_rejected_not_coerced(self) -> None:
+        body = """
+[[boards]]
+name = "b"
+purpose = "x"
+  [[boards.seats]]
+  model = "gpt-5.5"
+  effort = "high"
+  harness = "codex"
+  host_leg = "true"
+"""
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(BoardConfigError) as ctx:
+                load_boards(_write(tmp, body), matrix=_MATRIX)
+        msg = str(ctx.exception)
+        self.assertIn("host_leg", msg)
+        self.assertIn("boolean", msg)
+
+    def test_literal_bool_still_accepted(self) -> None:
+        body = """
+[[boards]]
+name = "keyed"
+purpose = "x"
+allow_api_key_fallback = true
+  [[boards.seats]]
+  model = "gpt-5.5"
+  effort = "high"
+  harness = "codex"
+  auth = "api_key"
+  host_leg = true
+"""
+        with TemporaryDirectory() as tmp:
+            cfg = load_boards(_write(tmp, body), matrix=_MATRIX)
+        board = cfg.get("keyed")
+        self.assertTrue(board.allow_api_key_fallback)
+        self.assertTrue(board.seats[0].host_leg)
+
+
 class MatrixInvalidBoardRejectedTests(unittest.TestCase):
     def test_invalid_pairing_in_user_board_rejected_at_load(self) -> None:
         body = """
