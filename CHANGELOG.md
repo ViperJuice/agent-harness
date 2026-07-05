@@ -5,6 +5,26 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+- **Advisor Board registries + matrix + presets (Phase 2 ABDREG).** Populates the
+  real data behind the frozen ABDFREEZE interfaces (no frozen type/stub changed —
+  the stubs still raise; `panel_invoker` untouched). Adds: the six-harness
+  `DefaultHarnessRegistry` (claude/codex/gemini built-3 `homebrew`;
+  opencode/pi/cursor breadth `omnigent`, cursor's availability gated on the
+  `cursor-agent` binary) and the `DefaultModelRegistry` (model → default
+  subscription lane pinned to a built-3 leg, `runnable_by` derived from the frozen
+  `schema.vendor_family` projection, effort ceiling) in `registries.py`; the
+  populated `(model × harness)` compatibility + per-lane auth-availability matrix
+  behind the frozen `is_valid(model, harness) -> (bool, AuthAvailability)` /
+  `default_lane(model)` API, plus config-time `validate_seat` / `validate_board`
+  that reject an invalid pairing (e.g. `claude:gpt-5.5`) or an over-ceiling effort
+  with an actionable message (`matrix.py`); the four board presets `default`
+  (== the shared `DEFAULT_BOARD` fixture, so today's 3 seats reconstruct by
+  construction), `code-review`, `brainstorm`, `doc-edit` (`presets.py`); and the
+  user-editable config loader for `~/.config/agent-harness/advisor-boards.toml`
+  (`config.py`) — `allow_api_key_fallback` defaults false, unknown top-level/board/
+  seat keys are a hard error (never a silent drop), and every board (presets
+  included) is matrix-validated at load. New dep: `tomli` on Python 3.10 (stdlib
+  `tomllib` on 3.11+). See `specs/phase-plans-v5.md` (Phase 2 ABDREG).
 - **Advisor Board contract freeze (Phase 1 ABDFREEZE).** New additive,
   behavior-neutral `phase_loop_runtime.advisor_board` package freezing the
   model-first Advisor Board interfaces the parallel fan-out (ABDREG / ABDRESOLVE

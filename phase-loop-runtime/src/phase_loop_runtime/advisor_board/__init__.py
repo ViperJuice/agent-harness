@@ -51,8 +51,12 @@ from .harness_mapping import (
     render_seat_invocation,
 )
 from .registries import (
+    DEFAULT_HARNESS_REGISTRY,
+    DEFAULT_MODEL_REGISTRY,
     AuthAvailability,
     CompatibilityMatrix,
+    DefaultHarnessRegistry,
+    DefaultModelRegistry,
     HarnessRegistry,
     HarnessSpec,
     MatrixVerdict,
@@ -61,6 +65,27 @@ from .registries import (
     StubCompatibilityMatrix,
     StubHarnessRegistry,
     StubModelRegistry,
+    UnknownHarnessError,
+    UnknownModelError,
+)
+from .matrix import (
+    DefaultCompatibilityMatrix,
+    SeatValidationError,
+    default_matrix,
+    resolved_lane,
+    validate_board,
+    validate_seat,
+)
+from .presets import (
+    DEFAULT_BOARD_NAME,
+    PRESET_NAMES,
+    PRESETS,
+    get_preset,
+)
+from .config import (
+    BoardConfig,
+    BoardConfigError,
+    load_boards,
 )
 from .backing import (
     VENDOR_API_KEY_VARS,
@@ -127,6 +152,28 @@ __all__ = [
     "StubHarnessRegistry",
     "StubModelRegistry",
     "StubCompatibilityMatrix",
+    # registries — populated (ABDREG)
+    "DefaultHarnessRegistry",
+    "DefaultModelRegistry",
+    "DEFAULT_HARNESS_REGISTRY",
+    "DEFAULT_MODEL_REGISTRY",
+    "UnknownHarnessError",
+    "UnknownModelError",
+    # matrix + validation (ABDREG)
+    "DefaultCompatibilityMatrix",
+    "default_matrix",
+    "SeatValidationError",
+    "resolved_lane",
+    "validate_seat",
+    "validate_board",
+    # presets + config loader (ABDREG)
+    "PRESETS",
+    "PRESET_NAMES",
+    "DEFAULT_BOARD_NAME",
+    "get_preset",
+    "BoardConfig",
+    "BoardConfigError",
+    "load_boards",
     # backing + auth
     "VENDOR_API_KEY_VARS",
     "all_vendor_key_vars",
