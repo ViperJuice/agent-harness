@@ -188,6 +188,17 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 - **Legal boards (`legal-review`, `legal-strategy-review`, `legal-brainstorm`)**
   encode the PRIMARY review lens per seat. `lens` / `purpose` are free-form strings
   (`schema.py`), so the legal lenses/purposes need no enum extension.
+- **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
+  limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
+  (three frontier vendors — gpt-5.5/adversarial, Gemini 3.1 Pro/alternative,
+  claude-fable-5/completeness — hand it any task + brief), and `solo` is the
+  single-MEMBER form (one `claude-fable-5` seat) for a quick top-end opinion when a
+  panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like
+  any other (bare/single seats are supported). Both default to TOP-END models: an
+  unanticipated task cannot be assumed low-stakes, so the safe default is frontier —
+  dial down explicitly (a cheaper board) when a task is known-cheap. Their lenses
+  (`adversarial`/`alternative`/`completeness`) and purpose (`general`) are free-form
+  strings, so no enum extension.
 - **Deep-seat FOLLOW-ON (documented, NOT built here).** The richer legal treatment —
   four lenses per seat, an apex-Opus (`claude-opus-4-8`) seat, a verify-round, and
   retrieval-grounded citation-verification — is a deliberate follow-on. The current

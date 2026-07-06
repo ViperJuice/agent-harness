@@ -12,7 +12,9 @@ from phase_loop_runtime.advisor_board import (
     DEFAULT_BOARD,
     PRESET_NAMES,
     PRESETS,
+    default_matrix,
     get_preset,
+    validate_board,
 )
 
 
@@ -36,11 +38,13 @@ class PresetTests(unittest.TestCase):
             {"gpt-5.5", "Gemini 3.1 Pro", "claude-fable-5"},
         )
         solo = PRESETS["solo"]
-        self.assertEqual(len(solo.seats), 1)
+        self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
         self.assertEqual(solo.seats[0].model, "claude-fable-5")
         # neither seats Sonnet — an unmodeled task is not assumed low-stakes.
         for board in (general, solo):
             self.assertNotIn("claude-sonnet-5", {s.model for s in board.seats})
+            self.assertEqual(board.purpose, "general")
+            validate_board(board, default_matrix())  # both pass matrix validation
 
     def test_default_preset_is_the_shared_default_board_fixture(self) -> None:
         # Identity, not equality: the preset reconstructs today's exact 3 seats.
