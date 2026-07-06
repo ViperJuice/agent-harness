@@ -96,21 +96,37 @@ seat without opting in.
 
 ## Board presets
 
-Four built-in presets (`advisor_board.presets`), each a named, purpose-tagged,
+Seven built-in presets (`advisor_board.presets`), each a named, purpose-tagged,
 open-ended seat list. Load via `load_boards()` (self-validates every preset against
 the matrix at load time).
 
-| Preset        | Purpose          | Seats (model · effort · harness · lens) |
-| ------------- | ---------------- | ---------------------------------------- |
-| `default`     | premerge-review  | gpt-5.5 · max · codex · — ; Gemini 3.1 Pro · high · gemini · — ; claude-sonnet-5 · max · claude · — |
-| `code-review` | code-review      | gpt-5.5 · max · codex · — ; claude-sonnet-5 · max · claude · adversarial |
-| `brainstorm`  | brainstorm       | claude-sonnet-5 · high · claude · adversarial ; gpt-5.5 · high · codex · supportive ; Gemini 3.1 Pro · high · gemini · lateral |
-| `doc-edit`    | doc-edit         | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
+| Preset                  | Purpose               | Seats (model · effort · harness · lens) |
+| ----------------------- | --------------------- | ---------------------------------------- |
+| `default`               | premerge-review       | gpt-5.5 · max · codex · — ; Gemini 3.1 Pro · high · gemini · — ; claude-fable-5 · max · claude · — |
+| `code-review`           | code-review           | gpt-5.5 · max · codex · adversarial ; Gemini 3.1 Pro · high · gemini · adversarial ; claude-fable-5 · max · claude · adversarial |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.5 · high · codex · supportive ; Gemini 3.1 Pro · high · gemini · lateral |
+| `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
+| `legal-review`          | legal-review          | gpt-5.5 · max · codex · opposing-counsel ; Gemini 3.1 Pro · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-5.5 · max · codex · red-team ; Gemini 3.1 Pro · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.5 · high · codex · conservative ; Gemini 3.1 Pro · high · gemini · creative |
+
+**Review-class boards run on Fable, never the implementer.** Pre-merge and legal
+review are mid-tier decisions where being wrong is expensive, so the review-class
+boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
+Fable (`claude-fable-5`) on the claude lane, decoupled from the implementer model
+`claude-sonnet-5` (`panel_invoker.DEFAULT_LEG_MODELS["claude"]` is the single source
+of truth, so the live governed gates `governed_review` / `governed_premerge` also
+review on Fable). The divergent-thinking boards (`brainstorm`, `doc-edit`,
+`legal-brainstorm`) deliberately keep Sonnet, where a diverse / cheap voice is the
+right tool. The legal boards encode the PRIMARY review lens per seat; the richer
+4-lens-per-seat + apex-Opus seat + verify-round + retrieval-grounded
+citation-verification treatment is a documented deep-seat follow-on
+(`advisor_board/CONTRACTS.md`), not yet built.
 
 `default` **is** the shared fixture board (`fixtures.DEFAULT_BOARD`), so the
 back-compat keystone holds by construction: a bare `advisor-board` invocation
 resolves to today's exact three seats and reproduces the legacy 3-leg panel
-byte-for-byte (proven in `tests/test_advisor_board_golden.py`).
+byte-for-byte on Fable (proven in `tests/test_advisor_board_golden.py`).
 
 ### Invoking a board
 

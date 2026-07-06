@@ -159,3 +159,37 @@ endpoint for an externally-launched (native) session, so a native leg is
   provider only knows sessions/turns and cannot populate it. `observability.py`
   maps our envelope onto the provider-mirrored `runtime_event.v0.1` shape, so the
   provider layer is still the wire target, just not the emit site.
+
+## ABDPRESET — Board preset library + Fable review-path · `presets.py`, `panel_invoker.py`
+
+The seven built-in presets (`presets.PRESETS`). Every preset self-validates against
+the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
+`tests/test_advisor_board_integration.py`).
+
+- **Review-class = Fable, decoupled from the implementer.** Pre-merge and legal
+  review are mid-tier decisions where being wrong is expensive, so the review-class
+  boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
+  Fable (`claude-fable-5`) on the claude lane — NOT the implementer model
+  `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
+  is the SINGLE source of truth for the panel's default claude model: the claude
+  leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
+  the *legacy* `invoke_panel` path AND the live governed gates
+  (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
+  override) review on Fable. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
+  implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
+  byte-pinned to this Fable `invoke_panel` panel by the golden proof
+  (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
+- **`code-review` = three frontier vendors, always.** codex `gpt-5.5`,
+  `Gemini 3.1 Pro`, and `claude-fable-5`, each on the `adversarial` lens (supersedes
+  the prior two-seat codex+sonnet composition).
+- **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
+  `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
+  low-stakes copyedit, a cheap aggressive ideation seat — where it is the right tool.
+- **Legal boards (`legal-review`, `legal-strategy-review`, `legal-brainstorm`)**
+  encode the PRIMARY review lens per seat. `lens` / `purpose` are free-form strings
+  (`schema.py`), so the legal lenses/purposes need no enum extension.
+- **Deep-seat FOLLOW-ON (documented, NOT built here).** The richer legal treatment —
+  four lenses per seat, an apex-Opus (`claude-opus-4-8`) seat, a verify-round, and
+  retrieval-grounded citation-verification — is a deliberate follow-on. The current
+  legal boards ship the single-primary-lens-per-seat form; the deep-seat form layers
+  onto the same seat/board schema (no schema change) when built.
