@@ -11,6 +11,7 @@ status so a verbose auth error is never mistaken for a real review.
 """
 from __future__ import annotations
 
+import logging
 import os
 import pty
 import re
@@ -297,6 +298,119 @@ _ADVISORY_INSTRUCTIONS = (
 
 def _mode_instructions(mode: str) -> str:
     return _ADVISORY_INSTRUCTIONS if mode == "advisory" else _REVIEW_INSTRUCTIONS
+
+
+# --- "reference, don't inline" ingestion -------------------------------------
+#
+# The caller→runtime boundary is where huge (20k+ token) artifacts choke the
+# CALLER's context: to call ``invoke_panel(artifact: str)`` the caller must first
+# build the full content as a Python string. ``artifact_ref`` / ``brief_ref``
+# promote that to by-reference ingestion — the caller passes a PATH (or paths) and
+# the runtime reads them off disk. The leg prompt was already lean (it stages
+# ``review-bundle.md`` and instructs the leg to READ the file); this closes the
+# remaining inline path at the caller boundary. ``artifact: str`` is untouched
+# back-compat: no ref ⇒ today's exact bytes ⇒ identical argv/env/timeout (the
+# golden byte-identity keystone).
+#
+# Soft guardrail: an INLINE artifact larger than this WARNS (never refuses, never
+# mutates), steering the caller to ``artifact_ref``. ~16 KB ≈ a few thousand
+# tokens — anything larger should have been a file.
+_MAX_INLINE_ARTIFACT_BYTES = 16 * 1024
+
+
+def _resolve_artifact(
+    artifact: str | None, artifact_ref: str | Sequence[str] | None
+) -> str:
+    """Resolve the review bundle content, reading from disk when a ref is given.
+
+    Precedence + failure contract:
+
+    * ``artifact_ref is None`` → return ``artifact or ""`` (today's inline path,
+      byte-for-byte).
+    * ``artifact_ref`` set (a single path string OR a sequence of paths) → read
+      each with ``Path(p).read_text(encoding="utf-8", errors="replace")``. A
+      SINGLE path returns its content VERBATIM (no header) so
+      ``artifact_ref=P`` is byte-identical to ``artifact=<contents of P>`` (the
+      golden/back-compat invariant). MULTIPLE paths concatenate deterministically
+      in the given order, each under a ``## {filename}`` header, joined by a blank
+      line — a stable, reproducible bundle.
+    * ``artifact_ref`` WINS if both it and ``artifact`` are supplied (documented).
+    * a missing ref path raises ``ValueError`` NAMING the path — fail-closed, never
+      a silent-empty bundle that would look like a real (empty) review.
+
+    A ``str`` is itself an iterable of characters, so it is checked BEFORE the
+    Sequence branch — otherwise a single path string would be read per-character.
+    """
+    if artifact_ref is None:
+        return artifact or ""
+    paths = [artifact_ref] if isinstance(artifact_ref, str) else list(artifact_ref)
+
+    def _read_one(p: str) -> str:
+        path = Path(p)
+        if not path.is_file():
+            raise ValueError(
+                f"artifact_ref path does not exist (fail-closed, not silent-empty): {p}"
+            )
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    if len(paths) == 1:
+        return _read_one(paths[0])
+    return "\n\n".join(f"## {Path(p).name}\n{_read_one(p)}" for p in paths)
+
+
+def _resolve_brief(mode: str, brief_ref: str | None) -> str:
+    """Resolve the review brief: a caller-supplied ``brief_ref`` file when given,
+    else ``_mode_instructions(mode)`` (today's behavior, byte-for-byte). A missing
+    ``brief_ref`` path raises ``ValueError`` naming it (fail-closed)."""
+    if brief_ref is None:
+        return _mode_instructions(mode)
+    path = Path(brief_ref)
+    if not path.is_file():
+        raise ValueError(
+            f"brief_ref path does not exist (fail-closed, not silent-empty): {brief_ref}"
+        )
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _maybe_warn_inline_size(artifact: str, *, from_ref: bool) -> None:
+    """Soft steer: WARN once (never refuse, never mutate) when an INLINE artifact
+    exceeds ``_MAX_INLINE_ARTIFACT_BYTES``, pointing the caller at ``artifact_ref``.
+
+    Refusing would break existing callers; a from-reference artifact is exactly
+    what we want (already off the caller's context), so it is never warned."""
+    if from_ref:
+        return
+    size = len((artifact or "").encode("utf-8", errors="replace"))
+    if size > _MAX_INLINE_ARTIFACT_BYTES:
+        logging.getLogger(__name__).warning(
+            "large inline artifact (%d bytes > %d) — pass artifact_ref=<path> to "
+            "keep caller context lean ('reference, don't inline'); running anyway",
+            size,
+            _MAX_INLINE_ARTIFACT_BYTES,
+        )
+
+
+def _gc_stale_panel_scratch(
+    root: Path | None = None, max_age_s: int = 24 * 3600
+) -> None:
+    """Best-effort sweep of crash-residual ``pl-panel-*`` scratch dirs.
+
+    The per-run ``finally: rmtree`` already cleans a normal run; a process KILLED
+    before that finally (timeout/crash) leaks its scratch dir. This reclaims those,
+    age-gated so a CONCURRENT run's fresh dir is never touched. It is wrapped so a
+    GC failure (permissions, a racing rmtree, an unreadable mtime) can NEVER affect
+    the run — advisory hygiene only."""
+    try:
+        base = Path(tempfile.gettempdir()) if root is None else Path(root)
+        cutoff = time.time() - max_age_s
+        for path in base.glob("pl-panel-*"):
+            try:
+                if path.is_dir() and path.stat().st_mtime < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                continue
+    except Exception:
+        return
 
 
 def _artifact_metadata(artifact: str) -> tuple[str, int]:
@@ -1123,6 +1237,7 @@ def _default_spawn(
     model: str | None = None,
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
+    brief_ref: str | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -1133,7 +1248,12 @@ def _default_spawn(
     ABDHOME: ``effort`` / ``env`` default to None (today's behavior, byte-for-byte);
     the ``invoke_board`` seam passes a seat's canonical effort + ``resolve_seat_env``
     result so per-seat effort + active env scrubbing reach the real launch.
+
+    ``brief_ref`` (None ⇒ today's ``_mode_instructions(mode)``, byte-for-byte)
+    stages a caller-supplied brief file as ``review-instructions.md``.
     """
+    # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
+    _gc_stale_panel_scratch()
     base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
     review_dir = base / "review"
@@ -1142,7 +1262,9 @@ def _default_spawn(
     out_dir.mkdir()
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
-        (review_dir / "review-instructions.md").write_text(_mode_instructions(mode), encoding="utf-8")
+        (review_dir / "review-instructions.md").write_text(
+            _resolve_brief(mode, brief_ref), encoding="utf-8"
+        )
         # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
         # path calls the leg execs with their exact prior signatures — existing
         # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
@@ -1190,15 +1312,20 @@ def _default_spawn_via_provider(
     model: str | None = None,
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
+    brief_ref: str | None = None,
 ) -> tuple[str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
     # (leg, artifact, repo_dir, mode, model) — the CS-0.8 same-signature guard.
+    # ``brief_ref`` is threaded the same way: omitted-when-None so the default
+    # path's ``_default_spawn`` call stays byte-identical.
     extra: dict[str, object] = {}
     if effort is not None:
         extra["effort"] = effort
     if env is not None:
         extra["env"] = env
+    if brief_ref is not None:
+        extra["brief_ref"] = brief_ref
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
             leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -1275,6 +1402,8 @@ def invoke_panel(
     mode: str = "review",
     models: Mapping[str, str] | None = None,
     max_concurrency: int | None = None,
+    artifact_ref: str | Sequence[str] | None = None,
+    brief_ref: str | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
 
@@ -1303,11 +1432,18 @@ def invoke_panel(
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    # 'reference, don't inline': resolve the artifact at the TOP so timeout /
+    # staging / metadata all see the resolved content. A ref reads from disk (a
+    # missing path fails closed); no ref keeps ``artifact`` byte-for-byte. Warn on a
+    # large INLINE artifact (never on a from-ref one, never refuse, never mutate).
+    artifact = _resolve_artifact(artifact, artifact_ref)
+    _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
     leg_models = dict(models or {})
     if spawn is None:
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
             return _default_spawn_via_provider(
-                leg, panel_artifact, repo_dir=repo_dir, mode=mode, model=leg_models.get(leg)
+                leg, panel_artifact, repo_dir=repo_dir, mode=mode,
+                model=leg_models.get(leg), brief_ref=brief_ref,
             )
     else:
         runner = spawn
@@ -1350,9 +1486,14 @@ def invoke_panel_request(
     own signature is unchanged (ABDFREEZE-4 back-compat anchor); this is an additive
     sibling. The request's ``metadata_only`` redaction posture is enforced at
     ``PanelRequest`` construction.
+
+    The request's declared ``artifact_ref`` is now FUNCTIONAL: it is resolved
+    through ``_resolve_artifact`` (reading paths off disk, fail-closed on a missing
+    path) so the value object honors 'reference, don't inline'. ``artifact_ref``
+    wins over ``artifact`` when both are set.
     """
     return invoke_panel(
-        request.artifact,
+        _resolve_artifact(request.artifact, request.artifact_ref),
         request.legs,
         spawn=spawn,
         repo_dir=repo_dir,
@@ -1476,6 +1617,8 @@ def invoke_board(
     sink: EventSink | None = None,
     omnigent: OmnigentBacking | None = None,
     max_concurrency: int | None = None,
+    artifact_ref: str | Sequence[str] | None = None,
+    brief_ref: str | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1532,6 +1675,12 @@ def invoke_board(
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    # 'reference, don't inline': resolve the artifact at the TOP (fail-closed on a
+    # missing ref path) so every downstream use sees resolved content; warn on a
+    # large INLINE artifact only. No ref ⇒ ``artifact`` byte-for-byte (the default
+    # board's golden byte-identity is preserved).
+    artifact = _resolve_artifact(artifact, artifact_ref)
+    _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
     # Tri-state gateway availability + a SINGLE catalog fetch. ``catalog_harnesses``
     # is itself the reachability probe (a successful fetch ⇒ gateway up), so fetch it
@@ -1612,6 +1761,7 @@ def invoke_board(
                 status, text = _default_spawn_via_provider(
                     leg, artifact, repo_dir=repo_dir, mode=mode,
                     model=seat.model, effort=seat.effort, env=seat_env,
+                    brief_ref=brief_ref,
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
