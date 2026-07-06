@@ -22,12 +22,15 @@ dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
-    # Widened ceiling (Slice G): the git-discipline guardrail CONSUMES the
-    # contract's `pipeline_ref_classes` registry + `git_discipline_protocol`
-    # schema, first published in 0.4.x. Floor stays at 0.3.0 so CI still resolves
-    # against the currently-published 0.3.0 (the guardrail then degrades to a
-    # neutral no-op); it auto-adopts the git-discipline contract once 0.4.x ships.
-    "consiliency-contract>=0.3.0,<0.5.0",
+    # PIN (spec-integration v0.3.0): contract 0.6.1 is now published to PyPI, so the
+    # floor moves to 0.6.1 (0.6.0 shipped self-inconsistent version references that
+    # rejected itself — see contract PR #18) — this supplies the `pipeline_ref_classes` registry +
+    # `git_discipline_protocol` schema + authority-event contract, ACTIVATING the
+    # git-discipline guardrail (previously a latent no-op under the 0.3.0-resolving
+    # `<0.5.0` ceiling). Warn-default remains; the guardrail still degrades to a
+    # neutral no-op if an older contract is somehow present (`available()` is False
+    # below 0.4). See consiliency_gates git_discipline active/no-op matrix test.
+    "consiliency-contract>=0.6.1,<0.7",
     "jsonschema>=4,<5",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in
