@@ -122,6 +122,7 @@ def run_governed_premerge_loop(
     spawn=None,
     repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+    max_concurrency: int | None = None,
 ) -> LoopResult:
     """Bounded governed pre-merge review loop.
 
@@ -158,6 +159,10 @@ def run_governed_premerge_loop(
         }
         if repo_dir is not None:
             invoke_kwargs["repo_dir"] = repo_dir
+        # Parallel by default; threaded only when a caller requests a cap/sequential
+        # (byte-neutral for the default path + a strict-signature custom ``invoke``).
+        if max_concurrency is not None:
+            invoke_kwargs["max_concurrency"] = max_concurrency
         gate = invoke(**invoke_kwargs)
         collected.extend(gate.findings)
         last_reason = gate.reason

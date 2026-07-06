@@ -61,7 +61,9 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertNotIn("--bg", command)
         self.assertNotIn("-p", command)
         self.assertIn("--model", command)
-        self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5")
+        # The default claude review leg runs Fable (review-path model), not the
+        # implementer claude-sonnet-5. Source of truth: DEFAULT_LEG_MODELS["claude"].
+        self.assertEqual(command[command.index("--model") + 1], "claude-fable-5")
         self.assertIn("--effort", command)
         self.assertEqual(command[command.index("--effort") + 1], "max")
         self.assertIn("--permission-mode", command)

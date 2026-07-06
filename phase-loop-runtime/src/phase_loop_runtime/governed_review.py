@@ -189,6 +189,7 @@ def governed_planning_gate(
     invoke: Callable[..., PanelResult] = invoke_panel,
     spawn=None,
     repo_dir=None,
+    max_concurrency: int | None = None,
 ) -> GateResult:
     """Evaluate a governed gate (plan-stage or pre-merge).
 
@@ -238,6 +239,11 @@ def governed_planning_gate(
     invoke_kwargs = {"spawn": spawn}
     if repo_dir is not None:
         invoke_kwargs["repo_dir"] = repo_dir
+    # Parallel by default; a caller can force sequential (max_concurrency=1). Passed
+    # ONLY when set so a custom ``invoke`` with a strict signature stays unaffected
+    # (byte-neutral for the default governed path).
+    if max_concurrency is not None:
+        invoke_kwargs["max_concurrency"] = max_concurrency
     panel = invoke(artifact, pool, **invoke_kwargs)
     findings = _findings_from_panel(panel)
     if not panel.usable_legs:

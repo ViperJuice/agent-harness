@@ -8217,6 +8217,7 @@ def governed_premerge_for_run(
     invoke=None,
     repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+    max_concurrency: int | None = None,
 ):
     """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
 
@@ -8237,6 +8238,7 @@ def governed_premerge_for_run(
         available_legs=available_legs,
         repo_dir=repo_dir,
         max_rounds=max_rounds,
+        max_concurrency=max_concurrency,
     )
     if invoke is not None:
         kwargs["invoke"] = invoke

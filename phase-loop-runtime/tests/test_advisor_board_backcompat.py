@@ -96,11 +96,18 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
 class InvokePanelApiStabilityTests(unittest.TestCase):
     def test_invoke_panel_signature_is_frozen(self) -> None:
         # ABDFREEZE-4: the invoke_panel() API is part of the back-compat contract.
+        # The frozen positional/keyword contract (artifact, legs) is unchanged; the
+        # keyword-only, default-valued extensions (`models` #66, `max_concurrency`)
+        # are additive and back-compat — no existing caller passes them positionally.
         sig = inspect.signature(pi.invoke_panel)
         self.assertEqual(
             list(sig.parameters),
-            ["artifact", "legs", "spawn", "repo_dir", "mode", "models"],
+            ["artifact", "legs", "spawn", "repo_dir", "mode", "models", "max_concurrency"],
         )
+        # The additions are keyword-only with defaults (the real back-compat guarantee).
+        for name in ("models", "max_concurrency"):
+            self.assertEqual(sig.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
+            self.assertIsNot(sig.parameters[name].default, inspect.Parameter.empty)
 
 
 class DeferredGoldenDimensionsScaffold(unittest.TestCase):
@@ -111,8 +118,8 @@ class DeferredGoldenDimensionsScaffold(unittest.TestCase):
 
     #: deferred dimension -> the ABDVERIFY golden test that now asserts it.
     LANDED_IN_ABDVERIFY = {
-        "launch_order": "GoldenWholeBoardBehaviorTests.test_launch_order_is_codex_gemini_claude_both_paths",
-        "prompt_payloads": "GoldenWholeBoardBehaviorTests.test_launch_order_* (same artifact fed to every leg)",
+        "launch_order": "GoldenWholeBoardBehaviorTests.test_every_leg_launched_once_and_results_in_order_both_paths (legs now fan out concurrently: every leg launched once + RESULTS in canonical order)",
+        "prompt_payloads": "GoldenWholeBoardBehaviorTests.test_every_leg_launched_once_* (same artifact fed to every leg)",
         "env_auth": "GoldenPerLegLaunchTests.test_*_argv_env_and_timeout_equal_legacy",
         "timeout_retry": "GoldenPerLegLaunchTests.test_per_leg_timeout_is_a_pure_function_of_the_staged_artifact",
         "result_keys": "GoldenWholeBoardBehaviorTests.test_seat_key_is_the_sole_documented_delta",

@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -63,13 +64,26 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude"}
 
-# #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-fable-5"})`
-# overrides any subset per-leg without an in-process monkeypatch of `CLAUDE_IMPLEMENTER_MODEL`.
+# #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-sonnet-5"})`
+# overrides any subset per-leg without an in-process monkeypatch.
+#
+# The claude leg default is `claude-fable-5` (Fable): pre-merge review is a mid-tier
+# decision where being wrong is expensive, so the review path runs on Fable, NOT on
+# `CLAUDE_IMPLEMENTER_MODEL` (the implementer model, `claude-sonnet-5`). This dict is
+# the SINGLE source of truth for the panel's per-leg default model — the claude leg
+# builder (`_claude_tui_command`) and the Agent-View attempt both read it — so the
+# review-path model is decoupled from the implementer model and can never silently
+# drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-5.5",
     "gemini": "Gemini 3.1 Pro (High)",
-    "claude": CLAUDE_IMPLEMENTER_MODEL,
+    "claude": "claude-fable-5",
 }
+# Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
+# board fans them out across threads for REAL parallelism — a 3-frontier max-effort
+# board should take ~max(leg) wall-clock, not sum(leg). Bounded: boards are 2-4 seats,
+# but cap the pool so a large custom board can't spawn an unbounded thread count.
+_PANEL_MAX_WORKERS = 8
 _LEG_TIMEOUT_BASE_S = 600
 _LEG_TIMEOUT_MAX_S = 1800
 _LEG_TIMEOUT_PER_KB_S = 12
@@ -351,14 +365,14 @@ def _claude_tui_command(
     effort_args = (
         ("--effort", "max")
         if effort is None
-        else render_seat_invocation("claude", model or CLAUDE_IMPLEMENTER_MODEL, effort).effort_args
+        else render_seat_invocation("claude", model or DEFAULT_LEG_MODELS["claude"], effort).effort_args
     )
     command = [
         "claude",
         "--ax-screen-reader",
         "--safe-mode",
         "--model",
-        model or CLAUDE_IMPLEMENTER_MODEL,
+        model or DEFAULT_LEG_MODELS["claude"],
         *effort_args,
         "--permission-mode",
         "default",
@@ -894,7 +908,7 @@ def _exec_claude_agent_view_attempt(
     command = adapter.launch_command(
         None,
         name=_CLAUDE_AGENT_NAME,
-        model=CLAUDE_IMPLEMENTER_MODEL,
+        model=DEFAULT_LEG_MODELS["claude"],
         effort=effort,
         # Plan mode can block review-sized prompts; Read-only access lets Claude inspect the staged Markdown file.
         permission="default",
@@ -1206,6 +1220,52 @@ def _default_spawn_via_provider(
     return status, text
 
 
+def _run_legs_ordered(
+    items: "Sequence[object]",
+    run_one: "Callable[[object], PanelLegResult]",
+    *,
+    max_concurrency: int | None = None,
+) -> list[PanelLegResult]:
+    """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
+
+    The panel/board legs are blocking subprocess I/O, so they fan out across a
+    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum) — this
+    is the OUT-OF-THE-BOX behavior; nobody opts in to parallel.
+
+    ``max_concurrency`` is the single knob:
+
+    * ``None`` (default) → parallel, bounded by ``min(len(items), _PANEL_MAX_WORKERS)``.
+    * ``1``              → sequential (the opt-in escape hatch for debugging, a
+                           rate-limited / throttled provider, or a constrained host).
+    * ``N``              → cap concurrency at ``N``.
+
+    It is the SAME thread-pool path either way: ``max_concurrency=1`` naturally
+    degrades to ``max_workers=1`` (one worker ⇒ strictly serial), with no separate
+    sequential branch. Two invariants the callers rely on, INDEPENDENT of concurrency:
+
+    * **Order preserved** — ``result[i]`` corresponds to ``items[i]`` regardless of
+      which leg finishes first (futures are submitted in order and read back by
+      index). The resolver re-keys results by position and the golden proof asserts
+      order + content, so this is load-bearing.
+    * **Fail-closed per item** — ``run_one`` is itself required to be fail-closed
+      (turn any exception into a DEGRADED ``PanelLegResult``), so a future's
+      ``.result()`` never raises and one broken leg can never crash the pool or the
+      board. Concurrency changes *timing only*, never a leg's outcome.
+    * **Parallel is the default; sequential is opt-in** — ``max_concurrency`` bounds
+      the pool: ``None`` (default) fans out up to ``_PANEL_MAX_WORKERS``; ``1`` forces
+      sequential (the escape hatch for debugging / rate-limits / a constrained host);
+      ``N`` caps at N. Nobody opts *in* to parallel — it is the out-of-the-box
+      behavior.
+    """
+    seq = list(items)
+    if not seq:
+        return []
+    max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(run_one, item) for item in seq]
+        return [future.result() for future in futures]
+
+
 def invoke_panel(
     artifact: str,
     legs: Sequence[str],
@@ -1214,8 +1274,13 @@ def invoke_panel(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     models: Mapping[str, str] | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
+
+    ``max_concurrency`` (parallel by default): ``None`` fans the legs out concurrently
+    (bounded by ``_PANEL_MAX_WORKERS``); ``1`` forces sequential; ``N`` caps at N. Legs
+    run in parallel out of the box — sequential is an explicit opt-in.
 
     ``mode`` (#63): ``"review"`` (default, back-compat) is the pre-merge code-review
     framing requiring an AGREE/PARTIALLY AGREE/DISAGREE verdict; ``"advisory"`` runs
@@ -1223,9 +1288,14 @@ def invoke_panel(
     non-code question (architecture, product, red-teaming a plan) with no verdict
     required — substantial prose is a real leg.
 
-    ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-fable-5"}`` — any
-    subset; unset legs use ``DEFAULT_LEG_MODELS``. Replaces the prior need to monkeypatch
-    ``CLAUDE_IMPLEMENTER_MODEL``.
+    ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-sonnet-5"}`` — any
+    subset; unset legs use ``DEFAULT_LEG_MODELS`` (the claude leg defaults to Fable,
+    ``claude-fable-5`` — the review-path model, decoupled from the implementer
+    ``CLAUDE_IMPLEMENTER_MODEL``). Replaces the prior need to monkeypatch a leg's model.
+
+    ``max_concurrency``: legs run in PARALLEL by default (``None`` → bounded by
+    ``min(len(legs), 8)``); pass ``1`` for sequential (the opt-in escape hatch), or
+    ``N`` to cap. Order + fail-closed semantics are identical regardless.
 
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
@@ -1241,20 +1311,24 @@ def invoke_panel(
             )
     else:
         runner = spawn
-    results: list[PanelLegResult] = []
-    for leg in legs:
+
+    def _run_leg(leg: str) -> PanelLegResult:
+        # Fail-closed: a broken leg degrades, never crashes the gate (so the pool's
+        # future.result() never raises). This is the exact per-leg body as before —
+        # only the surrounding loop is now a concurrent, order-preserving fan-out.
         try:
             status, text = runner(leg, artifact)
-        except Exception as exc:  # fail-closed: a broken leg degrades, never crashes the gate
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
-            continue
+        except Exception as exc:
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200])
         try:
             status = normalize_leg_status(status)
         except ValueError:
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        results.append(PanelLegResult(leg=leg, status=status, text=str(text)))
+        return PanelLegResult(leg=leg, status=status, text=str(text))
+
+    results = _run_legs_ordered(list(legs), _run_leg, max_concurrency=max_concurrency)
     return PanelResult(legs=tuple(results))
 
 
@@ -1265,6 +1339,7 @@ def invoke_panel_request(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     models: Mapping[str, str] | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run a panel from a ``PanelRequest`` value object (documented skill entry point).
 
@@ -1283,6 +1358,7 @@ def invoke_panel_request(
         repo_dir=repo_dir,
         mode=mode,
         models=models,
+        max_concurrency=max_concurrency,
     )
 
 
@@ -1399,6 +1475,7 @@ def invoke_board(
     matrix: CompatibilityMatrix | None = None,
     sink: EventSink | None = None,
     omnigent: OmnigentBacking | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1447,6 +1524,11 @@ def invoke_board(
     dispatch). The native host leg is OBSERVED, never relaunched through the
     gateway for observability's sake. ``sink=None`` (the default) is a no-op — no
     envelope is built — so the ``default`` board stays byte-neutral.
+
+    ``max_concurrency``: seats run in PARALLEL by default (``None`` → bounded by
+    ``min(len(seats), 8)``); pass ``1`` for sequential (the opt-in escape hatch for
+    debugging / a throttled provider / a constrained host), or ``N`` to cap. Seat
+    order and fail-closed-per-seat semantics are identical regardless.
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
@@ -1480,32 +1562,36 @@ def invoke_board(
 
     if observer is not None:
         observer.board_started()
-    results: list[PanelLegResult] = []
-    for seat in board.seats:
+
+    def _run_seat(seat: Seat) -> PanelLegResult:
+        # The full per-seat body — backing decision → skip / omnigent / homebrew →
+        # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
+        # so both the skip decisions and the spawn happen concurrently per seat. It
+        # is fail-closed (every path returns a PanelLegResult, never raises), so the
+        # future's .result() never raises and one broken seat can't crash the board.
+        # The shared reads it closes over — gateway_available, omnigent_catalog,
+        # env_source, board, matrix (already resolved) — are read-only; the single
+        # gateway-catalog fetch already happened ABOVE, once, before the pool.
+        #
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
         leg = (seat.harness or "").lower()
         decision = select_backing(seat, gateway_available=gateway_available)
         if decision.skip:
-            results.append(_skip(seat, leg, f"skip: {decision.reason}"))
-            continue
+            return _skip(seat, leg, f"skip: {decision.reason}")
         if decision.backing == BACKING_OMNIGENT:
             # ABDOMNI transport. With no omnigent backing wired this stays the
             # ABDHOME no-provider skip ("not served by homebrew"); with a backing,
             # the seat routes through Omnigent v0.4.0 iff the LIVE catalog reports
             # its harness (the DISTINCT dynamic cursor/amp gate).
             if omnigent is None:
-                results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
-                continue
-            results.append(_route_omnigent_seat(
-                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip))
-            continue
+                return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)")
+            return _route_omnigent_seat(
+                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip)
         if decision.backing != BACKING_HOMEBREW:
-            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"))
-            continue
+            return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew")
         if leg not in _HOMEBREW_BUILT3:
-            results.append(_skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
-            continue
+            return _skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)")
         # Render effort (proves the mapping is frozen for this lane) + resolve the
         # actively-scrubbed env BEFORE spawning. A breadth lane raises
         # EffortMappingError → skip; a never-silent-key violation raises ValueError
@@ -1516,11 +1602,9 @@ def invoke_board(
                 seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
             )
         except EffortMappingError as exc:
-            results.append(_skip(seat, leg, f"skip: {exc}"))
-            continue
+            return _skip(seat, leg, f"skip: {exc}")
         except ValueError as exc:  # never-silent-key
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
-            continue
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
             if spawn is not None:
                 status, text = spawn(leg, artifact)
@@ -1530,15 +1614,19 @@ def invoke_board(
                     model=seat.model, effort=seat.effort, env=seat_env,
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
-            continue
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
             status = normalize_leg_status(status)
         except ValueError:
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        results.append(PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key))
+        return PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
+
+    # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
+    # sequential); results come back in SEAT ORDER (positional re-key + golden
+    # order/content assertions depend on it).
+    results = _run_legs_ordered(list(board.seats), _run_seat, max_concurrency=max_concurrency)
     # Observability emit is a SEPARATE pass over the (unchanged) run results, in
     # seat order — 1 result per seat — so the run control-flow above is untouched
     # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.

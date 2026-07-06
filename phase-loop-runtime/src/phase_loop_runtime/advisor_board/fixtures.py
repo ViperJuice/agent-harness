@@ -29,13 +29,18 @@ CANONICAL_LEG_ORDER: tuple[str, ...] = ("codex", "gemini", "claude")
 # ``harness_mapping.render_seat_invocation``:
 #   codex  gpt-5.5           + effort max  -> ``-c model_reasoning_effort=xhigh``
 #   gemini "Gemini 3.1 Pro"  + effort high -> model ``"Gemini 3.1 Pro (High)"``
-#   claude claude-sonnet-5   + effort max  -> ``--effort max``
+#   claude claude-fable-5    + effort max  -> ``--effort max``
+#
+# The claude seat runs Fable (``claude-fable-5``): pre-merge review is a mid-tier
+# decision where being wrong is expensive, so the default review board reviews on
+# Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
+# ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
     Seat(model="gpt-5.5", effort="max", harness="codex",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="claude-sonnet-5", effort="max", harness="claude",
+    Seat(model="claude-fable-5", effort="max", harness="claude",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
 )
 
@@ -51,7 +56,7 @@ DEFAULT_BOARD: Board = Board(
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
     "codex": "gpt-5.5",
     "gemini": "Gemini 3.1 Pro (High)",
-    "claude": "claude-sonnet-5",
+    "claude": "claude-fable-5",
 }
 DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
     "codex": ("-c", "model_reasoning_effort=xhigh"),

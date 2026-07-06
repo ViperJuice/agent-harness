@@ -109,8 +109,11 @@ def parse_seats(
 # --- stand-in board catalog (until ABDREG's config loader + presets) --------
 
 # A stand-in ``code-review`` preset mirroring ``fixtures/advisor-boards.example.toml``
-# so ``advisor-board --board code-review`` resolves in ABDRESOLVE. ABDREG ships the
-# real presets (default, code-review, brainstorm, doc-edit) from config.
+# so ``advisor-board --board code-review`` resolved in ABDRESOLVE before the config
+# loader landed. SUPERSEDED by ``presets.PRESETS`` / ``config.load_boards`` (which
+# ship the seven real presets — the live ``code-review`` is now three frontier
+# adversarial seats on Fable, not this two-seat mirror); kept only as the ABDRESOLVE
+# stand-in fixture, off every live path.
 _STANDIN_CODE_REVIEW = Board(
     name="code-review",
     purpose="code-review",

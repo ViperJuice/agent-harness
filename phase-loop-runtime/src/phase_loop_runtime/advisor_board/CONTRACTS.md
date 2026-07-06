@@ -159,3 +159,99 @@ endpoint for an externally-launched (native) session, so a native leg is
   provider only knows sessions/turns and cannot populate it. `observability.py`
   maps our envelope onto the provider-mirrored `runtime_event.v0.1` shape, so the
   provider layer is still the wire target, just not the emit site.
+
+## ABDPRESET — Board preset library + Fable review-path · `presets.py`, `panel_invoker.py`
+
+The seven built-in presets (`presets.PRESETS`). Every preset self-validates against
+the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
+`tests/test_advisor_board_integration.py`).
+
+- **Review-class = Fable, decoupled from the implementer.** Pre-merge and legal
+  review are mid-tier decisions where being wrong is expensive, so the review-class
+  boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
+  Fable (`claude-fable-5`) on the claude lane — NOT the implementer model
+  `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
+  is the SINGLE source of truth for the panel's default claude model: the claude
+  leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
+  the *legacy* `invoke_panel` path AND the live governed gates
+  (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
+  override) review on Fable. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
+  implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
+  byte-pinned to this Fable `invoke_panel` panel by the golden proof
+  (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
+- **`code-review` = three frontier vendors, always.** codex `gpt-5.5`,
+  `Gemini 3.1 Pro`, and `claude-fable-5`, each on the `adversarial` lens (supersedes
+  the prior two-seat codex+sonnet composition).
+- **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
+  `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
+  low-stakes copyedit, a cheap aggressive ideation seat — where it is the right tool.
+- **Legal boards (`legal-review`, `legal-strategy-review`, `legal-brainstorm`)**
+  encode the PRIMARY review lens per seat. `lens` / `purpose` are free-form strings
+  (`schema.py`), so the legal lenses/purposes need no enum extension.
+- **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
+  limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
+  (three frontier vendors — gpt-5.5/adversarial, Gemini 3.1 Pro/alternative,
+  claude-fable-5/completeness — hand it any task + brief), and `solo` is the
+  single-MEMBER form (one `claude-fable-5` seat) for a quick top-end opinion when a
+  panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like
+  any other (bare/single seats are supported). Both default to TOP-END models: an
+  unanticipated task cannot be assumed low-stakes, so the safe default is frontier —
+  dial down explicitly (a cheaper board) when a task is known-cheap. Their lenses
+  (`adversarial`/`alternative`/`completeness`) and purpose (`general`) are free-form
+  strings, so no enum extension.
+- **Deep-seat FOLLOW-ON (documented, NOT built here).** The richer legal treatment —
+  four lenses per seat, an apex-Opus (`claude-opus-4-8`) seat, a verify-round, and
+  retrieval-grounded citation-verification — is a deliberate follow-on. The current
+  legal boards ship the single-primary-lens-per-seat form; the deep-seat form layers
+  onto the same seat/board schema (no schema change) when built.
+
+## ABDPAR — Concurrent leg execution · `panel_invoker.invoke_board` / `invoke_panel`
+
+`invoke_board` and `invoke_panel` fan their seats/legs out across a bounded
+`ThreadPoolExecutor` (`_run_legs_ordered`), not a sequential loop — legs are blocking
+subprocess I/O (the CLI wait releases the GIL), so wall-clock is `~max(leg)`, not
+`sum(leg)`.
+
+- **Parallel is the DEFAULT (opt-out, not opt-in).** Both entry points take a single
+  `max_concurrency: int | None = None` knob, threaded through the governed gates
+  (`governed_planning_gate` → `run_governed_premerge_loop` → `governed_premerge_for_run`)
+  so a caller CAN request sequential, while the default everywhere stays parallel:
+  - `None` (default) → parallel, bounded by `min(len(seats), 8)`.
+  - `1` → sequential (the opt-in escape hatch — debugging, a rate-limited / throttled
+    provider, a constrained host).
+  - `N` → cap concurrency at `N`.
+  It is the SAME thread-pool path: `max_workers = max(1, min(max_concurrency or len(seats), 8))`,
+  so `max_concurrency=1` degrades to one worker (strictly serial) with no separate
+  sequential branch. `max_concurrency` is a keyword-only, default-valued additive
+  extension to the frozen `invoke_panel` signature (back-compat, like `models` #66).
+
+Frozen invariants (concurrency is a **timing-only** change — never a leg's outcome;
+the golden proves byte-identity):
+
+- **Positional order** — futures are submitted in seat/leg order and read back by
+  index, so `result[i]` corresponds to `seats[i]`/`legs[i]` regardless of finish
+  order. `resolver.key_results_by_seat` re-keys by position and the golden asserts
+  order + content, so this is load-bearing.
+- **Fail-closed per seat** — the extracted per-seat/per-leg body returns a DEGRADED
+  `PanelLegResult` on any exception, so a future's `.result()` never raises and one
+  broken leg can never crash the pool or the board.
+- **Single shared reads before the pool** — the one `GET /v1/harnesses` gateway-catalog
+  fetch and the seat-validation/host-leg checks stay ABOVE the pool (one fetch, shared
+  read); the observability emit stays AFTER, in seat order. Bounded `max_workers =
+  min(len(seats), 8)`.
+- **Proof** — a `threading.Barrier(N)` test proves both directions without real sleeps:
+  the DEFAULT satisfies the barrier (all N legs in-flight at once → all OK), and
+  `max_concurrency=1` makes the same barrier unsatisfiable (one worker → it times out →
+  fail-closed DEGRADED), so the pair discriminates parallel from sequential. A third
+  test confirms sequential mode returns byte-identical ordered results.
+- **Thread-safety of the real leg paths** — the leg execs install NO signal handlers or
+  timers (`signal.signal` / `alarm` / `setitimer` would raise `ValueError: signal only
+  works in main thread` off the main thread); the only `signal.` use is `os.killpg(pid,
+  SIGTERM/SIGKILL)` (a constant, thread-safe), and timeouts run on `select.select(...)`
+  / `subprocess.run(timeout=...)`, not `SIGALRM`. Each leg stages its own temp review
+  dir, so concurrent legs never share filesystem state. Verified: the real `spawn=None`
+  path runs inside worker threads with no signal-in-thread error.
+- **Known edge (untested):** a custom board with two seats on the SAME lane (e.g. two
+  `claude` seats) now runs two concurrent same-lane CLI/PTY sessions — a scenario this
+  fan-out newly enables and nothing yet tests. The `default` board has one claude seat,
+  so it is unaffected.
