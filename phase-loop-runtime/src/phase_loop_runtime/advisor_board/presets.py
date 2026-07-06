@@ -1,6 +1,6 @@
 """Named board presets (ABDREG, Phase 2 — lane 4).
 
-Seven built-in presets, each a named, purpose-tagged, open-ended seat list:
+Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 
 * ``default``     — IS ``fixtures.DEFAULT_BOARD`` (imported, not re-declared), so
                     the back-compat keystone holds by construction: the default
@@ -113,6 +113,36 @@ LEGAL_BRAINSTORM_BOARD: Board = Board(
     ),
 )
 
+# --- general-purpose catch-alls -------------------------------------------
+#
+# For use cases we have NOT pre-modeled, so the board library is open-ended rather
+# than limited to the named domains. Both default to TOP-END models: an unanticipated
+# task cannot be assumed low-stakes, so the safe default is frontier — dial down
+# explicitly (a cheaper board or max_concurrency aside) when a task is known-cheap.
+
+# general: the domain-agnostic top-tier PANEL. Three frontier vendors with generic
+# critical lenses (adversarial / alternative-angle / completeness) — hand it any
+# task + brief and it convenes a cross-vendor frontier review.
+GENERAL_BOARD: Board = Board(
+    name="general",
+    purpose="general",
+    seats=(
+        Seat(model="gpt-5.5", effort="max", harness="codex", lens="adversarial"),
+        Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="alternative"),
+        Seat(model="claude-fable-5", effort="max", harness="claude", lens="completeness"),
+    ),
+)
+
+# solo: the general-purpose single MEMBER — one quick top-end opinion when a full
+# panel is overkill. A one-seat board resolves + validates like any other.
+SOLO_BOARD: Board = Board(
+    name="solo",
+    purpose="general",
+    seats=(
+        Seat(model="claude-fable-5", effort="max", harness="claude", lens="completeness"),
+    ),
+)
+
 # The built-in presets, keyed by name. ``default`` IS the shared fixture board.
 PRESETS: dict[str, Board] = {
     DEFAULT_BOARD.name: DEFAULT_BOARD,
@@ -122,6 +152,8 @@ PRESETS: dict[str, Board] = {
     LEGAL_REVIEW_BOARD.name: LEGAL_REVIEW_BOARD,
     LEGAL_STRATEGY_REVIEW_BOARD.name: LEGAL_STRATEGY_REVIEW_BOARD,
     LEGAL_BRAINSTORM_BOARD.name: LEGAL_BRAINSTORM_BOARD,
+    GENERAL_BOARD.name: GENERAL_BOARD,
+    SOLO_BOARD.name: SOLO_BOARD,
 }
 
 PRESET_NAMES: tuple[str, ...] = tuple(PRESETS)
@@ -150,5 +182,7 @@ __all__ = [
     "LEGAL_REVIEW_BOARD",
     "LEGAL_STRATEGY_REVIEW_BOARD",
     "LEGAL_BRAINSTORM_BOARD",
+    "GENERAL_BOARD",
+    "SOLO_BOARD",
     "get_preset",
 ]

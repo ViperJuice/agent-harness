@@ -96,10 +96,12 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
 class InvokePanelApiStabilityTests(unittest.TestCase):
     def test_invoke_panel_signature_is_frozen(self) -> None:
         # ABDFREEZE-4: the invoke_panel() API is part of the back-compat contract.
+        # ``max_concurrency`` (ABDPAR) is an additive keyword-only param defaulting to
+        # None (parallel) — existing positional/keyword callers are unaffected.
         sig = inspect.signature(pi.invoke_panel)
         self.assertEqual(
             list(sig.parameters),
-            ["artifact", "legs", "spawn", "repo_dir", "mode", "models"],
+            ["artifact", "legs", "spawn", "repo_dir", "mode", "models", "max_concurrency"],
         )
 
 

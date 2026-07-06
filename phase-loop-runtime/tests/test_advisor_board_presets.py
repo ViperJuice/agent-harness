@@ -17,14 +17,30 @@ from phase_loop_runtime.advisor_board import (
 
 
 class PresetTests(unittest.TestCase):
-    def test_seven_named_presets(self) -> None:
+    def test_nine_named_presets(self) -> None:
         self.assertEqual(
             set(PRESET_NAMES),
             {
                 "default", "code-review", "brainstorm", "doc-edit",
                 "legal-review", "legal-strategy-review", "legal-brainstorm",
+                "general", "solo",
             },
         )
+
+    def test_general_and_solo_are_top_end_catch_alls(self) -> None:
+        # general = 3 frontier vendors (domain-agnostic); solo = 1 top-end member.
+        general = PRESETS["general"]
+        self.assertEqual(len(general.seats), 3)
+        self.assertEqual(
+            {s.model for s in general.seats},
+            {"gpt-5.5", "Gemini 3.1 Pro", "claude-fable-5"},
+        )
+        solo = PRESETS["solo"]
+        self.assertEqual(len(solo.seats), 1)
+        self.assertEqual(solo.seats[0].model, "claude-fable-5")
+        # neither seats Sonnet — an unmodeled task is not assumed low-stakes.
+        for board in (general, solo):
+            self.assertNotIn("claude-sonnet-5", {s.model for s in board.seats})
 
     def test_default_preset_is_the_shared_default_board_fixture(self) -> None:
         # Identity, not equality: the preset reconstructs today's exact 3 seats.

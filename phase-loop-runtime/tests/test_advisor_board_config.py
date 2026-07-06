@@ -38,6 +38,7 @@ class PresetSelfValidationTests(unittest.TestCase):
             {
                 "default", "code-review", "brainstorm", "doc-edit",
                 "legal-review", "legal-strategy-review", "legal-brainstorm",
+                "general", "solo",
             },
         )
 

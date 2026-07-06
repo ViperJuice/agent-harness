@@ -96,7 +96,7 @@ seat without opting in.
 
 ## Board presets
 
-Seven built-in presets (`advisor_board.presets`), each a named, purpose-tagged,
+Nine built-in presets (`advisor_board.presets`), each a named, purpose-tagged,
 open-ended seat list. Load via `load_boards()` (self-validates every preset against
 the matrix at load time).
 
@@ -109,6 +109,20 @@ the matrix at load time).
 | `legal-review`          | legal-review          | gpt-5.5 · max · codex · opposing-counsel ; Gemini 3.1 Pro · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
 | `legal-strategy-review` | legal-strategy-review | gpt-5.5 · max · codex · red-team ; Gemini 3.1 Pro · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
 | `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.5 · high · codex · conservative ; Gemini 3.1 Pro · high · gemini · creative |
+| `general`               | general               | gpt-5.5 · max · codex · adversarial ; Gemini 3.1 Pro · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
+| `solo`                  | general               | claude-fable-5 · max · claude · completeness |
+
+**Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
+`solo` (one top-end member) are the domain-agnostic fallbacks — hand either any task
+and it convenes frontier review without a pre-defined domain board. Both default to
+top-end models: an unanticipated task is not assumed low-stakes, so the safe default
+is frontier; dial down explicitly when a task is known-cheap.
+
+**Parallel by default.** `invoke_board` / `invoke_panel` run their legs
+CONCURRENTLY out of the box (a bounded thread pool — wall-clock ≈ slowest leg, not
+the sum). `max_concurrency` is the knob: `None` (default) = parallel; `1` =
+sequential (the opt-in escape hatch for debugging / rate-limits / a constrained
+host); `N` = cap at N. Result order is always preserved regardless of finish order.
 
 **Review-class boards run on Fable, never the implementer.** Pre-merge and legal
 review are mid-tier decisions where being wrong is expensive, so the review-class

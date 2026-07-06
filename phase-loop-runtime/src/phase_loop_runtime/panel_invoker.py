@@ -1221,12 +1221,15 @@ def _default_spawn_via_provider(
 
 
 def _run_legs_ordered(
-    items: "Sequence[object]", run_one: "Callable[[object], PanelLegResult]"
+    items: "Sequence[object]",
+    run_one: "Callable[[object], PanelLegResult]",
+    *,
+    max_concurrency: int | None = None,
 ) -> list[PanelLegResult]:
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
     The panel/board legs are blocking subprocess I/O, so they fan out across a
-    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum). Two
+    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum). Three
     invariants the callers rely on:
 
     * **Order preserved** — ``result[i]`` corresponds to ``items[i]`` regardless of
@@ -1237,11 +1240,18 @@ def _run_legs_ordered(
       (turn any exception into a DEGRADED ``PanelLegResult``), so a future's
       ``.result()`` never raises and one broken leg can never crash the pool or the
       board. Concurrency changes *timing only*, never a leg's outcome.
+    * **Parallel is the default; sequential is opt-in** — ``max_concurrency`` bounds
+      the pool: ``None`` (default) fans out up to ``_PANEL_MAX_WORKERS``; ``1`` forces
+      sequential (the escape hatch for debugging / rate-limits / a constrained host);
+      ``N`` caps at N. Nobody opts *in* to parallel — it is the out-of-the-box
+      behavior.
     """
     seq = list(items)
     if not seq:
         return []
-    with ThreadPoolExecutor(max_workers=min(len(seq), _PANEL_MAX_WORKERS)) as pool:
+    limit = _PANEL_MAX_WORKERS if max_concurrency is None else max_concurrency
+    max_workers = max(1, min(len(seq), limit))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(run_one, item) for item in seq]
         return [future.result() for future in futures]
 
@@ -1254,8 +1264,13 @@ def invoke_panel(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     models: Mapping[str, str] | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
+
+    ``max_concurrency`` (parallel by default): ``None`` fans the legs out concurrently
+    (bounded by ``_PANEL_MAX_WORKERS``); ``1`` forces sequential; ``N`` caps at N. Legs
+    run in parallel out of the box — sequential is an explicit opt-in.
 
     ``mode`` (#63): ``"review"`` (default, back-compat) is the pre-merge code-review
     framing requiring an AGREE/PARTIALLY AGREE/DISAGREE verdict; ``"advisory"`` runs
@@ -1299,7 +1314,7 @@ def invoke_panel(
             status = "EMPTY"
         return PanelLegResult(leg=leg, status=status, text=str(text))
 
-    results = _run_legs_ordered(list(legs), _run_leg)
+    results = _run_legs_ordered(list(legs), _run_leg, max_concurrency=max_concurrency)
     return PanelResult(legs=tuple(results))
 
 
@@ -1444,6 +1459,7 @@ def invoke_board(
     matrix: CompatibilityMatrix | None = None,
     sink: EventSink | None = None,
     omnigent: OmnigentBacking | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1588,7 +1604,7 @@ def invoke_board(
 
     # Fan the seats out concurrently; results come back in SEAT ORDER (positional
     # re-key + golden order/content assertions depend on it).
-    results = _run_legs_ordered(list(board.seats), _run_seat)
+    results = _run_legs_ordered(list(board.seats), _run_seat, max_concurrency=max_concurrency)
     # Observability emit is a SEPARATE pass over the (unchanged) run results, in
     # seat order — 1 result per seat — so the run control-flow above is untouched
     # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
