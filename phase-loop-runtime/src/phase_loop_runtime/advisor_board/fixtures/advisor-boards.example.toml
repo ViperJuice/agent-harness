@@ -40,7 +40,8 @@ allow_api_key_fallback = false
   harness = "claude"
 
 # A purpose-tagged preset with an open-ended seat list (ABDREG ships the real
-# presets: default, code-review, brainstorm, doc-edit).
+# presets: default, code-review, brainstorm, doc-edit, legal-review,
+# legal-strategy-review, legal-brainstorm).
 [[boards]]
 name = "code-review"
 purpose = "code-review"

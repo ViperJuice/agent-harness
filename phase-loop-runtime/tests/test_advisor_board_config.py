@@ -33,7 +33,13 @@ class PresetSelfValidationTests(unittest.TestCase):
         # No file -> presets only. This is the guardrail: if any preset seat used
         # an unregistered model or an incompatible lane, this raises.
         cfg = load_boards(Path("/nonexistent/advisor-boards.toml"), matrix=_MATRIX)
-        self.assertEqual(set(cfg.names()), {"default", "code-review", "brainstorm", "doc-edit"})
+        self.assertEqual(
+            set(cfg.names()),
+            {
+                "default", "code-review", "brainstorm", "doc-edit",
+                "legal-review", "legal-strategy-review", "legal-brainstorm",
+            },
+        )
 
     def test_default_board_resolves_to_todays_three_seats(self) -> None:
         cfg = load_boards(Path("/nonexistent/advisor-boards.toml"), matrix=_MATRIX)

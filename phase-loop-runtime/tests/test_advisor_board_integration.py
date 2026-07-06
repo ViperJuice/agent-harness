@@ -7,7 +7,8 @@ release verification matrix from ``specs/phase-plans-v5.md`` (Verification):
 
 * **integration** — real registries × resolver × homebrew backing resolve, validate,
   and run a full board to results in seat order;
-* **presets smoke** — ``default`` / ``code-review`` / ``brainstorm`` / ``doc-edit``
+* **presets smoke** — every preset (``default`` / ``code-review`` / ``brainstorm`` /
+  ``doc-edit`` + the three ``legal-*`` boards)
   all load through ``config.load_boards`` (which self-validates against the real
   matrix) AND run to results;
 * **fail-closed matrix** — missing CLI / no auth / gateway-down each degrade the
