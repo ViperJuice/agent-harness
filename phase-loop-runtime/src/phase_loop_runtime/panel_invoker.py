@@ -12,7 +12,6 @@ status so a verbose auth error is never mistaken for a real review.
 from __future__ import annotations
 
 import os
-import pty
 import re
 import select
 import shutil
@@ -721,6 +720,10 @@ def _run_claude_tui_session(
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
     try:
+        # pty is Unix-only (it imports termios); import lazily so the
+        # module — and the whole phase-loop CLI — stays importable on
+        # native Windows, where only this PTY-based leg is unavailable.
+        import pty
         master_fd, slave_fd = pty.openpty()
         try:
             proc = subprocess.Popen(
