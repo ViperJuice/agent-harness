@@ -193,3 +193,26 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   retrieval-grounded citation-verification — is a deliberate follow-on. The current
   legal boards ship the single-primary-lens-per-seat form; the deep-seat form layers
   onto the same seat/board schema (no schema change) when built.
+
+## ABDPAR — Concurrent leg execution · `panel_invoker.invoke_board` / `invoke_panel`
+
+`invoke_board` and `invoke_panel` fan their seats/legs out across a bounded
+`ThreadPoolExecutor` (`_run_legs_ordered`), not a sequential loop — legs are blocking
+subprocess I/O (the CLI wait releases the GIL), so wall-clock is `~max(leg)`, not
+`sum(leg)`. Frozen invariants (concurrency is a **timing-only** change — never a leg's
+outcome; the golden proves byte-identity):
+
+- **Positional order** — futures are submitted in seat/leg order and read back by
+  index, so `result[i]` corresponds to `seats[i]`/`legs[i]` regardless of finish
+  order. `resolver.key_results_by_seat` re-keys by position and the golden asserts
+  order + content, so this is load-bearing.
+- **Fail-closed per seat** — the extracted per-seat/per-leg body returns a DEGRADED
+  `PanelLegResult` on any exception, so a future's `.result()` never raises and one
+  broken leg can never crash the pool or the board.
+- **Single shared reads before the pool** — the one `GET /v1/harnesses` gateway-catalog
+  fetch and the seat-validation/host-leg checks stay ABOVE the pool (one fetch, shared
+  read); the observability emit stays AFTER, in seat order. Bounded `max_workers =
+  min(len(seats), 8)`.
+- **Proof** — a `threading.Barrier(N)` test (all N legs must be in-flight at once or the
+  barrier times out → DEGRADED) proves genuine concurrency without real sleeps; it is
+  verified to discriminate serial from concurrent execution.
