@@ -255,3 +255,45 @@ the golden proves byte-identity):
   `claude` seats) now runs two concurrent same-lane CLI/PTY sessions — a scenario this
   fan-out newly enables and nothing yet tests. The `default` board has one claude seat,
   so it is unaffected.
+
+## ABDREF — "Reference, don't inline" ingestion · `panel_invoker._resolve_artifact` / `_resolve_brief`
+
+The leg prompt was already lean (it stages `review-bundle.md` and instructs the leg
+to READ the file); the remaining inline path was the caller→runtime boundary, where
+building `artifact: str` forces the caller to hold the whole (20k+ token) bundle in
+its own context. `artifact_ref` / `brief_ref` promote that to by-reference ingestion:
+the caller passes a PATH and the runtime reads it.
+
+- **Entry points.** `invoke_panel`, `invoke_board`, and `invoke_panel_request` accept
+  keyword-only `artifact_ref: str | Sequence[str] | None` and `brief_ref: str | None`
+  (default-valued additive extensions to the frozen signatures — back-compat, like
+  `models` / `max_concurrency`). The artifact is resolved at the TOP of the entry
+  point so timeout scaling, staging, and metadata all see the resolved content.
+- **`_resolve_artifact(artifact, artifact_ref)`.** `artifact_ref is None` →
+  `artifact or ""` (today's bytes, verbatim). A single path (a bare string OR a
+  one-element sequence) returns the file content VERBATIM — no header — so
+  `artifact_ref=P` is byte-identical to `artifact=<contents of P>`. Multiple paths
+  concatenate deterministically in the given order, each under a `## {filename}`
+  header, joined by a blank line. `artifact_ref` WINS when both it and `artifact` are
+  supplied. A `str` is checked BEFORE the `Sequence` branch (a string is itself an
+  iterable of characters).
+- **`_resolve_brief(mode, brief_ref)`.** `brief_ref` file when set, else
+  `_mode_instructions(mode)` — staged as `review-instructions.md`. Threaded through
+  `_default_spawn` / `_default_spawn_via_provider` (omitted-when-`None`, so the
+  default path's `_default_spawn` call stays byte-identical).
+- **Fail-closed.** A missing `artifact_ref` / `brief_ref` path raises `ValueError`
+  NAMING the path — never a silent-empty bundle that would read as a real (empty)
+  review.
+- **Inline-size guard (`_maybe_warn_inline_size`, `_MAX_INLINE_ARTIFACT_BYTES = 16 KB`).**
+  An INLINE (not-from-ref) artifact over the threshold logs ONE steering warning
+  pointing to `artifact_ref` — **WARN, never refuse, never mutate** (refusing would
+  break existing callers). A from-ref artifact is never warned.
+- **Crash-residual scratch GC (`_gc_stale_panel_scratch`).** Best-effort, age-gated
+  (`max_age_s = 24h`) sweep of `pl-panel-*` dirs, called at the top of
+  `_default_spawn`. Reclaims dirs leaked when a run is KILLED before the per-run
+  `finally: rmtree` (timeout/crash); a concurrent run's fresh dir is never touched,
+  and a GC failure can NEVER affect the run (fully swallowed).
+- **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical
+  per-leg argv / env / timeout. `tests/test_advisor_board_golden.py` (Proof A hits
+  `_exec_leg`; Proof B injects `spawn=`) is untouched;
+  `tests/test_advisor_board_ingestion.py` proves the new path is byte-transparent.

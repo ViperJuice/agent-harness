@@ -153,6 +153,15 @@ advisor-board --seats gpt-5.5:max:codex <art>  # ad-hoc seats (model:effort[:har
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
 callers keep using `panel_invoker.invoke_panel(...)` unchanged.
 
+**Pass artifacts and briefs by path — reference, don't inline.** Rather than
+inlining a large bundle into `artifact: str` (which bloats the *caller's* context),
+pass `artifact_ref="path/to/bundle.md"` (a path, or a list of paths concatenated
+deterministically) and, for a large review brief, `brief_ref="path/to/brief.md"`;
+the runtime reads and stages them. Inline `artifact: str` still works for small
+material, but a large inline artifact (> 16 KB) logs a steering warning, and a
+missing ref path fails closed (never a silent empty review). `artifact_ref` wins if
+both are given. Entry points: `invoke_panel` / `invoke_board` / `invoke_panel_request`.
+
 **Legs run in parallel by default.** `invoke_board` / `invoke_panel` fan their
 seats/legs out across a bounded thread pool, so wall-clock is ~`max(leg)`, not
 `sum(leg)` (the legs are blocking subprocess I/O). Both take a single

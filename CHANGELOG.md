@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Advisor Board "reference, don't inline" ingestion (`artifact_ref` / `brief_ref`).**
+  `invoke_panel` / `invoke_board` / `invoke_panel_request` now accept an
+  `artifact_ref` (a path or list of paths) and a `brief_ref` (a path): the runtime
+  reads them off disk and stages `review-bundle.md` / `review-instructions.md`, so a
+  caller no longer has to inline a 20k+ token bundle into its own context to invoke a
+  board. A single `artifact_ref` path is used verbatim; multiple paths concatenate
+  deterministically under per-file headers. A missing ref path fails **closed**
+  (`ValueError` naming the path, never a silent-empty review), and an oversized
+  **inline** artifact (> 16 KB) logs a one-line steering warning pointing to
+  `artifact_ref` — **warn, never refuse, never mutate**. `artifact: str` back-compat
+  is untouched (no ref ⇒ identical staged bytes ⇒ identical per-leg argv / env /
+  timeout — the golden byte-identity proof still holds). Adds a best-effort,
+  age-gated GC of crash-residual `pl-panel-*` scratch dirs that can never affect a
+  run, and rewrites the `advisor-board` skill to lead with passing artifacts/briefs
+  by path.
+
 ## [0.2.0] — 2026-07-06
 
 _First public PyPI release of `phase-loop-runtime`. Headline: the complete
