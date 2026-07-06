@@ -1487,19 +1487,23 @@ def invoke_panel_request(
     sibling. The request's ``metadata_only`` redaction posture is enforced at
     ``PanelRequest`` construction.
 
-    The request's declared ``artifact_ref`` is now FUNCTIONAL: it is resolved
-    through ``_resolve_artifact`` (reading paths off disk, fail-closed on a missing
-    path) so the value object honors 'reference, don't inline'. ``artifact_ref``
-    wins over ``artifact`` when both are set.
+    The request's declared ``artifact_ref`` is now FUNCTIONAL: it is passed THROUGH
+    to ``invoke_panel``'s ``artifact_ref`` (rather than pre-resolved here) so a single
+    resolution happens with a correct ``from_ref`` flag — a large bundle loaded from a
+    file must NOT trip the inline-size warning meant to steer callers toward
+    ``artifact_ref``. ``artifact_ref`` wins over ``artifact`` when both are set, and a
+    missing ref path fails closed inside ``invoke_panel`` (fail-closed, not
+    silent-empty).
     """
     return invoke_panel(
-        _resolve_artifact(request.artifact, request.artifact_ref),
+        request.artifact,
         request.legs,
         spawn=spawn,
         repo_dir=repo_dir,
         mode=mode,
         models=models,
         max_concurrency=max_concurrency,
+        artifact_ref=request.artifact_ref,
     )
 
 

@@ -187,6 +187,31 @@ class InlineSizeGuardTests(unittest.TestCase):
         self.assertTrue(any("artifact_ref" in line for line in cm.output))
 
 
+class PanelRequestRefTests(unittest.TestCase):
+    LOGGER = "phase_loop_runtime.panel_invoker"
+
+    def test_request_artifact_ref_resolves_and_does_not_warn_when_large(self) -> None:
+        # A LARGE bundle loaded from a file via PanelRequest.artifact_ref must NOT
+        # trip the inline-size warning (from_ref=True) — the by-reference entry point
+        # must not scold the caller for doing exactly the right thing.
+        big = "b" * (pi._MAX_INLINE_ARTIFACT_BYTES + 500)
+        seen: dict = {}
+
+        def spawn(leg, artifact):
+            seen["artifact"] = artifact
+            return ("OK", "AGREE")
+
+        with TemporaryDirectory() as td:
+            p = Path(td) / "big-bundle.md"
+            p.write_text(big, encoding="utf-8")
+            req = pi.PanelRequest(artifact="", artifact_ref=str(p), legs=("gemini",))
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                pi.invoke_panel_request(req, spawn=spawn)
+        # Resolution actually happened (spawn saw the file content, not the empty
+        # inline artifact).
+        self.assertEqual(seen["artifact"], big)
+
+
 class ScratchGCTests(unittest.TestCase):
     def _seed(self, root: Path, name: str, age_s: float) -> Path:
         d = root / name
