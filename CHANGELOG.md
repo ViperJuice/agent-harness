@@ -6,6 +6,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+## [0.3.0] — 2026-07-07
+
+The **spec-integration** release: the harness now consumes the published
+`consiliency-contract` and enforces its shared governance, retractably.
+
+- **`git_discipline` guardrail ACTIVATED.** The contract pin moves
+  `>=0.3.0,<0.5.0` → `>=0.6.3,<0.7` (contract published to PyPI + npm at 0.6.3).
+  This supplies the `pipeline_ref_classes` registry + `git_discipline_protocol`
+  schema, so the git-discipline guardrail — previously a latent no-op under the
+  0.3.0-resolving ceiling — is now live (warn-default; `human_required` never set).
+- **HGATE — a 6th `spec_conformance` governed gate.** Warns when a declared
+  spec-projection (`proj-S`/`proj-code`) sits below the conformance bar
+  (`hash-checked`+, set by an advisory panel). Structural (no canon dependency),
+  warn-default, no-op when no spec-projections are declared, and contract-sanctioned
+  L0 stubs are exempt. Forward-infrastructure: dormant on schema-valid manifests
+  until the per-archetype conformance ratchet + the manifest maturity enum expand.
+- **Retractable-teeth posture dial.** Gate enforcement is now a per-finding-class
+  posture (`observe` < `warn` < `enforce`) resolved from the merge-gated
+  `gate_posture_registry` in the contract, with **non-retractable floors**: a repo
+  raises any class freely via `.consiliency/manifest.json` `gate_posture_overrides`
+  and lowers only to each class's floor. `never_delete_human_refs` is enforce-floored
+  (forward-declared — no emitter yet), `write_footprint_violation`/`hash_drift` are
+  warn-floored; advisories retract to `observe`. Any downward move emits the
+  non-retractable `posture_retracted` note (de-fanging is fleet-visible). The
+  operator's `PHASE_LOOP_CONSILIENCY_GATES=hard` remains the master block switch;
+  `human_required` is never set. Backward-compatible: on a contract `< 0.6.2` every
+  gate falls back to its prior behavior. The three previously-hardcoded per-gate
+  postures (`version_skew` cap, git-discipline notes, HGATE loud/info) are migrated
+  into the registry.
+
 ## [0.2.1] — 2026-07-06
 
 - **Advisor Board purpose-derived default mode + advisory prompt hygiene.** A
