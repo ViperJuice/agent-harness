@@ -22,15 +22,17 @@ dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
-    # PIN (spec-integration v0.3.0): floor at 0.6.2 -- it ships the `gate_posture_registry`
-    # (retractable teeth) alongside `pipeline_ref_classes` + `git_discipline_protocol`. This
+    # PIN (spec-integration v0.3.0): floor at 0.6.3 -- ships the `gate_posture_registry`
+    # AND the manifest-schema `gate_posture_overrides` key (0.6.3) that makes the dial
+    # OPERABLE (a repo can declare per-repo posture overrides without failing layout_validity),
+    # alongside `pipeline_ref_classes` + `git_discipline_protocol`. This
     # ACTIVATES the git-discipline guardrail AND the posture dial (per-finding-class
     # enforcement with non-retractable floors). The dial degrades gracefully on an older
     # contract (gate_posture.available() False -> legacy per-gate behavior preserved), so
     # < 0.6.2 stays safe; the floor guarantees the teeth are present. Warn-default remains;
     # human_required is never set. (0.6.0 shipped self-inconsistent version refs -> fixed in
     # 0.6.1, contract PR #18.)
-    "consiliency-contract>=0.6.2,<0.7",
+    "consiliency-contract>=0.6.3,<0.7",
     "jsonschema>=4,<5",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in
