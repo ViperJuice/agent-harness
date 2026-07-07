@@ -3,6 +3,7 @@ import unittest
 from dataclasses import fields
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.panel_invoker import (
@@ -108,6 +109,25 @@ class PanelInvokerTest(unittest.TestCase):
         self.assertIn("FROM_BOARD_REF", seen["codex"])
         self.assertNotIn("PRIVATE_BODY_ABSENT", seen["codex"])
         self.assertIn(str(ref.resolve()), seen["codex"])
+
+    def test_board_threads_timeout_overrides_to_real_spawn_boundary(self):
+        seen_timeouts = {}
+
+        def spawn(leg, artifact, **kwargs):
+            seen_timeouts[leg] = kwargs.get("timeout_s")
+            return ("OK", "AGREE")
+
+        with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn):
+            invoke_board(
+                DEFAULT_BOARD,
+                "ARTIFACT",
+                timeouts_by_leg={"gemini": 137},
+                max_concurrency=1,
+            )
+
+        self.assertEqual(seen_timeouts["gemini"], 137)
+        self.assertIsNone(seen_timeouts["codex"])
+        self.assertIsNone(seen_timeouts["claude"])
 
     def test_panel_request_threads_artifact_ref_and_timeout_field_names(self):
         seen = {}
