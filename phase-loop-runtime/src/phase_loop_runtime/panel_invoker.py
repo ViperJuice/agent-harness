@@ -1433,7 +1433,16 @@ def _exec_leg(
             rc = proc.returncode
             log_text = proc.stderr or ""
             soft_empty = rc == 0 and not review_text.strip()
-            stall = bool(_GEMINI_TRANSIENT_RE.search(review_text + "\n" + log_text))
+            # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
+            # never inside a substantial successful review. Matching the transient regex
+            # against a full review body would misclassify a valid review that merely
+            # DISCUSSES "connection reset"/"please try again" (plausible — this panel reviews
+            # code) as a stall and discard+re-run it. So: stderr always counts; stdout counts
+            # only when the body is too short to be a real review.
+            stall = bool(
+                _GEMINI_TRANSIENT_RE.search(log_text)
+                or (len(review_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(review_text))
+            )
             if not (soft_empty or stall):
                 break  # real output OR hard non-transient error → stop (never hammer)
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
