@@ -502,7 +502,9 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
     emits an ``UNREADABLE`` entry so the leg still sees the intended path. The file
     is read ONLY to hash + size it (streamed in chunks — this mode exists for LARGE
     files, so the bytes are never fully buffered and NEVER placed in the returned
-    text). MIME is guessed from the extension, not content-sniffed."""
+    text). Relative paths and symlinks keep normal OS path resolution; non-regular
+    targets and open-time races fail closed. MIME is guessed from the extension,
+    not content-sniffed."""
     path = Path(p)
     if not path.is_file():
         msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"

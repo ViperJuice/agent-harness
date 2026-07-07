@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import unittest
 import hashlib
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -159,6 +160,49 @@ class ContextRefsMissingPathTests(unittest.TestCase):
             with self.assertRaises(ValueError) as cm:
                 pi._render_context_refs_manifest([td], soft_warn=False)
         self.assertIn(td, str(cm.exception))
+
+    def test_relative_parent_path_is_reported_as_resolved_absolute_path(self) -> None:
+        original_cwd = os.getcwd()
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            nested = root / "nested"
+            nested.mkdir()
+            p = root / "doc.txt"
+            p.write_text("body", encoding="utf-8")
+            try:
+                os.chdir(nested)
+                entry = pi._context_ref_entry("../doc.txt", soft_warn=False)
+            finally:
+                os.chdir(original_cwd)
+        self.assertIn(str(p.resolve()), entry or "")
+
+    def test_symlink_to_regular_file_follows_resolved_target(self) -> None:
+        with TemporaryDirectory() as td:
+            target = Path(td) / "target.txt"
+            target.write_text("body", encoding="utf-8")
+            link = Path(td) / "link.txt"
+            link.symlink_to(target)
+            entry = pi._context_ref_entry(str(link), soft_warn=False)
+        self.assertIn(str(target.resolve()), entry or "")
+
+    def test_symlink_to_directory_fails_closed_as_non_regular(self) -> None:
+        with TemporaryDirectory() as td:
+            target = Path(td) / "target-dir"
+            target.mkdir()
+            link = Path(td) / "dir-link"
+            link.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(ValueError) as cm:
+                pi._context_ref_entry(str(link), soft_warn=False)
+        self.assertIn(str(link), str(cm.exception))
+
+    def test_open_time_filesystem_race_fails_closed(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "doc.txt"
+            p.write_text("body", encoding="utf-8")
+            with patch.object(Path, "open", side_effect=OSError("changed during validation")):
+                with self.assertRaises(ValueError) as cm:
+                    pi._context_ref_entry(str(p), soft_warn=False)
+        self.assertIn("changed during validation", str(cm.exception))
 
     def test_missing_path_soft_warn_does_not_raise_and_marks_unreadable(self) -> None:
         missing = "/no/such/context-ref-114-soft.txt"
