@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Release prep (#114).** CTXVERIFY confirms the `context_refs` release gate is
+  merge-ready when the focused regression proof, standalone suite, skill parity,
+  clean-room install, and worktree hygiene checks are green. Publishing, tagging,
+  and workflow dispatch remain a separate release-dispatch action.
+
 ## [0.3.0] — 2026-07-07
 
 The **spec-integration** release: the harness now consumes the published
