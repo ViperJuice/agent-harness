@@ -1,13 +1,19 @@
 """model-routing-v1 P2 — panel-invoker (IF-0-P2-2). No live CLI calls."""
 import unittest
+from dataclasses import fields
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.panel_invoker import (
     LEG_STATUSES,
     PANEL_LEGS,
     PanelLegResult,
     PanelRequest,
     available_panel_legs,
+    invoke_board,
     invoke_panel,
+    invoke_panel_request,
     panel_leg_timeout_seconds,
 )
 
@@ -66,6 +72,67 @@ class PanelInvokerTest(unittest.TestCase):
 
     def test_panel_legs_are_three_vendors(self):
         self.assertEqual(PANEL_LEGS, ("codex", "gemini", "claude"))
+
+    def test_artifact_ref_wins_over_inline_artifact_for_panel(self):
+        seen = {}
+
+        def spawn(leg, artifact):
+            seen[leg] = artifact
+            return ("ok", "AGREE")
+
+        with TemporaryDirectory() as td:
+            p = Path(td) / "bundle.md"
+            p.write_text("FROM_ARTIFACT_REF", encoding="utf-8")
+            invoke_panel("INLINE_SHOULD_NOT_APPEAR", ["codex"], artifact_ref=str(p), spawn=spawn)
+        self.assertEqual(seen["codex"], "FROM_ARTIFACT_REF")
+
+    def test_board_threads_artifact_ref_and_context_refs(self):
+        seen = {}
+
+        def spawn(leg, artifact):
+            seen[leg] = artifact
+            return ("ok", "AGREE")
+
+        with TemporaryDirectory() as td:
+            bundle = Path(td) / "bundle.md"
+            bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
+            ref = Path(td) / "private.txt"
+            ref.write_text("PRIVATE_BODY_ABSENT", encoding="utf-8")
+            invoke_board(
+                DEFAULT_BOARD,
+                "INLINE",
+                artifact_ref=str(bundle),
+                context_refs=[str(ref)],
+                spawn=spawn,
+            )
+        self.assertIn("FROM_BOARD_REF", seen["codex"])
+        self.assertNotIn("PRIVATE_BODY_ABSENT", seen["codex"])
+        self.assertIn(str(ref.resolve()), seen["codex"])
+
+    def test_panel_request_threads_artifact_ref_and_timeout_field_names(self):
+        seen = {}
+
+        def spawn(leg, artifact):
+            seen[leg] = artifact
+            return ("ok", "AGREE")
+
+        with TemporaryDirectory() as td:
+            p = Path(td) / "bundle.md"
+            p.write_text("FROM_REQUEST_REF", encoding="utf-8")
+            req = PanelRequest(
+                artifact="INLINE",
+                artifact_ref=str(p),
+                legs=("codex",),
+                timeout_seconds_by_leg={"codex": 123},
+            )
+            invoke_panel_request(req, spawn=spawn)
+        self.assertEqual(seen["codex"], "FROM_REQUEST_REF")
+        self.assertIn("timeout_seconds_by_leg", {field.name for field in fields(PanelRequest)})
+        self.assertNotIn("timeouts_by_leg", {field.name for field in fields(PanelRequest)})
+
+    def test_panel_request_deliberately_excludes_brief_ref(self):
+        request_fields = {field.name for field in fields(PanelRequest)}
+        self.assertNotIn("brief_ref", request_fields)
 
 
 if __name__ == "__main__":

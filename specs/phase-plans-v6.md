@@ -121,6 +121,7 @@ Implement or repair the runtime so true by-reference context refs are available 
 - [ ] Context-ref manifests include deterministic path and metadata entries while excluding file bodies.
 - [ ] Missing paths fail closed by default and soft warning mode produces explicit unreadable metadata without pretending the file was reviewed.
 - [ ] Metadata extraction is bounded and avoids full-file memory reads for large files; non-regular files and unsupported filesystem cases follow the frozen policy.
+- [ ] Root-jail and TOCTOU hardening is either implemented to the CTXFREEZE contract or explicitly documented as unchanged OS-path behavior with focused regression coverage.
 - [ ] Manifest rendering uses escaped structured data or an equivalent injection-resistant format.
 - [ ] Remote/non-local seats either skip/degrade explicitly for `context_refs` or display the frozen limitation clearly.
 - [ ] Existing golden/back-compat tests for default panel behavior still pass unchanged.
