@@ -104,10 +104,14 @@ class InvokePanelApiStabilityTests(unittest.TestCase):
         self.assertEqual(
             list(sig.parameters),
             ["artifact", "legs", "spawn", "repo_dir", "mode", "models",
-             "max_concurrency", "artifact_ref", "brief_ref"],
+             "max_concurrency", "artifact_ref", "brief_ref",
+             # #114 additive, keyword-only, defaulted: TRUE by-reference file refs +
+             # per-leg timeout bound.
+             "context_refs", "context_refs_soft_warn", "timeouts_by_leg"],
         )
         # The additions are keyword-only with defaults (the real back-compat guarantee).
-        for name in ("models", "max_concurrency", "artifact_ref", "brief_ref"):
+        for name in ("models", "max_concurrency", "artifact_ref", "brief_ref",
+                     "context_refs", "context_refs_soft_warn", "timeouts_by_leg"):
             self.assertEqual(sig.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertIsNot(sig.parameters[name].default, inspect.Parameter.empty)
 

@@ -12,6 +12,7 @@ status so a verbose auth error is never mistaken for a real review.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import pty
 import re
@@ -88,6 +89,12 @@ _PANEL_MAX_WORKERS = 8
 _LEG_TIMEOUT_BASE_S = 600
 _LEG_TIMEOUT_MAX_S = 1800
 _LEG_TIMEOUT_PER_KB_S = 12
+# A soft empty/transient leg is retried ONCE — but ONLY when the failed attempt
+# returned FAST (consumed < this fraction of its timeout budget). A leg that already
+# burned most of its budget is genuinely slow, not transiently stalled: re-running it
+# would ~double the panel's wall-clock (the observed full-concurrent-path hang), so we
+# bound the retry to fast failures and let a slow leg fail its own leg instead.
+_LEG_RETRY_ELAPSED_FRACTION = 0.5
 _LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S  # floor / back-compat alias
 _DEFAULT_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S
 _MAX_LEG_TIMEOUT_S = _LEG_TIMEOUT_MAX_S
@@ -130,6 +137,12 @@ class PanelRequest:
     legs: tuple[str, ...] = PANEL_LEGS
     timeout_seconds_by_leg: Mapping[str, int] = field(default_factory=dict)
     redaction_posture: str = "metadata_only"
+    # #114: TRUE by-reference local file refs — the runtime injects ONLY a
+    # path+metadata manifest (never the file bytes). Distinct from ``artifact_ref``
+    # (read-file-and-INLINE). ``context_refs_soft_warn`` opts a missing/unreadable
+    # path out of fail-closed into a logged warning + UNREADABLE manifest entry.
+    context_refs: tuple[str, ...] | None = None
+    context_refs_soft_warn: bool = False
 
     def __post_init__(self) -> None:
         if self.redaction_posture != "metadata_only":
@@ -302,6 +315,15 @@ _AUTH_SIGNATURE = re.compile(
     r"usage limit (reached|exceeded)|rate limit exceeded|401 unauthorized",
     re.IGNORECASE,
 )
+# #114/agy: a TRANSIENT gemini backend stall — ``agy`` returns quickly with a
+# "timeout waiting for response" / "no response" marker (often 0-byte output).
+# This is a soft, retryable failure (distinct from a hard subprocess TimeoutExpired
+# that already consumed the full budget); the gemini leg retries it once.
+_GEMINI_TRANSIENT_RE = re.compile(
+    r"timeout waiting for response|no response from|temporarily unavailable|"
+    r"please try again|connection reset|backend (?:error|stall)",
+    re.IGNORECASE,
+)
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -336,17 +358,30 @@ def _mode_instructions(mode: str) -> str:
     return _ADVISORY_INSTRUCTIONS if mode == "advisory" else _REVIEW_INSTRUCTIONS
 
 
-# --- "reference, don't inline" ingestion -------------------------------------
+# --- artifact ingestion: three DISTINCT modes (#114) --------------------------
 #
-# The caller→runtime boundary is where huge (20k+ token) artifacts choke the
-# CALLER's context: to call ``invoke_panel(artifact: str)`` the caller must first
-# build the full content as a Python string. ``artifact_ref`` / ``brief_ref``
-# promote that to by-reference ingestion — the caller passes a PATH (or paths) and
-# the runtime reads them off disk. The leg prompt was already lean (it stages
-# ``review-bundle.md`` and instructs the leg to READ the file); this closes the
-# remaining inline path at the caller boundary. ``artifact: str`` is untouched
-# back-compat: no ref ⇒ today's exact bytes ⇒ identical argv/env/timeout (the
-# golden byte-identity keystone).
+# There are THREE ways to feed material to a leg; keep them straight (the #114
+# fix names them accurately — the old text mislabeled ``artifact_ref`` as
+# "don't inline", which it never was):
+#
+# 1. INLINE artifact (``artifact: str``) — the caller builds the full content as a
+#    Python string; it is written verbatim into ``review-bundle.md``. Fine for
+#    small material; a large inline artifact chokes the CALLER's context.
+#
+# 2. READ-FILE-AND-INLINE refs (``artifact_ref`` / ``brief_ref``) — the caller
+#    passes a PATH (or paths); the runtime READS the file bytes off disk and
+#    INLINES them into ``review-bundle.md`` / ``review-instructions.md``. This
+#    moves the bytes off the *caller's* context, but the FILE CONTENTS still land
+#    in the staged bundle every leg reads. ``artifact: str`` back-compat: no ref
+#    ⇒ today's exact bytes ⇒ identical argv/env/timeout (the golden keystone).
+#
+# 3. TRUE BY-REFERENCE refs (``context_refs``, #114) — the runtime injects ONLY a
+#    path + metadata MANIFEST (path, size, sha256, MIME/extension, PDF page count)
+#    plus an instruction telling each leg to open the files with its OWN local
+#    tools. The file CONTENTS are NEVER read into the bundle/prompt. This is the
+#    mode for large or private material (the EZBidPro PDF workflow) where inlining
+#    the bytes is exactly wrong. Existence/readability is validated fail-closed
+#    (opt-in soft-warn on unreadable).
 #
 # Soft guardrail: an INLINE artifact larger than this WARNS (never refuses, never
 # mutates), steering the caller to ``artifact_ref``. ~16 KB ≈ a few thousand
@@ -424,6 +459,105 @@ def _maybe_warn_inline_size(artifact: str, *, from_ref: bool) -> None:
             size,
             _MAX_INLINE_ARTIFACT_BYTES,
         )
+
+
+# --- #114: true by-reference context files (path + metadata manifest ONLY) ----
+#
+# The instruction line + header injected into the bundle. The file CONTENTS are
+# never read into this text — only path/size/sha256/type metadata — so a sentinel
+# string inside a referenced file is ABSENT from the rendered bundle/prompt.
+_CONTEXT_REFS_HEADER = "## Referenced context files (BY REFERENCE — contents NOT inlined)"
+_CONTEXT_REFS_INSTRUCTION = (
+    "The files below are provided BY REFERENCE ONLY: their raw contents are "
+    "intentionally NOT included anywhere in this bundle or prompt. When you need "
+    "detail, OPEN each file yourself with your own local tools (your Read / file / "
+    "PDF tooling) at the path shown. Do not assume the contents are pasted here."
+)
+
+
+def _pdf_page_count(data: bytes) -> int | None:
+    """Cheap, dependency-free best-effort PDF page count.
+
+    Counts ``/Type /Page`` page objects (tolerating whitespace, excluding
+    ``/Pages``). Returns ``None`` when it cannot be computed cheaply — the manifest
+    simply omits the field rather than failing (page count is "if cheaply
+    available", never load-bearing)."""
+    try:
+        count = len(re.findall(rb"/Type\s*/Page(?![sZ])", data))
+        return count or None
+    except Exception:
+        return None
+
+
+def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
+    """Render ONE by-reference file entry (path + metadata only), fail-closed.
+
+    A missing/unreadable path raises ``ValueError`` NAMING it (fail-closed, never a
+    silent-empty manifest) UNLESS ``soft_warn`` is set — then it logs a warning and
+    emits an ``UNREADABLE`` entry so the leg still sees the intended path. The file
+    bytes are read ONLY to hash/size/sniff them; they are NEVER placed in the
+    returned text."""
+    path = Path(p)
+    if not path.is_file():
+        msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"
+        if soft_warn:
+            logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
+            return f"- path: {json.dumps(str(p))}\n  status: MISSING (soft-warn enabled; leg should skip or note it)"
+        raise ValueError(msg)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        msg = f"context_refs path is not readable (fail-closed, not silent-empty): {p} ({exc})"
+        if soft_warn:
+            logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
+            return f"- path: {json.dumps(str(path.resolve()))}\n  status: UNREADABLE (soft-warn enabled)"
+        raise ValueError(msg)
+    digest = sha256(data).hexdigest()
+    size = len(data)
+    mime, _ = mimetypes.guess_type(str(path))
+    ext = path.suffix.lstrip(".").lower() or None
+    lines = [
+        # path is JSON-quoted: it is an untrusted filename (context_refs targets untrusted
+        # third-party docs); quoting escapes newlines/markdown so a hostile name cannot
+        # inject extra manifest lines or fake instructions into the bundle.
+        f"- path: {json.dumps(str(path.resolve()))}",
+        f"  bytes: {size}",
+        f"  sha256: {digest}",
+        f"  mime: {mime or 'application/octet-stream'}",
+        f"  extension: {ext or '(none)'}",
+    ]
+    if ext == "pdf" or mime == "application/pdf":
+        pages = _pdf_page_count(data)
+        if pages is not None:
+            lines.append(f"  pdf_page_count: {pages}")
+    return "\n".join(lines)
+
+
+def _render_context_refs_manifest(
+    context_refs: str | Sequence[str], *, soft_warn: bool
+) -> str:
+    """Render the header + instruction + per-file metadata manifest — no contents."""
+    refs = [context_refs] if isinstance(context_refs, str) else list(context_refs)
+    entries = [
+        entry
+        for entry in (_context_ref_entry(p, soft_warn=soft_warn) for p in refs)
+        if entry
+    ]
+    body = "\n".join(entries)
+    return f"{_CONTEXT_REFS_HEADER}\n\n{_CONTEXT_REFS_INSTRUCTION}\n\n{body}\n"
+
+
+def _apply_context_refs(
+    artifact: str, context_refs: str | Sequence[str] | None, *, soft_warn: bool
+) -> str:
+    """Append the by-reference manifest to the resolved artifact (NEVER the file
+    contents). No ``context_refs`` ⇒ ``artifact`` byte-for-byte (golden-neutral)."""
+    if not context_refs:
+        return artifact
+    manifest = _render_context_refs_manifest(context_refs, soft_warn=soft_warn)
+    if artifact and artifact.strip():
+        return artifact.rstrip("\n") + "\n\n" + manifest
+    return manifest
 
 
 def _gc_stale_panel_scratch(
@@ -1238,8 +1372,13 @@ def _exec_leg(
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
         # a rate-limited backend; classification handles it downstream.
+        # #114: also do NOT retry an empty turn that already burned most of its
+        # timeout budget (a genuinely slow leg, not a transient stall) — that was a
+        # source of the full-concurrent-path near-doubling. Bound the retry to FAST
+        # failures via ``_LEG_RETRY_ELAPSED_FRACTION``.
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            _t0 = time.monotonic()
             try:
                 proc = subprocess.run(
                     cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
@@ -1247,11 +1386,14 @@ def _exec_leg(
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {timeout_s}s"
+            _elapsed = time.monotonic() - _t0
             review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
             rc = proc.returncode
             log_text = (proc.stdout or "") + (proc.stderr or "")
             if rc != 0 or review_text.strip():
                 break  # hard failure OR real output → stop (never hammer, never waste)
+            if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
+                break  # slow empty turn (not transient) → don't re-run + double wall-clock
         return rc, review_text, log_text
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
@@ -1268,16 +1410,45 @@ def _exec_leg(
             "agy", "--model", gemini_model, "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
-        try:
-            proc = subprocess.run(
-                cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                timeout=timeout_s + 60, check=False, input=prompt,
+        # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
+        # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
+        # backend stall ("Error: timeout waiting for response", 0-byte) permanently
+        # dropped the whole leg. Retry a SOFT failure — a rc==0 empty turn OR a
+        # ``_GEMINI_TRANSIENT_RE`` stall marker — but NOT a hard subprocess timeout
+        # (that already consumed the budget → 124) and NOT an attempt that already
+        # burned most of its budget (a slow leg, not a transient stall; re-running it
+        # would ~double wall-clock — the full-concurrent-path hang).
+        rc, review_text, log_text = 1, "", ""
+        for _attempt in range(2):
+            _t0 = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
+                    timeout=timeout_s + 60, check=False, input=prompt,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, "", f"timeout after {timeout_s}s"
+            _elapsed = time.monotonic() - _t0
+            review_text = proc.stdout or ""
+            rc = proc.returncode
+            log_text = proc.stderr or ""
+            soft_empty = rc == 0 and not review_text.strip()
+            # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
+            # never inside a substantial successful review. Matching the transient regex
+            # against a full review body would misclassify a valid review that merely
+            # DISCUSSES "connection reset"/"please try again" (plausible — this panel reviews
+            # code) as a stall and discard+re-run it. So: stderr always counts; stdout counts
+            # only when the body is too short to be a real review.
+            stall = bool(
+                _GEMINI_TRANSIENT_RE.search(log_text)
+                or (len(review_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(review_text))
             )
-        except subprocess.TimeoutExpired:
-            return 124, "", f"timeout after {timeout_s}s"
-        review_text = proc.stdout or ""
+            if not (soft_empty or stall):
+                break  # real output OR hard non-transient error → stop (never hammer)
+            if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
+                break  # slow stall (not fast/transient) → don't re-run + double wall-clock
         out_file.write_text(review_text, encoding="utf-8")
-        return proc.returncode, review_text, (proc.stderr or "")
+        return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
 
@@ -1292,6 +1463,7 @@ def _default_spawn(
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
     brief_ref: str | None = None,
+    timeout_s: int | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -1305,6 +1477,11 @@ def _default_spawn(
 
     ``brief_ref`` (None ⇒ today's ``_mode_instructions(mode)``, byte-for-byte)
     stages a caller-supplied brief file as ``review-instructions.md``.
+
+    ``timeout_s`` (#114): a caller-supplied PER-LEG timeout override. ``None``
+    (default) keeps today's input-scaled ``_leg_timeout_for(review_dir)`` byte-for-
+    byte (the golden keystone); an explicit value BOUNDS a slow/stalled leg so it
+    fails its own leg instead of hanging the whole panel.
     """
     # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
     _gc_stale_panel_scratch()
@@ -1319,6 +1496,9 @@ def _default_spawn(
         (review_dir / "review-instructions.md").write_text(
             _resolve_brief(mode, brief_ref), encoding="utf-8"
         )
+        # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
+        # explicit override bounds the leg.
+        leg_timeout = _leg_timeout_for(review_dir) if timeout_s is None else int(timeout_s)
         # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
         # path calls the leg execs with their exact prior signatures — existing
         # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
@@ -1331,7 +1511,7 @@ def _default_spawn(
             return _exec_claude_tui_leg(
                 review_dir,
                 out_dir,
-                _leg_timeout_for(review_dir),
+                leg_timeout,
                 artifact,
                 repo_dir=resolved_repo_dir,
                 mode=mode,
@@ -1339,7 +1519,7 @@ def _default_spawn(
                 **extra,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model, **extra
+            leg, review_dir, out_dir, leg_timeout, artifact, mode, model, **extra
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed
@@ -1367,12 +1547,13 @@ def _default_spawn_via_provider(
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
     brief_ref: str | None = None,
+    timeout_s: int | None = None,
 ) -> tuple[str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
     # (leg, artifact, repo_dir, mode, model) — the CS-0.8 same-signature guard.
-    # ``brief_ref`` is threaded the same way: omitted-when-None so the default
-    # path's ``_default_spawn`` call stays byte-identical.
+    # ``brief_ref`` / ``timeout_s`` (#114) are threaded the same way: omitted-when-
+    # None so the default path's ``_default_spawn`` call stays byte-identical.
     extra: dict[str, object] = {}
     if effort is not None:
         extra["effort"] = effort
@@ -1380,6 +1561,8 @@ def _default_spawn_via_provider(
         extra["env"] = env
     if brief_ref is not None:
         extra["brief_ref"] = brief_ref
+    if timeout_s is not None:
+        extra["timeout_s"] = timeout_s
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
             leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -1458,6 +1641,9 @@ def invoke_panel(
     max_concurrency: int | None = None,
     artifact_ref: str | Sequence[str] | None = None,
     brief_ref: str | None = None,
+    context_refs: str | Sequence[str] | None = None,
+    context_refs_soft_warn: bool = False,
+    timeouts_by_leg: Mapping[str, int] | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
 
@@ -1480,6 +1666,24 @@ def invoke_panel(
     ``min(len(legs), 8)``); pass ``1`` for sequential (the opt-in escape hatch), or
     ``N`` to cap. Order + fail-closed semantics are identical regardless.
 
+    ``artifact_ref`` (read-file-and-INLINE): the runtime READS the path(s) and inlines
+    the bytes into ``review-bundle.md``. Use for material you WANT the leg to read
+    verbatim off the caller's context.
+
+    ``context_refs`` (#114 — TRUE by-reference): one or more local paths for which the
+    runtime injects ONLY a path+metadata manifest (path, size, sha256, MIME/extension,
+    PDF page count) plus an instruction telling each leg to open the files with its OWN
+    local tools. The file CONTENTS are NEVER read into the bundle/prompt — the mode for
+    large or private material. A missing/unreadable path fails CLOSED unless
+    ``context_refs_soft_warn=True`` (then it logs a warning + emits an UNREADABLE
+    manifest entry).
+
+    ``timeouts_by_leg`` (#114): per-leg timeout override in seconds, e.g.
+    ``{"gemini": 300}``. ``None``/unset legs keep the input-scaled default
+    (~600s floor + 12s/KB, capped at 1800s — a ~150-line artifact is ~11 min/leg).
+    Bounds a slow/stalled leg so it fails ITS leg instead of hanging the whole panel;
+    legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum.
+
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
     and never mistaken for a real review.
@@ -1492,12 +1696,18 @@ def invoke_panel(
     # large INLINE artifact (never on a from-ref one, never refuse, never mutate).
     artifact = _resolve_artifact(artifact, artifact_ref)
     _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
+    # #114 TRUE by-reference: append a path+metadata manifest (NEVER file contents).
+    # Applied AFTER the inline-size warn so the manifest never trips it. No
+    # context_refs ⇒ artifact byte-for-byte (golden-neutral).
+    artifact = _apply_context_refs(artifact, context_refs, soft_warn=context_refs_soft_warn)
     leg_models = dict(models or {})
+    leg_timeouts = dict(timeouts_by_leg or {})
     if spawn is None:
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
             return _default_spawn_via_provider(
                 leg, panel_artifact, repo_dir=repo_dir, mode=mode,
                 model=leg_models.get(leg), brief_ref=brief_ref,
+                timeout_s=leg_timeouts.get(leg),
             )
     else:
         runner = spawn
@@ -1548,6 +1758,11 @@ def invoke_panel_request(
     ``artifact_ref``. ``artifact_ref`` wins over ``artifact`` when both are set, and a
     missing ref path fails closed inside ``invoke_panel`` (fail-closed, not
     silent-empty).
+
+    The request's ``context_refs`` (#114 TRUE by-reference) and
+    ``timeout_seconds_by_leg`` (per-leg timeout bound) are now FUNCTIONAL too — both
+    threaded through so the value object is a complete entry point (they were
+    previously declared-but-inert on the request).
     """
     return invoke_panel(
         request.artifact,
@@ -1558,6 +1773,9 @@ def invoke_panel_request(
         models=models,
         max_concurrency=max_concurrency,
         artifact_ref=request.artifact_ref,
+        context_refs=request.context_refs,
+        context_refs_soft_warn=request.context_refs_soft_warn,
+        timeouts_by_leg=dict(request.timeout_seconds_by_leg) if request.timeout_seconds_by_leg else None,
     )
 
 
@@ -1677,6 +1895,9 @@ def invoke_board(
     max_concurrency: int | None = None,
     artifact_ref: str | Sequence[str] | None = None,
     brief_ref: str | None = None,
+    context_refs: str | Sequence[str] | None = None,
+    context_refs_soft_warn: bool = False,
+    timeouts_by_leg: Mapping[str, int] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1749,6 +1970,10 @@ def invoke_board(
     # board's golden byte-identity is preserved).
     artifact = _resolve_artifact(artifact, artifact_ref)
     _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
+    # #114 TRUE by-reference manifest (path+metadata ONLY, never file contents);
+    # applied after the inline-size warn. No context_refs ⇒ byte-for-byte (golden).
+    artifact = _apply_context_refs(artifact, context_refs, soft_warn=context_refs_soft_warn)
+    leg_timeouts = dict(timeouts_by_leg or {})
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
     # Tri-state gateway availability + a SINGLE catalog fetch. ``catalog_harnesses``
     # is itself the reachability probe (a successful fetch ⇒ gateway up), so fetch it
@@ -1829,7 +2054,7 @@ def invoke_board(
                 status, text = _default_spawn_via_provider(
                     leg, artifact, repo_dir=repo_dir, mode=mode,
                     model=seat.model, effort=seat.effort, env=seat_env,
-                    brief_ref=brief_ref,
+                    brief_ref=brief_ref, timeout_s=leg_timeouts.get(leg),
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
