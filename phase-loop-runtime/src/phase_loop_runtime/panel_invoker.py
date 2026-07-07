@@ -97,6 +97,10 @@ _LEG_TIMEOUT_PER_KB_S = 12
 _LEG_RETRY_ELAPSED_FRACTION = 0.5
 _LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S  # floor / back-compat alias
 _DEFAULT_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S
+# context_refs by-reference mode reads large untrusted files: hash streamed in 1 MiB
+# chunks (O(1) memory); the PDF page-count scans only a bounded 2 MiB prefix (best-effort).
+_HASH_CHUNK_BYTES = 1 << 20
+_PDF_SCAN_PREFIX_BYTES = 1 << 21
 _MAX_LEG_TIMEOUT_S = _LEG_TIMEOUT_MAX_S
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
@@ -495,8 +499,9 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
     A missing/unreadable path raises ``ValueError`` NAMING it (fail-closed, never a
     silent-empty manifest) UNLESS ``soft_warn`` is set — then it logs a warning and
     emits an ``UNREADABLE`` entry so the leg still sees the intended path. The file
-    bytes are read ONLY to hash/size/sniff them; they are NEVER placed in the
-    returned text."""
+    is read ONLY to hash + size it (streamed in chunks — this mode exists for LARGE
+    files, so the bytes are never fully buffered and NEVER placed in the returned
+    text). MIME is guessed from the extension, not content-sniffed."""
     path = Path(p)
     if not path.is_file():
         msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"
@@ -504,16 +509,21 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
             logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
             return f"- path: {json.dumps(str(p))}\n  status: MISSING (soft-warn enabled; leg should skip or note it)"
         raise ValueError(msg)
+    # Stream the hash + size in chunks so a large ref'd file is never buffered whole.
+    h = sha256()
+    size = 0
     try:
-        data = path.read_bytes()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(_HASH_CHUNK_BYTES), b""):
+                h.update(chunk)
+                size += len(chunk)
     except OSError as exc:
         msg = f"context_refs path is not readable (fail-closed, not silent-empty): {p} ({exc})"
         if soft_warn:
             logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
             return f"- path: {json.dumps(str(path.resolve()))}\n  status: UNREADABLE (soft-warn enabled)"
         raise ValueError(msg)
-    digest = sha256(data).hexdigest()
-    size = len(data)
+    digest = h.hexdigest()
     mime, _ = mimetypes.guess_type(str(path))
     ext = path.suffix.lstrip(".").lower() or None
     lines = [
@@ -527,7 +537,12 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
         f"  extension: {ext or '(none)'}",
     ]
     if ext == "pdf" or mime == "application/pdf":
-        pages = _pdf_page_count(data)
+        # best-effort + memory-bounded: scan only a bounded prefix for page markers.
+        try:
+            with path.open("rb") as fh:
+                pages = _pdf_page_count(fh.read(_PDF_SCAN_PREFIX_BYTES))
+        except OSError:
+            pages = None
         if pages is not None:
             lines.append(f"  pdf_page_count: {pages}")
     return "\n".join(lines)
@@ -1422,6 +1437,11 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
+                # timeout_s is the SOFT per-leg budget; the hard subprocess kill gets a
+                # deliberate +60s grace so a leg that is finishing can flush its final
+                # output instead of being truncated. The elapsed-fraction retry guard
+                # below is measured against this same expanded bound, so worst-case
+                # wall-clock stays ~1.5x one budget, never a full double.
                 proc = subprocess.run(
                     cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
                     timeout=timeout_s + 60, check=False, input=prompt,
