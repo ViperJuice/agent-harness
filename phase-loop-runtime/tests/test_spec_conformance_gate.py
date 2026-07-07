@@ -129,6 +129,15 @@ class SpecConformanceGateTest(unittest.TestCase):
         finding = next(f for f in warn["findings"] if f["code"] == "spec_below_conformance_bar")
         self.assertEqual(finding["posture"], "observe")  # recorded, not warned
 
+    def test_layout_validity_accepts_a_manifest_that_dials_its_teeth(self):
+        # The dial is only operable if the manifest schema ALLOWS gate_posture_overrides
+        # (manifest.schema additionalProperties was False -> it rejected the key pre-0.6.3).
+        with tempfile.TemporaryDirectory() as td:
+            repo = _scaffold(td)
+            _add_posture_override(repo, {"spec_nonconforming": "observe", "write_footprint_violation": "enforce"})
+            result = scan_consiliency_gates(repo)
+            self.assertEqual(result["gates"]["layout_validity"]["status"], "passed")
+
     def test_retracting_an_advisory_emits_a_visible_posture_retracted_note(self):
         # De-fanging is never silent: dialing spec_nonconforming down to observe records
         # the finding as a note AND adds the non-retractable posture_retracted note.
