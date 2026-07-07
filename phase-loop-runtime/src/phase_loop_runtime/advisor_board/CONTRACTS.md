@@ -264,11 +264,14 @@ building `artifact: str` forces the caller to hold the whole (20k+ token) bundle
 its own context. `artifact_ref` / `brief_ref` promote that to by-reference ingestion:
 the caller passes a PATH and the runtime reads it.
 
-- **Entry points.** `invoke_panel`, `invoke_board`, and `invoke_panel_request` accept
-  keyword-only `artifact_ref: str | Sequence[str] | None` and `brief_ref: str | None`
+- **Entry points.** `invoke_panel` and `invoke_board` accept keyword-only
+  `artifact_ref: str | Sequence[str] | None` and `brief_ref: str | None`
   (default-valued additive extensions to the frozen signatures — back-compat, like
-  `models` / `max_concurrency`). The artifact is resolved at the TOP of the entry
-  point so timeout scaling, staging, and metadata all see the resolved content.
+  `models` / `max_concurrency`). `invoke_panel_request` consumes
+  `PanelRequest.artifact_ref` but deliberately does not define `PanelRequest.brief_ref`
+  in this contract; callers that need a custom brief use the direct `invoke_panel` or
+  `invoke_board` entry point. The artifact is resolved at the TOP of the entry point
+  so timeout scaling, staging, and metadata all see the resolved content.
 - **`_resolve_artifact(artifact, artifact_ref)`.** `artifact_ref is None` →
   `artifact or ""` (today's bytes, verbatim). A single path (a bare string OR a
   one-element sequence) returns the file content VERBATIM — no header — so
@@ -297,6 +300,50 @@ the caller passes a PATH and the runtime reads it.
   per-leg argv / env / timeout. `tests/test_advisor_board_golden.py` (Proof A hits
   `_exec_leg`; Proof B injects `spawn=`) is untouched;
   `tests/test_advisor_board_ingestion.py` proves the new path is byte-transparent.
+
+## CTXFREEZE — Context references and panel reliability (#114)
+
+CTXFREEZE freezes the #114 public contract for downstream implementation and
+documentation phases. It does not claim that `artifact_ref` or `brief_ref` are true
+non-inlining modes: both are read-file-and-inline conveniences that keep bytes out
+of the caller context but still stage raw contents for each leg.
+
+- **Ingestion modes and precedence.** `artifact` is inline text. `artifact_ref` is a
+  file path, or ordered path sequence, whose contents replace `artifact` when both
+  are supplied. `brief_ref` is a file path used only by `invoke_panel` and
+  `invoke_board`; it replaces the generated review/advisory instruction file.
+  `context_refs` is the only true by-reference mode. `invoke_panel_request` threads
+  `PanelRequest.artifact_ref`, `PanelRequest.context_refs`,
+  `PanelRequest.context_refs_soft_warn`, and `PanelRequest.timeout_seconds_by_leg`;
+  `PanelRequest.brief_ref` is explicitly out of contract for this phase.
+- **True by-reference manifest.** `context_refs` appends a deterministic manifest to
+  the already-resolved artifact. Each entry is emitted in caller order and contains a
+  JSON-escaped absolute path, byte count, streamed SHA-256 digest, untrusted MIME
+  guess, untrusted extension hint, and optional best-effort PDF page count. Raw file
+  contents are not written into `review-bundle.md`, prompt text, or the manifest.
+- **Filesystem boundary.** Paths are interpreted relative to the current process
+  working directory when relative and are reported as `Path.resolve()` absolute
+  paths. Entries must be regular files at validation time; missing paths,
+  directories, devices, and other non-regular files fail closed by default. Symlinks
+  are followed only if their resolved target is a regular file under normal OS path
+  resolution. The runtime opens the file once to stream size/hash metadata and, for
+  PDF-looking files only, may reopen a bounded prefix for page counting; CTXIMPL owns
+  any stronger root jail or TOCTOU hardening.
+- **Soft-warning opt-in.** Missing or unreadable `context_refs` raise `ValueError`
+  unless `context_refs_soft_warn=True`. Soft warning logs a warning and emits a
+  `MISSING` or `UNREADABLE` entry. The manifest instruction text remains strict:
+  a leg must not infer, guess, or fabricate unavailable contents.
+- **Output-boundary claim.** The frozen privacy claim is runtime non-inlining only:
+  referenced contents are absent from the staged bundle and prompt produced by this
+  runtime path. This is not a global DLP guarantee for provider logs, human-visible
+  outputs, handoffs, screenshots, shell commands, or tools the leg chooses to run
+  after reading a referenced file.
+- **Reliability names.** Direct entry points accept `timeouts_by_leg`; `PanelRequest`
+  uses `timeout_seconds_by_leg`. Both feed the same per-leg override. Unset legs keep
+  input-scaled defaults. The codex and gemini CLI legs retry one fast soft-empty or
+  transient-stall result once, guarded by elapsed-time fraction; hard subprocess
+  timeouts return timeout status without retry. CTXRELY owns any follow-on reliability
+  split beyond these frozen names and retry/timeout invariants.
 
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
 
