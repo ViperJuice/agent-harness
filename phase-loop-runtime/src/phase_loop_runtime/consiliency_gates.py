@@ -62,7 +62,28 @@ CONSILIENCY_GATES_ENV = "PHASE_LOOP_CONSILIENCY_GATES"
 CONSILIENCY_GATES_MODES: tuple[str, ...] = ("off", "warn", "hard")
 DEFAULT_CONSILIENCY_GATES_MODE = "warn"
 
-_GATE_NAMES = ("presence", "local_integrity", "layout_validity", "version_skew", "git_discipline")
+_GATE_NAMES = ("presence", "local_integrity", "layout_validity", "version_skew", "git_discipline", "spec_conformance")
+
+# spec_conformance (HGATE) — the generic conformance ladder + default bar. Advisory
+# panel (Fable + Codex 5.5 + Gemini 3.1 Pro, unanimous) set the default PASS bar at
+# `hash-checked`+ ("bar B"): it's the lowest rung where the claim is checkable by the
+# existing local_integrity digest machinery, so a self-asserted `hash-checked` obligates
+# a recorded digest rather than being a free claim. `presence-only` is an INFO-grade
+# soft warn (declared but not digest-anchored); `present-nonconforming`/`foreign`/
+# `unmanaged` are loud. The per-archetype/per-doc conformance floor as CONTRACT REGISTRY
+# DATA is the deferred ratchet (do NOT hardcode org policy here). These labels mirror the
+# contract `maturity-labels` registry; `certified` is a deprecated alias of `parity-certified`.
+_SPEC_PROJECTION_CLASSES = ("proj-S", "proj-code")
+_CONFORMANCE_LADDER = {  # conforming rungs, low -> high
+    "presence-only": 0,
+    "hash-checked": 1,
+    "realized-edge-observed": 2,
+    "parity-certified": 3,
+    "authority-certified": 4,
+}
+_CONFORMANCE_ALIASES = {"certified": "parity-certified"}  # deprecated alias, ranked as parity-certified
+_NONCONFORMING_LABELS = frozenset({"present-nonconforming", "foreign", "unmanaged"})
+_CONFORMANCE_FLOOR = "hash-checked"  # bar B: the generic default PASS floor
 
 
 def resolve_consiliency_gates_mode(env: Mapping[str, str] | None = None) -> str:
@@ -118,6 +139,7 @@ def scan_consiliency_gates(
         "layout_validity": _gate_layout_validity(repo_path, manifest, mode=mode),
         "version_skew": _gate_version_skew(manifest, mode=mode),
         "git_discipline": _gate_git_discipline(repo_path, mode=mode),
+        "spec_conformance": _gate_spec_conformance(manifest, mode=mode),
     }
     if any(g["status"] == "blocked" for g in gates.values()):
         overall = "blocked"
@@ -176,6 +198,85 @@ def _gate_presence(repo: Path, manifest: Mapping[str, Any], *, mode: str) -> dic
         else:
             findings.append({"code": "no_path_or_ref", "doc_id": row.id})
     return {"status": _gate_status(findings, mode=mode), "maturity": "presence-only", "findings": findings}
+
+
+def _gate_spec_conformance(manifest: Mapping[str, Any], *, mode: str) -> dict[str, Any]:
+    """HGATE: warn when a DECLARED spec-projection (proj-S/proj-code) sits below the
+    conformance bar. Structural — reads declared maturity, no byte/digest verification
+    (that is local_integrity's job for hash-checked, and a future canon-backed verifier's
+    for higher rungs). Full no-op when the repo declares no spec-projections (OPA-style
+    optional layer). Two-tier: `present-nonconforming`/`foreign`/`unmanaged` are loud
+    (may block under hard mode); a below-bar non-sanctioned `presence-only` is an
+    info-grade soft warn that NEVER blocks (so honest early adopters are nudged, not
+    punished).
+
+    HONESTY -- this gate is FORWARD INFRASTRUCTURE, dormant on schema-valid manifests
+    with today's contract data: (a) every proj-S/proj-code required-doc row is
+    `l0_stub_allowed` at a `presence-only` floor, so the info + below-floor branches
+    are dead until the per-archetype conformance ratchet raises floors (deferred to
+    contract-registry data); (b) the manifest schema's maturity enum is only
+    {presence-only, hash-checked, realized-edge-observed}, so the non-conforming labels
+    that drive the loud branches are schema-INVALID and already caught by
+    layout_validity. So today it fires nothing layout_validity does not; it activates
+    without code change when the schema enum + the ratchet expand. Known ceiling:
+    `hash-checked` is the only rung the harness can locally verify (via local_integrity,
+    and only for `path`-backed docs -- `ref`-backed hash-checked is not yet digest-
+    checked); `realized-edge-observed`+ pass as accepted claims, verified downstream by
+    a canon-backed verifier, not here."""
+    decl_mode, archetypes, modifiers = _declared_archetypes_modifiers(manifest)
+    try:
+        rows = compose_required_documents(mode=decl_mode, archetypes=archetypes, modifiers=modifiers)
+    except ValueError:
+        # A malformed declaration is presence/layout's finding, not conformance's.
+        return {"status": "passed", "maturity": "presence-only", "findings": [],
+                "note": "declaration invalid; deferred to presence/layout gates"}
+    proj_rows = {r.id: r for r in rows if r.doc_class in _SPEC_PROJECTION_CLASSES}
+    docs_by_id = {d.get("id"): d for d in manifest.get("documents", []) if isinstance(d, Mapping)}
+    declared = [(pid, proj_rows[pid], docs_by_id[pid]) for pid in sorted(proj_rows) if pid in docs_by_id]
+    if not declared:
+        return {"status": "passed", "maturity": "presence-only", "findings": [],
+                "note": "no spec-projection documents declared; conformance gate is a no-op"}
+
+    bar_rank = _CONFORMANCE_LADDER[_CONFORMANCE_FLOOR]
+    loud: list[dict[str, Any]] = []
+    info: list[dict[str, Any]] = []
+    for pid, row, entry in declared:
+        raw = str(entry.get("maturity") or "").strip()
+        label = _CONFORMANCE_ALIASES.get(raw, raw)
+        floor_rank = _CONFORMANCE_LADDER.get(_CONFORMANCE_ALIASES.get(row.maturity_floor, row.maturity_floor), 0)
+        if not raw:
+            loud.append({"code": "spec_maturity_missing", "doc_id": pid,
+                         "message": f"spec-projection '{pid}' declares no maturity"})
+        elif label == "present-nonconforming":
+            loud.append({"code": "spec_nonconforming", "doc_id": pid, "maturity": raw,
+                         "message": f"spec-projection '{pid}' is 'present-nonconforming' -- the projection asserts the code does NOT match spec"})
+        elif label in _NONCONFORMING_LABELS:  # foreign / unmanaged -- governance-status, NOT a non-conformance assertion
+            loud.append({"code": "spec_ungoverned", "doc_id": pid, "maturity": raw,
+                         "message": f"spec-projection '{pid}' declares governance status '{raw}' (not this repo's, or ungoverned) -- outside the conformance ladder"})
+        elif label not in _CONFORMANCE_LADDER:
+            loud.append({"code": "spec_maturity_unknown", "doc_id": pid, "maturity": raw,
+                         "message": f"spec-projection '{pid}' declares an unrecognized maturity '{raw}'"})
+        elif _CONFORMANCE_LADDER[label] < floor_rank:
+            # Below the doc's OWN contract-declared maturity_floor -- a real regression.
+            loud.append({"code": "spec_below_declared_floor", "doc_id": pid, "maturity": raw, "floor": row.maturity_floor,
+                         "message": f"spec-projection '{pid}' is '{raw}' but the contract floor for it is '{row.maturity_floor}'"})
+        elif _CONFORMANCE_LADDER[label] < bar_rank and not row.l0_stub_allowed:
+            # Below the generic conformance bar AND not a contract-sanctioned L0 stub -> info nudge.
+            info.append({"code": "spec_below_conformance_bar", "doc_id": pid, "maturity": raw,
+                         "message": f"spec-projection '{pid}' is '{raw}'; the conformance bar is '{_CONFORMANCE_FLOOR}'+ (declared but not digest-anchored). Informational -- pass requires {_CONFORMANCE_FLOOR}+ unless it is a sanctioned L0 stub or local policy overrides."})
+        # else: at/above its contract floor and (hash-checked+ OR a sanctioned L0 stub) -> conforming
+
+    if loud:
+        status = _gate_status(loud + info, mode=mode)  # loud findings may block under hard mode
+    elif info:
+        status = "warn"  # info-grade never blocks, even under hard mode
+    else:
+        status = "passed"
+    # This gate does NO digest work itself -- it reads DECLARED maturity. Report its own
+    # maturity as presence-only (honest); hash-checked is the bar it enforces, not a claim
+    # about what it verified (that is local_integrity's job, and a canon-backed verifier's
+    # for higher rungs).
+    return {"status": status, "maturity": "presence-only", "findings": loud + info}
 
 
 def _git_show(repo: Path, path: str) -> bytes | None:
