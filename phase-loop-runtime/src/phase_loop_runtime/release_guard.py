@@ -49,13 +49,7 @@ def is_release_dispatch_plan(plan: Path | None) -> bool:
     if plan is None:
         return False
     metadata = plan_metadata(plan)
-    if metadata.get("phase_loop_mutation") == RELEASE_DISPATCH_MUTATION:
-        return True
-    try:
-        text = plan.read_text(encoding="utf-8").lower()
-    except OSError:
-        return False
-    return "gh workflow run" in text and "release" in text
+    return metadata.get("phase_loop_mutation") == RELEASE_DISPATCH_MUTATION
 
 
 def release_dispatch_blocker(repo: Path, plan: Path | None) -> ReleaseDispatchBlocker | None:

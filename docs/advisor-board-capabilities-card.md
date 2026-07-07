@@ -153,14 +153,25 @@ advisor-board --seats gpt-5.5:max:codex <art>  # ad-hoc seats (model:effort[:har
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
 callers keep using `panel_invoker.invoke_panel(...)` unchanged.
 
-**Pass artifacts and briefs by path — reference, don't inline.** Rather than
-inlining a large bundle into `artifact: str` (which bloats the *caller's* context),
-pass `artifact_ref="path/to/bundle.md"` (a path, or a list of paths concatenated
-deterministically) and, for a large review brief, `brief_ref="path/to/brief.md"`;
-the runtime reads and stages them. Inline `artifact: str` still works for small
-material, but a large inline artifact (> 16 KB) logs a steering warning, and a
-missing ref path fails closed (never a silent empty review). `artifact_ref` wins if
-both are given. Entry points: `invoke_panel` / `invoke_board` / `invoke_panel_request`.
+**Choose inline, read-file-and-stage, or true by-reference material.** Use
+`artifact="..."` only for small inline text. Use `artifact_ref="path/to/bundle.md"`
+(or an ordered list of paths) and `brief_ref="path/to/brief.md"` when you want the
+runtime to read local files and stage their bytes into `review-bundle.md` or
+`review-instructions.md`; this keeps the caller context lean but every leg still
+receives the file contents. Use `context_refs=["/path/to/material.pdf"]` for the
+true by-reference mode: the runtime stages a path and metadata manifest instead of
+file bytes, and each leg must intentionally inspect the referenced local file with
+its own tools.
+
+`artifact_ref` wins over `artifact` if both are given. Missing `artifact_ref`,
+`brief_ref`, and hard `context_refs` paths fail closed. `context_refs_soft_warn=True`
+can emit `MISSING` or `UNREADABLE` manifest entries instead. Pathnames and hashes can
+still disclose sensitive metadata, and a leg may disclose file contents after it
+intentionally inspects a referenced path unless an output policy forbids disclosure.
+Remote providers, sandboxed backings, or service-backed harnesses may not share the
+caller host's local file access, so `context_refs` is safest only when the selected
+provider/backing can see the same filesystem. Entry points: `invoke_panel` /
+`invoke_board` / `invoke_panel_request`.
 
 **Legs run in parallel by default.** `invoke_board` / `invoke_panel` fan their
 seats/legs out across a bounded thread pool, so wall-clock is ~`max(leg)`, not

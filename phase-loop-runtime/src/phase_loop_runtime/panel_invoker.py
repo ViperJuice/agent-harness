@@ -475,7 +475,8 @@ _CONTEXT_REFS_INSTRUCTION = (
     "The files below are provided BY REFERENCE ONLY: their raw contents are "
     "intentionally NOT included anywhere in this bundle or prompt. When you need "
     "detail, OPEN each file yourself with your own local tools (your Read / file / "
-    "PDF tooling) at the path shown. Do not assume the contents are pasted here."
+    "PDF tooling) at the path shown. Do not assume the contents are pasted here, "
+    "and do not infer, guess, or fabricate unavailable contents."
 )
 
 
@@ -501,7 +502,9 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
     emits an ``UNREADABLE`` entry so the leg still sees the intended path. The file
     is read ONLY to hash + size it (streamed in chunks — this mode exists for LARGE
     files, so the bytes are never fully buffered and NEVER placed in the returned
-    text). MIME is guessed from the extension, not content-sniffed."""
+    text). Relative paths and symlinks keep normal OS path resolution; non-regular
+    targets and open-time races fail closed. MIME is guessed from the extension,
+    not content-sniffed."""
     path = Path(p)
     if not path.is_file():
         msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"
@@ -533,8 +536,8 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
         f"- path: {json.dumps(str(path.resolve()))}",
         f"  bytes: {size}",
         f"  sha256: {digest}",
-        f"  mime: {mime or 'application/octet-stream'}",
-        f"  extension: {ext or '(none)'}",
+        f"  mime_untrusted_hint: {mime or 'application/octet-stream'}",
+        f"  extension_untrusted_hint: {ext or '(none)'}",
     ]
     if ext == "pdf" or mime == "application/pdf":
         # best-effort + memory-bounded: scan only a bounded prefix for page markers.

@@ -78,6 +78,24 @@ class TaxonomyTest(unittest.TestCase):
         self.assertFalse(release_guard._is_release_affecting_path("frontend/package.json"))
         self.assertIsNot(release_guard.RELEASE_AFFECTING_PATTERNS, ds.RELEASE_AFFECTING_PATTERNS)
 
+    def test_release_guard_requires_explicit_mutation_frontmatter(self):
+        from phase_loop_runtime import release_guard
+
+        with TemporaryDirectory() as d:
+            plan = Path(d) / "phase-plan.md"
+            plan.write_text(
+                "---\nphase: VERIFY\n---\n\n"
+                "Release prep only. Do not trigger `gh workflow run` during this phase.\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(release_guard.is_release_dispatch_plan(plan))
+
+            plan.write_text(
+                "---\nphase: DISPATCH\nphase_loop_mutation: release_dispatch\n---\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(release_guard.is_release_dispatch_plan(plan))
+
 
 class DecisionContractTest(unittest.TestCase):
     """evaluate(): the per-surface, relevance-bound contract."""

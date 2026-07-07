@@ -24,6 +24,8 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+import hashlib
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -67,14 +69,13 @@ class ContextRefsDoNotInlineTests(unittest.TestCase):
         self.assertNotIn(self.SENTINEL, bundle)
         # ...while the path + metadata DO.
         self.assertIn(str(p.resolve()), bundle)
-        import hashlib
-
         self.assertIn(hashlib.sha256(body).hexdigest(), bundle)
         self.assertIn(f"bytes: {len(body)}", bundle)
-        self.assertIn("extension: txt", bundle)
+        self.assertIn("extension_untrusted_hint: txt", bundle)
         # ...and an instruction telling the leg to open the files itself.
         self.assertIn("BY REFERENCE", bundle)
         self.assertIn("your own local tools", bundle)
+        self.assertIn("do not infer, guess, or fabricate unavailable contents", bundle)
 
     def test_inline_artifact_still_present_alongside_manifest(self) -> None:
         cap, _ = self._stage_with_context_ref("INLINE_ARTIFACT_MARKER", b"x")
@@ -103,7 +104,26 @@ class ContextRefsMetadataTests(unittest.TestCase):
             p.write_bytes(data)
             entry = pi._context_ref_entry(str(p), soft_warn=False)
             self.assertIn("pdf_page_count: 2", entry)
-            self.assertIn("mime: application/pdf", entry)
+            self.assertIn("mime_untrusted_hint: application/pdf", entry)
+
+    def test_hash_is_streamed_and_extension_values_are_untrusted_hints(self) -> None:
+        data = b"abcdefghi"
+        with TemporaryDirectory() as td:
+            p = Path(td) / "doc.TXT"
+            p.write_bytes(data)
+            with patch.object(pi, "_HASH_CHUNK_BYTES", 3):
+                entry = pi._context_ref_entry(str(p), soft_warn=False)
+        self.assertIn(f"sha256: {hashlib.sha256(data).hexdigest()}", entry)
+        self.assertIn("mime_untrusted_hint: text/plain", entry)
+        self.assertIn("extension_untrusted_hint: txt", entry)
+
+    def test_missing_extension_gets_octet_stream_and_none_hint(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "README"
+            p.write_bytes(b"x")
+            entry = pi._context_ref_entry(str(p), soft_warn=False)
+        self.assertIn("mime_untrusted_hint: application/octet-stream", entry)
+        self.assertIn("extension_untrusted_hint: (none)", entry)
 
     def test_manifest_lists_multiple_files_in_order(self) -> None:
         with TemporaryDirectory() as td:
@@ -135,12 +155,62 @@ class ContextRefsMissingPathTests(unittest.TestCase):
             pi.invoke_panel("art", ("gemini",), context_refs=[missing])
         self.assertIn(missing, str(cm.exception))
 
+    def test_non_regular_path_fails_closed(self) -> None:
+        with TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as cm:
+                pi._render_context_refs_manifest([td], soft_warn=False)
+        self.assertIn(td, str(cm.exception))
+
+    def test_relative_parent_path_is_reported_as_resolved_absolute_path(self) -> None:
+        original_cwd = os.getcwd()
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            nested = root / "nested"
+            nested.mkdir()
+            p = root / "doc.txt"
+            p.write_text("body", encoding="utf-8")
+            try:
+                os.chdir(nested)
+                entry = pi._context_ref_entry("../doc.txt", soft_warn=False)
+            finally:
+                os.chdir(original_cwd)
+        self.assertIn(str(p.resolve()), entry or "")
+
+    def test_symlink_to_regular_file_follows_resolved_target(self) -> None:
+        with TemporaryDirectory() as td:
+            target = Path(td) / "target.txt"
+            target.write_text("body", encoding="utf-8")
+            link = Path(td) / "link.txt"
+            link.symlink_to(target)
+            entry = pi._context_ref_entry(str(link), soft_warn=False)
+        self.assertIn(str(target.resolve()), entry or "")
+
+    def test_symlink_to_directory_fails_closed_as_non_regular(self) -> None:
+        with TemporaryDirectory() as td:
+            target = Path(td) / "target-dir"
+            target.mkdir()
+            link = Path(td) / "dir-link"
+            link.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(ValueError) as cm:
+                pi._context_ref_entry(str(link), soft_warn=False)
+        self.assertIn(str(link), str(cm.exception))
+
+    def test_open_time_filesystem_race_fails_closed(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "doc.txt"
+            p.write_text("body", encoding="utf-8")
+            with patch.object(Path, "open", side_effect=OSError("changed during validation")):
+                with self.assertRaises(ValueError) as cm:
+                    pi._context_ref_entry(str(p), soft_warn=False)
+        self.assertIn("changed during validation", str(cm.exception))
+
     def test_missing_path_soft_warn_does_not_raise_and_marks_unreadable(self) -> None:
         missing = "/no/such/context-ref-114-soft.txt"
         with self.assertLogs("phase_loop_runtime.panel_invoker", level="WARNING") as logs:
             manifest = pi._render_context_refs_manifest([missing], soft_warn=True)
         self.assertIn("MISSING", manifest)
         self.assertIn(missing, manifest)
+        self.assertIn("do not infer, guess, or fabricate unavailable contents", manifest)
         self.assertTrue(any(missing in line for line in logs.output))
 
 
