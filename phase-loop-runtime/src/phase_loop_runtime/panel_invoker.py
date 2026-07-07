@@ -502,7 +502,7 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
         msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"
         if soft_warn:
             logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
-            return f"- path: {p}\n  status: MISSING (soft-warn enabled; leg should skip or note it)"
+            return f"- path: {json.dumps(str(p))}\n  status: MISSING (soft-warn enabled; leg should skip or note it)"
         raise ValueError(msg)
     try:
         data = path.read_bytes()
@@ -510,14 +510,17 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
         msg = f"context_refs path is not readable (fail-closed, not silent-empty): {p} ({exc})"
         if soft_warn:
             logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
-            return f"- path: {path.resolve()}\n  status: UNREADABLE (soft-warn enabled)"
+            return f"- path: {json.dumps(str(path.resolve()))}\n  status: UNREADABLE (soft-warn enabled)"
         raise ValueError(msg)
     digest = sha256(data).hexdigest()
     size = len(data)
     mime, _ = mimetypes.guess_type(str(path))
     ext = path.suffix.lstrip(".").lower() or None
     lines = [
-        f"- path: {path.resolve()}",
+        # path is JSON-quoted: it is an untrusted filename (context_refs targets untrusted
+        # third-party docs); quoting escapes newlines/markdown so a hostile name cannot
+        # inject extra manifest lines or fake instructions into the bundle.
+        f"- path: {json.dumps(str(path.resolve()))}",
         f"  bytes: {size}",
         f"  sha256: {digest}",
         f"  mime: {mime or 'application/octet-stream'}",
@@ -1763,7 +1766,7 @@ def invoke_panel_request(
         artifact_ref=request.artifact_ref,
         context_refs=request.context_refs,
         context_refs_soft_warn=request.context_refs_soft_warn,
-        timeouts_by_leg=dict(request.timeout_seconds_by_leg) or None,
+        timeouts_by_leg=dict(request.timeout_seconds_by_leg) if request.timeout_seconds_by_leg else None,
     )
 
 
