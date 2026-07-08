@@ -3,6 +3,7 @@
 __all__ = [
     "__version__",
     "cli",
+    "conformance",
     "discovery",
     "handoff",
     "maintenance",

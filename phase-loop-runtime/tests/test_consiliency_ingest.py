@@ -309,5 +309,98 @@ class ConsiliencyIngestCLITest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
 
 
+class ConsiliencyIngestCheckOnlyTest(unittest.TestCase):
+    """`--check-only` decouples "run the check" from "is this repo adopted": an
+    un-adopted repo returns an explicit, honest not-adopted signal (mode
+    `not-adopted`, distinct non-zero exit 3) instead of the silent green
+    `skipped` no-op -- so a pre-PR actor is never misled into reading a no-op
+    as a pass. On an adopted repo it is exactly the read-only verify pass."""
+
+    def test_check_only_unadopted_is_an_explicit_not_adopted_signal(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            result = ingest(repo, check_only=True)
+            self.assertEqual(result.mode, "not-adopted")
+            self.assertFalse(result.adopted)
+            self.assertEqual(result.findings[0]["code"], "adoption.not_adopted")
+            # Strictly read-only: nothing shaped.
+            self.assertFalse((repo / ".consiliency").exists())
+
+    def test_check_only_ignores_adopt_and_never_shapes(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            # Even with --adopt, --check-only must not write a manifest.
+            result = ingest(repo, check_only=True, adopt=True, mode="baseline-only")
+            self.assertEqual(result.mode, "not-adopted")
+            self.assertFalse((repo / ".consiliency").exists())
+
+    def test_check_only_on_adopted_repo_is_a_verify(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            ingest(repo, adopt=True, mode="baseline-only")
+            result = ingest(repo, check_only=True)
+            self.assertEqual(result.mode, "verify")
+            self.assertIsNotNone(result.gate_scan)
+
+    def test_cli_check_only_unadopted_exits_3_with_distinct_signal(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            result = subprocess.run(
+                [*BIN, "consiliency-ingest", "--repo", str(repo), "--check-only", "--json"],
+                text=True, capture_output=True,
+            )
+            # Distinct from usage-error 2 and passing 0.
+            self.assertEqual(result.returncode, 3)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["mode"], "not-adopted")
+            self.assertFalse((repo / ".consiliency").exists())
+
+    def test_cli_check_only_on_adopted_repo_exits_0(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            subprocess.run(
+                [*BIN, "consiliency-ingest", "--repo", str(repo), "--adopt", "--archetype", "service", "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            result = subprocess.run(
+                [*BIN, "consiliency-ingest", "--repo", str(repo), "--check-only", "--json"],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["mode"], "verify")
+
+
+class ConformanceNamedLibraryTest(unittest.TestCase):
+    """The named public surface `phase_loop_runtime.conformance` re-exports the
+    IDENTICAL evaluator + pure cores (not a re-implementation) so an external
+    CR-fence can import and run the same function the actor runs."""
+
+    def test_named_entrypoint_reexports_the_same_function(self):
+        from phase_loop_runtime import conformance
+        from phase_loop_runtime.consiliency_gates import scan_consiliency_gates as impl
+        from phase_loop_runtime.git_discipline import (
+            evaluate_git_discipline as gd_impl,
+            self_heal_partition as heal_impl,
+        )
+        from phase_loop_runtime.consiliency_ingest import evaluate_governance_scope as gov_impl
+
+        self.assertIs(conformance.scan_consiliency_gates, impl)
+        self.assertIs(conformance.evaluate_git_discipline, gd_impl)
+        self.assertIs(conformance.self_heal_partition, heal_impl)
+        self.assertIs(conformance.evaluate_governance_scope, gov_impl)
+        for name in conformance.__all__:
+            self.assertTrue(hasattr(conformance, name), name)
+
+    def test_named_entrypoint_runs_on_an_arbitrary_repo(self):
+        from phase_loop_runtime.conformance import scan_consiliency_gates
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            verdict = scan_consiliency_gates(str(repo))
+            # Un-adopted repo: consent-gated no-op.
+            self.assertEqual(verdict["status"], "skipped")
+            self.assertFalse(verdict["consent"])
+
+
 if __name__ == "__main__":
     unittest.main()

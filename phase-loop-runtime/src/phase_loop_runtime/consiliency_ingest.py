@@ -278,6 +278,7 @@ def ingest(
     repo: str | Path,
     *,
     adopt: bool = False,
+    check_only: bool = False,
     mode: str = "baseline-only",
     archetypes: tuple[str, ...] = (),
     modifiers: tuple[str, ...] = (),
@@ -285,12 +286,43 @@ def ingest(
     display_name: str | None = None,
     dry_run: bool = False,
 ) -> IngestResult:
+    """Brownfield ingestion. See the module docstring for the SHAPE/VERIFY split.
+
+    ``check_only`` DECOUPLES "run the conformance check" from "is this repo
+    adopted". It is strictly read-only -- it NEVER shapes, so it ignores
+    ``adopt``. On an adopted repo it is exactly the VERIFY pass. On an
+    un-adopted repo (no ``.consiliency/manifest``) it does NOT return the silent
+    green ``skipped`` no-op that a plain (non-check) unflagged pass returns;
+    instead it returns an explicit, honest ``mode == "not-adopted"`` result so a
+    pre-PR actor is not misled into reading a no-op as a pass. The CLI maps that
+    mode to a distinct non-zero exit (see ``_consiliency_ingest_command``).
+    """
     repo = Path(repo)
     existing = find_consiliency_manifest(repo)
     if existing is not None:
         return _verify(repo, existing_manifest_path=existing, dry_run=dry_run)
 
     target_manifest_path = manifest_path(repo)
+    if check_only:
+        # Honest not-adopted signal: there is genuinely nothing to verify, and
+        # saying so out loud is the point -- a no-op is NOT a pass.
+        return IngestResult(
+            repo=repo, mode="not-adopted", dry_run=dry_run, adopted=False,
+            manifest_path=target_manifest_path, scaffold=None, gate_scan=None,
+            governed_set=(), document_labels=(),
+            findings=(
+                {
+                    "code": "adoption.not_adopted",
+                    "severity": "info",
+                    "message": (
+                        "No .consiliency/manifest present: this repo is NOT ADOPTED, "
+                        "so there is nothing to verify. --check-only reports this "
+                        "explicitly (distinct from a passing verify) so a no-op is "
+                        "never mistaken for a pass."
+                    ),
+                },
+            ),
+        )
     if not adopt:
         return IngestResult(
             repo=repo, mode="skipped", dry_run=dry_run, adopted=False,

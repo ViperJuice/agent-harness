@@ -415,6 +415,16 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Consent to shape an unmanaged repo (no-op without this flag when no manifest exists yet).",
             )
             sub.add_argument(
+                "--check-only",
+                action="store_true",
+                help=(
+                    "Run the conformance check only; never shape (ignores --adopt). "
+                    "On an adopted repo this is the verify pass. On an UN-ADOPTED repo "
+                    "it emits an explicit 'not adopted / nothing to verify' signal and "
+                    "exits non-zero (3), so a no-op is never mistaken for a pass."
+                ),
+            )
+            sub.add_argument(
                 "--archetype",
                 action="append",
                 default=[],
@@ -1634,6 +1644,7 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
     archetypes = tuple(dict.fromkeys(getattr(args, "archetype", None) or ()))
     modifiers = tuple(dict.fromkeys(getattr(args, "modifier", None) or ()))
     baseline_only = bool(getattr(args, "baseline_only", False))
+    check_only = bool(getattr(args, "check_only", False))
     if baseline_only and (archetypes or modifiers):
         print("phase-loop consiliency-ingest: --baseline-only is mutually exclusive with --archetype/--modifier", file=sys.stderr)
         return 2
@@ -1641,6 +1652,7 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
         result = ingest(
             repo,
             adopt=bool(getattr(args, "adopt", False)),
+            check_only=check_only,
             mode="baseline-only" if baseline_only else "archetyped",
             archetypes=archetypes,
             modifiers=modifiers,
@@ -1658,6 +1670,8 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
         print(f"phase-loop consiliency-ingest: {result.mode} {result.manifest_path}")
         if result.mode == "skipped":
             print("  no .consiliency/manifest and --adopt was not passed; repo left untouched")
+        if result.mode == "not-adopted":
+            print("  NOT ADOPTED: no .consiliency/manifest -- nothing to verify (a no-op is not a pass)")
         if result.mode == "shape":
             created = (result.scaffold or {}).get("created_paths", [])
             print(f"  scaffolded {len(created)} doc(s); proposed governed_set entries: {len(result.governed_set)}")
@@ -1665,6 +1679,11 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
             print(f"  gate scan: {result.gate_scan.get('status')}")
             for finding in result.findings:
                 print(f"  finding: {finding.get('code')} ({finding.get('path')})")
+    # Honest not-adopted signal under --check-only: distinct non-zero exit (3),
+    # separate from the usage-error 2 and the passing 0, so a pre-PR actor is
+    # never misled into reading "nothing to verify" as a pass.
+    if result.mode == "not-adopted":
+        return 3
     return 0
 
 
