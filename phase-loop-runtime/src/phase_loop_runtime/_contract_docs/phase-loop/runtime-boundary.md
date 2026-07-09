@@ -129,7 +129,7 @@ roots. See `docs/phase-loop/spec-discovery-roots.md`.
 The following modules under `phase_loop_runtime.*` are considered public:
 
 - `phase_loop_runtime.cli`: CLI entrypoint and parser definition.
-- `phase_loop_runtime.conformance`: Named conformance-check surface for actor-side self-check and the CR-fence. Covers the SHAPE / GOVERNANCE tier (the six L0 consiliency gates, `scan_consiliency_gates`) and the CERT / SCHEMA tier (`validate_certificate` — structural conformance of a declared parity certificate to the contract-distributed `certificate` schema; NOT authority / provenance / signing, which stays in gp).
+- `phase_loop_runtime.conformance`: Named conformance-check surface for actor-side self-check and the CR-fence. Covers the SHAPE / GOVERNANCE tier (the six L0 consiliency gates, `scan_consiliency_gates`) and the CERT / SCHEMA tier (`validate_certificate` — structural conformance of a declared parity certificate to the contract-distributed `certificate` schema; NOT authority / provenance / signing, which stays in gp). It also carries the OBSERVABILITY / EMISSION tier (`reconcile_git_grounded_projection` and `GitGroundedProjection`): a consent-gated, producer-agnostic reconciler that turns raw git reality (read via `git_discipline`, classified against the `pipeline_ref_classes` contract SoT) into a `raw-sha256` digest-bound projection body the Portal's projection-index verify path re-verifies at render; it emits, it does not sign or own Portal ingest.
 - `phase_loop_runtime.discovery`: Roadmap and repository resolution.
 - `phase_loop_runtime.handoff`: TUI handoff generation and metadata.
 - `phase_loop_runtime.models`: Core data models, schemas, and literals.

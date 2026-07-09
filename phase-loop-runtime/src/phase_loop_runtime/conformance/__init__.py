@@ -29,6 +29,17 @@ from .certificate_tier import (
     certificate_schema_available,
     validate_certificate,
 )
+from .git_grounded_projection import (
+    GIT_GROUNDED_KIND,
+    GIT_GROUNDED_PROJECTION_SCHEMA,
+    PORTAL_KIND_MISNOMER,
+    RAW_SHA256_DOMAIN,
+    GitGroundedContractAbsent,
+    GitGroundedProjection,
+    build_git_grounded_body,
+    build_projection_index_entry,
+    reconcile_git_grounded_projection,
+)
 from .outside_agent_core import (
     OutsideAgentBlocker,
     OutsideAgentConformanceVerdict,
@@ -73,6 +84,15 @@ __all__ = [
     "evaluate_governance_scope",
     "validate_certificate",
     "certificate_schema_available",
+    "GIT_GROUNDED_KIND",
+    "GIT_GROUNDED_PROJECTION_SCHEMA",
+    "PORTAL_KIND_MISNOMER",
+    "RAW_SHA256_DOMAIN",
+    "GitGroundedContractAbsent",
+    "GitGroundedProjection",
+    "build_git_grounded_body",
+    "build_projection_index_entry",
+    "reconcile_git_grounded_projection",
     "OutsideAgentBlocker",
     "OutsideAgentConformanceVerdict",
     "OutsideAgentEvidenceRef",
