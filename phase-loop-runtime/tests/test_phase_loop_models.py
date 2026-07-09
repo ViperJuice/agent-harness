@@ -28,6 +28,10 @@ from phase_loop_runtime.models import (
     PIPELINE_MODE_LITERALS,
     PIPELINE_PROTECTED_SOURCE_CATEGORIES,
     PIPELINE_PROTECTED_SOURCE_ROLES,
+    protected_source_categories,
+    protected_source_category_registry_available,
+    protected_source_fine_subtypes,
+    _reset_protected_source_registry_cache,
     PROMOTION_STATUSES,
     PRODUCT_LOOP_ACTIONS,
     UNSUPPORTED_POLICY_BEHAVIORS,
@@ -378,6 +382,87 @@ class PhaseLoopModelsTest(unittest.TestCase):
             PipelineProtectedSource(path=".pipeline/unknown.md", category="unknown")
         with self.assertRaises(ValueError):
             PipelineProtectedSource(path="specs/source.md", category="specs", role="unknown_role")
+
+    def test_protected_source_category_enum_sourced_from_contract_registry(self):
+        # PSCAT-PL: with the pinned contract (>= 0.6.5) present, the coarse enum
+        # is sourced from the DISTRIBUTED registry -- the seven coarse buckets
+        # (six pre-existing + governance_contracts), a strict superset of the
+        # legacy fallback tuple.
+        _reset_protected_source_registry_cache()
+        self.addCleanup(_reset_protected_source_registry_cache)
+        self.assertTrue(protected_source_category_registry_available())
+        coarse = protected_source_categories()
+        self.assertEqual(
+            coarse,
+            (
+                "specs",
+                "diagrams",
+                "adapter_config",
+                "definition_files",
+                "portal_contracts",
+                "phase_artifacts",
+                "governance_contracts",
+            ),
+        )
+        # Registry is a strict superset of the legacy fallback (no regression).
+        self.assertTrue(set(PIPELINE_PROTECTED_SOURCE_CATEGORIES).issubset(set(coarse)))
+        # The registry's fine subtype set is exposed as a soft reference only.
+        self.assertIn("skill_manifests", protected_source_fine_subtypes())
+
+    def test_protected_source_accepts_all_seven_coarse_categories_and_subtype(self):
+        # malformed_source_bundle must NOT fire for a contract-valid category,
+        # including the new governance_contracts bucket; subtype is accepted
+        # free-form and round-trips through to_json.
+        _reset_protected_source_registry_cache()
+        self.addCleanup(_reset_protected_source_registry_cache)
+        for category in protected_source_categories():
+            src = PipelineProtectedSource(path=f".pipeline/{category}.md", category=category)
+            self.assertEqual(src.category, category)
+        gov = PipelineProtectedSource(
+            path=".pipeline/skills/manifest.json",
+            category="governance_contracts",
+            subtype="skill_manifests",
+        )
+        self.assertEqual(gov.subtype, "skill_manifests")
+        self.assertEqual(gov.to_json()["subtype"], "skill_manifests")
+        # subtype is deliberately NOT enum-gated: an unregistered free-form
+        # subtype is accepted, never rejected.
+        free = PipelineProtectedSource(
+            path=".pipeline/x.md", category="specs", subtype="some_new_producer_subtype"
+        )
+        self.assertEqual(free.subtype, "some_new_producer_subtype")
+        # subtype omitted -> absent from serialized form (clean_dict drops None).
+        self.assertNotIn("subtype", PipelineProtectedSource(path="x", category="specs").to_json())
+
+    def test_protected_source_category_degrades_to_legacy_tuple_when_registry_absent(self):
+        # Contract-absent degrade: when load_registry raises (older contract with
+        # no protected_source_categories registry) we fall back to the legacy
+        # six-tuple and DO NOT hard-crash -- mirroring gate_posture.available().
+        from phase_loop_runtime import models as _models
+
+        def _raise(_name):
+            raise ValueError("Unknown registry: protected_source_categories")
+
+        _reset_protected_source_registry_cache()
+        self.addCleanup(_reset_protected_source_registry_cache)
+        import consiliency_contract as _cc
+
+        original = _cc.load_registry
+        _cc.load_registry = _raise
+        try:
+            self.assertFalse(protected_source_category_registry_available())
+            self.assertEqual(protected_source_categories(), PIPELINE_PROTECTED_SOURCE_CATEGORIES)
+            # governance_contracts is (correctly) unknown to the legacy fallback.
+            with self.assertRaises(ValueError):
+                PipelineProtectedSource(path="x", category="governance_contracts")
+            # A legacy-valid category still validates on the fallback path.
+            self.assertEqual(
+                PipelineProtectedSource(path="x", category="specs").category, "specs"
+            )
+        finally:
+            _cc.load_registry = original
+        # Reset so later tests re-read the real (present) registry.
+        _reset_protected_source_registry_cache()
 
     def test_pipeline_metadata_diagnostic_serializes_json_safe_contract(self):
         diagnostic = PipelineMetadataDiagnostic(

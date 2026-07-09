@@ -15,9 +15,9 @@ from .closeout_validators import (
 from .models import (
     PIPELINE_CLOSEOUT_OUTCOMES,
     PIPELINE_CLOSEOUT_SCHEMA,
-    PIPELINE_PROTECTED_SOURCE_CATEGORIES,
     PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES,
     PIPELINE_PROTECTED_SOURCE_ROLES,
+    protected_source_categories,
     SPEC_DELTA_CLOSEOUT_SCHEMA,
     SPEC_DELTA_DECISIONS,
     DirtyPathClassification,
@@ -625,7 +625,7 @@ def phase_loop_closeout_diagnostic(payload: Mapping[str, Any] | None) -> dict[st
                 return {"kind": "malformed_closeout", "message": "closeout source_bundle.protected_sources entries must be objects"}
             category = item.get("category")
             role = item.get("role")
-            if category not in PIPELINE_PROTECTED_SOURCE_CATEGORIES:
+            if category not in protected_source_categories():
                 return {"kind": "malformed_closeout", "message": "closeout source_bundle protected source has invalid category"}
             if role is not None and role not in PIPELINE_PROTECTED_SOURCE_ROLES and role not in PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES:
                 return {"kind": "malformed_closeout", "message": "closeout source_bundle protected source has invalid role"}

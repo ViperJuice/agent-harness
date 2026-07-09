@@ -1462,6 +1462,8 @@ def _read_phase_source_bundle(
                 category=str(entry.get("category", "")),
                 sha256=str(entry["sha256"]) if entry.get("sha256") is not None else None,
                 role=str(entry["role"]) if entry.get("role") is not None else None,
+                # PSCAT-PL: accept the optional free-form producer subtype.
+                subtype=str(entry["subtype"]) if entry.get("subtype") is not None else None,
             )
         except ValueError as exc:
             return None, PipelineMetadataDiagnostic(
