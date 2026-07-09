@@ -114,8 +114,16 @@ scope (delegated downstream / to gp).
 ### `consiliency-ingest --check-only`
 
 `--check-only` decouples "run the check" from "is this repo adopted". It is
-strictly read-only (never shapes; ignores `--adopt`). On an **adopted** repo it
-is the verify pass (exit `0`). On an **un-adopted** repo it does not return the
-silent green `skipped` no-op — it emits an explicit `not-adopted` result and
-exits non-zero (`3`, distinct from the usage-error `2` and the passing `0`), so a
-pre-PR actor is never misled into reading a no-op as a pass.
+strictly read-only (never shapes; ignores `--adopt`). It makes the exit code
+verdict-significant so a pre-PR actor is never misled into reading a no-op — or a
+failing verify — as a pass:
+
+| Repo state | mode | exit |
+|---|---|---|
+| adopted, verify clean (or `warn`) | `verify` | `0` |
+| adopted, gate scan `blocked` | `verify` | `1` |
+| un-adopted (no `.consiliency/manifest`) | `not-adopted` | `3` |
+| usage error | — | `2` |
+
+The plain (non-`--check-only`) path is unchanged — it keeps the silent green
+`skipped` no-op on an un-adopted repo and its existing exit `0`.

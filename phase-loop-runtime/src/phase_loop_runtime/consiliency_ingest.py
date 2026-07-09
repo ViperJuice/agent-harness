@@ -294,8 +294,12 @@ def ingest(
     un-adopted repo (no ``.consiliency/manifest``) it does NOT return the silent
     green ``skipped`` no-op that a plain (non-check) unflagged pass returns;
     instead it returns an explicit, honest ``mode == "not-adopted"`` result so a
-    pre-PR actor is not misled into reading a no-op as a pass. The CLI maps that
-    mode to a distinct non-zero exit (see ``_consiliency_ingest_command``).
+    pre-PR actor is not misled into reading a no-op as a pass. Because
+    ``check_only`` makes the outcome verdict-significant, the CLI maps its exit
+    code accordingly (see ``_consiliency_ingest_command``): ``3`` = not adopted /
+    nothing to verify, ``1`` = adopted but the gate scan is ``blocked``, ``0`` =
+    adopted + verify clean. This function itself only returns the
+    :class:`IngestResult`; the exit mapping lives in the CLI.
     """
     repo = Path(repo)
     existing = find_consiliency_manifest(repo)

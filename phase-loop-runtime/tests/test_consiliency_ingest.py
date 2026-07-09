@@ -9,6 +9,7 @@ flagged rather than silently re-shaped.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -369,6 +370,28 @@ class ConsiliencyIngestCheckOnlyTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
             self.assertEqual(payload["mode"], "verify")
+
+    def test_cli_check_only_on_blocked_scan_exits_1_distinct_from_not_adopted(self):
+        # An adopted service+public repo with LICENSE declared-missing blocks
+        # under hard mode; --check-only must surface that as a distinct non-zero
+        # exit (1), NOT the passing 0 -- a failing verify is not a pass either.
+        env = {**os.environ, "PHASE_LOOP_CONSILIENCY_GATES": "hard"}
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            subprocess.run(
+                [*BIN, "consiliency-ingest", "--repo", str(repo), "--adopt",
+                 "--archetype", "service", "--modifier", "public", "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertFalse((repo / "LICENSE").exists())
+            result = subprocess.run(
+                [*BIN, "consiliency-ingest", "--repo", str(repo), "--check-only", "--json"],
+                text=True, capture_output=True, env=env,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["mode"], "verify")
+            self.assertEqual(payload["gate_scan"]["status"], "blocked")
+            self.assertEqual(result.returncode, 1)  # distinct from 3 (not-adopted) and 2 (usage)
 
 
 class ConformanceNamedLibraryTest(unittest.TestCase):

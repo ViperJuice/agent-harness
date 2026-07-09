@@ -1679,11 +1679,19 @@ def _consiliency_ingest_command(*, repo: Path, args: argparse.Namespace, as_json
             print(f"  gate scan: {result.gate_scan.get('status')}")
             for finding in result.findings:
                 print(f"  finding: {finding.get('code')} ({finding.get('path')})")
-    # Honest not-adopted signal under --check-only: distinct non-zero exit (3),
-    # separate from the usage-error 2 and the passing 0, so a pre-PR actor is
-    # never misled into reading "nothing to verify" as a pass.
-    if result.mode == "not-adopted":
-        return 3
+    # --check-only makes the exit code verdict-significant, so a pre-PR actor is
+    # never misled into reading a no-op OR a failing verify as a pass:
+    #   3 -> not adopted / nothing to verify (distinct from a pass)
+    #   1 -> adopted but the gate scan is BLOCKED (a real conformance failure)
+    #   0 -> adopted + verify clean (warn stays 0: soft by default)
+    # 2 remains the usage-error code. The plain (non --check-only) path is
+    # UNCHANGED -- it keeps returning 0 exactly as before (see report note on
+    # the pre-existing blocked->0 gap on the plain command).
+    if check_only:
+        if result.mode == "not-adopted":
+            return 3
+        if result.gate_scan is not None and result.gate_scan.get("status") == "blocked":
+            return 1
     return 0
 
 
