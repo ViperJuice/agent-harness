@@ -74,6 +74,7 @@ from ..git_discipline import (
     self_heal_partition,
 )
 from ..git_discipline import RefState
+from ..runtime_paths import ensure_phase_loop_excluded
 
 #: Wire discriminator for the git-grounded projection body. Versioned; a bump is
 #: a body-shape change, never a silent edit.
@@ -239,12 +240,18 @@ def build_projection_index_entry(
     predicate: str = "git-grounded-observability",
     gate_state: str = "pass",
 ) -> dict[str, Any]:
-    """A ``projections.index.v1`` entry that the portal's verify path ingests.
+    """An index entry the portal's RUNTIME verify path (``isProjectionIndexEntry``
+    + ``verifyProjCode``) ingests -- NOT a schema-valid ``projections.index.v1``
+    entry (it deliberately omits the ``facts_path``/``facts_digest``/
+    ``pinned_commit`` the schema requires for ``proj-code-*`` kinds; the portal
+    runtime does not schema-validate, its load-bearing gate is the digest bind).
 
     The entry pins ``body_digest`` = the projection's ``raw-sha256`` digest over
-    the body FILE bytes, so the portal re-verifies the git-grounded body ITSELF
-    at render time (one body, one digest, verified end-to-end -- the portal
-    certifies git reality, not a derived doc).
+    the emitted body bytes. The portal reads ``body_path`` relative to its OWN
+    vendored root (not the producing repo), so a portal re-derive over the
+    vendored COPY of those exact bytes binds the same digest -- the digest is the
+    transport-integrity check ("these bytes, this digest"). ``body_path`` is the
+    portal-vendor DESTINATION, not a path in the observed repo.
 
     ``kind`` is forced to the closed-enum ``proj-code-sbom`` MISNOMER (the only
     non-cert, ``raw-sha256`` slot the portal runtime accepts). The misfit is made
@@ -315,35 +322,26 @@ def reconcile_git_grounded_projection(
 
     projection = GitGroundedProjection(body)
 
-    # The entry's ``body_path`` MUST resolve to the EXACT bytes ``body_digest``
-    # binds, or the portal reads a different (or missing) file and fails closed.
-    # The portal's ``isSafeVendoredPath`` requires ``body_path`` to start with
-    # ``spec-render/``, so the digested bytes are written there (repo-relative)
-    # and the SAME repo-relative path is what the entry names -- one body, one
-    # digest, the portal re-verifies the file it is handed.
-    #
-    # HONEST FINDING (#152): this ``spec-render/`` vendored-path requirement
-    # collides with the runtime boundary, whose native observability surface is
-    # ``.phase-loop/**``. We resolve it by writing the portal-facing body under
-    # ``spec-render/`` (the path the portal will read) rather than misnaming a
-    # ``.phase-loop/`` file the portal cannot load. A future portal change that
-    # accepts a runtime-native ``.phase-loop/`` body would let the two surfaces
-    # converge; until then the portal-facing copy lives where the portal reads.
-    body_rel = _portal_body_rel_path()
+    # EMIT + HANDOFF (the transport-agnostic model). The runtime EMITS the
+    # digested bytes to its OWN native, git-EXCLUDED observability surface under
+    # ``.phase-loop/`` (never a repo-tracked file, so the artifact never appears
+    # in the repo's own ``git status`` and the reconcile stays deterministic --
+    # the observer does not perturb the observed). ``entry.body_path`` is the
+    # portal-vendor DESTINATION (``spec-render/...``, the portal's own vendored
+    # namespace, NOT a directory in the observed repo); a portal-side vendoring
+    # step places THESE EXACT BYTES there. ``body_digest`` is precisely the
+    # integrity check that transport did not alter them -- so the guarantee is
+    # "these bytes, this digest", invariant of which root serves them (exactly
+    # how certified/portal projections already work: producer emits, portal
+    # vendors, digest binds across).
+    portal_body_rel = _portal_vendor_body_path()
     manifest_rel = "spec-render/git-grounded/manifest.json"
-    target = body_path if body_path is not None else Path(repo) / body_rel
-    # The entry names the ACTUAL written path (repo-relative), so a portal
-    # re-derive over ``body_path`` binds the pinned ``body_digest``.
-    entry_body_path = (
-        body_rel
-        if body_path is None
-        else _repo_relative(Path(repo), Path(target))
-    )
+    target = body_path if body_path is not None else _default_body_path(repo)
 
     index_entry = build_projection_index_entry(
         projection,
         repo_label=repo_label,
-        body_path=entry_body_path,
+        body_path=portal_body_rel,
         manifest_path=manifest_rel,
         predicate=predicate,
     )
@@ -354,33 +352,37 @@ def reconcile_git_grounded_projection(
         "body": projection.body,
         "body_digest": projection.body_digest,
         "body_digest_domain": projection.body_digest_domain,
+        # The portal-vendor destination the emitted bytes hand off to.
+        "portal_body_path": portal_body_rel,
         "index_entry": index_entry,
     }
     if write:
+        # Exclude BEFORE writing so the artifact never lands in git status even
+        # on the first reconcile (deterministic self-observation).
+        ensure_phase_loop_excluded(Path(repo))
         written = projection.write(target)
         result["body_path"] = str(written)
-        # Verify against the file the ENTRY names (the portal's exact check),
-        # not just some file we happened to write.
+        # Verify against the exact bytes we emitted -- the transport-invariant
+        # guarantee (sha256(emitted bytes) == pinned digest), which is what a
+        # portal re-derive over the vendored copy of these bytes also checks.
         result["verified"] = projection.verify(written)
     return result
 
 
-def _portal_body_rel_path() -> str:
-    """The repo-relative, portal-safe (``spec-render/``-prefixed) location the
-    digested body is written to and the index entry names -- the file the portal
-    reads and re-verifies."""
+def _portal_vendor_body_path() -> str:
+    """The portal-vendor DESTINATION for the emitted body: the portal's own
+    ``spec-render/``-prefixed vendored namespace (satisfies the portal's
+    ``isSafeVendoredPath``), NOT a path in the observed repo. A portal-side
+    vendoring step places the emitted bytes here; the digest binds across."""
     return "spec-render/git-grounded/observability.json"
 
 
-def _repo_relative(repo: Path, target: Path) -> str:
-    """``target`` expressed relative to ``repo`` with POSIX separators (portal
-    paths are repo-relative). Falls back to the basename when ``target`` is
-    outside ``repo`` -- a caller-supplied absolute path the portal could not
-    vendor anyway."""
-    try:
-        return target.resolve().relative_to(repo.resolve()).as_posix()
-    except ValueError:
-        return target.name
+def _default_body_path(repo: Path) -> Path:
+    """Runtime-native emission location: under the canonical, git-excluded
+    ``.phase-loop/`` observability surface (never a repo-tracked file, never a
+    sibling repo). This is where the runtime WRITES; the portal-vendor
+    destination is where those bytes hand off to."""
+    return Path(repo) / ".phase-loop" / "observability" / "git-grounded-projection.json"
 
 
 __all__ = [

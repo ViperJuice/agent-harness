@@ -53,7 +53,7 @@ class ConsentGateTest(unittest.TestCase):
             self.assertEqual(result["reason"], "no-consent")
             self.assertNotIn("body", result)
             # No artifact was written.
-            self.assertFalse((repo / "spec-render" / "git-grounded" / "observability.json").exists())
+            self.assertFalse((repo / ".phase-loop" / "observability" / "git-grounded-projection.json").exists())
 
     def test_no_repo_dir_is_a_clean_no_op(self):
         with tempfile.TemporaryDirectory() as td:
@@ -157,7 +157,7 @@ class EmissionTest(unittest.TestCase):
             result = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, write=False)
             self.assertEqual(result["status"], "emitted")
             self.assertNotIn("body_path", result)
-            self.assertFalse((repo / "spec-render" / "git-grounded" / "observability.json").exists())
+            self.assertFalse((repo / ".phase-loop" / "observability" / "git-grounded-projection.json").exists())
 
 
 class PortalIndexEntryTest(unittest.TestCase):
@@ -192,28 +192,46 @@ class PortalIndexEntryTest(unittest.TestCase):
             # re-verified end-to-end.
             self.assertEqual(entry["body_digest"], result["body_digest"])
 
-    def test_entry_body_path_resolves_to_the_hashed_bytes(self):
-        """The portal's EXACT check: read the file `entry["body_path"]` names
-        (repo-relative) and re-derive raw-sha256 over ITS bytes -> must bind the
-        pinned `entry["body_digest"]`. This is the end-to-end guarantee (the
-        portal reads `body_path` and verifies the file it is handed), distinct
-        from `result["body_path"]` -- they must be the SAME file."""
+    def test_emitted_bytes_bind_the_entry_digest_transport_invariant(self):
+        """The transport-invariant guarantee ("these bytes, this digest"): the
+        raw-sha256 over the EMITTED body bytes == entry["body_digest"]. The
+        portal reads body_path relative to its OWN vendor root (confirmed), so a
+        portal re-derive over the vendored COPY of these exact bytes binds the
+        same digest -- the integrity check that transport did not alter them.
+        entry["body_path"] is the portal-vendor DESTINATION, not a repo path."""
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             _opt_in(repo)
             result = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, repo_label="fixture")
             entry = result["index_entry"]
 
-            # The entry names a repo-relative path; the portal loads repo/body_path.
-            portal_read = repo / entry["body_path"]
-            self.assertTrue(portal_read.is_file(), f"portal would read a missing file: {entry['body_path']}")
-            # The file the RESULT reports and the file the ENTRY names are the SAME.
-            self.assertEqual(Path(result["body_path"]).resolve(), portal_read.resolve())
-            # raw-sha256 over the bytes the portal reads binds the pinned digest.
-            self.assertEqual(
-                hashlib.sha256(portal_read.read_bytes()).hexdigest(),
-                entry["body_digest"],
-            )
+            emitted = Path(result["body_path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(emitted).hexdigest(), entry["body_digest"])
+            # The emitted artifact lives on the runtime-native excluded surface,
+            # NOT at the portal-vendor destination path inside the observed repo.
+            self.assertIn(".phase-loop", result["body_path"])
+            self.assertEqual(entry["body_path"], result["portal_body_path"])
+            self.assertTrue(entry["body_path"].startswith("spec-render/"))
+            self.assertFalse((repo / entry["body_path"]).exists())
+
+    def test_reconcile_is_deterministic_and_does_not_self_perturb(self):
+        """Reconciling the same repo twice yields the SAME body_digest, and the
+        emitted artifact never appears in the body's own dirty_paths -- the
+        observer does not perturb the observed (the write is git-excluded)."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            _opt_in(repo)
+            first = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, repo_label="fixture")
+            second = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, repo_label="fixture")
+
+            self.assertEqual(first["body_digest"], second["body_digest"])
+            self.assertEqual(first["body"]["dirty_paths"], second["body"]["dirty_paths"])
+            # The emitted artifact is git-excluded, so it never shows up as a
+            # dirty path in the reconciled body (neither run).
+            for result in (first, second):
+                for dirty in result["body"]["dirty_paths"]:
+                    self.assertNotIn("git-grounded-projection.json", dirty)
+                    self.assertNotIn("observability", dirty)
 
     def test_entry_surfaces_the_kind_misnomer_honestly(self):
         with tempfile.TemporaryDirectory() as td:
