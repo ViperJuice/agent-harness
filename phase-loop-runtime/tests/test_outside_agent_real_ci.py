@@ -6,11 +6,11 @@ from pathlib import Path
 from phase_loop_runtime.conformance.outside_agent_vectors import run_outside_agent_vectors
 
 
-FIXTURE_ROOT = "tests/fixtures/outside_agent_real"
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "outside_agent_real"
 
 
 def _run_validate(name, tmp_path):
-    submission_path = f"{FIXTURE_ROOT}/{name}.json"
+    submission_path = FIXTURE_ROOT / f"{name}.json"
     output_path = tmp_path / f"{name}-verdict.json"
     return subprocess.run(
         [

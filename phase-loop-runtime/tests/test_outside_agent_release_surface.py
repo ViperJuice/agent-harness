@@ -1,5 +1,8 @@
+import importlib.metadata
 import re
 from pathlib import Path
+
+import pytest
 
 try:
     import tomllib
@@ -16,8 +19,17 @@ from phase_loop_runtime.conformance import (
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ROOT = REPO_ROOT / "phase-loop-runtime"
+RUNTIME_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = RUNTIME_ROOT.parent
+
+
+def _require_repo_files(*paths: Path):
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        pytest.skip(
+            "repo-root release docs/workflows are absent in standalone clean-room: "
+            + ", ".join(missing)
+        )
 
 
 def _submission():
@@ -38,7 +50,12 @@ def _submission():
 
 
 def test_package_version_matches_runtime_version():
-    pyproject = tomllib.loads((RUNTIME_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject_path = RUNTIME_ROOT / "pyproject.toml"
+    if not pyproject_path.exists():
+        assert importlib.metadata.version("phase-loop-runtime") == phase_loop_runtime.__version__
+        return
+
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "phase-loop-runtime"
     assert pyproject["project"]["version"] == phase_loop_runtime.__version__
@@ -100,8 +117,12 @@ def test_expected_outside_agent_contract_pin_release_fields_are_complete():
 
 
 def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
-    consistency = (REPO_ROOT / ".github/workflows/release-consistency.yml").read_text(encoding="utf-8")
-    publish = (REPO_ROOT / ".github/workflows/publish-pypi.yml").read_text(encoding="utf-8")
+    consistency_path = REPO_ROOT / ".github/workflows/release-consistency.yml"
+    publish_path = REPO_ROOT / ".github/workflows/publish-pypi.yml"
+    _require_repo_files(consistency_path, publish_path)
+
+    consistency = consistency_path.read_text(encoding="utf-8")
+    publish = publish_path.read_text(encoding="utf-8")
 
     assert "push:" in consistency
     assert "tags: ['v*']" in consistency
@@ -119,7 +140,10 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
 
 
 def test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary():
-    handoff = (REPO_ROOT / "docs/releases/outside-agent-release-handoff.md").read_text(encoding="utf-8")
+    handoff_path = REPO_ROOT / "docs/releases/outside-agent-release-handoff.md"
+    _require_repo_files(handoff_path)
+
+    handoff = handoff_path.read_text(encoding="utf-8")
     pin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
 
     required_terms = {
@@ -164,8 +188,12 @@ def test_release_handoff_records_metadata_only_package_contract_and_dispatch_bou
 
 
 def test_public_docs_point_to_handoff_without_claiming_release_dispatch():
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8").lower()
-    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8").lower()
+    readme_path = REPO_ROOT / "README.md"
+    changelog_path = REPO_ROOT / "CHANGELOG.md"
+    _require_repo_files(readme_path, changelog_path)
+
+    readme = readme_path.read_text(encoding="utf-8").lower()
+    changelog = changelog_path.read_text(encoding="utf-8").lower()
 
     assert "docs/releases/outside-agent-release-handoff.md" in readme
     assert "docs/outside-agent-conformance.md" in readme
