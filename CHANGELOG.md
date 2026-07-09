@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- Nothing yet.
+
+## [0.4.0] — 2026-07-09
+
 - **PSCAT-PL — `protected_source_category` sourced from the contract SoT (#155).**
   phase-loop no longer hardcodes the accepted protected-source vocabulary. The
   coarse category enum is now read from the distributed contract registry
@@ -22,10 +26,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   registry's `fine_subtypes` is a soft reference set only). `malformed_source_bundle`
   / `malformed_closeout` no longer fire for a category that is valid per the
   contract coarse enum, including `governance_contracts`.
-- **Release prep (#114).** CTXVERIFY confirms the `context_refs` release gate is
-  merge-ready when the focused regression proof, standalone suite, skill parity,
-  clean-room install, and worktree hygiene checks are green. Publishing, tagging,
-  and workflow dispatch remain a separate release-dispatch action.
+- **Advisor panel `context_refs` maturity (#114–#118).** The `context_refs`
+  path now keeps referenced artifacts out-of-line, carries stable metadata and
+  hashes, preserves bounded per-leg timeouts, retries the Gemini leg correctly,
+  and has release-gate proof for focused regressions, standalone tests, skill
+  parity, clean-room install, and worktree hygiene.
+- **Claude Code native-agent review leg (#120, fixes #92).** The advisor-panel
+  Claude leg now defers to a native Agent under Claude Code instead of spawning
+  a headless TUI, preserving subscription-auth posture and avoiding the prior
+  stuck/headless execution mode.
+- **Shared conformance library (#121).** Adds the named public
+  `phase_loop_runtime.conformance` API so runtime and companion checks share one
+  conformance implementation instead of duplicating role-specific helpers.
 
 ## [0.3.0] — 2026-07-07
 
