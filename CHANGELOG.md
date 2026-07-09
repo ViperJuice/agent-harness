@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Outside-agent release prep (OARELEASE).** Adds the metadata-only outside-agent
+  release handoff with `phase-loop-runtime` package identity, validator version,
+  `consiliency-spec` contract pin, vector manifest hash, focused release-check
+  evidence, temp wheel/sdist inventory, governed-pipeline pinning instructions,
+  advisory preflight usage, and maintainer-owned publish/tag/workflow-dispatch
+  boundaries. The runtime is not published, tagged, workflow-dispatched, or
+  claimed as production merge enforcement by this preparation entry.
 - **Release prep (#114).** CTXVERIFY confirms the `context_refs` release gate is
   merge-ready when the focused regression proof, standalone suite, skill parity,
   clean-room install, and worktree hygiene checks are green. Publishing, tagging,
