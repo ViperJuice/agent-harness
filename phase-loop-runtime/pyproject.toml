@@ -32,7 +32,17 @@ dependencies = [
     # < 0.6.2 stays safe; the floor guarantees the teeth are present. Warn-default remains;
     # human_required is never set. (0.6.0 shipped self-inconsistent version refs -> fixed in
     # 0.6.1, contract PR #18.)
-    "consiliency-contract>=0.6.3,<0.7",
+    #
+    # PIN (PSCAT-PL, roadmap Phase 2B): floor at 0.6.5 -- ships the
+    # `protected_source_categories` registry that OWNS the coarse
+    # protected_source_category vocabulary (the six pre-existing buckets +
+    # `governance_contracts`). phase-loop reads that registry via
+    # `consiliency_contract.load_registry` and validates against it as the SoT
+    # (models.py `protected_source_categories()`), replacing the hardcoded enum.
+    # Registry-present is authoritative; the runtime still degrades to the legacy
+    # six-tuple if a caller runs an older contract (no hard crash), but this floor
+    # guarantees the contract-owned vocabulary (incl. governance_contracts) is live.
+    "consiliency-contract>=0.6.5,<0.7",
     "jsonschema>=4,<5",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in

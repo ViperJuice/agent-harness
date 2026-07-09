@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **PSCAT-PL — `protected_source_category` sourced from the contract SoT (#155).**
+  phase-loop no longer hardcodes the accepted protected-source vocabulary. The
+  coarse category enum is now read from the distributed contract registry
+  `protected_source_categories` (`consiliency-contract` pin moves
+  `>=0.6.3,<0.7` → `>=0.6.5,<0.7`) via the same `consiliency_contract.load_registry`
+  loader the git-discipline / consiliency gates use — so the runtime stays in
+  lockstep with the SoT. Registry-present is authoritative (the seven coarse
+  buckets: the six pre-existing + the new `governance_contracts`); when an older
+  contract lacks the registry the runtime degrades to the legacy six-tuple
+  (`protected_source_category_registry_available()` False) rather than hard-crashing
+  at import, mirroring the `gate_posture.available()` pattern. `PipelineProtectedSource`
+  now accepts an optional free-form producer `subtype` (never enum-gated — the
+  contract deliberately keeps the fine vocabulary un-coupled across repos; the
+  registry's `fine_subtypes` is a soft reference set only). `malformed_source_bundle`
+  / `malformed_closeout` no longer fire for a category that is valid per the
+  contract coarse enum, including `governance_contracts`.
 - **Release prep (#114).** CTXVERIFY confirms the `context_refs` release gate is
   merge-ready when the focused regression proof, standalone suite, skill parity,
   clean-room install, and worktree hygiene checks are green. Publishing, tagging,
