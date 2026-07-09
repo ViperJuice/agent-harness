@@ -31,18 +31,30 @@ body digest (``sha256`` over the raw ``body_path`` file bytes -- no domain
 prefix, no re-canonicalization at read time), so the same body the portal reads
 re-verifies at render time. A tampered body fails the bind and never renders.
 
-PORTAL CONTRACT NOTE (honest finding, issue #152). The portal's verify
+PORTAL CONTRACT NOTES (honest findings, issue #152). The portal's verify
 *mechanism* accepts this digest-bound git-grounded body TODAY via the
 ``raw-sha256`` body-digest domain -- no portal or contract change is required to
-re-verify it. But the ``projections.index.v1`` *schema* has no honest home for a
-git-grounded reconciled state: ``kind`` is closed to
-``proj-code-sbom | proj-code-api | proj-S-certified`` (no git-grounded value)
-and ``body_content_type`` is ``text/markdown | text/html`` (no
-``application/json``). :func:`build_projection_index_entry` therefore emits a
-portal-ingestable entry but records ``kind_is_misnomer``/``git_grounded_kind``
-provenance so the misfit is surfaced, not hidden. Closing the gap honestly is an
-ADDITIVE contract change (a git-grounded ``kind`` + optional
-``application/json`` content type); this module does not force it.
+re-verify it. Two schema/shape misfits remain, surfaced rather than forced:
+
+1. **No git-grounded ``kind``.** The ``projections.index.v1`` schema ``kind`` is
+   closed to ``proj-code-sbom | proj-code-api | proj-S-certified`` (no
+   git-grounded value) and ``body_content_type`` is ``text/markdown |
+   text/html`` (no ``application/json``). :func:`build_projection_index_entry`
+   emits a portal-ingestable entry using the ``proj-code-sbom`` slot but records
+   ``kind_is_misnomer`` / ``git_grounded_kind`` provenance so the misfit is
+   visible. Closing it honestly is an ADDITIVE contract change (a git-grounded
+   ``kind`` + optional ``application/json`` content type).
+
+2. **``spec-render/`` vendored-path constraint vs the ``.phase-loop/`` runtime
+   boundary.** The portal's ``isSafeVendoredPath`` requires ``body_path`` to
+   start with ``spec-render/``, but the runtime's native observability surface
+   is ``.phase-loop/**``. Because ``body_path`` MUST resolve to the exact bytes
+   ``body_digest`` binds (else the portal reads the wrong/missing file and fails
+   closed), the reconciler writes the portal-facing body under ``spec-render/``
+   -- the path the portal actually reads -- rather than misnaming a
+   ``.phase-loop/`` file the portal cannot load. A future portal change that
+   accepts a runtime-native ``.phase-loop/`` body would let the two surfaces
+   converge; this module does not force it.
 """
 from __future__ import annotations
 
@@ -302,14 +314,36 @@ def reconcile_git_grounded_projection(
         return {"status": "skipped", "reason": "contract-absent"}
 
     projection = GitGroundedProjection(body)
-    target = body_path if body_path is not None else _default_body_path(repo)
+
+    # The entry's ``body_path`` MUST resolve to the EXACT bytes ``body_digest``
+    # binds, or the portal reads a different (or missing) file and fails closed.
+    # The portal's ``isSafeVendoredPath`` requires ``body_path`` to start with
+    # ``spec-render/``, so the digested bytes are written there (repo-relative)
+    # and the SAME repo-relative path is what the entry names -- one body, one
+    # digest, the portal re-verifies the file it is handed.
+    #
+    # HONEST FINDING (#152): this ``spec-render/`` vendored-path requirement
+    # collides with the runtime boundary, whose native observability surface is
+    # ``.phase-loop/**``. We resolve it by writing the portal-facing body under
+    # ``spec-render/`` (the path the portal will read) rather than misnaming a
+    # ``.phase-loop/`` file the portal cannot load. A future portal change that
+    # accepts a runtime-native ``.phase-loop/`` body would let the two surfaces
+    # converge; until then the portal-facing copy lives where the portal reads.
+    body_rel = _portal_body_rel_path()
     manifest_rel = "spec-render/git-grounded/manifest.json"
-    body_rel = "spec-render/git-grounded/observability.md"
+    target = body_path if body_path is not None else Path(repo) / body_rel
+    # The entry names the ACTUAL written path (repo-relative), so a portal
+    # re-derive over ``body_path`` binds the pinned ``body_digest``.
+    entry_body_path = (
+        body_rel
+        if body_path is None
+        else _repo_relative(Path(repo), Path(target))
+    )
 
     index_entry = build_projection_index_entry(
         projection,
         repo_label=repo_label,
-        body_path=body_rel,
+        body_path=entry_body_path,
         manifest_path=manifest_rel,
         predicate=predicate,
     )
@@ -325,14 +359,28 @@ def reconcile_git_grounded_projection(
     if write:
         written = projection.write(target)
         result["body_path"] = str(written)
+        # Verify against the file the ENTRY names (the portal's exact check),
+        # not just some file we happened to write.
         result["verified"] = projection.verify(written)
     return result
 
 
-def _default_body_path(repo: Path) -> Path:
-    """Default on-repo location for the emitted body (under the canonical
-    ``.phase-loop/`` observability surface, never a sibling repo)."""
-    return Path(repo) / ".phase-loop" / "observability" / "git-grounded-projection.json"
+def _portal_body_rel_path() -> str:
+    """The repo-relative, portal-safe (``spec-render/``-prefixed) location the
+    digested body is written to and the index entry names -- the file the portal
+    reads and re-verifies."""
+    return "spec-render/git-grounded/observability.json"
+
+
+def _repo_relative(repo: Path, target: Path) -> str:
+    """``target`` expressed relative to ``repo`` with POSIX separators (portal
+    paths are repo-relative). Falls back to the basename when ``target`` is
+    outside ``repo`` -- a caller-supplied absolute path the portal could not
+    vendor anyway."""
+    try:
+        return target.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return target.name
 
 
 __all__ = [

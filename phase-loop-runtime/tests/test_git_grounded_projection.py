@@ -53,7 +53,7 @@ class ConsentGateTest(unittest.TestCase):
             self.assertEqual(result["reason"], "no-consent")
             self.assertNotIn("body", result)
             # No artifact was written.
-            self.assertFalse((repo / ".phase-loop" / "observability" / "git-grounded-projection.json").exists())
+            self.assertFalse((repo / "spec-render" / "git-grounded" / "observability.json").exists())
 
     def test_no_repo_dir_is_a_clean_no_op(self):
         with tempfile.TemporaryDirectory() as td:
@@ -157,7 +157,7 @@ class EmissionTest(unittest.TestCase):
             result = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, write=False)
             self.assertEqual(result["status"], "emitted")
             self.assertNotIn("body_path", result)
-            self.assertFalse((repo / ".phase-loop" / "observability" / "git-grounded-projection.json").exists())
+            self.assertFalse((repo / "spec-render" / "git-grounded" / "observability.json").exists())
 
 
 class PortalIndexEntryTest(unittest.TestCase):
@@ -191,6 +191,29 @@ class PortalIndexEntryTest(unittest.TestCase):
             # The entry pins the SAME digest as the body -- one body, one digest,
             # re-verified end-to-end.
             self.assertEqual(entry["body_digest"], result["body_digest"])
+
+    def test_entry_body_path_resolves_to_the_hashed_bytes(self):
+        """The portal's EXACT check: read the file `entry["body_path"]` names
+        (repo-relative) and re-derive raw-sha256 over ITS bytes -> must bind the
+        pinned `entry["body_digest"]`. This is the end-to-end guarantee (the
+        portal reads `body_path` and verifies the file it is handed), distinct
+        from `result["body_path"]` -- they must be the SAME file."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            _opt_in(repo)
+            result = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY, repo_label="fixture")
+            entry = result["index_entry"]
+
+            # The entry names a repo-relative path; the portal loads repo/body_path.
+            portal_read = repo / entry["body_path"]
+            self.assertTrue(portal_read.is_file(), f"portal would read a missing file: {entry['body_path']}")
+            # The file the RESULT reports and the file the ENTRY names are the SAME.
+            self.assertEqual(Path(result["body_path"]).resolve(), portal_read.resolve())
+            # raw-sha256 over the bytes the portal reads binds the pinned digest.
+            self.assertEqual(
+                hashlib.sha256(portal_read.read_bytes()).hexdigest(),
+                entry["body_digest"],
+            )
 
     def test_entry_surfaces_the_kind_misnomer_honestly(self):
         with tempfile.TemporaryDirectory() as td:
