@@ -6,7 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
-- Nothing yet.
+- **CERT / SCHEMA tier in the shared conformance library (#153).** Adds
+  `phase_loop_runtime.conformance.validate_certificate(cert) -> dict` — the rung
+  above `hash-checked`. It structurally validates a *declared* parity
+  certificate against the contract-distributed `certificate` schema
+  (`consiliency_contract.load_schema('certificate')`, from contract 0.6.4+):
+  required fields present, and the `result_state` `$ref` closure enforced
+  (`overall_result_state` / `dimension_results[].result_state` must be real
+  contract result-state enum members). Loaded via the SAME `consiliency_contract`
+  loader the SHAPE gates use, so it is versioned with the contract and
+  byte-identical between the actor-side self-check (a mock, never authoritative)
+  and the fence (the real mount). It returns the SHAPE-gate verdict shape
+  (`{"status", "findings", ...}`) and is additive — it does not change any
+  existing shape-tier gate behavior. Contract-absent or a contract too old to
+  distribute the cert schema degrades to a neutral `skipped` verdict
+  (`consent: false`, mirroring the `gate_posture.available()` pattern), never a
+  crash; a companion `certificate_schema_available()` predicate exposes the
+  degrade signal. STRUCTURAL only — it does NOT verify the certificate digest
+  byte-value, any signature, or canon/provenance; those authority / provenance /
+  signing rungs stay downstream in gp.
 
 ## [0.5.0] — 2026-07-09
 
