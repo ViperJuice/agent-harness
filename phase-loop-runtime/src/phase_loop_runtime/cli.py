@@ -670,6 +670,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the ledger state as JSON.",
     )
+    outside_agent_sub = subparsers.add_parser(
+        "outside-agent-preflight",
+        help="Emit advisory metadata-only outside-agent preflight evidence.",
+    )
+    outside_agent_sub.add_argument("submission_file", metavar="submission-file")
+    outside_agent_sub.add_argument("--output", help="Path to write advisory evidence JSON.")
+    outside_agent_validate_sub = subparsers.add_parser(
+        "outside-agent-validate",
+        help="Emit governed-pipeline outside-agent validation verdict JSON.",
+    )
+    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file")
+    outside_agent_validate_sub.add_argument(
+        "--output",
+        required=True,
+        help="Path to write governed-pipeline validation verdict JSON.",
+    )
+    outside_agent_validate_sub.add_argument(
+        "--submitted-ref",
+        action="append",
+        default=[],
+        help="Repo-relative ref submitted to governed-pipeline; may be repeated.",
+    )
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -751,6 +773,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":
         return _run_train_status_command(parser=parser, args=args)
+    if command == "outside-agent-preflight":
+        return _outside_agent_preflight_command(args=args)
+    if command == "outside-agent-validate":
+        return _outside_agent_validate_command(args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -1126,6 +1152,78 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
+    from .conformance.outside_agent_advisory import (
+        build_malformed_outside_agent_advisory_evidence,
+        build_outside_agent_advisory_evidence,
+        digest_outside_agent_submission_bytes,
+        serialize_outside_agent_advisory_evidence,
+    )
+
+    submission_path = Path(args.submission_file)
+    try:
+        raw = submission_path.read_bytes()
+    except OSError as exc:
+        evidence = build_malformed_outside_agent_advisory_evidence(
+            input_digest=digest_outside_agent_submission_bytes(str(submission_path).encode("utf-8")),
+            message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
+        )
+    else:
+        try:
+            submission = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            evidence = build_malformed_outside_agent_advisory_evidence(
+                input_digest=digest_outside_agent_submission_bytes(raw),
+            )
+        else:
+            evidence = build_outside_agent_advisory_evidence(submission)
+
+    payload = serialize_outside_agent_advisory_evidence(evidence)
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    print(text, end="")
+    return int(evidence.exit_code)
+
+
+def _outside_agent_validate_command(args: argparse.Namespace) -> int:
+    from .conformance.outside_agent_real import (
+        build_malformed_outside_agent_validation_verdict,
+        build_outside_agent_validation_verdict,
+    )
+    from .conformance.outside_agent_real_output import (
+        digest_outside_agent_validation_bytes,
+        serialize_outside_agent_validation_verdict,
+    )
+
+    submission_path = Path(args.submission_file)
+    try:
+        raw = submission_path.read_bytes()
+    except OSError as exc:
+        validation = build_malformed_outside_agent_validation_verdict(
+            input_digest=digest_outside_agent_validation_bytes(str(submission_path).encode("utf-8")),
+            message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
+        )
+    else:
+        try:
+            submission = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            validation = build_malformed_outside_agent_validation_verdict(
+                input_digest=digest_outside_agent_validation_bytes(raw),
+            )
+        else:
+            validation = build_outside_agent_validation_verdict(
+                submission,
+                submitted_refs=tuple(args.submitted_ref or ()),
+            )
+
+    payload = serialize_outside_agent_validation_verdict(validation)
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    Path(args.output).write_text(text, encoding="utf-8")
+    print(text, end="")
+    return int(validation.exit_code)
 
 
 def _parse_lane_ir_override(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> tuple[str, ...]:

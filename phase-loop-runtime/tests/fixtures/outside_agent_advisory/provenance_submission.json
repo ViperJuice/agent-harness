@@ -1,0 +1,15 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_kind": "ambiguity_report",
+  "metadata": {
+    "submission_id": "oa-fixture-provenance",
+    "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "provenance_refs": [
+    {
+      "ref": "../requests/oa-fixture-provenance.json",
+      "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "evidence_refs": []
+}

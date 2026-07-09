@@ -1,0 +1,48 @@
+{
+  "clean_submission.json": {
+    "authority": "advisory",
+    "classification": "clean_advisory_pass",
+    "exit_code": 0,
+    "status": "pass",
+    "blocker_codes": [],
+    "provenance_refs": [
+      "requests/oa-fixture-clean.json"
+    ]
+  },
+  "malformed_submission.json": {
+    "authority": "advisory",
+    "classification": "malformed_input",
+    "exit_code": 2,
+    "status": "blocked",
+    "blocker_codes": [
+      "schema_validation_failed",
+      "unsupported_submission_kind"
+    ],
+    "provenance_refs": [
+      "requests/oa-fixture-malformed.json"
+    ]
+  },
+  "redaction_submission.json": {
+    "authority": "advisory",
+    "classification": "redaction_violation",
+    "exit_code": 3,
+    "status": "blocked",
+    "blocker_codes": [
+      "raw_log_present",
+      "unknown_field"
+    ],
+    "provenance_refs": [
+      "requests/oa-fixture-redaction.json"
+    ]
+  },
+  "provenance_submission.json": {
+    "authority": "advisory",
+    "classification": "provenance_failure",
+    "exit_code": 4,
+    "status": "blocked",
+    "blocker_codes": [
+      "path_traversal_ref"
+    ],
+    "provenance_refs": []
+  }
+}

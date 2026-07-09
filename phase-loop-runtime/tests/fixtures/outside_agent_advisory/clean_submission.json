@@ -1,0 +1,20 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_kind": "work_request",
+  "metadata": {
+    "submission_id": "oa-fixture-clean",
+    "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "provenance_refs": [
+    {
+      "ref": "requests/oa-fixture-clean.json",
+      "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "evidence_refs": [
+    {
+      "ref": "evidence/oa-fixture-clean.json",
+      "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

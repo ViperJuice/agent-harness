@@ -8,6 +8,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Nothing yet.
 
+## [0.5.0] — 2026-07-09
+
+- **Outside-agent conformance runtime (OARELEASE).** Adds the metadata-only outside-agent
+  release handoff with `phase-loop-runtime` package identity, validator version,
+  `consiliency-spec` contract pin, vector manifest hash, focused release-check
+  evidence, temp wheel/sdist inventory, governed-pipeline pinning instructions,
+  advisory preflight usage, and maintainer-owned publish/tag/workflow-dispatch
+  boundaries. The runtime can be published as the `0.5.0` validator release, but
+  downstream production merge enforcement remains governed-pipeline-owned.
+
 ## [0.4.0] — 2026-07-09
 
 - **PSCAT-PL — `protected_source_category` sourced from the contract SoT (#155).**

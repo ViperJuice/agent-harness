@@ -1,0 +1,14 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_kind": "unsupported_kind",
+  "metadata": {
+    "submission_id": "oa-fixture-malformed"
+  },
+  "provenance_refs": [
+    {
+      "ref": "requests/oa-fixture-malformed.json",
+      "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "evidence_refs": []
+}

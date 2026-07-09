@@ -40,6 +40,17 @@ return **absolute** roots.)
 > `pip install agent-harness` expecting this CLI. The published wheel is
 > `pip install phase-loop-runtime==X.Y.Z` (built by `.github/workflows/publish-pypi.yml`).
 
+## Outside-agent conformance
+
+Outside-agent release preparation is documented in
+`docs/releases/outside-agent-release-handoff.md`, with package/check evidence,
+contract/vector pin metadata, governed-pipeline validator pin instructions, and
+the maintainer-owned publish boundary. The user-facing conformance contract and
+advisory-vs-authoritative split remain in `docs/outside-agent-conformance.md`.
+The advisory `outside-agent-preflight` command is available for local producer
+checks; governed-pipeline must use `outside-agent-validate` for authoritative
+validator evidence after maintainers publish or pin the runtime.
+
 ## Autonomy & review gates
 
 The runner is built to drive phases **unattended**. Closeout review gates
