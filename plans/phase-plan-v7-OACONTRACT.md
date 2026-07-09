@@ -19,7 +19,7 @@ Canonical runner state exists under `.phase-loop/`; legacy `.codex/phase-loop/` 
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-OACONTRACT-1 - Outside-agent contract import pin: `phase_loop_runtime.conformance` remains backward-compatible for the existing `.consiliency/` gate API, while `phase_loop_runtime.conformance.outside_agent_pin.OutsideAgentContractPin` records `schema_version`, `contract_package`, `contract_version`, `contract_git_sha`, `vector_manifest_hash`, `vector_manifest_name`, `source_owner`, and `redaction_posture`; `phase_loop_runtime.conformance.outside_agent_imports.load_outside_agent_contract_pin()` fails closed on missing or unknown contract version and vector manifest digest drift, and loads schema/vector truth only from `consiliency_contract` / Consiliency/spec rather than copied JSON in this repo.
+- [ ] IF-0-OACONTRACT-1 - Outside-agent contract import pin: `phase_loop_runtime.conformance` remains backward-compatible for the existing `.consiliency/` gate API, while `phase_loop_runtime.conformance.outside_agent_pin.OutsideAgentContractPin` records `schema_version`, `verdict_schema_version`, `contract_package`, `contract_version`, `contract_git_sha`, `vector_manifest_hash`, `vector_manifest_name`, `source_owner`, and `redaction_posture`; `phase_loop_runtime.conformance.outside_agent_imports.load_outside_agent_contract_pin()` fails closed on missing or unknown contract version and vector manifest digest drift, and loads schema/vector truth only from the pinned `consiliency_spec` package or immutable Consiliency/spec git checkout rather than copied JSON in this repo.
 
 ## Lane Index & Dependencies
 
@@ -63,11 +63,11 @@ SL-4 — Consumer docs and phase verification reducer
 - **Scope**: Record the exact outside-agent contract identity and vector manifest digest consumed from Consiliency/spec without vendoring schema or vector truth into agent-harness.
 - **Owned files**: `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_pin.py`, `phase-loop-runtime/tests/test_outside_agent_contract_pin.py`
 - **Interfaces provided**: `OutsideAgentContractPin`, `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN`, `IF-0-OACONTRACT-1` pin fields
-- **Interfaces consumed**: (pre-existing) `consiliency_contract` package metadata, Consiliency/spec outside-agent schema/vector aliases from the installed contract package
+- **Interfaces consumed**: Consiliency/spec git SHA and the `consiliency_spec` package data surface (`schemas/outside-agent-*.schema.json`, `test-vectors/outside-agent/manifest.json`)
 - **Parallel-safe**: yes; writes only the dependency/pin metadata surface and its focused tests after SL-0 creates the package namespace.
 - **Tasks**:
   - test: Add assertions that the expected pin records a schema version, a package version or git sha, a vector manifest name, a vector manifest sha256, `source_owner="Consiliency/spec"`, and `redaction_posture="metadata_only"`.
-  - impl: Add a frozen pin metadata module and, if required by the upstream package shape, tighten the `consiliency-contract` dependency enough that the outside-agent pin is deterministic while preserving existing `.consiliency/` gate compatibility.
+  - impl: Add a frozen pin metadata module for `consiliency-spec` / Consiliency/spec git SHA. Do not tighten the existing `consiliency-contract` dependency for outside-agent files; that package remains the `.consiliency/` gate contract, not the outside-agent schema package.
   - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_contract_pin.py -q`
 
 ### SL-2 — Import Helpers And Version Checks
@@ -75,11 +75,11 @@ SL-4 — Consumer docs and phase verification reducer
 - **Scope**: Add the minimal import-time helper that reads the canonical package metadata/vector manifest and fails closed on missing, unknown, or drifted contract identity.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_imports.py`, `phase-loop-runtime/tests/test_outside_agent_contract_imports.py`
 - **Interfaces provided**: `load_outside_agent_contract_pin()`, `OutsideAgentContractError`, typed error codes `missing_contract`, `unknown_contract_version`, `vector_manifest_hash_mismatch`
-- **Interfaces consumed**: `OutsideAgentContractPin`, `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN`, (pre-existing) `consiliency_contract.load_schema`, (pre-existing) `consiliency_contract.load_vector`, (pre-existing) package metadata APIs
+- **Interfaces consumed**: `OutsideAgentContractPin`, `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN`, `consiliency_spec` package resources when installed, `OUTSIDE_AGENT_SPEC_ROOT` / explicit Consiliency/spec checkout path during pre-release trains, package metadata APIs
 - **Parallel-safe**: yes; writes only import helpers and import-check tests after consuming the SL-1 pin.
 - **Tasks**:
   - test: Add import-helper tests that simulate missing package metadata, unknown schema version, and vector manifest hash mismatch without network access or provider credentials.
-  - impl: Implement the import helper so it returns the expected pin only after the installed canonical package metadata and vector manifest digest match the frozen pin; it must raise `OutsideAgentContractError` instead of silently accepting drift.
+  - impl: Implement the import helper so it returns the expected pin only after either the installed `consiliency_spec` package or a pre-release Consiliency/spec checkout matches the frozen git/package identity and vector manifest digest; it must raise `OutsideAgentContractError` instead of silently accepting drift.
   - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_contract_imports.py -q`
 
 ### SL-3 — Negative Drift Fixtures
@@ -122,7 +122,7 @@ SL-4 — Consumer docs and phase verification reducer
 
 - Execute SL-0 first because Python cannot have both `phase_loop_runtime/conformance.py` and `phase_loop_runtime/conformance/` as the import owner.
 - Preserve the existing `.consiliency/` gate API exactly; outside-agent additions live in submodules and do not change current gate semantics.
-- If Consiliency/spec has not published the outside-agent schema/vector alias yet, stop in SL-1 or SL-2 with `blocker_class=upstream_phase_unmet`, `human_required=false`, and evidence naming the missing package metadata only.
+- If Consiliency/spec has not published the outside-agent package yet, validate the train-pinned Consiliency/spec git checkout by immutable SHA and vector manifest hash. Stop with `blocker_class=upstream_phase_unmet`, `human_required=false`, only when neither a matching checkout nor a matching installed `consiliency_spec` package is available.
 - Do not copy canonical schema JSON, vector bodies, raw provider payloads, local env values, or secrets into agent-harness. OACONTRACT stores metadata and hashes only.
 - Documentation sweep decision: `docs/outside-agent-conformance.md` is the consumer-facing boundary doc for this phase; no changelog edits are required.
 
@@ -152,7 +152,7 @@ automation:
 ## Acceptance Criteria
 
 - [ ] `phase_loop_runtime.conformance` remains import-compatible with the existing `.consiliency/` named library tests after the package migration.
-- [ ] `phase-loop-runtime/tests/test_outside_agent_contract_pin.py` asserts import metadata records outside-agent schema version, package version or git sha, vector manifest name, vector manifest sha256, source owner, and metadata-only redaction posture.
+- [ ] `phase-loop-runtime/tests/test_outside_agent_contract_pin.py` asserts import metadata records outside-agent schema version, verdict schema version, package version or git sha, vector manifest name, vector manifest sha256, source owner, and metadata-only redaction posture.
 - [ ] `phase-loop-runtime/tests/test_outside_agent_contract_imports.py` asserts the import helper fails closed for missing contract metadata, unknown schema version, and vector manifest digest mismatch.
 - [ ] `phase-loop-runtime/tests/test_outside_agent_contract_drift.py` proves agent-harness does not silently accept stale, unknown, or copied outside-agent schema/vector truth.
 - [ ] `phase-loop-runtime/tests/test_outside_agent_contract_drift.py` or a focused `rg` check proves the repo contains no copied canonical outside-agent schema JSON or raw vector corpus outside metadata-only negative fixtures.
