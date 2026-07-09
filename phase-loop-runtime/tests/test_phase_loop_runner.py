@@ -415,7 +415,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="complete",
-                    model="gpt-5.5",
+                    model="gpt-5.6-sol",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={"phase_loop_closeout": closeout},
@@ -814,7 +814,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                             phase="CONTRACT",
                             action="execute",
                             status="complete",
-                            model="gpt-5.4",
+                            model="gpt-5.6-terra",
                             reasoning_effort="medium",
                             source="fixture",
                             **event_provenance(roadmap, "CONTRACT"),
@@ -912,7 +912,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                     phase=fixture.execute_phase,
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -961,7 +961,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                         phase="CONTRACT",
                         action="execute",
                         status="complete",
-                        model="gpt-5.4",
+                        model="gpt-5.6-terra",
                         reasoning_effort="medium",
                         source="fixture",
                         schema_version=2,
@@ -1318,7 +1318,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2057,7 +2057,7 @@ automation:
                     phase="RUNNER",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2128,7 +2128,7 @@ automation:
                     phase="RUNNER",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2489,7 +2489,7 @@ automation:
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2527,7 +2527,7 @@ automation:
                     phase="CONTRACT",
                     action="plan",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2724,7 +2724,7 @@ automation:
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -2762,7 +2762,7 @@ automation:
                     phase=fixture.execute_phase,
                     action="plan",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -3108,7 +3108,7 @@ automation:
                     phase="CONTRACT",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -3154,7 +3154,7 @@ automation:
                     phase="CONTRACT",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -3256,7 +3256,7 @@ automation:
                     phase="CONTRACT",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={

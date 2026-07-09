@@ -17,7 +17,7 @@ from phase_loop_test_utils import make_repo
 
 
 def _metric(status: str) -> dict[str, object]:
-    return {"verification_status": status, "executor": "codex", "model": "gpt-5.5"}
+    return {"verification_status": status, "executor": "codex", "model": "gpt-5.6-sol"}
 
 
 class ObservabilityAlertingTest(unittest.TestCase):
@@ -66,7 +66,7 @@ class ObservabilityAlertingTest(unittest.TestCase):
                 repo=repo,
                 phase="RUNNER",
                 action="execute",
-                launch_metadata={"executor": "codex", "selected_model": "gpt-5.5"},
+                launch_metadata={"executor": "codex", "selected_model": "gpt-5.6-sol"},
                 terminal_summary=build_terminal_summary(
                     terminal_status="executed",
                     terminal_blocker=None,

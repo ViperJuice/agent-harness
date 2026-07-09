@@ -202,7 +202,7 @@ class PhaseLoopMixedRunDispatchTest(unittest.TestCase):
             roadmap.write_text(
                 roadmap.read_text(encoding="utf-8")
                 + "\n## Execution Policy\n"
-                + "- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`, work-unit=`lane_execute`, reason=`policy test`\n",
+                + "- execute: executor=`codex`, model=`gpt-5.6-sol`, effort=`high`, work-unit=`lane_execute`, reason=`policy test`\n",
                 encoding="utf-8",
             )
             plan = write_phase_plan(repo, "RUNNER", roadmap)
@@ -230,7 +230,7 @@ class PhaseLoopMixedRunDispatchTest(unittest.TestCase):
             launch_metadata = json.loads(Path(artifacts["metadata"]).read_text(encoding="utf-8"))
             self.assertEqual(launch_metadata["execution_policy"]["effort"], "high")
             self.assertEqual(launch_metadata["execution_policy"]["execution_policy_source"], "roadmap policy")
-            self.assertEqual(event_metadata["execution_policy"]["model"], "gpt-5.5")
+            self.assertEqual(event_metadata["execution_policy"]["model"], "gpt-5.6-sol")
 
     def test_unsupported_execution_policy_blocks_before_launch(self):
         with tempfile.TemporaryDirectory() as td:

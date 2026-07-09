@@ -153,7 +153,7 @@ class PhaseLoopMigrationRegressionsTest(unittest.TestCase):
                     phase=fixture.execute_phase,
                     action="execute",
                     status="blocked",
-                    model="gpt-5.5",
+                    model="gpt-5.6-sol",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={

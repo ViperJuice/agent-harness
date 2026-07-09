@@ -29,7 +29,7 @@ def test_codex_cli_effort_passes_through_supported_levels():
 
 
 def test_build_codex_command_emits_xhigh_for_max():
-    selection = ModelSelection(profile="plan", model="gpt-5.5-codex", effort="max")
+    selection = ModelSelection(profile="plan", model="gpt-5.6-sol-codex", effort="max")
     cmd = build_codex_command(Path("/repo"), selection, "prompt")
     assert _emit(cmd) == 'model_reasoning_effort="xhigh"'
     # the invalid literal must never reach the CLI
@@ -37,6 +37,6 @@ def test_build_codex_command_emits_xhigh_for_max():
 
 
 def test_build_codex_command_passes_through_high():
-    selection = ModelSelection(profile="execute", model="gpt-5.4-codex", effort="high")
+    selection = ModelSelection(profile="execute", model="gpt-5.6-terra-codex", effort="high")
     cmd = build_codex_command(Path("/repo"), selection, "prompt")
     assert _emit(cmd) == 'model_reasoning_effort="high"'

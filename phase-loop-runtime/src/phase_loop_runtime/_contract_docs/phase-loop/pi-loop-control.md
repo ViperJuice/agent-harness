@@ -148,7 +148,7 @@ pi-agent-watch \
   --repo /path/to/repo \
   --roadmap specs/phase-plans-v1.md \
   --provider openai-codex \
-  --model gpt-5.5 \
+  --model gpt-5.6-sol \
   --thinking high \
   --phase-executor claude \
   --claude-execution-mode agent_team \

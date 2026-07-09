@@ -35,7 +35,7 @@ class PhaseLoopRepairSkippedWhenBlockerClearedTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={

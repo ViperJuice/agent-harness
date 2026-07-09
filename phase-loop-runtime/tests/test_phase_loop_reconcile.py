@@ -46,7 +46,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="run",
                     status="planned",
-                    model="gpt-5.5",
+                    model="gpt-5.6-sol",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -87,7 +87,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="run",
                     status="planned",
-                    model="gpt-5.5",
+                    model="gpt-5.6-sol",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -128,7 +128,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="repair",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker=stale_blocker,
@@ -157,7 +157,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -179,7 +179,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="state_transition",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -219,7 +219,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -253,7 +253,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -518,7 +518,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     schema_version=2,
@@ -539,7 +539,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
             write_state(repo, StateSnapshot(timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phases={"RUNNER": "complete"}))
-            append_event(repo, LoopEvent(timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="RUNNER", action="execute", status="complete", model="gpt-5.4", reasoning_effort="medium", source="default"))
+            append_event(repo, LoopEvent(timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="RUNNER", action="execute", status="complete", model="gpt-5.6-terra", reasoning_effort="medium", source="default"))
             snapshot = reconcile(repo, roadmap)
             self.assertEqual(snapshot.phases["RUNNER"], "unplanned")
             self.assertTrue(any(warning["reason"] == "legacy" for warning in snapshot.ledger_warnings))
@@ -568,7 +568,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase=fixture.execute_phase,
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -629,7 +629,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -694,7 +694,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="executed",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -728,7 +728,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -766,7 +766,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -815,7 +815,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -875,7 +875,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -979,7 +979,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1035,7 +1035,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             phase="ALPHA",
             action="execute",
             status="blocked",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
             metadata={
@@ -1076,7 +1076,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                 "phase": "ALPHA",
                 "action": "manual",
                 "status": "planned",
-                "model": "gpt-5.4",
+                "model": "gpt-5.6-terra",
                 "reasoning_effort": "medium",
                 "source": "manual",
                 "human_required": False,
@@ -1109,7 +1109,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -1133,7 +1133,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="manual_repair",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="manual",
                     metadata={"manual_repair": {"clears_blocker": True}},
@@ -1185,7 +1185,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1237,7 +1237,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -1262,7 +1262,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="manual_repair",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="operator",
                     metadata={"manual_repair": {"clears_blocker": True}},
@@ -1292,7 +1292,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1351,7 +1351,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1424,7 +1424,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1598,7 +1598,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="ALPHA",
                     action="manual",
                     status="executed",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="manual",
                     blocker=blocker,
@@ -1654,7 +1654,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1723,7 +1723,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="RUNNER",
                     action="run",
                     status="blocked",
-                    model="gpt-5.5",
+                    model="gpt-5.6-sol",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={

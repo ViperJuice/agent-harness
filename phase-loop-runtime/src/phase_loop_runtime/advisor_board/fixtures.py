@@ -27,7 +27,7 @@ CANONICAL_LEG_ORDER: tuple[str, ...] = ("codex", "gemini", "claude")
 # The default board's three seats — model-first, effort split out of the model
 # name. These reconstruct today's ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
-#   codex  gpt-5.5           + effort max  -> ``-c model_reasoning_effort=xhigh``
+#   codex  gpt-5.6-sol           + effort max  -> ``-c model_reasoning_effort=xhigh``
 #   gemini "Gemini 3.1 Pro"  + effort high -> model ``"Gemini 3.1 Pro (High)"``
 #   claude claude-fable-5    + effort max  -> ``--effort max``
 #
@@ -36,7 +36,7 @@ CANONICAL_LEG_ORDER: tuple[str, ...] = ("codex", "gemini", "claude")
 # Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
 # ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-5.5", effort="max", harness="codex",
+    Seat(model="gpt-5.6-sol", effort="max", harness="codex",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -54,7 +54,7 @@ DEFAULT_BOARD: Board = Board(
 # Golden literals the default seats must reproduce (cross-checked in the
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
-    "codex": "gpt-5.5",
+    "codex": "gpt-5.6-sol",
     "gemini": "Gemini 3.1 Pro (High)",
     "claude": "claude-fable-5",
 }
@@ -65,16 +65,16 @@ DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
 }
 
 # Canonical (model x harness) pairs ABDREG's matrix + ABDRESOLVE's validation test
-# against. Same-vendor-across-harness (gpt-5.5 on codex and opencode) is VALID and
-# projects to one family; a cross-vendor mismatch (gpt-5.5 on claude) is INVALID.
+# against. Same-vendor-across-harness (gpt-5.6-sol on codex and opencode) is VALID and
+# projects to one family; a cross-vendor mismatch (gpt-5.6-sol on claude) is INVALID.
 CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
-    ("gpt-5.5", "codex"),
-    ("gpt-5.5", "opencode"),
+    ("gpt-5.6-sol", "codex"),
+    ("gpt-5.6-sol", "opencode"),
     ("claude-sonnet-5", "claude"),
     ("Gemini 3.1 Pro", "gemini"),
 )
 CANONICAL_INVALID_PAIRS: tuple[tuple[str, str], ...] = (
-    ("gpt-5.5", "claude"),        # openai-family model on the claude lane
+    ("gpt-5.6-sol", "claude"),        # openai-family model on the claude lane
     ("claude-sonnet-5", "codex"),  # anthropic model on the codex lane
 )
 
@@ -85,7 +85,7 @@ TWO_SAME_VENDOR_BOARD: Board = Board(
     name="two-openai",
     purpose="brainstorm",
     seats=(
-        Seat(model="gpt-5.5", effort="high", harness="codex"),
-        Seat(model="gpt-5.5", effort="high", harness="opencode"),
+        Seat(model="gpt-5.6-sol", effort="high", harness="codex"),
+        Seat(model="gpt-5.6-sol", effort="high", harness="opencode"),
     ),
 )

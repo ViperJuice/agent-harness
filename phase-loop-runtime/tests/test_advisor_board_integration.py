@@ -94,7 +94,7 @@ class EndToEndHomebrewIntegrationTests(unittest.TestCase):
 
     def test_ad_hoc_seats_resolve_and_run(self) -> None:
         # the `--seats model:effort[:harness]` ad-hoc path, end-to-end.
-        board = resolve_board(seats="gpt-5.5:high:codex", matrix=default_matrix())
+        board = resolve_board(seats="gpt-5.6-sol:high:codex", matrix=default_matrix())
         res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
         self.assertEqual(res.legs[0].leg, "codex")
         self.assertEqual(res.legs[0].status, "OK")
@@ -168,7 +168,7 @@ class FailClosedMatrixTests(unittest.TestCase):
         board = Board(
             name="mix", purpose="x",
             seats=(
-                Seat(model="gpt-5.5", effort="max", harness="codex"),
+                Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
                 Seat(model="claude-sonnet-5", effort="max", harness="claude", auth=AUTH_API_KEY),
             ),
             allow_api_key_fallback=True,  # board opts in, but no key present in base_env
@@ -193,13 +193,13 @@ class FailClosedMatrixTests(unittest.TestCase):
         # that an opted-in board still runs the healthy seat.
         with self.assertRaises(ValueError):
             Board(name="b", purpose="x",
-                  seats=(Seat(model="gpt-5.5", effort="max", harness="codex", auth=AUTH_API_KEY),))
+                  seats=(Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=AUTH_API_KEY),))
         self.assertEqual(spawned, [])
 
     def test_gateway_down_skips_omnigent_seat_leaves_others_ok(self) -> None:
         board = Board(name="breadth", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="max", harness="codex"),  # homebrew built-3
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),  # omnigent
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex"),  # homebrew built-3
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),  # omnigent
         ))
         omni = _FakeOmnigent({"opencode"}, down=True)
         res = pi.invoke_board(board, "artifact", omnigent=omni, spawn=_ok_spawn)
@@ -224,7 +224,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
 
     def test_omnigent_seat_in_live_catalog_routes_through_transport(self) -> None:
         board = Board(name="breadth", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         omni = _FakeOmnigent({"opencode", "pi"})
         res = pi.invoke_board(board, "artifact", omnigent=omni)
@@ -234,7 +234,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
     def test_omnigent_seat_not_in_catalog_skips_with_warning(self) -> None:
         # the dynamic cursor/amp gate: a reachable gateway that omits the harness.
         board = Board(name="breadth", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         omni = _FakeOmnigent(frozenset())  # gateway up, but catalog omits opencode
         res = pi.invoke_board(board, "artifact", omnigent=omni)
@@ -245,7 +245,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
         # ABDHOME no-provider contract: an omnigent seat with no transport is skip,
         # never a silent homebrew fallback.
         board = Board(name="breadth", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         res = pi.invoke_board(board, "artifact", gateway_available=True)
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")

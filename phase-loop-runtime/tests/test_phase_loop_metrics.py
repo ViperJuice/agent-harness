@@ -30,7 +30,7 @@ class PhaseLoopMetricsTest(unittest.TestCase):
                 lane_id="SL-2",
                 launch_metadata={
                     "executor": "codex",
-                    "selected_model": "gpt-5.5",
+                    "selected_model": "gpt-5.6-sol",
                     "harness_lane_assignment": {"lane_id": "SL-2"},
                     "execution_policy": {
                         "work_unit_kind": "lane_execute",
@@ -69,7 +69,7 @@ class PhaseLoopMetricsTest(unittest.TestCase):
                 action="execute",
                 launch_metadata={
                     "executor": "codex",
-                    "selected_model": "gpt-5.4",
+                    "selected_model": "gpt-5.6-terra",
                     "wave_id": "wave-001",
                     "execution_policy": {
                         "work_unit_kind": "lane_execute",
@@ -103,7 +103,7 @@ class PhaseLoopMetricsTest(unittest.TestCase):
             self.assertEqual(data["work_unit_kind"], "lane_execute")
             self.assertEqual(data["executor"], "codex")
             self.assertEqual(data["provider"], "openai")
-            self.assertEqual(data["model"], "gpt-5.4")
+            self.assertEqual(data["model"], "gpt-5.6-terra")
             self.assertEqual(data["effort"], "medium")
             self.assertEqual(data["wave_id"], "wave-001")
             self.assertTrue(data["fallback_applied"])

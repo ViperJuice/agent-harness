@@ -179,7 +179,7 @@ class PhaseLoopWorkUnitObservabilityTest(unittest.TestCase):
                 repo=repo,
                 phase="RUNNER",
                 action="execute",
-                launch_metadata={"executor": "codex", "selected_model": "gpt-5.5"},
+                launch_metadata={"executor": "codex", "selected_model": "gpt-5.6-sol"},
                 terminal_summary=summary,
                 lane_id="SL-0",
             )

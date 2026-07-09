@@ -220,7 +220,7 @@ def _append_awaiting_closeout(repo: Path, roadmap: Path) -> None:
             phase="CONTRACT",
             action="execute",
             status="awaiting_phase_closeout",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
             metadata={

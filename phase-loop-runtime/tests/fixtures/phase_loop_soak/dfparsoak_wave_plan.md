@@ -40,6 +40,6 @@
 ## Execution Policy
 
 - work-unit defaults: work-unit=`lane_execute`, effort=`medium`, unsupported=`inherit_default`, inherit-default=`true`
-- SL-0: executor=`codex`, model=`gpt-5.5`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`
-- SL-1: executor=`codex`, model=`gpt-5.5`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`
-- SL-2: executor=`codex`, model=`gpt-5.5`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`
+- SL-0: executor=`codex`, model=`gpt-5.6-sol`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`
+- SL-1: executor=`codex`, model=`gpt-5.6-sol`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`
+- SL-2: executor=`codex`, model=`gpt-5.6-sol`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`registry-default-inheritance`

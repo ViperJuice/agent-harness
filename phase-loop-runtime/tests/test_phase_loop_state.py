@@ -260,7 +260,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="status",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={"artifacts": {key: str(value) for key, value in artifacts.items()}},
@@ -284,7 +284,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                 repo=repo,
                 phase="RUNNER",
                 action="execute",
-                launch_metadata={"executor": "codex", "selected_model": "gpt-5.4"},
+                launch_metadata={"executor": "codex", "selected_model": "gpt-5.6-terra"},
                 terminal_summary=build_terminal_summary(
                     terminal_status="complete",
                     terminal_blocker=None,
@@ -357,7 +357,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="repair",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={"artifacts": {key: str(value) for key, value in old_artifacts.items()}},
@@ -397,7 +397,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="repair",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -517,7 +517,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -568,7 +568,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -640,7 +640,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -678,7 +678,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={"artifacts": {"terminal": str(repo / ".phase-loop" / "runs" / "x" / "terminal-summary.json")}},
@@ -703,7 +703,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -751,7 +751,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -812,7 +812,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase=fixture.execute_phase,
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -851,7 +851,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase=fixture.execute_phase,
                     action="plan",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -927,7 +927,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                         phase="RUNNER",
                         action="run",
                         status="blocked",
-                        model="gpt-5.4",
+                        model="gpt-5.6-terra",
                         reasoning_effort="medium",
                         source="fixture",
                         metadata={
@@ -949,7 +949,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                         phase="RUNNER",
                         action="manual_repair",
                         status="complete",
-                        model="gpt-5.4",
+                        model="gpt-5.6-terra",
                         reasoning_effort="medium",
                         source="manual",
                         metadata={
@@ -987,7 +987,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="run",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -1009,7 +1009,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="manual_repair",
                     status="planned",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="manual",
                     metadata={"manual_repair": {"clears_blocker": True}},
@@ -1036,7 +1036,7 @@ class PhaseLoopStateTest(unittest.TestCase):
                     phase="RUNNER",
                     action="run",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={

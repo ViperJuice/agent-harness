@@ -6,7 +6,7 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
                     the back-compat keystone holds by construction: the default
                     board reconstructs today's exact three seats (the claude seat
                     on Fable, ``claude-fable-5``).
-* ``code-review`` — three frontier vendors, each adversarial: codex ``gpt-5.5``,
+* ``code-review`` — three frontier vendors, each adversarial: codex ``gpt-5.6-sol``,
                     ``Gemini 3.1 Pro``, and ``claude-fable-5``.
 * ``brainstorm``  — multi-vendor divergent thinking, lens-differentiated.
 * ``doc-edit``    — a lighter documentation-editing board.
@@ -42,7 +42,7 @@ CODE_REVIEW_BOARD: Board = Board(
     name="code-review",
     purpose="code-review",
     seats=(
-        Seat(model="gpt-5.5", effort="max", harness="codex", lens="adversarial"),
+        Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="adversarial"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="adversarial"),
         Seat(model="claude-fable-5", effort="max", harness="claude", lens="adversarial"),
     ),
@@ -54,7 +54,7 @@ BRAINSTORM_BOARD: Board = Board(
     purpose="brainstorm",
     seats=(
         Seat(model="claude-sonnet-5", effort="high", harness="claude", lens="adversarial"),
-        Seat(model="gpt-5.5", effort="high", harness="codex", lens="supportive"),
+        Seat(model="gpt-5.6-sol", effort="high", harness="codex", lens="supportive"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="lateral"),
     ),
 )
@@ -65,7 +65,7 @@ DOC_EDIT_BOARD: Board = Board(
     purpose="doc-edit",
     seats=(
         Seat(model="claude-sonnet-5", effort="medium", harness="claude", lens="copyedit"),
-        Seat(model="gpt-5.5", effort="medium", harness="codex", lens="structure"),
+        Seat(model="gpt-5.6-sol", effort="medium", harness="codex", lens="structure"),
     ),
 )
 
@@ -83,7 +83,7 @@ LEGAL_REVIEW_BOARD: Board = Board(
     name="legal-review",
     purpose="legal-review",
     seats=(
-        Seat(model="gpt-5.5", effort="max", harness="codex", lens="opposing-counsel"),
+        Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="opposing-counsel"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="risk-liability"),
         Seat(model="claude-fable-5", effort="max", harness="claude", lens="authority-verification"),
     ),
@@ -95,7 +95,7 @@ LEGAL_STRATEGY_REVIEW_BOARD: Board = Board(
     name="legal-strategy-review",
     purpose="legal-strategy-review",
     seats=(
-        Seat(model="gpt-5.5", effort="max", harness="codex", lens="red-team"),
+        Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="alternatives"),
         Seat(model="claude-fable-5", effort="max", harness="claude", lens="downside-ethics"),
     ),
@@ -108,7 +108,7 @@ LEGAL_BRAINSTORM_BOARD: Board = Board(
     purpose="legal-brainstorm",
     seats=(
         Seat(model="claude-sonnet-5", effort="high", harness="claude", lens="aggressive"),
-        Seat(model="gpt-5.5", effort="high", harness="codex", lens="conservative"),
+        Seat(model="gpt-5.6-sol", effort="high", harness="codex", lens="conservative"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="creative"),
     ),
 )
@@ -127,7 +127,7 @@ GENERAL_BOARD: Board = Board(
     name="general",
     purpose="general",
     seats=(
-        Seat(model="gpt-5.5", effort="max", harness="codex", lens="adversarial"),
+        Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="adversarial"),
         Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="alternative"),
         Seat(model="claude-fable-5", effort="max", harness="claude", lens="completeness"),
     ),

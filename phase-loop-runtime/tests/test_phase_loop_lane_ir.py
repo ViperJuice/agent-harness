@@ -48,7 +48,7 @@ class PhaseLoopLaneIRTest(unittest.TestCase):
                     "  - verify: `python3 -m unittest tests.test_contract`\n\n"
                     "## Execution Policy\n\n"
                     "- work-unit defaults: work-unit=`lane_execute`, effort=`medium`, unsupported=`inherit_default`, inherit-default=`true`\n"
-                    "- execute: executor=`codex`, model=`gpt-5.5`, effort=`medium`, work-unit=`lane_execute`, unsupported=`inherit_default`, inherit-default=`true`\n"
+                    "- execute: executor=`codex`, model=`gpt-5.6-sol`, effort=`medium`, work-unit=`lane_execute`, unsupported=`inherit_default`, inherit-default=`true`\n"
                     "- SL-1: executor=`codex`, effort=`high`, work-unit=`phase_reducer`, unsupported=`inherit_default`, inherit-default=`true`\n\n"
                     "## Dispatch Hints\n\n"
                     "- preferred executors: `codex`\n"

@@ -260,7 +260,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             phase="RUNNER",
             action="dry-run",
             status="planned",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="default",
             command=["codex", "exec"],
@@ -281,7 +281,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             phase="RUNNER",
             action="dry-run",
             status="planned",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="default",
             selected_executor="codex",
@@ -295,7 +295,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 phase="RUNNER",
                 action="dry-run",
                 status="planned",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="default",
                 selected_executor="bogus",
@@ -309,7 +309,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             phase="RUNNER",
             action="run",
             status="plan_skipped",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
         )
@@ -337,7 +337,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
 
     def test_invalid_profile_rejected(self):
         with self.assertRaises(ValueError):
-            ModelSelection(profile="bad", model="gpt-5.4", effort="medium")
+            ModelSelection(profile="bad", model="gpt-5.6-terra", effort="medium")
 
     def test_pipeline_plan_metadata_serializes_optional_fields(self):
         metadata = PipelinePlanMetadata(
@@ -631,7 +631,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "wave_id": "wave-001",
                 "read_only_refs": ["shared/phase-loop/protocol.md"],
                 "harness_route": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-sol",
                 "effort": "medium",
                 "fallback_reason": "none",
             }
@@ -651,7 +651,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
         self.assertEqual(data["consumed_interfaces"], ["PhasePlanLane", "WorkUnitCloseout"])
         self.assertEqual(data["worktree_assignment"]["base_sha"], "def456")
         self.assertEqual(data["harness_route"], "codex")
-        self.assertEqual(data["model"], "gpt-5.5")
+        self.assertEqual(data["model"], "gpt-5.6-sol")
         self.assertEqual(data["effort"], "medium")
         self.assertEqual(data["fallback_reason"], "none")
         self.assertIn("automation.status", data["closeout_schema_required"])
@@ -813,7 +813,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="high",
             work_unit_kind="lane_execute",
             unsupported_policy_behavior="fallback",
@@ -826,7 +826,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             action="execute",
             lane="SL-2",
             executor="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="high",
             work_unit_kind="lane_execute",
             execution_policy_source="phase-plan policy",

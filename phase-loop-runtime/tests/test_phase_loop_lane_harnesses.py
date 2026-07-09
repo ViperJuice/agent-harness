@@ -158,7 +158,7 @@ class PhaseLoopLaneHarnessesTest(unittest.TestCase):
                 base_sha="b" * 40,
             ),
             harness_route="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="high",
             fallback_reason="codex_cli_fallback",
             metadata={"evidence_refs": [{"path": ".phase-loop/runs/dfparsoak/terminal-summary.json", "sha256": "a" * 64}]},
@@ -170,7 +170,7 @@ class PhaseLoopLaneHarnessesTest(unittest.TestCase):
         self.assertEqual(data["worktree_assignment"]["isolation_mode"], "git_worktree")
         self.assertEqual(data["worktree_assignment"]["base_sha"], "b" * 40)
         self.assertEqual(data["harness_route"], "codex")
-        self.assertEqual(data["model"], "gpt-5.5")
+        self.assertEqual(data["model"], "gpt-5.6-sol")
         self.assertEqual(data["effort"], "high")
         self.assertEqual(data["fallback_reason"], "codex_cli_fallback")
 

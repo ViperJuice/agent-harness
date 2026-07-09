@@ -13,7 +13,7 @@ built-in ``presets``. Contract:
   top-level, board, or seat key raises ``BoardConfigError`` naming the key.
 * Every board (presets AND user boards) is validated through the compatibility
   matrix at load time, so an invalid ``(model, harness)`` pairing (e.g.
-  ``claude:gpt-5.5``) or an over-ceiling effort is rejected at CONFIG TIME with an
+  ``claude:gpt-5.6-sol``) or an over-ceiling effort is rejected at CONFIG TIME with an
   actionable message (``validation.validate_board``).
 
 A missing config file is not an error: the built-in presets load on their own.

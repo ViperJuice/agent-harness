@@ -74,7 +74,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -102,7 +102,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                     phase="RUNNER",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -127,7 +127,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                 phase=phase,
                 action="execute",
                 status="awaiting_phase_closeout",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="fixture",
                 metadata={
@@ -990,7 +990,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                 "# Roadmap\n\n"
                 "### Phase 1 - Runner (RUNNER)\n\n"
                 "## Execution Policy\n"
-                "- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`\n"
+                "- execute: executor=`codex`, model=`gpt-5.6-sol`, effort=`high`\n"
                 "- repair: effort=`ultra`\n"
                 "- review: executor=`claude`, model=`claude-opus-4-8`, effort=`high`\n",
                 encoding="utf-8",

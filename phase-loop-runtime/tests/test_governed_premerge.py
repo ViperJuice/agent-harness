@@ -31,7 +31,7 @@ class ImplementerDispatchTest(unittest.TestCase):
     def test_execute_resolves_to_implementer(self):
         self.assertEqual(shipped_model_policy_rule("execute").model_class, "implementer")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
-        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.4")
+        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
 
 
 class EscalationLadderTest(unittest.TestCase):

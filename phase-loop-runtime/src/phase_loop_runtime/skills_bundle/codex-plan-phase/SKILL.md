@@ -237,7 +237,7 @@ policy source, or override reason also need to be frozen, add optional
 ```markdown
 ## Execution Policy
 - work-unit defaults: work-unit=`lane_execute`, effort=`medium`, unsupported=`inherit_default`, inherit-default=`true`
-- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`, work-unit=`lane_execute`, reason=`phase-plan policy`
+- execute: executor=`codex`, model=`gpt-5.6-sol`, effort=`high`, work-unit=`lane_execute`, reason=`phase-plan policy`
 - SL-2: executor=`gemini`, model=`phase-loop-execute-medium`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`phase-loop-execute-medium`
 ```
 

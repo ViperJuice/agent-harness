@@ -71,7 +71,7 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
 
     def test_subscription_seat_scrubs_every_vendor_key(self) -> None:
         base = {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin", "HOME": "/h"}
-        sub_seat = Seat(model="gpt-5.5", effort="max", harness="codex")  # subscription default
+        sub_seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex")  # subscription default
         env = resolve_seat_env(sub_seat, base)
         for var in pi._API_KEY_VARS:
             self.assertNotIn(var, env)
@@ -79,7 +79,7 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
 
     def test_api_key_seat_injects_only_its_vendor_key(self) -> None:
         base = {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin"}
-        codex_seat = Seat(model="gpt-5.5", effort="max", harness="codex", auth=AUTH_API_KEY)
+        codex_seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=AUTH_API_KEY)
         env = resolve_seat_env(codex_seat, base, allow_api_key_fallback=True)
         self.assertEqual(env["OPENAI_API_KEY"], "secret")          # only codex's key
         self.assertNotIn("ANTHROPIC_API_KEY", env)                 # never another vendor's
@@ -88,7 +88,7 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
         self.assertEqual(VENDOR_API_KEY_VARS["codex"], ("OPENAI_API_KEY",))
 
     def test_api_key_seat_without_optin_raises_never_silent(self) -> None:
-        codex_seat = Seat(model="gpt-5.5", effort="max", harness="codex", auth=AUTH_API_KEY)
+        codex_seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=AUTH_API_KEY)
         with self.assertRaises(ValueError):
             resolve_seat_env(codex_seat, {"OPENAI_API_KEY": "x"}, allow_api_key_fallback=False)
 

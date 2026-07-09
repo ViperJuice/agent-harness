@@ -44,7 +44,7 @@ equivalence is proven by a test (not asserted in prose).
   `seat_vendor_family(seat)`, model-first with a harness-lane fallback.
   Byte-consistent with `governed_review.author_vendor_for_model` (:60-75) and
   `_EXECUTOR_VENDOR` (:47-53). Two same-vendor seats on different harnesses
-  (`gpt-5.5` on `codex` and on `opencode`) project to the same family, so the
+  (`gpt-5.6-sol` on `codex` and on `opencode`) project to the same family, so the
   governed reviewer≠author disjointness survives model-first. ABDHOME rewires the
   governed gates onto *this* canonical function (not a copy).
 
@@ -179,7 +179,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
   byte-pinned to this Fable `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
-- **`code-review` = three frontier vendors, always.** codex `gpt-5.5`,
+- **`code-review` = three frontier vendors, always.** codex `gpt-5.6-sol`,
   `Gemini 3.1 Pro`, and `claude-fable-5`, each on the `adversarial` lens (supersedes
   the prior two-seat codex+sonnet composition).
 - **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
@@ -190,7 +190,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-5.5/adversarial, Gemini 3.1 Pro/alternative,
+  (three frontier vendors — gpt-5.6-sol/adversarial, Gemini 3.1 Pro/alternative,
   claude-fable-5/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-fable-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like

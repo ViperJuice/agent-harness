@@ -18,7 +18,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="pi",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="medium",
             work_unit_kind="lane_execute",
             source="roadmap:execute",
@@ -27,7 +27,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="high",
             work_unit_kind="lane_execute",
             unsupported_policy_behavior="inherit_default",
@@ -38,7 +38,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         resolved = resolve_execution_policy(
             action="execute",
             executor=DEFAULT_EXECUTOR_POLICY["execute"],
-            model_selection=ModelSelection(profile="execute", model="gpt-5.5", effort="medium"),
+            model_selection=ModelSelection(profile="execute", model="gpt-5.6-sol", effort="medium"),
             plan_policy=plan,
             roadmap_policy=roadmap,
         )
@@ -62,7 +62,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="xhigh",
             work_unit_kind="lane_execute",
             source="plan:execute",
@@ -77,7 +77,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(resolved.executor, "codex")
-        self.assertEqual(resolved.model, "gpt-5.5")
+        self.assertEqual(resolved.model, "gpt-5.6-sol")
         self.assertEqual(resolved.effort, "xhigh")
         self.assertEqual(resolved.execution_policy_source, "phase-plan policy")
 
@@ -86,7 +86,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="codex",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             effort="medium",
             work_unit_kind="lane_execute",
             source="plan:execute",
@@ -95,14 +95,14 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         resolved = resolve_execution_policy(
             action="execute",
             executor="codex",
-            model_selection=ModelSelection(profile="execute", model="gpt-5.5", effort="medium"),
-            operator_model="gpt-5.4",
+            model_selection=ModelSelection(profile="execute", model="gpt-5.6-sol", effort="medium"),
+            operator_model="gpt-5.6-terra",
             operator_effort="high",
             plan_policy=plan,
         )
         selection = resolve_model_selection_from_policy(profile="execute", resolved_policy=resolved)
 
-        self.assertEqual(selection.model, "gpt-5.4")
+        self.assertEqual(selection.model, "gpt-5.6-terra")
         self.assertEqual(selection.effort, "high")
         self.assertEqual(resolved.model_source, "CLI/operator override")
         self.assertEqual(resolved.effort_source, "CLI/operator override")

@@ -76,7 +76,7 @@ purpose = "custom"
 name = "sub-only"
 purpose = "x"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
 """
@@ -90,7 +90,7 @@ purpose = "x"
 name = "leaky"
 purpose = "x"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
   auth = "api_key"
@@ -106,7 +106,7 @@ name = "keyed"
 purpose = "x"
 allow_api_key_fallback = true
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
   auth = "api_key"
@@ -137,7 +137,7 @@ class UnknownKeyErrorsTests(unittest.TestCase):
 name = "x"
 purpose = "y"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
   temperature = 0.7
@@ -163,7 +163,7 @@ name = "leaky"
 purpose = "x"
 allow_api_key_fallback = "false"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
 """
@@ -180,7 +180,7 @@ allow_api_key_fallback = "false"
 name = "b"
 purpose = "x"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
   host_leg = "true"
@@ -199,7 +199,7 @@ name = "keyed"
 purpose = "x"
 allow_api_key_fallback = true
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "codex"
   auth = "api_key"
@@ -219,7 +219,7 @@ class MatrixInvalidBoardRejectedTests(unittest.TestCase):
 name = "bad"
 purpose = "x"
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "high"
   harness = "claude"
 """
@@ -227,7 +227,7 @@ purpose = "x"
             with self.assertRaises(BoardConfigError) as ctx:
                 load_boards(_write(tmp, body), matrix=_MATRIX)
         msg = str(ctx.exception)
-        self.assertIn("gpt-5.5", msg)
+        self.assertIn("gpt-5.6-sol", msg)
         self.assertIn("bad", msg)  # board name located
 
 

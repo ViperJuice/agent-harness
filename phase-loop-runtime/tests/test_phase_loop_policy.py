@@ -55,12 +55,12 @@ class PhaseLoopPolicyTest(unittest.TestCase):
         self.assertEqual(provider_policy_capabilities()["manual"].executor, "manual")
 
     def test_default_profiles_freeze_planning_execution_review_posture(self):
-        self.assertEqual(DEFAULT_PROFILES["roadmap"], ("gpt-5.5", "high"))
-        self.assertEqual(DEFAULT_PROFILES["plan"], ("gpt-5.5", "high"))
-        self.assertEqual(DEFAULT_PROFILES["execute"], ("gpt-5.5", "medium"))
-        self.assertEqual(DEFAULT_PROFILES["repair"], ("gpt-5.5", "medium"))
-        self.assertEqual(DEFAULT_PROFILES["review"], ("gpt-5.5", "high"))
-        self.assertEqual(DEFAULT_PROFILES["skill-maintenance"], ("gpt-5.5", "high"))
+        self.assertEqual(DEFAULT_PROFILES["roadmap"], ("gpt-5.6-sol", "high"))
+        self.assertEqual(DEFAULT_PROFILES["plan"], ("gpt-5.6-sol", "high"))
+        self.assertEqual(DEFAULT_PROFILES["execute"], ("gpt-5.6-sol", "medium"))
+        self.assertEqual(DEFAULT_PROFILES["repair"], ("gpt-5.6-sol", "medium"))
+        self.assertEqual(DEFAULT_PROFILES["review"], ("gpt-5.6-sol", "high"))
+        self.assertEqual(DEFAULT_PROFILES["skill-maintenance"], ("gpt-5.6-sol", "high"))
         self.assertEqual(ACTION_WORK_UNITS["execute"], "lane_execute")
         self.assertEqual(ACTION_WORK_UNITS["review"], "lane_review")
         self.assertEqual(ACTION_WORK_UNITS["maintain-skills"], "phase_verify")

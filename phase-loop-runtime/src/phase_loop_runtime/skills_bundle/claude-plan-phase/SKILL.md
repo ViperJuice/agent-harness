@@ -67,7 +67,7 @@ is recorded.
 
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
-The runtime resolves one heavy model per executor (`codex` → `gpt-5.5`,
+The runtime resolves one heavy model per executor (`codex` → `gpt-5.6-sol`,
 `claude` → `claude-opus-4-8`), so **reasoning effort is the primary cost dial.**
 The normalized effort ladder, cheapest first, is:
 

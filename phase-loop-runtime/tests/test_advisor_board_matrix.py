@@ -3,7 +3,7 @@ validation (Phase 2, lane 3).
 
 The acceptance oracle is the SHARED canonical fixtures: the matrix must accept
 every ``CANONICAL_VALID_PAIRS`` and reject every ``CANONICAL_INVALID_PAIRS`` —
-proving ``claude:gpt-5.5`` is rejected at config time with an actionable message.
+proving ``claude:gpt-5.6-sol`` is rejected at config time with an actionable message.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class MatrixVerdictTests(unittest.TestCase):
 
     def test_default_lane_delegates_to_model_registry(self) -> None:
         m = default_matrix()
-        self.assertEqual(m.default_lane("gpt-5.5"), "codex")
+        self.assertEqual(m.default_lane("gpt-5.6-sol"), "codex")
         self.assertEqual(m.default_lane("claude-sonnet-5"), "claude")
 
     def test_unknown_model_and_harness_are_total_not_raising(self) -> None:
@@ -50,7 +50,7 @@ class MatrixVerdictTests(unittest.TestCase):
         ok, avail = m.is_valid("no-such-model", "codex")
         self.assertFalse(ok)
         self.assertIn("no-such-model", avail.detail)
-        ok2, avail2 = m.is_valid("gpt-5.5", "no-such-harness")
+        ok2, avail2 = m.is_valid("gpt-5.6-sol", "no-such-harness")
         self.assertFalse(ok2)
         self.assertIn("no-such-harness", avail2.detail)
 
@@ -58,24 +58,24 @@ class MatrixVerdictTests(unittest.TestCase):
 class AuthAvailabilityTests(unittest.TestCase):
     def test_subscription_lane_tracks_cli_presence(self) -> None:
         present = default_matrix(probe=_ALL_PRESENT, env={})
-        _, avail = present.is_valid("gpt-5.5", "codex")
+        _, avail = present.is_valid("gpt-5.6-sol", "codex")
         self.assertTrue(avail.subscription)
         absent = default_matrix(probe=_NONE_PRESENT, env={})
-        _, avail2 = absent.is_valid("gpt-5.5", "codex")
+        _, avail2 = absent.is_valid("gpt-5.6-sol", "codex")
         self.assertFalse(avail2.subscription)  # valid pairing, but no usable lane
 
     def test_api_key_lane_requires_the_vendor_key_in_env(self) -> None:
         # no-silent-key is TESTABLE: api_key lane is available only when the
         # vendor's key var is actually present.
         no_key = default_matrix(probe=_ALL_PRESENT, env={})
-        _, avail = no_key.is_valid("gpt-5.5", "codex")
+        _, avail = no_key.is_valid("gpt-5.6-sol", "codex")
         self.assertFalse(avail.api_key)
         with_key = default_matrix(probe=_ALL_PRESENT, env={"OPENAI_API_KEY": "sk-x"})
-        _, avail2 = with_key.is_valid("gpt-5.5", "codex")
+        _, avail2 = with_key.is_valid("gpt-5.6-sol", "codex")
         self.assertTrue(avail2.api_key)
         # and it's the codex vendor's key specifically — an anthropic key doesn't count
         wrong_key = default_matrix(probe=_ALL_PRESENT, env={"ANTHROPIC_API_KEY": "sk-x"})
-        _, avail3 = wrong_key.is_valid("gpt-5.5", "codex")
+        _, avail3 = wrong_key.is_valid("gpt-5.6-sol", "codex")
         self.assertFalse(avail3.api_key)
 
 
@@ -87,16 +87,16 @@ class ConfigTimeSeatValidationTests(unittest.TestCase):
     def test_invalid_pairing_rejected_at_config_time(self) -> None:
         m = default_matrix(probe=_ALL_PRESENT, env={})
         with self.assertRaises(SeatValidationError) as ctx:
-            validate_seat(Seat(model="gpt-5.5", effort="max", harness="claude"), m)
+            validate_seat(Seat(model="gpt-5.6-sol", effort="max", harness="claude"), m)
         msg = str(ctx.exception)
-        self.assertIn("gpt-5.5", msg)
+        self.assertIn("gpt-5.6-sol", msg)
         self.assertIn("claude", msg)
         self.assertIn("codex", msg)  # names the valid lane
 
     def test_bare_seat_resolves_default_lane_and_validates(self) -> None:
         m = default_matrix(probe=_ALL_PRESENT, env={})
-        # harness omitted -> default_lane(gpt-5.5) == codex -> valid
-        verdict = validate_seat(Seat(model="gpt-5.5", effort="max"), m)
+        # harness omitted -> default_lane(gpt-5.6-sol) == codex -> valid
+        verdict = validate_seat(Seat(model="gpt-5.6-sol", effort="max"), m)
         self.assertEqual(verdict.harness, "codex")
         self.assertTrue(verdict.auth.subscription)
 
@@ -109,7 +109,7 @@ class ConfigTimeSeatValidationTests(unittest.TestCase):
         # A valid pairing with no usable lane degrades at launch (skip-with-
         # warning), it is NOT a config-time rejection.
         m = default_matrix(probe=_NONE_PRESENT, env={})
-        verdict = validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), m)
+        verdict = validate_seat(Seat(model="gpt-5.6-sol", effort="max", harness="codex"), m)
         self.assertFalse(verdict.auth.any_available)
 
 

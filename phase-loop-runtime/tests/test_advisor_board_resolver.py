@@ -86,34 +86,34 @@ class BoardResolverTests(unittest.TestCase):
 
 class AdHocSeatParsingTests(unittest.TestCase):
     def test_model_effort_harness(self) -> None:
-        seat = parse_seat_spec("gpt-5.5:max:codex")
-        self.assertEqual((seat.model, seat.effort, seat.harness), ("gpt-5.5", "max", "codex"))
+        seat = parse_seat_spec("gpt-5.6-sol:max:codex")
+        self.assertEqual((seat.model, seat.effort, seat.harness), ("gpt-5.6-sol", "max", "codex"))
 
     def test_model_effort_defaults_lane_via_matrix(self) -> None:
-        seat = parse_seat_spec("gpt-5.5:high", matrix=MATRIX)
-        self.assertEqual(seat.harness, "codex")  # default_lane(gpt-5.5)
+        seat = parse_seat_spec("gpt-5.6-sol:high", matrix=MATRIX)
+        self.assertEqual(seat.harness, "codex")  # default_lane(gpt-5.6-sol)
 
     def test_model_effort_without_matrix_leaves_lane_unresolved(self) -> None:
-        seat = parse_seat_spec("gpt-5.5:high")
+        seat = parse_seat_spec("gpt-5.6-sol:high")
         self.assertIsNone(seat.harness)
 
     def test_bad_effort_rejected(self) -> None:
         with self.assertRaises(SeatSpecError):
-            parse_seat_spec("gpt-5.5:turbo")
+            parse_seat_spec("gpt-5.6-sol:turbo")
 
     def test_malformed_specs_rejected(self) -> None:
-        for bad in ("", "gpt-5.5", "gpt-5.5:max:codex:extra", ":max:codex"):
+        for bad in ("", "gpt-5.6-sol", "gpt-5.6-sol:max:codex:extra", ":max:codex"):
             with self.subTest(bad=bad), self.assertRaises(SeatSpecError):
                 parse_seat_spec(bad)
 
     def test_parse_seats_list_and_csv_preserve_order(self) -> None:
-        csv = parse_seats("gpt-5.5:high:codex, gpt-5.5:high:opencode")
-        lst = parse_seats(["gpt-5.5:high:codex", "gpt-5.5:high:opencode"])
+        csv = parse_seats("gpt-5.6-sol:high:codex, gpt-5.6-sol:high:opencode")
+        lst = parse_seats(["gpt-5.6-sol:high:codex", "gpt-5.6-sol:high:opencode"])
         self.assertEqual(csv, lst)
         self.assertEqual(tuple(s.harness for s in csv), ("codex", "opencode"))
 
     def test_resolver_synthesizes_ad_hoc_board(self) -> None:
-        board = BoardResolver(matrix=MATRIX).resolve(seats="gpt-5.5:high:codex,claude-sonnet-5:max:claude")
+        board = BoardResolver(matrix=MATRIX).resolve(seats="gpt-5.6-sol:high:codex,claude-sonnet-5:max:claude")
         self.assertEqual(board.name, "ad-hoc")
         self.assertEqual(len(board.seats), 2)
 
@@ -123,22 +123,22 @@ class AdHocSeatParsingTests(unittest.TestCase):
 
 class SeatValidationTests(unittest.TestCase):
     def test_valid_seat_returns_verdict_with_auth(self) -> None:
-        verdict = validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), MATRIX)
+        verdict = validate_seat(Seat(model="gpt-5.6-sol", effort="max", harness="codex"), MATRIX)
         self.assertEqual(verdict.harness, "codex")
         self.assertTrue(verdict.auth.subscription)
 
     def test_same_vendor_different_harness_is_valid(self) -> None:
-        verdict = validate_seat(Seat(model="gpt-5.5", effort="high", harness="opencode"), MATRIX)
+        verdict = validate_seat(Seat(model="gpt-5.6-sol", effort="high", harness="opencode"), MATRIX)
         self.assertEqual(verdict.harness, "opencode")
 
     def test_invalid_pairing_fails_fast_with_actionable_diagnostic(self) -> None:
-        seat = Seat(model="gpt-5.5", effort="max", harness="claude")
+        seat = Seat(model="gpt-5.6-sol", effort="max", harness="claude")
         with self.assertRaises(SeatValidationError) as ctx:
             validate_seat(seat, MATRIX, models=MODELS)
         msg = str(ctx.exception)
-        self.assertIn("gpt-5.5", msg)
+        self.assertIn("gpt-5.6-sol", msg)
         self.assertIn("claude", msg)
-        self.assertIn("codex", msg)  # did-you-mean: the lanes gpt-5.5 runs on
+        self.assertIn("codex", msg)  # did-you-mean: the lanes gpt-5.6-sol runs on
 
     def test_bare_seat_resolves_lane_via_matrix_default(self) -> None:
         # harness omitted -> matrix.default_lane resolves it before validation.
@@ -150,7 +150,7 @@ class SeatValidationTests(unittest.TestCase):
             name="bad",
             purpose="p",
             seats=(
-                Seat(model="gpt-5.5", effort="max", harness="claude"),
+                Seat(model="gpt-5.6-sol", effort="max", harness="claude"),
                 Seat(model="claude-sonnet-5", effort="max", harness="codex"),
             ),
         )
@@ -166,7 +166,7 @@ class SeatValidationTests(unittest.TestCase):
         # The effort-ceiling gate folded in from matrix.validate_seat: a seat above
         # its model's ceiling is rejected. Every *real* model ceilings at "max"
         # (the ladder top), so the gate is exercised here with a stand-in registry
-        # that caps gpt-5.5 at "high" — proving the fold enforces, not just parses.
+        # that caps gpt-5.6-sol at "high" — proving the fold enforces, not just parses.
         from phase_loop_runtime.advisor_board.registries import ModelSpec
 
         class _CappedModels:
@@ -184,11 +184,11 @@ class SeatValidationTests(unittest.TestCase):
 
         capped = _CappedModels()
         # at-ceiling passes …
-        ok = validate_seat(Seat(model="gpt-5.5", effort="high", harness="codex"), MATRIX, models=capped)
+        ok = validate_seat(Seat(model="gpt-5.6-sol", effort="high", harness="codex"), MATRIX, models=capped)
         self.assertEqual(ok.harness, "codex")
         # … over-ceiling rejects with an actionable message.
         with self.assertRaises(SeatValidationError) as ctx:
-            validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), MATRIX, models=capped)
+            validate_seat(Seat(model="gpt-5.6-sol", effort="max", harness="codex"), MATRIX, models=capped)
         msg = str(ctx.exception)
         self.assertIn("exceeds", msg)
         self.assertIn("high", msg)

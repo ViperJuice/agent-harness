@@ -12,7 +12,7 @@
       "selected_via": null,
       "source": null
     },
-    "model": "gpt-5.5",
+    "model": "gpt-5.6-sol",
     "phase": "RUNNER",
     "reasoning_effort": "medium",
     "selected_executor": null,
@@ -44,7 +44,7 @@
       "selected_via": "preferred",
       "source": "registry_default"
     },
-    "model": "gpt-5.5",
+    "model": "gpt-5.6-sol",
     "phase": "RUNNER",
     "reasoning_effort": "medium",
     "selected_executor": "codex",

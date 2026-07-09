@@ -14,7 +14,7 @@ default_board = "default"
 
 # The default board reproduces today's 3-leg panel (byte-for-byte back-compat).
 # Its three seats, in panel-leg order, render to today's exact CLI invocations:
-#   codex  gpt-5.5          effort=max  -> -c model_reasoning_effort=xhigh
+#   codex  gpt-5.6-sol          effort=max  -> -c model_reasoning_effort=xhigh
 #   gemini "Gemini 3.1 Pro" effort=high -> model "Gemini 3.1 Pro (High)"
 #   claude claude-sonnet-5  effort=max  -> --effort max
 [[boards]]
@@ -23,7 +23,7 @@ purpose = "premerge-review"
 allow_api_key_fallback = false
 
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "max"
   harness = "codex"        # optional; omit to resolve via default_lane(model)
   auth = "subscription"    # subscription (default) | api_key
@@ -48,7 +48,7 @@ purpose = "code-review"
 allow_api_key_fallback = false
 
   [[boards.seats]]
-  model = "gpt-5.5"
+  model = "gpt-5.6-sol"
   effort = "max"
   harness = "codex"
 

@@ -2,7 +2,7 @@
 
 A seat's ``(model, harness)`` pairing is validated against the frozen
 ``CompatibilityMatrix.is_valid`` (``registries``). An invalid pairing (e.g.
-``gpt-5.5`` on the ``claude`` lane) fails fast with an **actionable** diagnostic:
+``gpt-5.6-sol`` on the ``claude`` lane) fails fast with an **actionable** diagnostic:
 the matrix's rejection reason plus, when a model registry is supplied, the lanes
 the model actually runs on ("did you mean ...?"). A *valid* pairing returns its
 ``AuthAvailability`` so the caller can degrade a valid-but-unauthed seat

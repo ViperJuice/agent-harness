@@ -38,7 +38,7 @@ pytestmark = pytest.mark.dotfiles_integration
 
 class PhaseLoopLauncherTest(unittest.TestCase):
     def test_profile_overrides_record_reason(self):
-        selection = resolve_profile("execute", model="gpt-5.5", effort="high")
+        selection = resolve_profile("execute", model="gpt-5.6-sol", effort="high")
         self.assertEqual(selection.source, "user_override")
         self.assertIn("--model", build_codex_command(Path("/repo"), selection, "prompt"))
 
@@ -53,7 +53,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
     def test_opencode_executor_uses_provider_qualified_model_alias(self):
         selection = resolve_profile_for_executor(action="plan", executor="opencode")
-        self.assertEqual(selection.model, "openai/gpt-5.5")
+        self.assertEqual(selection.model, "openai/gpt-5.6-sol")
         self.assertEqual(selection.source, "opencode_default")
 
     def test_command_vector_and_dry_run(self):
@@ -1223,7 +1223,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
     def test_gemini_executor_builds_live_launch_spec(self):
         # Use the gemini executor profile (model alias "pro" → agy "Gemini 3.1 Pro
-        # (High)"); a generic default like gpt-5.5 is no longer silently coerced.
+        # (High)"); a generic default like gpt-5.6-sol is no longer silently coerced.
         selection = resolve_profile_for_executor(action="plan", executor="gemini")
         request = build_launch_request(
             executor="gemini",
@@ -1307,10 +1307,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.auth_preflight_probes, ("opencode --version", "opencode run --help", "opencode agent list"))
         self.assertEqual(spec.permission_posture, "explicit")
         self.assertEqual(spec.selected_agent, "build")
-        self.assertEqual(spec.selected_model, "openai/gpt-5.5")
+        self.assertEqual(spec.selected_model, "openai/gpt-5.6-sol")
         self.assertEqual(
             spec.command[:10],
-            ["opencode", "run", spec.command[2], "--dir", "/repo", "--agent", "build", "--model", "openai/gpt-5.5", "--format"],
+            ["opencode", "run", spec.command[2], "--dir", "/repo", "--agent", "build", "--model", "openai/gpt-5.6-sol", "--format"],
         )
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[2])
         result = launch_with_spec(spec, dry_run=True, log_path=Path("/tmp/opencode/output.log"))
@@ -1320,7 +1320,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(result.expected_skill_pack, ("opencode-plan-phase",))
         self.assertEqual(result.permission_posture, "explicit")
         self.assertEqual(result.selected_agent, "build")
-        self.assertEqual(result.selected_model, "openai/gpt-5.5")
+        self.assertEqual(result.selected_model, "openai/gpt-5.6-sol")
 
     def test_pi_executor_builds_repo_local_launch_spec(self):
         selection = resolve_profile_for_executor(action="execute", executor="pi")

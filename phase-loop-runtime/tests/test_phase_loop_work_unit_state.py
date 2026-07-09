@@ -51,7 +51,7 @@ class PhaseLoopWorkUnitStateTest(unittest.TestCase):
                 phase="RUNNER",
                 action="status",
                 status="planned",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="legacy",
                 **event_provenance(roadmap, "RUNNER"),

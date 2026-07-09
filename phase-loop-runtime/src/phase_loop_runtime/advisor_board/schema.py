@@ -74,7 +74,7 @@ def board_config_path(env: "os._Environ[str] | dict[str, str] | None" = None) ->
 
 # Harness -> vendor family. Mirrors `governed_review._EXECUTOR_VENDOR` (:47-53)
 # EXACTLY so the projection reproduces today's executor->vendor mapping. Two
-# same-vendor seats on different harnesses (gpt-5.5 on ``codex`` and on
+# same-vendor seats on different harnesses (gpt-5.6-sol on ``codex`` and on
 # ``opencode``) MUST project to the same family, which this table encodes.
 _HARNESS_VENDOR: dict[str, str] = {
     "codex": "codex",

@@ -15,7 +15,7 @@ Populates the frozen ``CompatibilityMatrix`` interface (registries.py:101-115):
 Validity is model-first: a pairing is valid iff the harness's lane vendor-family
 matches the model's vendor-family (the FROZEN ``schema.vendor_family`` projection
 that also keeps the governed reviewer≠author disjointness intact). That makes
-``gpt-5.5`` valid on both ``codex`` and ``opencode`` (same family) but invalid on
+``gpt-5.6-sol`` valid on both ``codex`` and ``opencode`` (same family) but invalid on
 ``claude`` — exactly ``fixtures.CANONICAL_VALID_PAIRS`` /
 ``CANONICAL_INVALID_PAIRS``.
 

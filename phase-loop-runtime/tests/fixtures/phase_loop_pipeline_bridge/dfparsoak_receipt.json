@@ -81,7 +81,7 @@
     "fallback_reason": "registry-default-inheritance",
     "harness_route": "codex",
     "lane_id": "SL-5",
-    "model": "gpt-5.5",
+    "model": "gpt-5.6-sol",
     "policy_source": "phase-plan",
     "verification_status": "passed",
     "wave_id": "wave-001",

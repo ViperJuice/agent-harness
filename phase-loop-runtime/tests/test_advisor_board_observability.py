@@ -79,8 +79,8 @@ class EnvelopeEmitTests(unittest.TestCase):
         sink = obs.CollectingSink()
         # opencode/omnigent seat with no gateway → UNAVAILABLE (skip); codex → OK.
         board = Board(name="mix", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="max", harness="codex"),
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         pi.invoke_board(board, "artifact", spawn=_ok_spawn, sink=sink)
         by_kind = [e.kind for e in sink.events]
@@ -216,7 +216,7 @@ class EnvelopeToLedgerMappingTests(unittest.TestCase):
         # would fail zod. Prove the mapping emits the full, valid object.
         ev = AdvisorBoardEvent(
             kind="seat.failed", board="b", sequence=2, occurred_at="2026-07-05T00:00:00+00:00",
-            seat_key="codex|gpt-5.5|max", payload={"status": "DEGRADED", "failure": {"reason": "boom"}},
+            seat_key="codex|gpt-5.6-sol|max", payload={"status": "DEGRADED", "failure": {"reason": "boom"}},
         )
         rt = obs.map_event_to_runtime_event(ev, session_id="s1")
         failure = rt["payload"]["failure"]

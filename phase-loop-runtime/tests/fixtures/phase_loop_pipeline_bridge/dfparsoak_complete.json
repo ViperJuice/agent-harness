@@ -41,7 +41,7 @@
     "fallback_reason": "codex_cli_fallback",
     "harness_route": "codex",
     "lane_id": "SL-2",
-    "model": "gpt-5.5",
+    "model": "gpt-5.6-sol",
     "policy_source": "phase-plan",
     "verification_status": "passed",
     "wave_id": "wave-dfparsoak-001",

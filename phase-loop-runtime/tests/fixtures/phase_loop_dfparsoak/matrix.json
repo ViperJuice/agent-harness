@@ -42,7 +42,7 @@
     {
       "lane_id": "SL-2",
       "harness_route": "codex",
-      "model": "gpt-5.5",
+      "model": "gpt-5.6-sol",
       "effort": "high",
       "policy_source": "phase-plan",
       "fallback_reason": "codex_cli_fallback",

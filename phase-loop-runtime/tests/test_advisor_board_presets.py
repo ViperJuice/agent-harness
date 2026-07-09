@@ -35,7 +35,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-5.5", "Gemini 3.1 Pro", "claude-fable-5"},
+            {"gpt-5.6-sol", "Gemini 3.1 Pro", "claude-fable-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
@@ -54,7 +54,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
-                ("gpt-5.5", "max", "codex"),
+                ("gpt-5.6-sol", "max", "codex"),
                 ("Gemini 3.1 Pro", "high", "gemini"),
                 ("claude-fable-5", "max", "claude"),
             ),
@@ -71,7 +71,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
-                ("gpt-5.5", "max", "codex", "adversarial"),
+                ("gpt-5.6-sol", "max", "codex", "adversarial"),
                 ("Gemini 3.1 Pro", "high", "gemini", "adversarial"),
                 ("claude-fable-5", "max", "claude", "adversarial"),
             ),
@@ -92,12 +92,12 @@ class PresetTests(unittest.TestCase):
         unchanged = {
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
-                ("gpt-5.5", "high", "codex", "supportive"),
+                ("gpt-5.6-sol", "high", "codex", "supportive"),
                 ("Gemini 3.1 Pro", "high", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "medium", "claude", "copyedit"),
-                ("gpt-5.5", "medium", "codex", "structure"),
+                ("gpt-5.6-sol", "medium", "codex", "structure"),
             ),
         }
         for name, expected in unchanged.items():
@@ -110,18 +110,18 @@ class PresetTests(unittest.TestCase):
     def test_legal_boards_present_and_shaped(self) -> None:
         legal = {
             "legal-review": (
-                ("gpt-5.5", "max", "codex", "opposing-counsel"),
+                ("gpt-5.6-sol", "max", "codex", "opposing-counsel"),
                 ("Gemini 3.1 Pro", "high", "gemini", "risk-liability"),
                 ("claude-fable-5", "max", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
-                ("gpt-5.5", "max", "codex", "red-team"),
+                ("gpt-5.6-sol", "max", "codex", "red-team"),
                 ("Gemini 3.1 Pro", "high", "gemini", "alternatives"),
                 ("claude-fable-5", "max", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "aggressive"),
-                ("gpt-5.5", "high", "codex", "conservative"),
+                ("gpt-5.6-sol", "high", "codex", "conservative"),
                 ("Gemini 3.1 Pro", "high", "gemini", "creative"),
             ),
         }

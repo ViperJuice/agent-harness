@@ -3,7 +3,7 @@
 The correctness bug this fixes: ``select_reviewer_pool`` compared leg-NAMES to
 author vendor FAMILIES. For the built-3 panel the leg name IS its family, so it
 worked — but a custom/model-first board can put two same-vendor seats on
-different lanes (``gpt-5.5`` on ``codex`` AND on ``opencode``, both the ``codex``
+different lanes (``gpt-5.6-sol`` on ``codex`` AND on ``opencode``, both the ``codex``
 family). Comparing ``"opencode" not in {"codex"}`` wrongly kept the opencode lane
 as a reviewer of a codex-authored artifact — a silent same-vendor self-review.
 
@@ -40,7 +40,7 @@ class GatesConsumeFrozenProjectionTests(unittest.TestCase):
             self.assertEqual(author_vendor_for_executor(harness), vendor_of_harness(harness))
 
     def test_author_vendor_for_model_is_family_or_bare_model(self) -> None:
-        self.assertEqual(author_vendor_for_model("gpt-5.5"), "codex")
+        self.assertEqual(author_vendor_for_model("gpt-5.6-sol"), "codex")
         self.assertEqual(author_vendor_for_model("claude-sonnet-5"), "claude")
         self.assertEqual(author_vendor_for_model("Gemini 3.1 Pro"), "gemini")
         self.assertEqual(author_vendor_for_model("some-unknown"), "some-unknown")

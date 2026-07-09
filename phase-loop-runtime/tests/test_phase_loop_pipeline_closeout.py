@@ -551,7 +551,7 @@ class TestPhaseLoopPipelineCloseout(unittest.TestCase):
                         "worktree_isolation_mode": "git_worktree",
                         "base_sha": "b" * 40,
                         "harness_route": "codex",
-                        "model": "gpt-5.5",
+                        "model": "gpt-5.6-sol",
                         "effort": "high",
                         "policy_source": "phase-plan",
                         "fallback_reason": "codex_cli_fallback",
@@ -570,7 +570,7 @@ class TestPhaseLoopPipelineCloseout(unittest.TestCase):
             self.assertEqual(closeout["lane"]["base_sha"], "b" * 40)
             self.assertEqual(closeout["lane"]["harness_route"], "codex")
             self.assertEqual(closeout["lane"]["work_unit_kind"], "lane_execute")
-            self.assertEqual(closeout["lane"]["model"], "gpt-5.5")
+            self.assertEqual(closeout["lane"]["model"], "gpt-5.6-sol")
             self.assertEqual(closeout["lane"]["effort"], "high")
             self.assertEqual(closeout["lane"]["policy_source"], "phase-plan")
             self.assertEqual(closeout["lane"]["fallback_reason"], "codex_cli_fallback")

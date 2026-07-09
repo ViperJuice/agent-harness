@@ -32,7 +32,7 @@ class ModelClassResolutionTest(unittest.TestCase):
         self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-4-8")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
-        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.4")
+        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
         # Gemini keeps `pro` for planning while implementer/worker route through
         # the validated agy Flash model name.
         self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
@@ -48,7 +48,7 @@ class ModelClassResolutionTest(unittest.TestCase):
 
 class EmptyPolicyBackCompatTest(unittest.TestCase):
     def test_plan_codex_unchanged(self):
-        self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-5.5", "high"))
+        self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-5.6-sol", "high"))
 
     def test_execute_claude_unchanged(self):
         # opus @ high is today's claude execute baseline (the empty-policy path).
@@ -57,7 +57,7 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
 
 class ShippedPolicyTest(unittest.TestCase):
     def test_plan_codex_becomes_max(self):
-        self.assertEqual(_resolve("plan", "codex", model_policy=True), ("gpt-5.5", "max"))
+        self.assertEqual(_resolve("plan", "codex", model_policy=True), ("gpt-5.6-sol", "max"))
 
     def test_roadmap_is_max(self):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
@@ -93,7 +93,7 @@ class PrecedenceTest(unittest.TestCase):
 
     def test_operator_model_beats_model_policy(self):
         self.assertEqual(
-            _resolve("plan", "codex", model_policy=True, operator_model="gpt-5.4")[0], "gpt-5.4"
+            _resolve("plan", "codex", model_policy=True, operator_model="gpt-5.6-terra")[0], "gpt-5.6-terra"
         )
 
     def test_plan_policy_beats_model_policy(self):

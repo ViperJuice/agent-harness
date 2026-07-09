@@ -378,7 +378,7 @@ def provenanced_event(repo: Path, roadmap: Path, phase: str, status: str, action
         phase=phase.upper(),
         action=action,
         status=status,
-        model="gpt-5.4",
+        model="gpt-5.6-terra",
         reasoning_effort="medium",
         source="fixture",
         **event_provenance(roadmap, phase),

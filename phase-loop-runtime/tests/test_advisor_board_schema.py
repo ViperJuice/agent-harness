@@ -41,28 +41,28 @@ class SeatBoardValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Seat(model="", effort="max")
         with self.assertRaises(ValueError):
-            Seat(model="gpt-5.5", effort="turbo")  # not an EFFORT_LEVEL
+            Seat(model="gpt-5.6-sol", effort="turbo")  # not an EFFORT_LEVEL
         with self.assertRaises(ValueError):
-            Seat(model="gpt-5.5", effort="max", auth="token")
+            Seat(model="gpt-5.6-sol", effort="max", auth="token")
         with self.assertRaises(ValueError):
-            Seat(model="gpt-5.5", effort="max", backing="cloud")
+            Seat(model="gpt-5.6-sol", effort="max", backing="cloud")
 
     def test_seat_defaults_are_subscription_homebrew_subprocess(self) -> None:
-        seat = Seat(model="gpt-5.5", effort="max", harness="codex")
+        seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex")
         self.assertEqual(seat.auth, "subscription")
         self.assertEqual(seat.backing, "homebrew")
         self.assertFalse(seat.host_leg)
 
     def test_board_rejects_api_key_seat_without_optin(self) -> None:
-        seat = Seat(model="gpt-5.5", effort="max", harness="codex", auth=AUTH_API_KEY)
+        seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=AUTH_API_KEY)
         with self.assertRaises(ValueError):
             Board(name="b", purpose="p", seats=(seat,))
         # opt-in makes it expressible
         Board(name="b", purpose="p", seats=(seat,), allow_api_key_fallback=True)
 
     def test_seat_key_distinguishes_same_vendor_seats(self) -> None:
-        a = Seat(model="gpt-5.5", effort="high", harness="codex")
-        b = Seat(model="gpt-5.5", effort="high", harness="opencode")
+        a = Seat(model="gpt-5.6-sol", effort="high", harness="codex")
+        b = Seat(model="gpt-5.6-sol", effort="high", harness="opencode")
         self.assertNotEqual(a.seat_key, b.seat_key)
 
     def test_seat_key_distinguishes_lens_only_difference(self) -> None:
@@ -82,7 +82,7 @@ class VendorProjectionByteConsistencyTests(unittest.TestCase):
         for model in [
             "claude-sonnet-5", "claude-opus-4-8", "opus", "sonnet", "haiku",
             "gemini", "Gemini 3.1 Pro", "pro", "flash", "flash-lite", "auto",
-            "gpt-5.5", "gpt-4", "o1", "o3", "openai/gpt-5.5",
+            "gpt-5.6-sol", "gpt-4", "o1", "o3", "openai/gpt-5.6-sol",
             "some-unknown-model", "",
         ]:
             # author_vendor_for_model returns the family, or the bare model when
@@ -101,8 +101,8 @@ class VendorProjectionByteConsistencyTests(unittest.TestCase):
             )
 
     def test_same_vendor_across_harnesses_projects_identically(self) -> None:
-        codex_seat = Seat(model="gpt-5.5", effort="high", harness="codex")
-        opencode_seat = Seat(model="gpt-5.5", effort="high", harness="opencode")
+        codex_seat = Seat(model="gpt-5.6-sol", effort="high", harness="codex")
+        opencode_seat = Seat(model="gpt-5.6-sol", effort="high", harness="opencode")
         self.assertEqual(seat_vendor_family(codex_seat), "codex")
         self.assertEqual(seat_vendor_family(opencode_seat), "codex")
         self.assertEqual(codex_seat.vendor_family, opencode_seat.vendor_family)
@@ -124,7 +124,7 @@ class EffortMappingRoundTripTests(unittest.TestCase):
         self.assertEqual(inv.effort_args, ("--effort", "max"))
 
     def test_codex_effort_config_max_is_xhigh(self) -> None:
-        inv = render_seat_invocation("codex", "gpt-5.5", "max")
+        inv = render_seat_invocation("codex", "gpt-5.6-sol", "max")
         self.assertEqual(inv.mechanism, MECH_CONFIG)
         self.assertEqual(inv.effort_args, ("-c", "model_reasoning_effort=xhigh"))
 
@@ -141,7 +141,7 @@ class EffortMappingRoundTripTests(unittest.TestCase):
 
     def test_breadth_harness_raises_until_populated(self) -> None:
         with self.assertRaises(EffortMappingError):
-            render_seat_invocation("opencode", "gpt-5.5", "high")
+            render_seat_invocation("opencode", "gpt-5.6-sol", "high")
 
 
 class HostLegIdentityTests(unittest.TestCase):
@@ -156,7 +156,7 @@ class HostLegIdentityTests(unittest.TestCase):
 
     def test_host_leg_identified_when_running_inside_harness(self) -> None:
         claude_seat = Seat(model="claude-sonnet-5", effort="max", harness="claude")
-        codex_seat = Seat(model="gpt-5.5", effort="max", harness="codex")
+        codex_seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex")
         board = Board(name="b", purpose="p", seats=(codex_seat, claude_seat))
         host = identify_host_leg(board, HostContext(host_harness="claude"))
         self.assertIs(host, claude_seat)
@@ -187,7 +187,7 @@ class EventEnvelopeTests(unittest.TestCase):
     def test_event_to_json_is_stable_shape(self) -> None:
         ev = AdvisorBoardEvent(
             kind="seat.completed", board="default", sequence=3, occurred_at="2026-07-05T00:00:00Z",
-            seat_key="codex:gpt-5.5:max", vendor_family="codex", harness="codex",
+            seat_key="codex:gpt-5.6-sol:max", vendor_family="codex", harness="codex",
             payload={"status": "OK"},
         )
         j = ev.to_json()

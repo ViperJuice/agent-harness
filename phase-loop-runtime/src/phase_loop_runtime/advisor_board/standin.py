@@ -74,8 +74,8 @@ class StandinCompatibilityMatrix:
         if pair in CANONICAL_VALID_PAIRS:
             return (True, AuthAvailability(subscription=True, detail="subscription"))
         # Not enumerated: valid iff the model's vendor family matches the harness
-        # lane's family (the same rule the canonical pairs encode) — so gpt-5.5 on
-        # any openai-family lane is valid, gpt-5.5 on claude is not.
+        # lane's family (the same rule the canonical pairs encode) — so gpt-5.6-sol on
+        # any openai-family lane is valid, gpt-5.6-sol on claude is not.
         model_fam = vendor_of_model(model)
         lane_fam = vendor_of_harness(harness)
         if model_fam and model_fam == lane_fam:

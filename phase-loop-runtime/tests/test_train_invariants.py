@@ -1113,7 +1113,7 @@ class TestInvariant7RunLoopFailureContract:
                 phase="VERIFY",
                 action="execute",
                 status="blocked",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="invariant-test-fixture",
                 blocker={
@@ -1179,7 +1179,7 @@ class TestInvariant7RunLoopFailureContract:
                 phase="VERIFY",
                 action="execute",
                 status="blocked",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="invariant-test-fixture",
                 blocker={

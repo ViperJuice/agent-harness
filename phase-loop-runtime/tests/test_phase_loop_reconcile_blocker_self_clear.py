@@ -90,7 +90,7 @@ def _seed_blocked_snapshot(
             phase=phase.upper(),
             action="execute",
             status="blocked",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
             blocker={
@@ -284,7 +284,7 @@ class CloseoutAllowUnownedAttestationTest(unittest.TestCase):
             phase=phase,
             action="execute",
             status="blocked",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
             metadata={
@@ -423,7 +423,7 @@ class CloseoutAllowUnownedAttestationTest(unittest.TestCase):
                 phase=phase,
                 action="execute",
                 status="blocked",
-                model="gpt-5.4",
+                model="gpt-5.6-terra",
                 reasoning_effort="medium",
                 source="fixture",
                 blocker={
@@ -480,7 +480,7 @@ class CloseoutAllowUnownedAttestationTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={

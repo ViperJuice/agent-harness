@@ -106,7 +106,7 @@ class PhaseLoopPlanDocSkipTest(unittest.TestCase):
             phase="RUNNER",
             action="run",
             status="plan_skipped",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             reasoning_effort="medium",
             source="fixture",
             metadata={"plan_doc_skip": {"reason": "plan_doc_current", "plan_artifact": "plans/phase-plan-v1-RUNNER.md", "forced_replan": False}},

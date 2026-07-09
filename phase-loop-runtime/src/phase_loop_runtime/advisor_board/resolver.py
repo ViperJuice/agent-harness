@@ -118,7 +118,7 @@ _STANDIN_CODE_REVIEW = Board(
     name="code-review",
     purpose="code-review",
     seats=(
-        Seat(model="gpt-5.5", effort="max", harness="codex"),
+        Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
         Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial"),
     ),
 )

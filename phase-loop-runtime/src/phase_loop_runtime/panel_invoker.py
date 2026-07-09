@@ -78,7 +78,7 @@ _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude
 # review-path model is decoupled from the implementer model and can never silently
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
-    "codex": "gpt-5.5",
+    "codex": "gpt-5.6-sol",
     "gemini": "Gemini 3.1 Pro (High)",
     "claude": "claude-fable-5",
 }
@@ -1428,11 +1428,11 @@ def _exec_leg(
         codex_effort_args = (
             ("-c", "model_reasoning_effort=xhigh")
             if effort is None
-            else render_seat_invocation("codex", model or "gpt-5.5", effort).effort_args
+            else render_seat_invocation("codex", model or DEFAULT_LEG_MODELS["codex"], effort).effort_args
         )
         cmd = [
             "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
-            "--sandbox", "read-only", "--model", model or "gpt-5.5",
+            "--sandbox", "read-only", "--model", model or DEFAULT_LEG_MODELS["codex"],
             *codex_effort_args,
             "--output-last-message", str(out_file), "-",
         ]
@@ -1896,10 +1896,10 @@ def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Bo
       ``claude-sonnet-5`` seat runs on ``claude`` instead of skipping on lane
       ``''``), returned as ``verdict.harness``;
     * REJECTS an inexpressible seat — unknown model, cross-vendor pairing (e.g.
-      ``gpt-5.5`` on ``claude``), or an over-ceiling effort — by raising
+      ``gpt-5.6-sol`` on ``claude``), or an over-ceiling effort — by raising
       ``SeatValidationError`` before a single subprocess is spawned (so
-      ``resolve_board(seats="gpt-5.5:max:claude")`` can never launch
-      ``claude --model gpt-5.5``).
+      ``resolve_board(seats="gpt-5.6-sol:max:claude")`` can never launch
+      ``claude --model gpt-5.6-sol``).
 
     Returns a board whose seats all carry a concrete harness lane. The ``default``
     board (every seat already lane-concrete and valid) is returned byte-equivalent.

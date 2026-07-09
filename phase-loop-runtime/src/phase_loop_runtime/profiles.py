@@ -15,8 +15,8 @@ from .models import (
 )
 
 
-OPENAI_HEAVY_MODEL = "gpt-5.5"
-OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.5"
+OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
+OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
 GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
@@ -88,10 +88,10 @@ EXECUTOR_EFFORT_OVERRIDES = {
 # model_aliases; gemini/pi pass through non-alias strings), so these resolve.
 CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-5"
 CLAUDE_WORKER_MODEL = "claude-haiku-4-5"
-OPENAI_IMPLEMENTER_MODEL = "gpt-5.4"
-OPENAI_WORKER_MODEL = "gpt-5.4-mini"
-OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.4"
-OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.4-mini"
+OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
+OPENAI_WORKER_MODEL = "gpt-5.6-luna"
+OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
+OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini planner stays on the CLI `pro` alias; bounded implementer/worker lanes
 # use the validated agy model name directly rather than the broad `auto` alias.
 GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL

@@ -52,7 +52,7 @@ class PhaseLoopReconcileToStatusPlannedRecoveryTest(unittest.TestCase):
             phase="ALPHA",
             action="execute",
             status="blocked",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             reasoning_effort="medium",
             source="fixture",
             blocker={

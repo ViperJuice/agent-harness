@@ -222,7 +222,7 @@ class FakeOmnigentServer:
 
 
 def _opencode_seat(auth: str = "subscription") -> Seat:
-    return Seat(model="gpt-5.5", effort="high", harness="opencode",
+    return Seat(model="gpt-5.6-sol", effort="high", harness="opencode",
                 backing=BACKING_OMNIGENT, auth=auth)
 
 
@@ -277,7 +277,7 @@ class PrimaryRoutingTests(unittest.TestCase):
         # pass config-time validation yet; the TRANSPORT is nonetheless harness-
         # agnostic — run_seat routes targetHarness="pi" and returns OK.
         with FakeOmnigentServer() as srv:
-            seat = Seat(model="gpt-5.5", effort="high", harness="pi", backing=BACKING_OMNIGENT)
+            seat = Seat(model="gpt-5.6-sol", effort="high", harness="pi", backing=BACKING_OMNIGENT)
             outcome = srv.backing().run_seat(seat, "review pi", base_env={})
         self.assertEqual(outcome.status, "OK")
         self.assertIn("Echo: review pi", outcome.text)
@@ -360,7 +360,7 @@ class GatewayDownTests(unittest.TestCase):
         # The paired half of the exit criterion: gateway-down skips the omnigent
         # seat AND leaves the built-3 (codex homebrew) untouched.
         board = _board(
-            Seat(model="gpt-5.5", effort="max", harness="codex", backing=BACKING_HOMEBREW),
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex", backing=BACKING_HOMEBREW),
             _opencode_seat(),
         )
         backing = OmnigentBacking.from_config(base_url="http://127.0.0.1:1")  # nothing listening
@@ -399,7 +399,7 @@ class DynamicCatalogGateTests(unittest.TestCase):
 
     def test_cursor_is_catalog_gated(self) -> None:
         # cursor routes only when the live catalog exposes it (no code gate).
-        cursor_seat = Seat(model="gpt-5.5", effort="high", harness="cursor",
+        cursor_seat = Seat(model="gpt-5.6-sol", effort="high", harness="cursor",
                            backing=BACKING_OMNIGENT)
         with FakeOmnigentServer(include_cursor=False) as srv:
             self.assertNotIn("cursor", srv.backing().catalog_harnesses())
@@ -418,7 +418,7 @@ class DynamicCatalogGateTests(unittest.TestCase):
 class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
     def test_mixed_board_built3_homebrew_and_opencode_omnigent(self) -> None:
         board = _board(
-            Seat(model="gpt-5.5", effort="max", harness="codex", backing=BACKING_HOMEBREW),
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex", backing=BACKING_HOMEBREW),
             _opencode_seat(),
         )
         with FakeOmnigentServer() as srv:
@@ -459,7 +459,7 @@ class SkipDoesNotBlockTests(unittest.TestCase):
         # A codex homebrew seat stays OK while an opencode omnigent seat whose
         # harness the catalog omits skips-with-warning — the skip never blocks.
         board = _board(
-            Seat(model="gpt-5.5", effort="max", harness="codex", backing=BACKING_HOMEBREW),
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex", backing=BACKING_HOMEBREW),
             _opencode_seat(),
         )
         with FakeOmnigentServer(harnesses=set()) as srv:

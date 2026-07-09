@@ -32,7 +32,7 @@ class ReturnTypeTests(unittest.TestCase):
 
     def test_specs_are_frozen_records(self) -> None:
         hs = HarnessSpec(name="codex", cli="codex")
-        ms = ModelSpec(model="gpt-5.5", vendor_family="codex", default_lane="codex")
+        ms = ModelSpec(model="gpt-5.6-sol", vendor_family="codex", default_lane="codex")
         with self.assertRaises(Exception):
             hs.name = "x"  # frozen
         with self.assertRaises(Exception):
@@ -52,9 +52,9 @@ class StubTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             StubHarnessRegistry().list_harnesses()
         with self.assertRaises(NotImplementedError):
-            StubModelRegistry().default_lane("gpt-5.5")
+            StubModelRegistry().default_lane("gpt-5.6-sol")
         with self.assertRaises(NotImplementedError):
-            StubCompatibilityMatrix().is_valid("gpt-5.5", "codex")
+            StubCompatibilityMatrix().is_valid("gpt-5.6-sol", "codex")
 
     def test_matrix_is_valid_return_shape(self) -> None:
         # Freeze the tuple[bool, AuthAvailability] shape via a hand-built verdict —
@@ -100,11 +100,11 @@ class PopulatedRegistryTests(unittest.TestCase):
             DefaultHarnessRegistry().get("amp")
 
     def test_model_default_lane_pins_gpt55_to_codex_not_opencode(self) -> None:
-        # gpt-5.5 is runnable_by both codex and opencode, but a bare seat MUST
+        # gpt-5.6-sol is runnable_by both codex and opencode, but a bare seat MUST
         # resolve onto the built-3 codex leg (default-board back-compat).
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
-        spec = DEFAULT_MODEL_REGISTRY.get("gpt-5.5")
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-5.6-sol")
         self.assertEqual(spec.default_lane, "codex")
         self.assertEqual(spec.runnable_by, ("codex", "opencode"))
         self.assertEqual(spec.vendor_family, "codex")  # derived from schema.vendor_family

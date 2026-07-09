@@ -71,11 +71,11 @@ class EffortReachesEachCliTests(unittest.TestCase):
     def test_codex_effort_reaches_reasoning_config(self) -> None:
         captured, fake = _capture_run()
         with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            pi._exec_leg("codex", Path(rd), Path(od), effort="high", model="gpt-5.5")
+            pi._exec_leg("codex", Path(rd), Path(od), effort="high", model="gpt-5.6-sol")
         self.assertIn("model_reasoning_effort=high", captured["cmd"])  # canonical high → high
         captured, fake = _capture_run()
         with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.5")
+            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol")
         self.assertIn("model_reasoning_effort=xhigh", captured["cmd"])  # canonical max → xhigh
 
     def test_agy_effort_is_baked_into_the_model_name(self) -> None:
@@ -193,7 +193,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         return {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin"}
 
     def _codex_seat(self, auth: str) -> Seat:
-        return Seat(model="gpt-5.5", effort="max", harness="codex", auth=auth)
+        return Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=auth)
 
     def _gemini_seat(self, auth: str) -> Seat:
         return Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", auth=auth)
@@ -205,7 +205,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         env = resolve_seat_env(self._codex_seat("subscription"), self._all_keys_base())
         captured, fake = _capture_run()
         with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.5", env=env)
+            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol", env=env)
         for var in pi._API_KEY_VARS:
             self.assertNotIn(var, captured["env"])
 
@@ -214,7 +214,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
                                allow_api_key_fallback=True)
         captured, fake = _capture_run()
         with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.5", env=env)
+            pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol", env=env)
         self.assertEqual(captured["env"]["OPENAI_API_KEY"], "secret")
         self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
         self.assertNotIn("GEMINI_API_KEY", captured["env"])
@@ -347,7 +347,7 @@ class SkipWithWarningTests(unittest.TestCase):
 
     def test_omnigent_seat_without_gateway_skips_with_warning(self) -> None:
         board = Board(name="o", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         res = pi.invoke_board(board, "artifact", gateway_available=False,
                               spawn=lambda leg, art: ("OK", "AGREE"))
@@ -358,7 +358,7 @@ class SkipWithWarningTests(unittest.TestCase):
         # ABDHOME does not implement omnigent transport — even WITH a gateway an
         # omnigent seat is ABDOMNI's job, never a silent homebrew fallback.
         board = Board(name="o", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         res = pi.invoke_board(board, "artifact", gateway_available=True,
                               spawn=lambda leg, art: ("OK", "AGREE"))
@@ -367,8 +367,8 @@ class SkipWithWarningTests(unittest.TestCase):
 
     def test_a_skipped_seat_does_not_block_a_healthy_seat(self) -> None:
         board = Board(name="mix", purpose="x", seats=(
-            Seat(model="gpt-5.5", effort="max", harness="codex", backing=BACKING_HOMEBREW),
-            Seat(model="gpt-5.5", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex", backing=BACKING_HOMEBREW),
+            Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
         self.assertEqual(res.legs[0].status, "OK")
@@ -388,22 +388,22 @@ class BoardSeamValidationTests(unittest.TestCase):
         self.assertEqual(res.legs[0].status, "OK")
 
     def test_invalid_pairing_rejects_before_any_spawn(self) -> None:
-        # finding 7: gpt-5.5 on the claude lane must reject, never spawn
-        # `claude --model gpt-5.5`.
+        # finding 7: gpt-5.6-sol on the claude lane must reject, never spawn
+        # `claude --model gpt-5.6-sol`.
         spawned: list[str] = []
 
         def _spawn(leg, art):
             spawned.append(leg)
             return ("OK", "x")
 
-        board = Board(name="bad", purpose="x", seats=(Seat(model="gpt-5.5", effort="max", harness="claude"),))
+        board = Board(name="bad", purpose="x", seats=(Seat(model="gpt-5.6-sol", effort="max", harness="claude"),))
         with self.assertRaises(SeatValidationError):
             pi.invoke_board(board, "artifact", spawn=_spawn)
         self.assertEqual(spawned, [])  # rejected before spawn
 
     def test_ad_hoc_resolve_board_invalid_pairing_rejects_before_spawn(self) -> None:
         # finding 7: the same invariant on the resolve_board(seats=...) ad-hoc path.
-        board = resolve_board(seats="gpt-5.5:max:claude", matrix=pi.default_matrix())
+        board = resolve_board(seats="gpt-5.6-sol:max:claude", matrix=pi.default_matrix())
         spawned: list[str] = []
 
         def _spawn(leg, art):

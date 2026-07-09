@@ -84,7 +84,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="awaiting_phase_closeout",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -109,7 +109,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
                     phase="ALPHA",
                     action="execute",
                     status="executed",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -146,7 +146,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
                     phase="BETA",
                     action="execute",
                     status="blocked",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="fixture",
                     metadata={
@@ -171,7 +171,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
                     phase="BETA",
                     action="manual_repair",
                     status="complete",
-                    model="gpt-5.4",
+                    model="gpt-5.6-terra",
                     reasoning_effort="medium",
                     source="operator",
                     metadata={"clears_blocker": True},
@@ -203,7 +203,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
             roadmap.write_text(
                 roadmap.read_text(encoding="utf-8")
                 + "\n## Execution Policy\n"
-                + "- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`\n"
+                + "- execute: executor=`codex`, model=`gpt-5.6-sol`, effort=`high`\n"
                 + "- review: executor=`claude`, model=`claude-opus-4-8`, effort=`high`\n",
                 encoding="utf-8",
             )
@@ -212,7 +212,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
             policy = payload.get("execution_policy") or {}
             self.assertIn("ALPHA", policy)
             self.assertEqual(policy["ALPHA"]["execute"]["executor"], "codex")
-            self.assertEqual(policy["ALPHA"]["execute"]["model"], "gpt-5.5")
+            self.assertEqual(policy["ALPHA"]["execute"]["model"], "gpt-5.6-sol")
             self.assertEqual(policy["ALPHA"]["execute"]["source"], "roadmap policy")
             self.assertEqual(policy["ALPHA"]["review"]["executor"], "claude")
 
