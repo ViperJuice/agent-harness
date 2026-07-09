@@ -2,6 +2,17 @@
 
 This package preserves the existing public ``.consiliency/`` conformance
 imports while providing a namespace for outside-agent contract pin helpers.
+
+TIERS.
+    * SHAPE / GOVERNANCE tier -- :func:`scan_consiliency_gates` and its pure
+      cores: the deterministic, consent-gated evaluator over a repo's
+      ``.consiliency/`` layout.
+    * CERT / SCHEMA tier -- :func:`validate_certificate`: structural conformance
+      of a DECLARED parity certificate to the contract-distributed
+      ``certificate`` schema (contract 0.6.4+). Loaded via the same
+      ``consiliency_contract`` loader the SHAPE gates use; versioned with the
+      contract; degrades to a neutral ``skipped`` verdict when the schema is
+      absent. It is NOT authority / provenance / signing -- that stays gp.
 """
 from __future__ import annotations
 
@@ -14,6 +25,10 @@ from ..consiliency_gates import (
 )
 from ..consiliency_ingest import evaluate_governance_scope
 from ..git_discipline import evaluate_git_discipline, self_heal_partition
+from .certificate_tier import (
+    certificate_schema_available,
+    validate_certificate,
+)
 from .outside_agent_core import (
     OutsideAgentBlocker,
     OutsideAgentConformanceVerdict,
@@ -56,6 +71,8 @@ __all__ = [
     "evaluate_git_discipline",
     "self_heal_partition",
     "evaluate_governance_scope",
+    "validate_certificate",
+    "certificate_schema_available",
     "OutsideAgentBlocker",
     "OutsideAgentConformanceVerdict",
     "OutsideAgentEvidenceRef",
