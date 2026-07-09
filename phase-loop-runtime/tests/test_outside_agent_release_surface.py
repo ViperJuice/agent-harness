@@ -162,8 +162,8 @@ def test_release_handoff_records_metadata_only_package_contract_and_dispatch_bou
         pin.vector_manifest_hash,
         pin.source_owner,
         pin.redaction_posture,
-        "phase_loop_runtime-0.3.0-py3-none-any.whl",
-        "phase_loop_runtime-0.3.0.tar.gz",
+        f"phase_loop_runtime-{phase_loop_runtime.__version__}-py3-none-any.whl",
+        f"phase_loop_runtime-{phase_loop_runtime.__version__}.tar.gz",
         "maintainer",
         "not published",
         "not dispatched",
@@ -200,8 +200,8 @@ def test_public_docs_point_to_handoff_without_claiming_release_dispatch():
     assert "outside-agent-preflight" in readme
     assert "outside-agent-validate" in readme
     assert "governed-pipeline" in readme
-    assert "outside-agent release prep (oarelease)" in changelog
+    assert "outside-agent conformance runtime (oarelease)" in changelog
     assert "release handoff" in changelog
     assert "governed-pipeline pinning instructions" in changelog
     assert "maintainer-owned publish/tag/workflow-dispatch" in changelog
-    assert "not published, tagged, workflow-dispatched" in changelog
+    assert "0.5.0" in changelog

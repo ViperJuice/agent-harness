@@ -8,15 +8,15 @@ enforcement is live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.3.0`
-- Runtime `phase_loop_runtime.__version__`: `0.3.0`
-- Git SHA prepared for downstream pinning: `983c2db3440f8db0bc9b585ef3f140aad9a6f780`
+- Version: `0.5.0`
+- Runtime `phase_loop_runtime.__version__`: `0.5.0`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.5.0`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.3.0`
+- Validator version: `0.5.0`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -45,9 +45,9 @@ enforcement is live.
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.3.0-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.3.0.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.3.0.data`, `phase_loop_runtime-0.3.0.dist-info`
+- Wheel artifact: `phase_loop_runtime-0.5.0-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.5.0.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.5.0.data`, `phase_loop_runtime-0.5.0.dist-info`
 - Wheel file count: 382
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
 - Sdist file count: 792
@@ -57,9 +57,8 @@ enforcement is live.
 ## Governed-Pipeline Pinning
 
 Governed-pipeline should consume this runtime as an authoritative validator only
-after a maintainer publishes or pins it. Pin either the released package
-`phase-loop-runtime==0.3.0` or the git SHA
-`983c2db3440f8db0bc9b585ef3f140aad9a6f780`, then call:
+after a maintainer publishes or pins it. Pin the released package
+`phase-loop-runtime==0.5.0`, then call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \

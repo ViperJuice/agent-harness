@@ -168,6 +168,18 @@ DIRTY_PATH_CLASSIFICATIONS = (
     "unowned",
 )
 PIPELINE_MODE_LITERALS = ("standalone", "pipeline_optional", "pipeline_required")
+# LEGACY FALLBACK ONLY. The canonical protected_source_category vocabulary is
+# owned by the contract SoT (consiliency-contract >= 0.6.5,
+# `core/registries/protected-source-categories.json`, registry name
+# `protected_source_categories`). When the installed contract ships that
+# registry, its `coarse_categories` enum is AUTHORITATIVE and is what
+# `PipelineProtectedSource` validates against -- see
+# `protected_source_categories()` below. This tuple is retained only as the
+# contract-absent degrade path (older contract with no registry): the six
+# pre-existing coarse buckets the loop has always accepted. The registry is a
+# strict superset (same six + `governance_contracts`), so a category valid under
+# the fallback is never rejected under the registry. This is migration glue, not
+# a permanent shim -- registry-present is the SoT.
 PIPELINE_PROTECTED_SOURCE_CATEGORIES = (
     "specs",
     "diagrams",
@@ -351,6 +363,87 @@ def require_literal(value: str, allowed: tuple[str, ...], label: str) -> str:
     if value not in allowed:
         raise ValueError(f"invalid {label}: {value}")
     return value
+
+
+# --- protected_source_category vocabulary: sourced from the contract SoT -------
+#
+# The coarse `protected_source_category` enum is owned by consiliency-contract
+# (>= 0.6.5), registry `protected_source_categories`. We read it through the same
+# `consiliency_contract.load_registry` loader the git-discipline / consiliency
+# gates use, mirroring the lazy-cached `available()` / contract-absent degrade
+# pattern in `gate_posture.py`. When the registry is present it is AUTHORITATIVE;
+# when the installed contract predates it (no registry / load error) we degrade
+# to the legacy six-tuple rather than hard-crashing at import time.
+_PROTECTED_CATEGORY_CACHE: tuple[str, ...] | None = None
+_PROTECTED_CATEGORY_REGISTRY_PRESENT = False
+_PROTECTED_CATEGORY_LOADED = False
+_PROTECTED_FINE_SUBTYPES_CACHE: tuple[str, ...] = ()
+
+
+def _load_protected_source_registry() -> None:
+    global _PROTECTED_CATEGORY_CACHE, _PROTECTED_CATEGORY_REGISTRY_PRESENT
+    global _PROTECTED_CATEGORY_LOADED, _PROTECTED_FINE_SUBTYPES_CACHE
+    if _PROTECTED_CATEGORY_LOADED:
+        return
+    coarse: tuple[str, ...] | None = None
+    fine: tuple[str, ...] = ()
+    try:
+        from consiliency_contract import load_registry
+
+        reg = load_registry("protected_source_categories")
+        entries = reg.get("coarse_categories") if isinstance(reg, dict) else None
+        if isinstance(entries, list):
+            ids = tuple(
+                str(item["id"])
+                for item in entries
+                if isinstance(item, dict) and item.get("id")
+            )
+            if ids:
+                coarse = ids
+        raw_fine = reg.get("fine_subtypes") if isinstance(reg, dict) else None
+        if isinstance(raw_fine, list):
+            fine = tuple(str(x) for x in raw_fine if isinstance(x, str))
+    except Exception:
+        # Installed contract predates the registry (< 0.6.5) or read failed:
+        # degrade to the legacy tuple. Not a hard crash -- see gate_posture.py.
+        coarse = None
+    _PROTECTED_CATEGORY_REGISTRY_PRESENT = coarse is not None
+    _PROTECTED_CATEGORY_CACHE = coarse if coarse is not None else PIPELINE_PROTECTED_SOURCE_CATEGORIES
+    _PROTECTED_FINE_SUBTYPES_CACHE = fine
+    _PROTECTED_CATEGORY_LOADED = True
+
+
+def _reset_protected_source_registry_cache() -> None:
+    """Test-only: clear the memoized registry read (present/absent isolation)."""
+    global _PROTECTED_CATEGORY_CACHE, _PROTECTED_CATEGORY_REGISTRY_PRESENT
+    global _PROTECTED_CATEGORY_LOADED, _PROTECTED_FINE_SUBTYPES_CACHE
+    _PROTECTED_CATEGORY_CACHE = None
+    _PROTECTED_CATEGORY_REGISTRY_PRESENT = False
+    _PROTECTED_CATEGORY_LOADED = False
+    _PROTECTED_FINE_SUBTYPES_CACHE = ()
+
+
+def protected_source_categories() -> tuple[str, ...]:
+    """The authoritative coarse `protected_source_category` enum.
+
+    Prefers the distributed contract registry (>= 0.6.5); falls back to the
+    legacy six-tuple when the contract lacks the registry.
+    """
+    _load_protected_source_registry()
+    assert _PROTECTED_CATEGORY_CACHE is not None  # set by loader
+    return _PROTECTED_CATEGORY_CACHE
+
+
+def protected_source_category_registry_available() -> bool:
+    """True when the installed contract ships the coarse-category registry."""
+    _load_protected_source_registry()
+    return _PROTECTED_CATEGORY_REGISTRY_PRESENT
+
+
+def protected_source_fine_subtypes() -> tuple[str, ...]:
+    """Registered fine `subtype` names (soft/warn signal only, never a gate)."""
+    _load_protected_source_registry()
+    return _PROTECTED_FINE_SUBTYPES_CACHE
 
 
 @dataclass(frozen=True)
@@ -691,11 +784,19 @@ class PipelineProtectedSource:
     category: str
     sha256: str | None = None
     role: str | None = None
+    # PSCAT-PL: the producer's OPTIONAL fine governance granularity, carried
+    # alongside the coarse `category`. Free-form by contract design (the fine
+    # vocabulary is deliberately NOT re-coupled across repos) -- accepted as any
+    # string and never enum-gated. `protected_source_fine_subtypes()` is a soft
+    # reference set for tooling only, never a hard reject.
+    subtype: str | None = None
 
     def __post_init__(self) -> None:
         if not self.path.strip():
             raise ValueError("protected source path must not be empty")
-        require_literal(self.category, PIPELINE_PROTECTED_SOURCE_CATEGORIES, "protected source category")
+        # Validate the coarse category against the contract-owned enum
+        # (registry-authoritative >= 0.6.5; legacy six-tuple when absent).
+        require_literal(self.category, protected_source_categories(), "protected source category")
         if self.role is not None and self.role not in PIPELINE_PROTECTED_SOURCE_LEGACY_ROLES:
             require_literal(self.role, PIPELINE_PROTECTED_SOURCE_ROLES, "protected source role")
 

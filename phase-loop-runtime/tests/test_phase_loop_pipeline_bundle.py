@@ -28,6 +28,40 @@ class PhaseLoopPipelineBundleTest(unittest.TestCase):
             self.assertEqual(bundle.protected_sources[0].role, "active_canonical_spec")
             self.assertEqual(bundle.plan_metadata().source_bundle_sha256, bundle.sha256)
 
+    def test_governance_contracts_category_and_subtype_load_without_malformed(self):
+        # PSCAT-PL: a protected source whose coarse category is the new
+        # contract-owned `governance_contracts` bucket (with an optional free-form
+        # producer `subtype`) must load cleanly -- malformed_source_bundle must
+        # NOT fire for a category that is valid per the distributed contract enum.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            source = _write_protected_source(repo)
+            sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            bundle_path = _write_bundle(
+                repo,
+                protected_entries=[
+                    {
+                        "path": "specs/protected-source.md",
+                        "category": "governance_contracts",
+                        "subtype": "skill_manifests",
+                        "sha256": sha,
+                    }
+                ],
+            )
+
+            diagnostic = phase_source_bundle_diagnostic(
+                repo, bundle_path, phase="RUNNER", roadmap=repo / "specs" / "phase-plans-v1.md"
+            )
+            self.assertIsNone(diagnostic)
+
+            bundle = load_phase_source_bundle(
+                repo, bundle_path, phase="RUNNER", roadmap=repo / "specs" / "phase-plans-v1.md"
+            )
+            self.assertIsNotNone(bundle)
+            assert bundle is not None
+            self.assertEqual(bundle.protected_sources[0].category, "governance_contracts")
+            self.assertEqual(bundle.protected_sources[0].subtype, "skill_manifests")
+
     def test_dfparsoak_optional_bundle_loads_pipeline_context(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
