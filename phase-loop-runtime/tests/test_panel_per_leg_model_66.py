@@ -48,14 +48,19 @@ def test_exec_leg_codex_uses_model_override(tmp_path, monkeypatch):
     review_dir, out_dir = _stage(tmp_path)
     captured = {}
 
-    def fake_run(cmd, **k):
-        if list(cmd[:3]) == ["codex", "login", "status"]:
-            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+    # The auth preflight still uses subprocess.run — keep it logged-in. The leg exec
+    # now goes through _run_leg_with_liveness (the codex verdict is the out_file).
+    monkeypatch.setattr(
+        pi.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
+    )
+
+    def fake_liveness(cmd, **k):
         captured["cmd"] = list(cmd)
         (out_dir / "panel-codex.txt").write_text("AGREE", encoding="utf-8")
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return pi._LegRun(0, "", "")
 
-    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     pi._exec_leg("codex", review_dir, out_dir, 60, "q", model="gpt-5.6-terra-codex")
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "gpt-5.6-terra-codex"
 
@@ -64,11 +69,11 @@ def test_exec_leg_gemini_uses_model_override(tmp_path, monkeypatch):
     review_dir, out_dir = _stage(tmp_path)
     captured = {}
 
-    def fake_run(cmd, **k):
+    def fake_liveness(cmd, **k):
         captured["cmd"] = list(cmd)
-        return types.SimpleNamespace(returncode=0, stdout="AGREE", stderr="")
+        return pi._LegRun(0, "AGREE", "")  # gemini reads its verdict from stdout
 
-    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     pi._exec_leg("gemini", review_dir, out_dir, 60, "q", model="Gemini 3.5 Flash (High)")
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "Gemini 3.5 Flash (High)"
 

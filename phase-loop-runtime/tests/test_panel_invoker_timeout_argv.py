@@ -9,7 +9,6 @@ These tests pin the input-scaling and the exact command construction (read-only 
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -37,23 +36,24 @@ def test_leg_timeout_is_capped():
 
 
 def _capture_run(monkeypatch, stdout: str = ""):
+    """Capture the leg's ``_run_leg_with_liveness`` call.
+
+    The leg exec no longer calls ``subprocess.run`` — it goes through the stall-aware
+    ``_run_leg_with_liveness`` seam. We capture the ``cmd`` plus the ``deadline_s`` /
+    ``stall_threshold_s`` / ``input_text`` kwargs. The codex auth preflight still uses
+    ``subprocess.run``, so bypass it (fail-open logged-in) to reach the leg exec.
+    """
     captured: dict = {}
 
-    def fake_run(cmd, **kwargs):
+    def fake_liveness(cmd, **kwargs):
         captured["cmd"] = list(cmd)
-        captured["timeout"] = kwargs.get("timeout")
-        captured["input"] = kwargs.get("input")
-        captured["stdin"] = kwargs.get("stdin")
+        captured["deadline_s"] = kwargs.get("deadline_s")
+        captured["stall_threshold_s"] = kwargs.get("stall_threshold_s")
+        captured["input_text"] = kwargs.get("input_text")
+        return pi._LegRun(0, stdout, "")
 
-        class _R:
-            returncode = 0
-
-        r = _R()
-        r.stdout = stdout
-        r.stderr = ""
-        return r
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a, **k: (True, ""))
     return captured
 
 
@@ -61,7 +61,6 @@ def test_codex_leg_argv_is_read_only_with_output_last_message(monkeypatch):
     captured = _capture_run(monkeypatch)
     with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
         pi._exec_leg("codex", Path(rd), Path(od))
-        expected_timeout = pi._leg_timeout_for(Path(rd))
     cmd = captured["cmd"]
     assert cmd[:2] == ["codex", "exec"]
     assert "--sandbox" in cmd and cmd[cmd.index("--sandbox") + 1] == "read-only"
@@ -69,7 +68,12 @@ def test_codex_leg_argv_is_read_only_with_output_last_message(monkeypatch):
     # never the executor default that build_codex_command emits
     assert "danger-full-access" not in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-    assert captured["timeout"] == expected_timeout
+    # Leg-liveness: the hard-kill is DECOUPLED from the input-scaled timeout and raised
+    # to the _MAX_LEG_TIMEOUT_S backstop (a slow-but-streaming leg is no longer killed
+    # at the 600s floor); stall detection uses the seam's _LEG_STALL_THRESHOLD_S default
+    # (never overridden by the leg, so it is absent from the call kwargs).
+    assert captured["deadline_s"] == pi._MAX_LEG_TIMEOUT_S
+    assert captured["stall_threshold_s"] is None
 
 
 def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
@@ -77,7 +81,6 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
         rdp = Path(rd)
         pi._exec_leg("grok", rdp, Path(od))  # effort-absent → grok's max reasoning
-        expected_timeout = pi._leg_timeout_for(rdp)
     cmd = captured["cmd"]
     assert cmd[0] == "grok"
     assert "-p" in cmd  # single-turn headless prompt
@@ -88,8 +91,10 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     assert cmd[cmd.index("--reasoning-effort") + 1] == "max"
     # web search / tools stay ON — never disabled (matches codex/gemini convention)
     assert "--disable-web-search" not in cmd
-    # grok is a SLOW leg: same +60s hard-kill grace as gemini, never a short timeout
-    assert captured["timeout"] == expected_timeout + 60
+    # grok is a SLOW leg: the hard-kill is the raised _MAX_LEG_TIMEOUT_S backstop (no
+    # longer a short input-scaled wall-clock); liveness rides the 180s stall default.
+    assert captured["deadline_s"] == pi._MAX_LEG_TIMEOUT_S
+    assert captured["stall_threshold_s"] is None
 
 
 def test_grok_leg_renders_seat_effort_through_the_map(monkeypatch):
@@ -112,8 +117,12 @@ def test_gemini_leg_argv_uses_add_dir_and_scaled_print_timeout(monkeypatch):
     assert cmd[0] == "agy"
     assert "--add-dir" in cmd
     assert "--print-timeout" in cmd
+    # --print-timeout is still the input-scaled timeout_s (agy's own internal budget)
     assert cmd[cmd.index("--print-timeout") + 1] == f"{expected_timeout}s"
-    assert captured["timeout"] == expected_timeout + 60
+    # ...but the process hard-kill is the raised _MAX_LEG_TIMEOUT_S backstop, decoupled
+    # from that scaled value; liveness rides the 180s stall default (not overridden).
+    assert captured["deadline_s"] == pi._MAX_LEG_TIMEOUT_S
+    assert captured["stall_threshold_s"] is None
 
 
 def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
@@ -132,6 +141,6 @@ def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
     prompt_arg = cmd[cmd.index("-p") + 1]
     assert prompt_arg != "-"
     assert "review-bundle.md" in prompt_arg  # the real staged-bundle pointer prompt
-    # and nothing is fed on stdin (feeding stdin was the empty-prompt bug)
-    assert captured["input"] is None
-    assert captured["stdin"] is subprocess.DEVNULL
+    # and nothing is fed on stdin (feeding stdin was the empty-prompt bug): the gemini
+    # leg passes NO input_text to the liveness seam, which then wires the child to DEVNULL.
+    assert captured["input_text"] is None

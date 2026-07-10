@@ -20,7 +20,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
     def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
         captured = {}
 
-        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review"):
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review", backstop_s=None):
             captured["command"] = command
             captured["cwd"] = cwd
             captured["prompt"] = prompt
@@ -276,7 +276,7 @@ class BundleStagingTest(unittest.TestCase):
     def test_bundle_and_instructions_staged_readonly_dir(self):
         captured = {}
 
-        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None):
+        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None, **kwargs):
             captured["bundle"] = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
             captured["instructions_exists"] = (review_dir / "review-instructions.md").exists()
             captured["out_separate"] = out_dir != review_dir
@@ -305,65 +305,68 @@ class BundleStagingTest(unittest.TestCase):
             stdout = ""
             stderr = ""
 
-        def fake_run(cmd, **kwargs):
-            if list(cmd[:3]) == ["codex", "login", "status"]:  # #64 auth preflight
-                return Completed()
-            captured["cmd"] = cmd
+        # The auth preflight still uses subprocess.run — keep it logged-in.
+        def fake_auth(cmd, **kwargs):
+            return Completed()
+
+        # The leg exec now goes through _run_leg_with_liveness; codex's prompt rides
+        # ``input_text`` (stdin "-"), and its verdict is the --output-last-message file.
+        def fake_liveness(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
             captured["kwargs"] = kwargs
             out_file = Path(cmd[cmd.index("--output-last-message") + 1])
             out_file.write_text("Looks good.\nAGREE", encoding="utf-8")
-            return Completed()
+            return pi._LegRun(0, "", "")
 
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_auth), \
+                    patch.object(pi, "_run_leg_with_liveness", side_effect=fake_liveness):
                 rc, review_text, _ = pi._exec_leg("codex", review_dir, out_dir, 600, "SENTINEL-CODEX-ARTIFACT")
 
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
         self.assertEqual(captured["cmd"][-1], "-")
-        self.assertNotIn("SENTINEL-CODEX-ARTIFACT", captured["kwargs"]["input"])
-        self.assertIn("review-instructions.md", captured["kwargs"]["input"])
-        self.assertIn("review-bundle.md", captured["kwargs"]["input"])
-        self.assertIn(str(review_dir / "review-instructions.md"), captured["kwargs"]["input"])
-        self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input"])
-        self.assertNotIn("stdin", captured["kwargs"])
+        # the prompt is fed via the seam's ``input_text`` (the stdin writer thread),
+        # never inlining the artifact body — it POINTS at the staged files.
+        self.assertNotIn("SENTINEL-CODEX-ARTIFACT", captured["kwargs"]["input_text"])
+        self.assertIn("review-instructions.md", captured["kwargs"]["input_text"])
+        self.assertIn("review-bundle.md", captured["kwargs"]["input_text"])
+        self.assertIn(str(review_dir / "review-instructions.md"), captured["kwargs"]["input_text"])
+        self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input_text"])
 
     def test_gemini_command_prompt_references_staged_artifact_file_with_add_dir(self):
         captured = {}
 
-        class Completed:
-            returncode = 0
-            stdout = "Looks good.\nAGREE"
-            stderr = ""
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
+        # gemini has no auth probe; the leg exec now flows through the liveness seam,
+        # which reads the verdict from ``_LegRun.stdout``.
+        def fake_liveness(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
             captured["kwargs"] = kwargs
-            return Completed()
+            return pi._LegRun(0, "Looks good.\nAGREE", "")
 
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+            with patch.object(pi, "_run_leg_with_liveness", side_effect=fake_liveness):
                 rc, review_text, _ = pi._exec_leg("gemini", review_dir, out_dir, 600, "SENTINEL-GEMINI-ARTIFACT")
 
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
         self.assertIn("--add-dir", captured["cmd"])
         self.assertEqual(captured["cmd"][captured["cmd"].index("--add-dir") + 1], str(review_dir))
-        # BUGFIX: the prompt is now the inline ``-p`` argv value (last arg), NOT the
-        # stdin sentinel "-" + ``input=`` (agy ``-p -`` ignored stdin → empty prompt).
+        # BUGFIX: the prompt is the inline ``-p`` argv value (last arg), NOT the stdin
+        # sentinel "-" + stdin feed (agy ``-p -`` ignored stdin → empty prompt). The leg
+        # passes NO ``input_text`` to the seam, which then wires the child to DEVNULL.
         prompt_arg = captured["cmd"][-1]
         self.assertEqual(captured["cmd"][captured["cmd"].index("-p") + 1], prompt_arg)
         self.assertNotEqual(prompt_arg, "-")
-        self.assertIsNone(captured["kwargs"].get("input"))
-        self.assertIs(captured["kwargs"].get("stdin"), subprocess.DEVNULL)
+        self.assertIsNone(captured["kwargs"].get("input_text"))
         # the prompt still POINTS at the staged files, never inlines the artifact body
         self.assertNotIn("SENTINEL-GEMINI-ARTIFACT", prompt_arg)
         self.assertIn("review-instructions.md", prompt_arg)
@@ -377,14 +380,20 @@ class BundleStagingTest(unittest.TestCase):
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch(
-                "phase_loop_runtime.panel_invoker.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(["codex"], timeout=777),
-            ):
+            # An EXPLICIT per-leg override (timeout_s=777) is the HARD deadline, honored
+            # as-is — the backstop is raised to _MAX_LEG_TIMEOUT_S only for the input-
+            # scaled DEFAULT. So the deadline backstop fires at 777s and the log reports
+            # 777s (frozen-contract: timeouts_by_leg is a real per-leg bound).
+            with patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
+                    patch.object(
+                        pi, "_run_leg_with_liveness",
+                        side_effect=subprocess.TimeoutExpired(["codex"], timeout=777),
+                    ):
                 rc, _, log_text = pi._exec_leg("codex", review_dir, out_dir, 777, "SECRET-SENTINEL")
 
         self.assertEqual(rc, 124)
         self.assertIn("777s", log_text)
+        self.assertNotIn(f"{pi._MAX_LEG_TIMEOUT_S}s", log_text)  # NOT raised to the backstop
         self.assertNotIn("SECRET-SENTINEL", log_text)
 
     def test_large_artifact_prompt_is_file_reference_with_digest_metadata(self):

@@ -83,16 +83,20 @@ def test_exec_leg_codex_retries_soft_empty_turn(tmp_path, monkeypatch):
     out_file = out_dir / "panel-codex.txt"
     calls = {"exec": 0}
 
-    def fake_run(cmd, **k):
-        if list(cmd[:3]) == ["codex", "login", "status"]:
-            return types.SimpleNamespace(returncode=0, stdout="logged in", stderr="")
-        if list(cmd[:2]) == ["codex", "exec"]:
-            calls["exec"] += 1
-            out_file.write_text("" if calls["exec"] == 1 else "PARTIALLY AGREE\n", encoding="utf-8")
-            return types.SimpleNamespace(returncode=0, stdout="transcript", stderr="")
-        raise AssertionError(cmd)
+    # auth preflight still runs via subprocess.run — keep it logged-in.
+    monkeypatch.setattr(
+        pi.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
+    )
 
-    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    # the leg exec now goes through _run_leg_with_liveness; the codex verdict is the
+    # out_file (--output-last-message), so simulate an empty first turn then a real one.
+    def fake_liveness(cmd, **k):
+        calls["exec"] += 1
+        out_file.write_text("" if calls["exec"] == 1 else "PARTIALLY AGREE\n", encoding="utf-8")
+        return pi._LegRun(0, "transcript", "")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     rc, review, log = pi._exec_leg("codex", review_dir, out_dir, timeout_s=60)
     assert calls["exec"] == 2, "a soft empty-turn (rc=0 + empty) must be retried once"
     assert review.strip() == "PARTIALLY AGREE"
@@ -103,16 +107,17 @@ def test_exec_leg_codex_does_not_retry_hard_failure(tmp_path, monkeypatch):
     out_file = out_dir / "panel-codex.txt"
     calls = {"exec": 0}
 
-    def fake_run(cmd, **k):
-        if list(cmd[:3]) == ["codex", "login", "status"]:
-            return types.SimpleNamespace(returncode=0, stdout="logged in", stderr="")
-        if list(cmd[:2]) == ["codex", "exec"]:
-            calls["exec"] += 1
-            out_file.write_text("", encoding="utf-8")
-            return types.SimpleNamespace(returncode=1, stdout="", stderr="rate limit")
-        raise AssertionError(cmd)
+    monkeypatch.setattr(
+        pi.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
+    )
 
-    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    def fake_liveness(cmd, **k):
+        calls["exec"] += 1
+        out_file.write_text("", encoding="utf-8")
+        return pi._LegRun(1, "", "rate limit")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     rc, review, log = pi._exec_leg("codex", review_dir, out_dir, timeout_s=60)
     assert calls["exec"] == 1, "a hard failure (rc!=0) must NOT be retried (never hammer)"
     assert rc == 1

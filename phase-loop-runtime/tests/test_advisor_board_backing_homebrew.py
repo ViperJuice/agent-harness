@@ -26,6 +26,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,51 +45,47 @@ from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, TWO_SAME_VE
 from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
 
 
+@contextmanager
 def _capture_run(stdout: str = ""):
-    """Capture the LAST ``subprocess.run`` call's cmd/env/timeout (the leg cmd;
-    the codex auth preflight also calls run but is overwritten by the main cmd)."""
+    """Capture the leg's ``_run_leg_with_liveness`` call (cmd/env/deadline_s).
+
+    The leg exec now flows through the stall-aware ``_run_leg_with_liveness`` seam
+    (the old single ``subprocess.run`` boundary). The codex auth preflight still uses
+    ``subprocess.run``, so it is bypassed (fail-open logged-in) to reach the leg exec.
+    """
     captured: dict = {}
 
-    def fake_run(cmd, **kwargs):
+    def fake_liveness(cmd, **kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = kwargs.get("env")
-        captured["timeout"] = kwargs.get("timeout")
+        captured["deadline_s"] = kwargs.get("deadline_s")
+        return pi._LegRun(0, stdout, "")
 
-        class _R:
-            returncode = 0
-
-        r = _R()
-        r.stdout = stdout
-        r.stderr = ""
-        return r
-
-    return captured, fake_run
+    with patch.object(pi, "_run_leg_with_liveness", fake_liveness), \
+            patch.object(pi, "_leg_auth_ok", return_value=(True, "")):
+        yield captured
 
 
 class EffortReachesEachCliTests(unittest.TestCase):
     """seat.effort → each CLI's real invocation via the frozen mapping."""
 
     def test_codex_effort_reaches_reasoning_config(self) -> None:
-        captured, fake = _capture_run()
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run() as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("codex", Path(rd), Path(od), effort="high", model="gpt-5.6-sol")
         self.assertIn("model_reasoning_effort=high", captured["cmd"])  # canonical high → high
-        captured, fake = _capture_run()
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run() as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol")
         self.assertIn("model_reasoning_effort=xhigh", captured["cmd"])  # canonical max → xhigh
 
     def test_agy_effort_is_baked_into_the_model_name(self) -> None:
         # The NEW case: effort was hard-coded in the model string before ABDHOME.
-        captured, fake = _capture_run(stdout="AGREE")
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run(stdout="AGREE") as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("gemini", Path(rd), Path(od), effort="low", model="Gemini 3.1 Pro")
         model = captured["cmd"][captured["cmd"].index("--model") + 1]
         self.assertEqual(model, "Gemini 3.1 Pro (Low)")  # effort embedded in the name
 
     def test_agy_effort_is_idempotent_on_an_already_baked_model(self) -> None:
-        captured, fake = _capture_run(stdout="AGREE")
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run(stdout="AGREE") as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("gemini", Path(rd), Path(od), effort="high", model="Gemini 3.1 Pro (High)")
         model = captured["cmd"][captured["cmd"].index("--model") + 1]
         self.assertEqual(model, "Gemini 3.1 Pro (High)")
@@ -133,11 +130,9 @@ class DefaultBoardByteEquivalenceTests(unittest.TestCase):
         base = dict(os.environ)
         seat = self._default_seat("codex")
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            legacy, fake = _capture_run()
-            with patch.object(subprocess, "run", fake):
+            with _capture_run() as legacy:
                 pi._exec_leg("codex", Path(rd), Path(od))  # effort/env absent (legacy)
-            seam, fake2 = _capture_run()
-            with patch.object(subprocess, "run", fake2):
+            with _capture_run() as seam:
                 pi._exec_leg("codex", Path(rd), Path(od), effort=seat.effort, model=seat.model,
                              env=resolve_seat_env(seat, base))
         self.assertEqual(legacy["cmd"], seam["cmd"])
@@ -147,11 +142,9 @@ class DefaultBoardByteEquivalenceTests(unittest.TestCase):
         base = dict(os.environ)
         seat = self._default_seat("gemini")
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            legacy, fake = _capture_run(stdout="AGREE")
-            with patch.object(subprocess, "run", fake):
+            with _capture_run(stdout="AGREE") as legacy:
                 pi._exec_leg("gemini", Path(rd), Path(od))
-            seam, fake2 = _capture_run(stdout="AGREE")
-            with patch.object(subprocess, "run", fake2):
+            with _capture_run(stdout="AGREE") as seam:
                 pi._exec_leg("gemini", Path(rd), Path(od), effort=seat.effort, model=seat.model,
                              env=resolve_seat_env(seat, base))
         self.assertEqual(legacy["cmd"], seam["cmd"])
@@ -203,8 +196,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
 
     def test_codex_launcher_subscription_scrubs_every_key(self) -> None:
         env = resolve_seat_env(self._codex_seat("subscription"), self._all_keys_base())
-        captured, fake = _capture_run()
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run() as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol", env=env)
         for var in pi._API_KEY_VARS:
             self.assertNotIn(var, captured["env"])
@@ -212,8 +204,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
     def test_codex_launcher_api_key_injects_only_openai(self) -> None:
         env = resolve_seat_env(self._codex_seat(AUTH_API_KEY), self._all_keys_base(),
                                allow_api_key_fallback=True)
-        captured, fake = _capture_run()
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run() as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("codex", Path(rd), Path(od), effort="max", model="gpt-5.6-sol", env=env)
         self.assertEqual(captured["env"]["OPENAI_API_KEY"], "secret")
         self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
@@ -221,8 +212,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
 
     def test_gemini_launcher_subscription_scrubs_every_key(self) -> None:
         env = resolve_seat_env(self._gemini_seat("subscription"), self._all_keys_base())
-        captured, fake = _capture_run(stdout="AGREE")
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run(stdout="AGREE") as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("gemini", Path(rd), Path(od), effort="high", model="Gemini 3.1 Pro", env=env)
         for var in pi._API_KEY_VARS:
             self.assertNotIn(var, captured["env"])
@@ -230,8 +220,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
     def test_gemini_launcher_api_key_injects_only_google_vars(self) -> None:
         env = resolve_seat_env(self._gemini_seat(AUTH_API_KEY), self._all_keys_base(),
                                allow_api_key_fallback=True)
-        captured, fake = _capture_run(stdout="AGREE")
-        with patch.object(subprocess, "run", fake), tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        with _capture_run(stdout="AGREE") as captured, tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_leg("gemini", Path(rd), Path(od), effort="high", model="Gemini 3.1 Pro", env=env)
         self.assertEqual(captured["env"]["GEMINI_API_KEY"], "secret")
         self.assertEqual(captured["env"]["GOOGLE_API_KEY"], "secret")

@@ -261,8 +261,12 @@ class GeminiRetryOnceTests(unittest.TestCase):
     """Fix 2: the agy leg retries once on a transient stall (mirroring codex)."""
 
     def _run_gemini(self, monkeypatched_run):
+        # The gemini leg exec now flows through _run_leg_with_liveness (the old
+        # single subprocess.run boundary); gemini has no auth probe, so re-pointing
+        # this one seam is all that's needed. The returned _FakeProc is duck-compatible
+        # with _LegRun (.returncode/.stdout/.stderr).
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            with patch.object(subprocess, "run", monkeypatched_run):
+            with patch.object(pi, "_run_leg_with_liveness", monkeypatched_run):
                 return pi._exec_leg("gemini", Path(rd), Path(od))
 
     def test_transient_stall_then_success_retries_and_recovers(self) -> None:
@@ -317,7 +321,7 @@ class GeminiRetryOnceTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             calls["n"] += 1
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("deadline_s"))
 
         rc, _text, _log = self._run_gemini(fake_run)
         self.assertEqual(calls["n"], 1)
@@ -342,7 +346,7 @@ class RetryElapsedGuardTests(unittest.TestCase):
             return next(times)
 
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            with patch.object(subprocess, "run", fake_run), \
+            with patch.object(pi, "_run_leg_with_liveness", fake_run), \
                  patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
                  patch.object(pi.time, "monotonic", side_effect=fake_monotonic):
                 pi._exec_leg("codex", Path(rd), Path(od))
@@ -362,7 +366,7 @@ class RetryElapsedGuardTests(unittest.TestCase):
             return next(times)
 
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            with patch.object(subprocess, "run", fake_run), \
+            with patch.object(pi, "_run_leg_with_liveness", fake_run), \
                  patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
                  patch.object(pi.time, "monotonic", side_effect=fake_monotonic):
                 pi._exec_leg("codex", Path(rd), Path(od))

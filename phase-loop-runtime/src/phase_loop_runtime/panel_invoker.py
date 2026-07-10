@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
@@ -55,6 +56,7 @@ from .advisor_board.schema import (
     Seat,
     identify_host_leg,
 )
+from ._proc_cpu import group_cpu_ticks
 from .advisor_board.validation import validate_seat
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
@@ -106,6 +108,20 @@ _DEFAULT_LEG_TIMEOUT_S = _LEG_TIMEOUT_BASE_S
 _HASH_CHUNK_BYTES = 1 << 20
 _PDF_SCAN_PREFIX_BYTES = 1 << 21
 _MAX_LEG_TIMEOUT_S = _LEG_TIMEOUT_MAX_S
+# Leg-liveness monitor: a leg is killed on HEARTBEAT EXTINCTION (no stdout/stderr byte
+# AND no process-group CPU advance for _LEG_STALL_THRESHOLD_S), not on a blind wall-clock.
+# 180s = 2.5x the empirically-measured worst-case healthy silence gap (codex xhigh
+# streams its transcript to stderr with gaps up to ~73s). The wall-clock DEADLINE is a
+# rarely-hit backstop raised to _MAX_LEG_TIMEOUT_S (decoupled from the input-scaled base)
+# — reliable stall detection is exactly what makes that generous backstop safe.
+_LEG_STALL_THRESHOLD_S = 180
+_LEG_LIVENESS_READ_INTERVAL_S = 0.5  # select() slice; also the idle-sleep granularity
+_LEG_LIVENESS_CPU_SAMPLE_S = 5.0     # /proc CPU sampling cadence (secondary reset only)
+# Once the leg LEADER exits but a descendant still holds the stdout/stderr pipe open
+# (an inherited-fd outliver), the leg's real work is done — reclaim the group after a
+# short idle grace instead of burning the full wall-clock backstop. Reset by any late
+# flush, so a still-streaming descendant is never truncated.
+_LEG_POST_EXIT_GRACE_S = 15.0
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
@@ -1010,23 +1026,178 @@ def _read_review_output(path: Path) -> str:
         return ""
 
 
-def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
-    if proc.poll() is not None:
+def _terminate_process_group(proc: subprocess.Popen[bytes], *, force_group: bool = False) -> None:
+    """Terminate the leg's process group (pgid == proc.pid, launched start_new_session).
+
+    Default: no-op once the leader is reaped — the group is presumed empty and its pgid
+    could be reused, so we must NOT ``killpg`` a possibly-recycled group id.
+
+    ``force_group=True``: the CALLER has just proven a descendant OUTLIVES the reaped
+    leader (an inherited stdout/stderr pipe is still open), so the group is provably
+    alive — reap it directly. Without this, a leader that exits while a child holds the
+    pipe would never be killed and the leg would burn the full wall-clock backstop.
+    """
+    leader_running = proc.poll() is None
+    if not leader_running and not force_group:
         return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return  # group already gone
     except Exception:
         try:
             proc.terminate()
         except Exception:
             pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
+    if leader_running:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except Exception:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        time.sleep(0.2)  # brief grace for the outliving descendant to handle SIGTERM
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
             proc.kill()
+        except Exception:
+            pass
+
+
+@dataclass
+class _LegRun:
+    """Result of :func:`_run_leg_with_liveness` — the subset of
+    ``subprocess.CompletedProcess`` (``returncode``/``stdout``/``stderr``) the
+    print-mode leg branches read, so they consume it with no other change."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _run_leg_with_liveness(
+    cmd: "Sequence[str]",
+    *,
+    cwd: "Path | str",
+    env: Mapping[str, str],
+    deadline_s: float,
+    stall_threshold_s: float = _LEG_STALL_THRESHOLD_S,
+    input_text: str | None = None,
+) -> "_LegRun":
+    """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
+
+    Drop-in for the codex/gemini/grok legs' ``subprocess.run(..., timeout=deadline_s)``:
+    returns a :class:`_LegRun` with ``.returncode/.stdout/.stderr`` and RAISES
+    ``subprocess.TimeoutExpired`` when the wall-clock ``deadline_s`` backstop fires, so
+    each caller's existing ``except subprocess.TimeoutExpired -> 124`` path is preserved.
+
+    Heartbeat = any new stdout OR stderr byte (primary; codex streams its transcript to
+    STDERR, grok/agy to STDOUT — so BOTH are watched) OR advancing process-group CPU
+    (secondary, NON-killing reset: it can only extend a leg's life, never false-kill).
+    Silent AND CPU-flat for ``stall_threshold_s`` while still running -> terminate the
+    whole process group + return ``rc or 1`` with a ``[leg-liveness]`` stall marker on
+    stderr (fail-closed; a silent+idle print-mode leg has nothing to nudge). stdin is
+    fed by a daemon writer thread so a large prompt can't deadlock against the child
+    filling its own stdout/stderr pipe buffers.
+    """
+    proc = subprocess.Popen(
+        list(cmd),
+        cwd=str(cwd),
+        env=dict(env),
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
+    )
+    if input_text is not None and proc.stdin is not None:
+        def _feed() -> None:
+            try:
+                proc.stdin.write(input_text.encode("utf-8", errors="replace"))
+                proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass  # child exited before consuming stdin — nothing to do
+
+        threading.Thread(target=_feed, daemon=True).start()
+
+    out_buf = bytearray()
+    err_buf = bytearray()
+    fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
+    open_fds = set(fd_map)
+    start = time.monotonic()
+    last_heartbeat = start
+    last_cpu_sample = start
+    last_ticks = group_cpu_ticks(proc.pid)
+
+    def _decode() -> tuple[str, str]:
+        return (
+            out_buf.decode("utf-8", errors="replace"),
+            err_buf.decode("utf-8", errors="replace"),
+        )
+
+    try:
+        while True:
+            # (1) wall-clock backstop — should rarely fire once stall detection works.
+            if time.monotonic() - start >= deadline_s:
+                _terminate_process_group(proc)
+                raise subprocess.TimeoutExpired(list(cmd), deadline_s)
+            # (2) drain available output; any byte is a heartbeat.
+            if open_fds:
+                readable, _, _ = select.select(
+                    list(open_fds), [], [], _LEG_LIVENESS_READ_INTERVAL_S
+                )
+            else:
+                readable = []
+                time.sleep(_LEG_LIVENESS_READ_INTERVAL_S)  # avoid busy-spin when both EOF
+            for fd in readable:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    fd_map[fd].extend(chunk)
+                    last_heartbeat = time.monotonic()
+                else:
+                    open_fds.discard(fd)  # EOF on this pipe
+            # (3) secondary CPU heartbeat — reset only, never a kill trigger.
+            now = time.monotonic()
+            if now - last_cpu_sample >= _LEG_LIVENESS_CPU_SAMPLE_S:
+                last_cpu_sample = now
+                ticks = group_cpu_ticks(proc.pid)
+                if ticks > last_ticks:
+                    last_heartbeat = now
+                last_ticks = ticks
+            # (4) exit handling.
+            exited = proc.poll() is not None
+            if exited:
+                if not open_fds:
+                    # clean exit — both pipes drained to EOF.
+                    out_s, err_s = _decode()
+                    return _LegRun(proc.returncode if proc.returncode is not None else 0, out_s, err_s)
+                # Leader exited but a descendant still holds stdout/stderr open. The leg's
+                # real work is done; reclaim after a short IDLE grace (reset by any late
+                # flush or descendant CPU) instead of burning the wall-clock backstop.
+                # ``open_fds`` non-empty proves the group is still alive, so force the
+                # group kill even though the leader is already reaped.
+                if time.monotonic() - last_heartbeat >= _LEG_POST_EXIT_GRACE_S:
+                    _terminate_process_group(proc, force_group=True)
+                    out_s, err_s = _decode()
+                    return _LegRun(proc.returncode if proc.returncode is not None else 0, out_s, err_s)
+            # (5) stall: silent AND CPU-flat past the threshold while still running.
+            elif time.monotonic() - last_heartbeat >= stall_threshold_s:
+                _terminate_process_group(proc)
+                out_s, err_s = _decode()
+                marker = f"\n[leg-liveness] stalled: no output/CPU for {int(stall_threshold_s)}s"
+                return _LegRun(proc.returncode or 1, out_s, err_s + marker)
+    finally:
+        _terminate_process_group(proc)
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
 
 
 def _run_claude_tui_session(
@@ -1038,16 +1209,30 @@ def _run_claude_tui_session(
     timeout_s: int,
     env: Mapping[str, str],
     mode: str = "review",
+    backstop_s: int | None = None,
 ) -> tuple[int, str, str]:
     start_monotonic = time.monotonic()
     start_wall = time.time()
-    deadline = start_monotonic + max(1, timeout_s)
+    # Leg-liveness: like the print-mode legs, the claude TUI leg is bounded by heartbeat
+    # extinction, not the input-scaled base. The wall-clock DEADLINE honors an EXPLICIT
+    # caller override (``backstop_s`` supplied by ``_default_spawn``, which knows whether
+    # the per-leg timeout was an explicit override) and otherwise raises the input-scaled
+    # default to the ``_MAX_LEG_TIMEOUT_S`` backstop so a long, actively-streaming review
+    # isn't killed mid-flight; a genuinely wedged TUI is reclaimed by the stall timer.
+    if backstop_s is None:
+        backstop_s = max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
+    else:
+        backstop_s = max(1, int(backstop_s))
+    deadline = start_monotonic + backstop_s
     master_fd: int | None = None
     proc: subprocess.Popen[bytes] | None = None
     terminal_bytes = bytearray()
     prompt_sent = False
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
+    last_heartbeat = start_monotonic
+    last_cpu_sample = start_monotonic
+    last_ticks = 0
     try:
         master_fd, slave_fd = pty.openpty()
         try:
@@ -1073,6 +1258,7 @@ def _run_claude_tui_session(
             os.close(master_fd)
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}"
 
+    last_ticks = group_cpu_ticks(proc.pid)
     try:
         while time.monotonic() < deadline:
             if master_fd is not None:
@@ -1084,6 +1270,7 @@ def _run_claude_tui_session(
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
+                        last_heartbeat = time.monotonic()  # PTY output = liveness
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed
                         # the slave side, so no further output can arrive. Without this
@@ -1133,9 +1320,27 @@ def _run_claude_tui_session(
                     return 0, review_text, "claude_tui_file_output"
                 detail = "claude_tui_missing_canonical_output"
                 return proc.returncode or 1, review_text or transcript_text, detail
+            # secondary CPU heartbeat (never a kill; only extends life) + stall reclaim.
+            if now - last_cpu_sample >= _LEG_LIVENESS_CPU_SAMPLE_S:
+                last_cpu_sample = now
+                ticks = group_cpu_ticks(proc.pid)
+                if ticks > last_ticks:
+                    last_heartbeat = now
+                last_ticks = ticks
+            # stall: PTY silent AND CPU-flat past the threshold while still running. The
+            # canonical verdict is the review FILE (checked above); nothing to nudge for a
+            # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
+            if now - last_heartbeat >= _LEG_STALL_THRESHOLD_S:
+                review_text = _read_review_output(output_file)
+                if _completion_ok(review_text, mode):
+                    return 0, review_text, "claude_tui_file_output"
+                transcript_text = transcript_salvage or _latest_claude_transcript_text(
+                    str(cwd), since=start_wall
+                )
+                return proc.poll() or 1, review_text or transcript_text, "claude_tui_stalled"
         review_text = _read_review_output(output_file)
         transcript_text = transcript_salvage or _latest_claude_transcript_text(str(cwd), since=start_wall)
-        return 124, review_text or transcript_text, f"timeout after {timeout_s}s"
+        return 124, review_text or transcript_text, f"timeout after {backstop_s}s"
     finally:
         if proc is not None:
             _terminate_process_group(proc)
@@ -1226,6 +1431,7 @@ def _exec_claude_tui_leg(
     model: str | None = None,
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
+    backstop_s: int | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -1268,6 +1474,7 @@ def _exec_claude_tui_leg(
         timeout_s=timeout_s,
         env=env,
         mode=mode,
+        backstop_s=backstop_s,
     )
     return _classify_leg(rc, review_text, log_text, mode), review_text or log_text
 
@@ -1394,6 +1601,22 @@ def _leg_timeout_for(review_dir: Path) -> int:
     return min(_LEG_TIMEOUT_MAX_S, _LEG_TIMEOUT_BASE_S + kb * _LEG_TIMEOUT_PER_KB_S)
 
 
+def _leg_deadline_from(timeout_s: int | None, review_dir: Path) -> tuple[int, int]:
+    """Return ``(retry_reference_s, hard_deadline_s)`` for a leg.
+
+    An **explicit** caller override (``timeouts_by_leg`` / ``timeout_seconds_by_leg``,
+    surfaced here as a non-``None`` ``timeout_s``) is the HARD deadline, honored as-is —
+    a frozen-contract per-leg bound a governed caller relies on (``{"gemini": 300}`` must
+    kill at 300s, not 1800s). Only the input-scaled DEFAULT (``timeout_s is None``) is
+    raised to the ``_MAX_LEG_TIMEOUT_S`` backstop, so a slow-but-STREAMING leg isn't
+    killed at the 600s floor while stall detection reclaims dead legs long before 1800s.
+    """
+    if timeout_s is None:
+        ref = _leg_timeout_for(review_dir)
+        return ref, max(int(ref), _MAX_LEG_TIMEOUT_S)
+    return int(timeout_s), int(timeout_s)
+
+
 def _exec_leg(
     leg: str,
     review_dir: Path,
@@ -1404,6 +1627,8 @@ def _exec_leg(
     model: str | None = None,
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
+    *,
+    deadline_s: int | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -1425,7 +1650,17 @@ def _exec_leg(
     authed, auth_detail = _leg_auth_ok(leg, env)
     if not authed:
         return 1, "", auth_detail
-    timeout_s = _leg_timeout_for(review_dir) if timeout_s is None else timeout_s
+    # Leg-liveness: ``timeout_s`` stays the fast-vs-slow retry-fraction reference; the
+    # real kill is stall detection inside ``_run_leg_with_liveness``. The wall-clock
+    # DEADLINE honors an EXPLICIT caller override as-is and only raises the input-scaled
+    # DEFAULT to the ``_MAX_LEG_TIMEOUT_S`` backstop (so a slow-but-STREAMING leg isn't
+    # killed at the 600s floor). ``deadline_s`` may be supplied by ``_default_spawn`` —
+    # which alone knows whether the override was explicit; when absent (direct callers /
+    # tests) it is derived here from this call's own ``timeout_s`` None-ness.
+    if deadline_s is None:
+        timeout_s, deadline_s = _leg_deadline_from(timeout_s, review_dir)
+    else:
+        timeout_s = _leg_timeout_for(review_dir) if timeout_s is None else int(timeout_s)
     artifact = _read_review_output(review_dir / "review-bundle.md") if artifact is None else artifact
     prompt = _render_leg_prompt(artifact, review_dir, mode)
     if leg == "codex":
@@ -1454,12 +1689,14 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
-                proc = subprocess.run(
-                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                    timeout=timeout_s, check=False, input=prompt,
+                # codex streams its transcript to STDERR (stdout is empty until the
+                # final message), so the liveness heartbeat rides stderr. Prompt on
+                # stdin ("-").
+                proc = _run_leg_with_liveness(
+                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s, input_text=prompt,
                 )
             except subprocess.TimeoutExpired:
-                return 124, "", f"timeout after {timeout_s}s"
+                return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
             rc = proc.returncode
@@ -1503,17 +1740,14 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
-                # timeout_s is the SOFT per-leg budget; the hard subprocess kill gets a
-                # deliberate +60s grace so a leg that is finishing can flush its final
-                # output instead of being truncated. The elapsed-fraction retry guard
-                # below is measured against this same expanded bound, so worst-case
-                # wall-clock stays ~1.5x one budget, never a full double.
-                proc = subprocess.run(
-                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                    timeout=timeout_s + 60, check=False, stdin=subprocess.DEVNULL,
+                # agy streams its review to STDOUT; the liveness heartbeat rides stdout
+                # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
+                # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
+                proc = _run_leg_with_liveness(
+                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
                 )
             except subprocess.TimeoutExpired:
-                return 124, "", f"timeout after {timeout_s}s"
+                return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             review_text = proc.stdout or ""
             rc = proc.returncode
@@ -1562,12 +1796,13 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
-                proc = subprocess.run(
-                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                    timeout=timeout_s + 60, check=False,
+                # grok streams its plain review to STDOUT; heartbeat rides stdout.
+                # Prompt is inline on argv (-p) — no stdin.
+                proc = _run_leg_with_liveness(
+                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
                 )
             except subprocess.TimeoutExpired:
-                return 124, "", f"timeout after {timeout_s}s"
+                return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             review_text = proc.stdout or ""
             rc = proc.returncode
@@ -1631,8 +1866,11 @@ def _default_spawn(
             _resolve_brief(mode, brief_ref), encoding="utf-8"
         )
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
-        # explicit override bounds the leg.
-        leg_timeout = _leg_timeout_for(review_dir) if timeout_s is None else int(timeout_s)
+        # explicit override bounds the leg. This is the ONE place that knows whether the
+        # override was explicit, so resolve BOTH the retry reference and the hard deadline
+        # here and thread the deadline down (an explicit override is honored as-is; only
+        # the input-scaled default is raised to the _MAX backstop).
+        leg_timeout, leg_deadline = _leg_deadline_from(timeout_s, review_dir)
         # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
         # path calls the leg execs with their exact prior signatures — existing
         # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
@@ -1650,10 +1888,12 @@ def _default_spawn(
                 repo_dir=resolved_repo_dir,
                 mode=mode,
                 model=model,
+                backstop_s=leg_deadline,
                 **extra,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, leg_timeout, artifact, mode, model, **extra
+            leg, review_dir, out_dir, leg_timeout, artifact, mode, model,
+            deadline_s=leg_deadline, **extra,
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed

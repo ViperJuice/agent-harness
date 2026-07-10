@@ -43,10 +43,10 @@ proves the two live code paths agree, so it does not re-snapshot literals.
 from __future__ import annotations
 
 import os
-import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -56,27 +56,25 @@ from phase_loop_runtime.advisor_board import Seat, resolve_seat_env
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
 
+@contextmanager
 def _capture_run(stdout: str = "", returncode: int = 0):
-    """Capture the LAST ``subprocess.run`` call's cmd/env/timeout. codex/gemini
-    fire an auth-preflight ``run`` first; the leg cmd overwrites it (rc0 ⇒ the
-    preflight passes, exactly as the homebrew test relies on)."""
+    """Capture the leg's ``_run_leg_with_liveness`` call (cmd/env/deadline_s).
+
+    The leg exec now flows through the stall-aware ``_run_leg_with_liveness`` seam
+    (the old single ``subprocess.run`` boundary). codex still fires an auth-preflight
+    ``subprocess.run`` first, so it is bypassed (fail-open logged-in) to reach the leg
+    exec — exactly the passing-preflight the legacy capture relied on."""
     captured: dict = {}
 
-    def fake_run(cmd, **kwargs):
+    def fake_liveness(cmd, **kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = kwargs.get("env")
-        captured["timeout"] = kwargs.get("timeout")
+        captured["deadline_s"] = kwargs.get("deadline_s")
+        return pi._LegRun(returncode, stdout, "")
 
-        class _R:
-            pass
-
-        r = _R()
-        r.returncode = returncode
-        r.stdout = stdout
-        r.stderr = ""
-        return r
-
-    return captured, fake_run
+    with patch.object(pi, "_run_leg_with_liveness", fake_liveness), \
+            patch.object(pi, "_leg_auth_ok", return_value=(True, "")):
+        yield captured
 
 
 def _default_seat(harness: str) -> Seat:
@@ -97,11 +95,9 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         base = dict(os.environ)
         seat = _default_seat(leg)
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            legacy, fake = _capture_run(stdout=stdout)
-            with patch.object(subprocess, "run", fake):
+            with _capture_run(stdout=stdout) as legacy:
                 pi._exec_leg(leg, Path(rd), Path(od))  # legacy: effort/env absent
-            seam, fake2 = _capture_run(stdout=stdout)
-            with patch.object(subprocess, "run", fake2):
+            with _capture_run(stdout=stdout) as seam:
                 pi._exec_leg(
                     leg, Path(rd), Path(od),
                     effort=seat.effort, model=seat.model,
@@ -113,7 +109,7 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         legacy, seam = self._exec_leg_pair("codex")
         self.assertEqual(legacy["cmd"], seam["cmd"])       # argv
         self.assertEqual(legacy["env"], seam["env"])       # scrubbed env
-        self.assertEqual(legacy["timeout"], seam["timeout"])  # timeout metadata
+        self.assertEqual(legacy["deadline_s"], seam["deadline_s"])  # hard-kill deadline
         # anchor: the codex effort literal really is in the argv both ways.
         self.assertIn("model_reasoning_effort=xhigh", seam["cmd"])
 
@@ -121,7 +117,7 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         legacy, seam = self._exec_leg_pair("gemini", stdout="AGREE")
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])
-        self.assertEqual(legacy["timeout"], seam["timeout"])
+        self.assertEqual(legacy["deadline_s"], seam["deadline_s"])
         # anchor: the agy leg bakes effort INTO the model name, both ways.
         self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "Gemini 3.1 Pro (High)")
 
