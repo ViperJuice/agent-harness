@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+## [0.6.1] — 2026-07-10
+
 - **Stall-aware leg-liveness monitor (kill on heartbeat extinction, not a blind
   wall-clock).** The codex/gemini/grok print-mode review legs no longer hard-kill at
   the input-scaled `timeout_s` (a slow-but-STREAMING frontier review was being killed
