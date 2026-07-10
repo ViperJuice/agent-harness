@@ -10,7 +10,7 @@ name: publish-consiliency-harness
 # One-time MAINTAINER setup on PyPI (agent cannot do this — it needs credentials):
 #   create/claim project "consiliency-harness" and add a Trusted Publisher:
 #     owner=ViperJuice  repo=agent-harness
-#     workflow=publish-consiliency-harness.yml  environment=pypi-consiliency-harness
+#     workflow=publish-consiliency-harness.yml  environment=pypi
 # The credentialed publish runs ONLY when the maintainer cuts a
 # `consiliency-harness-vX.Y.Z` tag. PR / workflow_dispatch only dry-run-BUILD.
 
@@ -95,7 +95,7 @@ jobs:
     # Credentialed publish ONLY on a maintainer-cut consiliency-harness-v* tag.
     if: startsWith(github.ref, 'refs/tags/consiliency-harness-v')
     runs-on: ubuntu-latest
-    environment: pypi-consiliency-harness
+    environment: pypi
     permissions:
       id-token: write
     steps:
