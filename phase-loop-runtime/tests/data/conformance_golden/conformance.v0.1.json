@@ -1,0 +1,83 @@
+{
+  "schema": "conformance.v0.1",
+  "title": "AgentRuntimeProvider cross-language conformance golden",
+  "description": "Language-neutral conformance golden for the agent-runtime-provider-omnigent.v0.1 seam. Pins the four invariant tables shared by the TypeScript core-contracts source (omniagent-plus/packages/core-contracts/src/*) and the Python baseline (agent-harness phase_loop_runtime/agent_runtime_provider.py). The method-name mapping table pins the snake_case<->camelCase correspondence so a conformance test distinguishes real drift (a changed event/error string, a dropped method) from a naming-convention delta.",
+  "provenance": {
+    "ts_source": {
+      "methods": "packages/core-contracts/src/provider.ts (interface AgentRuntimeProvider)",
+      "events": "packages/core-contracts/src/events.ts (type RuntimeEvent union)",
+      "states": "packages/core-contracts/src/state-machines.ts (turnStates / agentSessionStates + transition tables)",
+      "errors": "packages/core-contracts/src/errors.ts (runtimeFailureCategories)"
+    },
+    "py_baseline": "agent-harness phase-loop-runtime/src/phase_loop_runtime/agent_runtime_provider.py (Protocol AgentRuntimeProvider + HomebrewAgentRuntimeProvider)"
+  },
+  "methodNames": [
+    "createSession",
+    "sendTurn",
+    "readHistory",
+    "streamEvents",
+    "cancelTurn",
+    "closeSession",
+    "getSessionInfo",
+    "health"
+  ],
+  "methodNameMapping": [
+    { "ts": "createSession", "py": "create_session" },
+    { "ts": "sendTurn", "py": "send_turn" },
+    { "ts": "readHistory", "py": "read_history" },
+    { "ts": "streamEvents", "py": "stream_events" },
+    { "ts": "cancelTurn", "py": "cancel_turn" },
+    { "ts": "closeSession", "py": "close_session" },
+    { "ts": "getSessionInfo", "py": "get_session_info" },
+    { "ts": "health", "py": "health" }
+  ],
+  "eventTypes": [
+    "runtime.session.created",
+    "runtime.turn.started",
+    "runtime.text.delta",
+    "runtime.tool.call",
+    "runtime.tool.result",
+    "runtime.approval.request",
+    "runtime.limit",
+    "runtime.turn.completed",
+    "runtime.turn.failed",
+    "runtime.turn.cancelled",
+    "runtime.turn.timed_out",
+    "runtime.session.closed",
+    "runtime.heartbeat"
+  ],
+  "terminalStates": {
+    "turn": [
+      "completed",
+      "failed",
+      "cancelled",
+      "timed_out"
+    ],
+    "session": [
+      "closed",
+      "failed"
+    ]
+  },
+  "errorCategories": [
+    "validation",
+    "transport",
+    "protocol",
+    "auth",
+    "billing",
+    "rate_limit",
+    "concurrency_limit",
+    "policy_denied",
+    "approval_required",
+    "approval_denied",
+    "timeout",
+    "cancelled",
+    "harness_unavailable",
+    "backend_unavailable",
+    "backend_version_mismatch",
+    "backend_capability_missing",
+    "sandbox_denied",
+    "malformed_response",
+    "state_conflict",
+    "internal"
+  ]
+}
