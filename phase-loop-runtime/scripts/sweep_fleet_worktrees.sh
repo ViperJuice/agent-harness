@@ -99,18 +99,29 @@ is_orphan_worktree() {
   [[ -f "$dotgit" ]] || return 1
   local gitdir
   gitdir=$(sed -n 's/^gitdir: //p' "$dotgit" 2>/dev/null | head -n1)
+  gitdir="${gitdir%$'\r'}"                          # tolerate CRLF `.git` pointer files
   [[ -n "$gitdir" ]] || return 1
   # Relative gitdir → resolve against the worktree dir.
   [[ "$gitdir" == /* ]] || gitdir="$path/$gitdir"
-  # Orphan iff the owning admin dir is genuinely ABSENT. `-e` alone conflates
-  # absence (ENOENT) with inaccessibility (EACCES anywhere in the ancestor chain),
-  # which would misread an existing-but-unreadable gitdir as absent and delete
-  # recoverable work. `stat`'s error text is the reliable discriminator: only a
-  # genuine "no such file" means orphan; ANY other stat failure → cannot confirm
-  # absence → KEEP.
+  # Orphan iff the owning admin dir is genuinely ABSENT. `-e` conflates absence
+  # (ENOENT) with inaccessibility (EACCES anywhere in the ancestor chain), and
+  # parsing stat's error TEXT is path-contaminated. Use python3's errno-precise
+  # stat instead: FileNotFoundError is EXACTLY ENOENT, with no text/path parsing.
+  # Only ENOENT → orphan; exists → not orphan; EACCES/other → KEEP (fail-safe).
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import os,sys
+try: os.stat(sys.argv[1]); sys.exit(1)
+except FileNotFoundError: sys.exit(0)
+except OSError: sys.exit(1)' "$gitdir"; then
+      return 0                                       # ENOENT → orphan
+    fi
+    return 1                                          # exists / EACCES / other → KEEP
+  fi
+  # Fallback (no python3): path-stripped text match so a path containing
+  # "not found"/"no such file" cannot masquerade as ENOENT.
   local st
   st=$(stat -- "$gitdir" 2>&1) && return 1          # exists → not an orphan
-  grep -qiE 'no such file|not found' <<<"$st" && return 0   # genuinely absent → orphan
+  grep -qiE 'no such file|not found' <<<"${st//"$gitdir"/}" && return 0   # ENOENT → orphan
   return 1                                           # EACCES / other → KEEP (fail-safe)
 }
 
