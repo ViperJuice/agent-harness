@@ -10,35 +10,66 @@ skills, extracted from a private fleet repo into a public, Apache-2.0 package.
   plan/execute-phase, plan/execute-detailed, skill-improvement-planner, skill-editor,
   phase-loop) with per-harness overrides for claude / codex / gemini / opencode.
 
-## Install
+## Quickstart (60 seconds)
 
-Cross-OS (macOS / Linux), no tailnet / 1Password / Homebrew / dotfiles clone:
+```sh
+pip install consiliency-harness   # the install-friendly front door → phase-loop-runtime
+phase-loop run                    # autonomous by default: no subscription auth, no dotfiles
+```
+
+That's it. `consiliency-harness` is a thin **dependency shim** that pulls the
+`phase-loop-runtime` engine (it ships no code and no console script of its own; the
+obvious PyPI name `agent-harness` is an **unrelated third party**). With zero
+configuration you get:
+
+- **Zero-auth, autonomous by default.** `run_mode` is `autonomous` — the runner
+  drives phases unattended, with no advisor panel and **no subscription login
+  required**. Opt into governed review with `--governed`.
+- **Degraded-CLI tolerant.** Missing or unbilled executor CLIs (codex / claude /
+  gemini / opencode / pi) are **skipped, not fatal** — a run continues on whatever
+  is installed and authed.
+- **Skills already inside the wheel.** `phase-loop run` / `dry-run` resolve their
+  workflow skill packs from `skills_bundle/**` shipped **in the wheel** — no
+  dotfiles checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you
+  set one, must return **absolute** roots.)
+
+## Install — two surfaces
+
+**Both surfaces are supported; pick by how you drive the runner.**
+
+**(1) Wheel-bundled skills** — the primitive itself. `pip install
+consiliency-harness` (or the engine directly, `pip install phase-loop-runtime`)
+gives you the `phase-loop` / `codex-phase-loop` CLIs with the workflow skills
+bundled in the wheel, so `phase-loop run` works with no dotfiles. Pin a release with
+`pip install consiliency-harness==X.Y.Z`.
+
+**(2) Interactive-harness skills** — if you drive an interactive harness (Claude
+Code, Codex, Gemini, OpenCode) and want the workflow skills **copied into that
+harness's skill root** (`~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`,
+`~/.config/opencode/skills`), run the installer script. Cross-OS (macOS / Linux),
+no tailnet / 1Password / Homebrew / dotfiles clone:
 
 ```sh
 git clone https://github.com/ViperJuice/agent-harness
-agent-harness/install-agent-harness.sh --harness all   # claude + codex + gemini + opencode (or pick one: claude|codex|gemini|opencode)
+agent-harness/install-agent-harness.sh --harness all   # claude + codex + gemini + opencode (or pick one)
 
 # …or the one-liner:
 curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
 ```
 
-This installs the pinned `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) and the
-harness workflow skills into your harness skill root (`~/.claude/skills`,
-`~/.codex/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`). `--ref vX.Y.Z`
-pins a release (default: the latest stable). Re-run to update.
-
-A plain `pip install "git+…/agent-harness@<tag>#subdirectory=phase-loop-runtime"`
-also works out of the box: the assembled workflow skill bundle ships **inside** the
-wheel, so `phase-loop run`/`dry-run` resolve their skill packs with no dotfiles
-checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you set one, must
-return **absolute** roots.)
+This installs the `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) **and** the
+harness workflow skills into your skill root. It auto-resolves the current release
+(no hardcoded ref); `--ref vX.Y.Z` pins one explicitly. Re-run to update.
 
 > [!IMPORTANT]
-> **PyPI package name is `phase-loop-runtime` — not `agent-harness`.** The
+> **The install-friendly name is `consiliency-harness`; the engine is
+> `phase-loop-runtime`.** Do **not** `pip install agent-harness` — the
 > `agent-harness` project on PyPI is an **unrelated third party** (coincidentally
-> similar version numbers); do **not** publish this runtime there, and do **not**
-> `pip install agent-harness` expecting this CLI. The published wheel is
-> `pip install phase-loop-runtime==X.Y.Z` (built by `.github/workflows/publish-pypi.yml`).
+> similar version numbers), not this CLI. `consiliency-harness` is a pure dependency
+> shim (sole dep `phase-loop-runtime>=0.6.1`, zero `[project.scripts]`) that resolves
+> to the real engine; `pip install phase-loop-runtime==X.Y.Z` installs that engine
+> directly. Both are built by trusted-publishing release workflows under
+> `.github/workflows/` (never an agent-typed credential).
 
 ## Outside-agent conformance
 

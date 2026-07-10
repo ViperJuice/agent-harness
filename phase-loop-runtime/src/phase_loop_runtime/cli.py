@@ -640,6 +640,31 @@ def build_parser() -> argparse.ArgumentParser:
         choices=repo_validation.ALL_TARGET_TOKENS,
         help="One of: fast, gate, full, fix, affected, doctor (check == doctor).",
     )
+    # doctor: the front-door adoptability report (IF-0-AHADOPT-2). A NEW top-level
+    # command and strict SUPERSET of `repo-validate doctor` — it adds the two
+    # install surfaces and the multi-registry BOM, emitting the checked-in
+    # `phase-loop-doctor.v1` schema. Own --json/--fail-on-stale/--bom-fixture so
+    # they can follow the subcommand (`phase-loop doctor --json`); reuses the
+    # top-level --repo.
+    doctor_sub = subparsers.add_parser(
+        "doctor",
+        help=(
+            "Adoptability report: which tools/CLIs are installed+authed and what "
+            "each unlocks, across BOTH install surfaces, plus a pin-vs-registry "
+            "BOM (npm+PyPI) with stale|current|unknown verdicts."
+        ),
+    )
+    doctor_sub.add_argument("--json", action="store_true", help="Emit the phase-loop-doctor.v1 payload as JSON.")
+    doctor_sub.add_argument(
+        "--fail-on-stale",
+        action="store_true",
+        help="Exit non-zero if any GATING (repo-owned) BOM target is stale.",
+    )
+    doctor_sub.add_argument(
+        "--bom-fixture",
+        metavar="PATH",
+        help="Load the BOM from a fixture JSON instead of live registries (CI/test wiring).",
+    )
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
     train_status_sub = subparsers.add_parser(
@@ -755,6 +780,19 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             target=args.repo_validate_target,
             cwd=args.repo or ".",
             as_json=bool(getattr(args, "json", False)),
+        )
+    if command == "doctor":
+        # DECOUPLE SL-1: lazy import keeps the doctor module (and its reuse of
+        # repo_validation / install_status) off the bare `import cli` graph, and
+        # the doctor graph itself pulls NO dotfiles-domain module.
+        from . import doctor as _doctor
+
+        fixture = getattr(args, "bom_fixture", None)
+        return _doctor.run_doctor(
+            repo=Path(args.repo or "."),
+            as_json=bool(getattr(args, "json", False)),
+            fail_on_stale=bool(getattr(args, "fail_on_stale", False)),
+            bom_fixture=Path(fixture) if fixture else None,
         )
     if command == "export-schema":
         return _export_schema_command(args=args)

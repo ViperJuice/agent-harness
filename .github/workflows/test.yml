@@ -42,6 +42,15 @@ jobs:
         working-directory: phase-loop-runtime
         run: python -m pytest -m "not dotfiles_integration"
 
+      - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target
+        # A drift detector nobody invokes re-rots on day 1 (IF-0-AHADOPT-2). This
+        # runs the INSTALLED `phase-loop doctor` against the live npm+PyPI
+        # registries and fails the build if a GATING (repo-owned) BOM target is
+        # stale — the auto-track install pin or the consiliency-contract floor.
+        # It degrades to `unknown` (never fails) when a registry is unreachable,
+        # so a network blip cannot red the build; only definitive drift gates.
+        run: phase-loop doctor --fail-on-stale
+
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
     runs-on: ubuntu-latest

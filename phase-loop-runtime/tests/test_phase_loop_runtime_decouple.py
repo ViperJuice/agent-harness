@@ -81,6 +81,40 @@ class SkillInventoryDecoupleTest(unittest.TestCase):
         self.assertIn(fake_root, roots.get("claude", ()))
 
 
+class DoctorImportIsolationTest(unittest.TestCase):
+    """AHADOPT lane (d): the `phase-loop doctor` import graph must pull NO
+    dotfiles-domain module, transitively (it reuses repo_validation +
+    install_status, so this also guards those two)."""
+
+    def test_importing_doctor_pulls_no_dotfiles_domain_module(self):
+        # Import in a fresh subprocess so an unrelated earlier import in this
+        # session cannot mask a real leak.
+        import subprocess
+        import sys
+
+        code = (
+            "import phase_loop_runtime.doctor, sys; "
+            "forbidden=['phase_loop_runtime.adoption_bundle',"
+            "'phase_loop_runtime.build_bundle',"
+            "'phase_loop_runtime.skill_sources_plugin',"
+            "'phase_loop_runtime.dotfiles_profile_plugin']; "
+            "leaked=[m for m in forbidden if m in sys.modules]; "
+            "assert not leaked, leaked; print('clean')"
+        )
+        # Propagate the parent's sys.path so the fresh subprocess can import the
+        # package whether it is pip-installed (CI/Gate A) or run from an
+        # uninstalled checkout without PYTHONPATH=src. Isolation still holds: the
+        # child imports only phase_loop_runtime.doctor and asserts no dotfiles
+        # module is present.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("clean", result.stdout)
+
+
 class PlanManifestRootTest(unittest.TestCase):
     def test_manifest_path_takes_explicit_root(self):
         repo = Path("/tmp/some-repo")

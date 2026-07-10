@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase-loop-doctor.v1",
+  "$comment": "Checked-in contract for `phase-loop doctor --json` (IF-0-AHADOPT-2). Metadata-only: NO absolute paths. Separate from phase-loop-install-status.v1 and the dotfiles adoption-bundle. Hand-authored; a golden fixture (phase-loop-doctor.v1.golden.json) and live output both validate against it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "summary", "tools", "stack_hints", "declared_contracts", "install_surfaces", "bom"],
+  "properties": {
+    "schema": {
+      "const": "phase-loop-doctor.v1"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "stack_hints": {
+      "type": "array",
+      "description": "Stack marker files present (from repo_validation.doctor_report; superset). Filenames only — metadata-only.",
+      "items": { "type": "string" }
+    },
+    "declared_contracts": {
+      "type": "array",
+      "description": "Declared agent validation contracts (from repo_validation.doctor_report; superset).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "runner"],
+        "properties": {
+          "target": { "type": "string" },
+          "runner": { "type": "string" }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "present", "authed", "unlocks"],
+        "properties": {
+          "name": { "type": "string" },
+          "present": { "type": "boolean" },
+          "authed": { "type": ["boolean", "null"] },
+          "unlocks": { "type": "string" }
+        }
+      }
+    },
+    "install_surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "status"],
+        "properties": {
+          "surface": {
+            "type": "string",
+            "enum": ["wheel-bundled-skills", "interactive-harness-skills"]
+          },
+          "harness": { "type": ["string", "null"] },
+          "status": {
+            "type": "string",
+            "enum": ["present", "partial", "missing", "unknown"]
+          },
+          "unlocks": { "type": "string" }
+        }
+      }
+    },
+    "bom": {
+      "type": "array",
+      "description": "BOM inventory v1: named pin-vs-registry-latest targets across PyPI + npm.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "ecosystem", "pinned", "latest", "verdict", "gating"],
+        "properties": {
+          "target": { "type": "string" },
+          "ecosystem": {
+            "type": "string",
+            "enum": ["pypi", "pypi(phase-loop-runtime)", "npm", "dotfiles"]
+          },
+          "pinned": { "type": ["string", "null"] },
+          "latest": { "type": ["string", "null"] },
+          "verdict": {
+            "type": "string",
+            "enum": ["stale", "current", "unknown"]
+          },
+          "gating": {
+            "type": "boolean",
+            "description": "When true, a `stale` verdict makes `phase-loop doctor --fail-on-stale` exit non-zero. Repo-owned targets gate; vendored/foreign refs are reported but do not gate."
+          },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}

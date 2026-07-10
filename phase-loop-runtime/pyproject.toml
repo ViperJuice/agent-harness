@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"  # PyPI dist name; NOT "agent-harness" (an unrelated third-party PyPI project)
-version = "0.6.1"
+version = "0.6.2"
 description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,6 +44,12 @@ dependencies = [
     # guarantees the contract-owned vocabulary (incl. governance_contracts) is live.
     "consiliency-contract>=0.6.5,<0.7",
     "jsonschema>=4,<5",
+    # `phase-loop doctor` (IF-0-AHADOPT-2) compares consumer pins to registry
+    # latest with PEP 440 version ordering. Declared so the BOM produces real
+    # stale|current verdicts on the isolated `uv tool install` path (where pip —
+    # and its transitive packaging — is not present); the doctor still degrades to
+    # `unknown` rather than crash if it is somehow absent.
+    "packaging>=21",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in
     # the tomli backport there (import shim in advisor_board/config.py).

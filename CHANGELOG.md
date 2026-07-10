@@ -6,6 +6,37 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+## [0.6.2] — 2026-07-10
+
+Front-door adoptability for the primitive (roadmap AHADOPT; freezes
+IF-0-AHADOPT-1 + IF-0-AHADOPT-2).
+
+- **`consiliency-harness` install-friendly front door (new PyPI meta-package).**
+  A pure dependency shim whose sole install-requires is
+  `phase-loop-runtime>=0.6.1` and which ships ZERO `[project.scripts]` — it adds no
+  console script and cannot shadow the runtime's `phase-loop` / `codex-phase-loop`.
+  The obvious name `agent-harness` is an unrelated third party; `pip install
+  consiliency-harness` now pulls the real engine. Staged for release via a
+  dedicated tokenless-OIDC trusted-publishing workflow
+  (`publish-consiliency-harness.yml`, `consiliency-harness-v*` tag namespace) —
+  the maintainer cuts the tag; no agent credential.
+- **`phase-loop doctor` (new top-level command).** A strict superset of
+  `repo-validate doctor` that reports which tools/CLIs are installed + authed and
+  what each unlocks, across BOTH install surfaces (wheel-bundled `phase-loop run`
+  vs interactive `~/.claude/skills`), plus a multi-registry **BOM** comparing
+  named consumer pins to npm + PyPI registry latest (PyPI `consiliency-contract`;
+  npm `@consiliency/contract`, `@consiliency/canon-core`; the install-script ref;
+  the mac-skills ref) with `stale|current|unknown` verdicts. Emits the checked-in
+  `phase-loop-doctor.v1` schema (+ golden fixture); metadata-only. Degrades to
+  `unknown` (never fails) when a registry is unreachable. `--fail-on-stale` exits
+  non-zero on a stale GATING (repo-owned) target and is WIRED as a CI drift gate.
+  The doctor import graph pulls no dotfiles-domain module (DECOUPLE SL-1).
+- **Install-pin auto-track.** `install-agent-harness.sh` no longer hardcodes a
+  stale release ref; it resolves the ref from a new checked-in `RELEASE_PIN`
+  (sibling when cloned, fetched from the default branch on curl-pipe), held ==
+  the package version by the `release-consistency` gate. A test asserts the pin
+  is never behind the PyPI-published version.
+
 ## [0.6.1] — 2026-07-10
 
 - **Stall-aware leg-liveness monitor (kill on heartbeat extinction, not a blind

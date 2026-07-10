@@ -1,0 +1,32 @@
+{
+  "$comment": "All-current BOM fixture: `phase-loop doctor --fail-on-stale --bom-fixture tests/fixtures/bom-current.json` must exit 0. A non-gating stale entry is present to prove it does NOT gate.",
+  "bom": [
+    {
+      "target": "consiliency-contract",
+      "ecosystem": "pypi",
+      "pinned": "0.6.5",
+      "latest": "0.6.5",
+      "verdict": "current",
+      "gating": true,
+      "note": "current gating target"
+    },
+    {
+      "target": "install-agent-harness.sh ref",
+      "ecosystem": "pypi(phase-loop-runtime)",
+      "pinned": "0.6.1",
+      "latest": "0.6.1",
+      "verdict": "current",
+      "gating": true,
+      "note": "current gating target"
+    },
+    {
+      "target": "@consiliency/contract",
+      "ecosystem": "npm",
+      "pinned": "0.3.0",
+      "latest": "0.6.5",
+      "verdict": "stale",
+      "gating": false,
+      "note": "stale but NON-gating: must not fail --fail-on-stale"
+    }
+  ]
+}

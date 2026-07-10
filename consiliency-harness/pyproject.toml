@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "consiliency-harness"
+version = "0.6.1"
+description = "Dependency shim: installs the phase-loop-runtime orchestration primitive under an obvious, install-friendly name."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "ViperJuice" }]
+keywords = ["phase-loop", "agent-harness", "orchestration", "consiliency"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+]
+
+# IF-0-AHADOPT-1: this is a PURE DEPENDENCY SHIM. Its SOLE install-requires is the
+# published runtime engine of record. The obvious install name `agent-harness` is
+# an unrelated third-party PyPI project; `consiliency-harness` is the front door
+# that pulls the real runtime so `pip install consiliency-harness` "just works".
+dependencies = [
+    "phase-loop-runtime>=0.6.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/ViperJuice/agent-harness"
+Repository = "https://github.com/ViperJuice/agent-harness"
+Issues = "https://github.com/ViperJuice/agent-harness/issues"
+
+# INTENTIONALLY NO [project.scripts]. The shim adds NO console script of its own so
+# it cannot shadow the runtime's existing `phase-loop` / `codex-phase-loop` entry
+# points (Assumption 1). The only executables on PATH after install are the
+# runtime's own. A test/verify step asserts this shim ships zero scripts.
+
+# Pure-metadata wheel: this distribution ships NO importable package or module.
+# Declaring both collections empty prevents setuptools from auto-discovering
+# sibling directories ("multiple top-level packages discovered") and guarantees
+# `python -m build` emits metadata only — no code, just the dependency edge.
+[tool.setuptools]
+packages = []
+py-modules = []

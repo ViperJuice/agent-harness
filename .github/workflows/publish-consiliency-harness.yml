@@ -1,0 +1,106 @@
+name: publish-consiliency-harness
+
+# Publish the `consiliency-harness` meta-package (the dependency shim) to PyPI on
+# a DEDICATED tag, via PyPI Trusted Publishing (OIDC) — no API token stored.
+#
+# Tag namespace is DISTINCT from the runtime's `v*` publish (publish-pypi.yml) so
+# the two never collide: a `consiliency-harness-vX.Y.Z` tag publishes ONLY the
+# shim; a `vX.Y.Z` tag publishes ONLY phase-loop-runtime.
+#
+# One-time MAINTAINER setup on PyPI (agent cannot do this — it needs credentials):
+#   create/claim project "consiliency-harness" and add a Trusted Publisher:
+#     owner=ViperJuice  repo=agent-harness
+#     workflow=publish-consiliency-harness.yml  environment=pypi-consiliency-harness
+# The credentialed publish runs ONLY when the maintainer cuts a
+# `consiliency-harness-vX.Y.Z` tag. PR / workflow_dispatch only dry-run-BUILD.
+
+on:
+  push:
+    tags: ['consiliency-harness-v*']
+  pull_request:
+    paths:
+      - 'consiliency-harness/**'
+      - '.github/workflows/publish-consiliency-harness.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + verify shim (dry-run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify tag matches consiliency-harness version
+        # GITHUB_REF_NAME reaches the script via env (never interpolated into the
+        # shell body) so a crafted ref cannot inject commands.
+        if: startsWith(github.ref, 'refs/tags/consiliency-harness-v')
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import tomli as tomllib
+          ver = tomllib.load(open("consiliency-harness/pyproject.toml", "rb"))["project"]["version"]
+          tag = os.environ.get("TAG_NAME", "")
+          tag_v = tag[len("consiliency-harness-v"):] if tag.startswith("consiliency-harness-v") else tag
+          print(f"tag={tag}  tag_v={tag_v}  pyproject={ver}")
+          if tag_v != ver:
+              print(f"::error::tag {tag!r} (-> {tag_v!r}) != consiliency-harness version {ver!r}")
+              sys.exit(1)
+          PY
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel --outdir dist consiliency-harness
+
+      - name: Verify the shim is a pure metadata dependency edge
+        # Guards Assumption 1 / IF-0-AHADOPT-1: the wheel must ship NO console
+        # script and NO importable module, and depend only on phase-loop-runtime.
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          whl = sorted(glob.glob("dist/*.whl"))[-1]
+          z = zipfile.ZipFile(whl)
+          names = z.namelist()
+          # Any file NOT under the .dist-info metadata dir would be shipped code.
+          non_meta = [n for n in names if ".dist-info/" not in n]
+          assert not non_meta, f"shim ships non-metadata files: {non_meta}"
+          assert not any("entry_points.txt" in n for n in names), "shim ships a console script"
+          meta = z.read([n for n in names if n.endswith("METADATA")][0]).decode()
+          reqs = [l for l in meta.splitlines() if l.startswith("Requires-Dist:")]
+          assert reqs == ["Requires-Dist: phase-loop-runtime>=0.6.1"], reqs
+          print("OK: metadata-only shim, sole dep phase-loop-runtime>=0.6.1, no script")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: consiliency-harness-dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI (trusted publishing)
+    needs: build
+    # Credentialed publish ONLY on a maintainer-cut consiliency-harness-v* tag.
+    if: startsWith(github.ref, 'refs/tags/consiliency-harness-v')
+    runs-on: ubuntu-latest
+    environment: pypi-consiliency-harness
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: consiliency-harness-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

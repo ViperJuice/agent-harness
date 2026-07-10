@@ -1,0 +1,79 @@
+{
+  "schema": "phase-loop-doctor.v1",
+  "summary": "13/17 tools present; BOM 2 current / 1 stale / 2 unknown (0 gating-stale)",
+  "tools": [
+    { "name": "git", "present": true, "authed": null, "unlocks": "version control" },
+    { "name": "just", "present": true, "authed": null, "unlocks": "just task runner (repo agent:* contracts)" },
+    { "name": "dagger", "present": false, "authed": null, "unlocks": "dagger CI pipelines" },
+    { "name": "docker", "present": false, "authed": null, "unlocks": "docker compose self-host (DEPLOY)" },
+    { "name": "node", "present": true, "authed": null, "unlocks": "node / npx (governed-pipeline, DEPLOY)" },
+    { "name": "pnpm", "present": true, "authed": null, "unlocks": "pnpm package install" },
+    { "name": "npm", "present": true, "authed": null, "unlocks": "npm / npx package install" },
+    { "name": "yarn", "present": false, "authed": null, "unlocks": "yarn package install" },
+    { "name": "bun", "present": false, "authed": null, "unlocks": "bun runtime / package install" },
+    { "name": "uv", "present": true, "authed": null, "unlocks": "uv tool install (primitive install path)" },
+    { "name": "python3", "present": true, "authed": null, "unlocks": "python runtime" },
+    { "name": "cargo", "present": true, "authed": null, "unlocks": "cargo (rust builds)" },
+    { "name": "codex", "present": true, "authed": true, "unlocks": "codex executor leg" },
+    { "name": "claude", "present": true, "authed": true, "unlocks": "claude executor leg" },
+    { "name": "gemini", "present": true, "authed": false, "unlocks": "gemini executor leg" },
+    { "name": "opencode", "present": true, "authed": false, "unlocks": "opencode executor leg" },
+    { "name": "pi", "present": false, "authed": null, "unlocks": "pi executor leg" }
+  ],
+  "stack_hints": ["pyproject.toml"],
+  "declared_contracts": [
+    { "target": "fast", "runner": "just agent::fast" }
+  ],
+  "install_surfaces": [
+    { "surface": "wheel-bundled-skills", "status": "present", "unlocks": "phase-loop run / dry-run with no dotfiles" },
+    { "surface": "interactive-harness-skills", "harness": "claude", "status": "present" },
+    { "surface": "interactive-harness-skills", "harness": "codex", "status": "missing" }
+  ],
+  "bom": [
+    {
+      "target": "consiliency-contract",
+      "ecosystem": "pypi",
+      "pinned": "0.6.5",
+      "latest": "0.6.5",
+      "verdict": "current",
+      "gating": true,
+      "note": "phase-loop-runtime dependency floor"
+    },
+    {
+      "target": "install-agent-harness.sh ref",
+      "ecosystem": "pypi(phase-loop-runtime)",
+      "pinned": "0.6.2",
+      "latest": "0.6.2",
+      "verdict": "current",
+      "gating": true,
+      "note": "auto-track install pin (RELEASE_PIN vs published runtime)"
+    },
+    {
+      "target": "@consiliency/contract",
+      "ecosystem": "npm",
+      "pinned": "0.3.0",
+      "latest": "0.6.5",
+      "verdict": "stale",
+      "gating": false,
+      "note": "vendored contract (owned by consiliency-ingest; reported, not gated)"
+    },
+    {
+      "target": "@consiliency/canon-core",
+      "ecosystem": "npm",
+      "pinned": null,
+      "latest": "0.1.0",
+      "verdict": "unknown",
+      "gating": false,
+      "note": "no local pin in the primitive; reported for visibility"
+    },
+    {
+      "target": "mac-skills ref",
+      "ecosystem": "dotfiles",
+      "pinned": null,
+      "latest": null,
+      "verdict": "unknown",
+      "gating": false,
+      "note": "owned by dotfiles; not resolvable from the decoupled primitive"
+    }
+  ]
+}
