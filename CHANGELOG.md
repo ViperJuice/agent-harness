@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **`consiliency-harness` publish uses the `pypi` environment.** The
+  trusted-publishing workflow now gates on the same `pypi` GitHub environment as the
+  runtime's `publish-pypi.yml` (instead of a bespoke `pypi-consiliency-harness`
+  environment), so the maintainer registers one set of PyPI trusted-publisher
+  coordinates (owner=ViperJuice, repo=agent-harness,
+  workflow=publish-consiliency-harness.yml, environment=pypi) for a clean tag-and-go
+  first publish. Workflow-only; no runtime change.
+
 ## [0.6.2] — 2026-07-10
 
 Front-door adoptability for the primitive (roadmap AHADOPT; freezes
