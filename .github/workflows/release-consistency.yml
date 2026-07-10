@@ -53,6 +53,18 @@ jobs:
           elif pyproject_v != init_v:
               errors.append(f"pyproject version {pyproject_v!r} != __init__ __version__ {init_v!r}")
 
+          # RELEASE_PIN (root) is the install-script auto-track source. It must name
+          # the current release (a leading "v" + the package version) so the pinned
+          # ref installed by install-agent-harness.sh always == the published version.
+          pin_path = pathlib.Path("RELEASE_PIN")
+          if not pin_path.is_file():
+              errors.append("RELEASE_PIN file is missing at the repo root")
+          else:
+              pin = pin_path.read_text().strip()
+              pin_v = pin[1:] if pin.startswith("v") else pin
+              if pin_v != pyproject_v:
+                  errors.append(f"RELEASE_PIN {pin!r} (-> {pin_v!r}) != package version {pyproject_v!r}")
+
           if os.environ.get("IS_TAG") == "true":
               tag = os.environ.get("TAG_NAME", "")
               tag_v = tag[1:] if tag.startswith("v") else tag

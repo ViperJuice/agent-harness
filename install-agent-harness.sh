@@ -13,14 +13,35 @@
 #   (--harness all installs the skills for EVERY harness; the runtime is shared.)
 # Env overrides:
 #   AGENT_HARNESS_REPO   (default https://github.com/ViperJuice/agent-harness)
-#   AGENT_HARNESS_REF    (default v0.1.13 — keep in sync with each release)
+#   AGENT_HARNESS_REF    (default: auto-resolved from the checked-in RELEASE_PIN;
+#                         set to override — no hardcoded stale ref)
 #   AGENT_HARNESS_HARNESS (default claude; use "all" for every harness)
 #   AGENT_HARNESS_HOME   (persistent clone dir; default ~/.local/share/agent-harness)
 #   AGENT_HARNESS_SKILL_DEST (override the harness skill root)
 set -euo pipefail
 
 REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
-REF="${AGENT_HARNESS_REF:-v0.1.13}"
+
+# Resolve the release ref WITHOUT a hardcoded pin. Order:
+#   1. AGENT_HARNESS_REF override (explicit wins);
+#   2. the checked-in RELEASE_PIN sibling (cloned checkout — the common path);
+#   3. RELEASE_PIN fetched from the repo's default branch (curl-pipe path).
+# RELEASE_PIN is kept == the published package version by the release-consistency
+# CI gate, so it always names the current release (auto-track, not a stale const).
+resolve_ref() {
+    if [ -n "${AGENT_HARNESS_REF:-}" ]; then printf '%s' "$AGENT_HARNESS_REF"; return 0; fi
+    local here pin
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+    if [ -n "$here" ] && [ -f "$here/RELEASE_PIN" ]; then
+        tr -d '[:space:]' < "$here/RELEASE_PIN"; return 0
+    fi
+    pin="$(curl -fsSL "${REPO%.git}/raw/main/RELEASE_PIN" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$pin" ]; then printf '%s' "$pin"; return 0; fi
+    echo "ERROR: could not resolve the release pin. Set AGENT_HARNESS_REF=vX.Y.Z, or" >&2
+    echo "       ensure network access to ${REPO%.git}/raw/main/RELEASE_PIN." >&2
+    return 1
+}
+REF=""  # populated after arg parsing (an explicit --ref overrides RELEASE_PIN)
 HARNESS="${AGENT_HARNESS_HARNESS:-claude}"
 HOME_DIR="${AGENT_HARNESS_HOME:-$HOME/.local/share/agent-harness}"
 
@@ -32,6 +53,11 @@ while [ $# -gt 0 ]; do
         *) echo "unknown arg: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
+
+# No explicit --ref? Auto-resolve from RELEASE_PIN (sibling file, else fetched).
+if [ -z "$REF" ]; then
+    REF="$(resolve_ref)" || exit 1
+fi
 
 # Resolve the harness list: "all" => every supported harness (the runtime is shared;
 # only the skills are per-harness, installed into each harness's own skill root).
