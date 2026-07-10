@@ -6,6 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix fleet-sweep ORPHAN false-positive (path-contaminated stat grep).** `sweep_fleet_worktrees.sh`'s ENOENT-vs-EACCES discriminator grepped the raw `stat` stderr, which interpolates the path — so a gitdir path literally containing "not found"/"no such file" (or a CRLF `.git` file) misclassified an inaccessible-but-present worktree as ORPHAN, deleting recoverable work under opt-in `--prune`. Strip the path from the stderr before matching + tolerate CRLF. Found by a Grok 4.5 adversarial review that the codex+claude PCR missed.
 - **Live prune-on-merge trigger + fleet-wide detection backstop.** Two hardening
   items that shorten the window merged worktrees linger and add a cross-repo
   safety net, both reusing the ironclad safety of `prune_merged_worktrees.sh`
