@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+## [0.6.0] — 2026-07-10
+
 - **4-vendor panel reports cross-vendor independence.** `advisor_board.board_independence(board)` returns `independent`/`degraded`/`none` + `distinct_vendors` so a governed consumer (gp's `degraded_independence` gate) can distinguish a backfilled same-vendor board from a true cross-vendor one — the availability-aware fallback previously surfaced no such signal (unanimous 4-vendor CR finding).
 - **4-vendor default review board + availability-aware lens-diversity fallback.**
   The `code-review` board is now the 4-vendor cross-vendor panel — one seat per
