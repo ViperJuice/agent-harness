@@ -53,18 +53,22 @@ MARKER = "model-id-source:"
 # REGISTRY ALLOWLIST — files whose job is to enumerate model<->tier/lane
 # mappings. A concrete model ID in one of these is expected and allowed. Paths
 # are relative to the phase-loop-runtime package root (the dir holding ``src/``).
+#
+# CRITERION: only files that pin model IDs in actual CODE (dict/tuple/Seat
+# literals the tokenizer sees as STRING tokens) belong here — NOT files that
+# merely mention IDs in comments or docstrings. The tokenizer already ignores
+# comment/docstring text, so allowlisting a comment-only file is dead weight and
+# would silently exempt a FUTURE real code-level hardcode in it. Each entry below
+# was verified (with the file dropped from this set) to flag >=1 code-level ID;
+# advisor_board/{config,matrix,schema,standin,validation}.py were checked and
+# had IDs only in comments/docstrings, so they are deliberately NOT listed.
 # ---------------------------------------------------------------------------
 REGISTRY_ALLOWLIST: frozenset[str] = frozenset(
     {
         "src/phase_loop_runtime/advisor_board/fixtures.py",
         "src/phase_loop_runtime/advisor_board/presets.py",
-        "src/phase_loop_runtime/advisor_board/matrix.py",
         "src/phase_loop_runtime/advisor_board/registries.py",
         "src/phase_loop_runtime/advisor_board/resolver.py",
-        "src/phase_loop_runtime/advisor_board/standin.py",
-        "src/phase_loop_runtime/advisor_board/schema.py",
-        "src/phase_loop_runtime/advisor_board/config.py",
-        "src/phase_loop_runtime/advisor_board/validation.py",
         "src/phase_loop_runtime/profiles.py",
     }
 )

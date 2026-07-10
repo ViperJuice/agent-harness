@@ -54,6 +54,35 @@ def test_catches_unmarked_literal_in_non_registry_file() -> None:
     assert "gpt-5.6-sol" in violations[0].snippet
 
 
+def test_scan_tree_catches_planted_file_end_to_end(tmp_path: Path) -> None:
+    """End-to-end: a planted .py with an unmarked literal inside a scanned tree is flagged.
+
+    Exercises ``scan_tree()`` — the exact function the CLI/CI ``main()`` calls —
+    against a synthetic package root, not just the lower-level ``check_source``.
+    """
+    pkg_root = tmp_path
+    scan_root = pkg_root / "src" / "phase_loop_runtime"
+    scan_root.mkdir(parents=True)
+    (scan_root / "planted_module.py").write_text(
+        'FALLBACK = "gpt-5.6-sol"\n', encoding="utf-8"
+    )
+    violations = guard.scan_tree(scan_root=scan_root, package_root=pkg_root)
+    assert len(violations) == 1
+    assert violations[0].rel_path == "src/phase_loop_runtime/planted_module.py"
+    assert "gpt-5.6-sol" in violations[0].snippet
+
+
+def test_scan_tree_ignores_marked_planted_file_end_to_end(tmp_path: Path) -> None:
+    """The same planted file WITH a trailing marker passes the end-to-end scan."""
+    pkg_root = tmp_path
+    scan_root = pkg_root / "src" / "phase_loop_runtime"
+    scan_root.mkdir(parents=True)
+    (scan_root / "planted_module.py").write_text(
+        'FALLBACK = "gpt-5.6-sol"  # model-id-source: sanctioned edge\n', encoding="utf-8"
+    )
+    assert guard.scan_tree(scan_root=scan_root, package_root=pkg_root) == []
+
+
 def test_marker_suppresses_the_violation() -> None:
     """The same literal WITH a trailing marker is a sanctioned edge -> not flagged."""
     source = 'FALLBACK = "gpt-5.6-sol"  # model-id-source: sanctioned edge\n'
