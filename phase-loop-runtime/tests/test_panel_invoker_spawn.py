@@ -20,7 +20,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
     def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
         captured = {}
 
-        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review"):
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review", backstop_s=None):
             captured["command"] = command
             captured["cwd"] = cwd
             captured["prompt"] = prompt
@@ -276,7 +276,7 @@ class BundleStagingTest(unittest.TestCase):
     def test_bundle_and_instructions_staged_readonly_dir(self):
         captured = {}
 
-        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None):
+        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None, **kwargs):
             captured["bundle"] = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
             captured["instructions_exists"] = (review_dir / "review-instructions.md").exists()
             captured["out_separate"] = out_dir != review_dir
@@ -380,18 +380,20 @@ class BundleStagingTest(unittest.TestCase):
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            # The hard-kill backstop now fires from _run_leg_with_liveness at the raised
-            # deadline (max(777, _MAX_LEG_TIMEOUT_S) == 1800), so the log reports the
-            # decoupled deadline, NOT the input-scaled 777s.
+            # An EXPLICIT per-leg override (timeout_s=777) is the HARD deadline, honored
+            # as-is — the backstop is raised to _MAX_LEG_TIMEOUT_S only for the input-
+            # scaled DEFAULT. So the deadline backstop fires at 777s and the log reports
+            # 777s (frozen-contract: timeouts_by_leg is a real per-leg bound).
             with patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
                     patch.object(
                         pi, "_run_leg_with_liveness",
-                        side_effect=subprocess.TimeoutExpired(["codex"], timeout=pi._MAX_LEG_TIMEOUT_S),
+                        side_effect=subprocess.TimeoutExpired(["codex"], timeout=777),
                     ):
                 rc, _, log_text = pi._exec_leg("codex", review_dir, out_dir, 777, "SECRET-SENTINEL")
 
         self.assertEqual(rc, 124)
-        self.assertIn(f"{pi._MAX_LEG_TIMEOUT_S}s", log_text)
+        self.assertIn("777s", log_text)
+        self.assertNotIn(f"{pi._MAX_LEG_TIMEOUT_S}s", log_text)  # NOT raised to the backstop
         self.assertNotIn("SECRET-SENTINEL", log_text)
 
     def test_large_artifact_prompt_is_file_reference_with_digest_metadata(self):

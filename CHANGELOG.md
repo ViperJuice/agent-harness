@@ -16,9 +16,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (codex streams its transcript to STDERR; grok/agy to STDOUT), and advancing
   process-group CPU is a secondary, NON-killing reset (it can only extend a leg's
   life, never false-kill). The wall-clock deadline is retained purely as a raised,
-  rarely-hit backstop (`max(timeout_s, _MAX_LEG_TIMEOUT_S)` == 1800s), so the existing
-  `except subprocess.TimeoutExpired → 124` path is preserved; the input-scaled
-  `timeout_s` now only feeds the #114 retry-fraction heuristic, not the kill.
+  rarely-hit backstop, so the existing `except subprocess.TimeoutExpired → 124` path
+  is preserved; the input-scaled `timeout_s` now only feeds the #114 retry-fraction
+  heuristic, not the kill.
+  - **An EXPLICIT per-leg timeout override is honored as the hard deadline** (frozen
+    contract): `timeouts_by_leg` / `timeout_seconds_by_leg` still bound a leg exactly
+    (`{"gemini": 300}` kills at 300s). Only the input-scaled DEFAULT is raised to the
+    `_MAX_LEG_TIMEOUT_S` backstop — `_default_spawn` alone knows whether the override
+    was explicit and threads the resolved `deadline_s`/`backstop_s` down. (An earlier
+    revision nullified overrides via `max(timeout_s, 1800)`; caught in cross-vendor CR.)
+  - **Reclaim regression fixed:** if a leg's LEADER exits while a descendant still holds
+    the stdout/stderr pipe open, the group is now reclaimed after a short idle grace
+    (`_LEG_POST_EXIT_GRACE_S`) via a `force_group` `killpg` — instead of burning the full
+    backstop (the old code hit neither the clean-exit nor the stall branch). Also caught
+    in CR.
 - **Fix: the gemini (agy) review leg silently ran an EMPTY prompt.** The leg passed
   `agy … -p -` and fed the composed prompt on stdin (`input=prompt`), but `agy -p -`
   IGNORES stdin and runs an empty prompt — agy printed its "How can I help you

@@ -44,7 +44,7 @@ def test_classify_leg_advisory_prose_is_ok_review_would_degrade():
 def test_default_spawn_advisory_stages_advisory_instructions_and_accepts_prose(tmp_path):
     captured = {}
 
-    def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None):
+    def fake_exec(leg, review_dir, out_dir, timeout_s, artifact, mode="review", model=None, **kwargs):
         captured["mode"] = mode
         captured["instructions"] = (review_dir / "review-instructions.md").read_text(encoding="utf-8")
         return 0, _PROSE, ""

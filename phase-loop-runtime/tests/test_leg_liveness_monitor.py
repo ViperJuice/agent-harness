@@ -99,3 +99,62 @@ def test_normal_fast_exit_returns_captured_output():
     assert result.returncode == 0
     assert "done" in result.stdout
     assert "[leg-liveness] stalled" not in result.stderr
+
+
+# --- Concern 1: an EXPLICIT per-leg timeout override is honored as the hard deadline ---
+
+def test_leg_deadline_from_honors_explicit_and_raises_default(tmp_path):
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    # explicit override → honored as-is (even below the backstop): frozen contract.
+    assert pi._leg_deadline_from(300, review_dir) == (300, 300)
+    assert pi._leg_deadline_from(2400, review_dir) == (2400, 2400)  # above backstop honored too
+    # default (None) → input-scaled reference, deadline raised to the _MAX backstop.
+    ref, deadline = pi._leg_deadline_from(None, review_dir)
+    assert ref == pi._leg_timeout_for(review_dir)
+    assert deadline == pi._MAX_LEG_TIMEOUT_S
+
+
+def test_exec_leg_threads_explicit_override_as_deadline(tmp_path, monkeypatch):
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    (review_dir / "review-bundle.md").write_text("bundle")
+    (review_dir / "review-instructions.md").write_text("instr")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured = {}
+
+    def fake_liveness(cmd, **k):
+        captured["deadline_s"] = k.get("deadline_s")
+        (out_dir / "panel-codex.txt").write_text("AGREE")
+        return pi._LegRun(0, "", "")
+
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+
+    # explicit 300 override reaches the runner as a 300s deadline — NOT raised to 1800.
+    pi._exec_leg("codex", review_dir, out_dir, 300, "artifact")
+    assert captured["deadline_s"] == 300
+    # unset (None) → raised to the _MAX backstop so a slow-but-streaming default isn't cut off.
+    pi._exec_leg("codex", review_dir, out_dir, None, "artifact")
+    assert captured["deadline_s"] == pi._MAX_LEG_TIMEOUT_S
+
+
+# --- Concern 2: leader exits while a descendant still holds the pipe → reclaim, not hang ---
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="process-group kill needs a POSIX process group")
+def test_leader_exit_with_child_holding_pipe_is_reclaimed_not_deadline(monkeypatch):
+    # bash leader backgrounds `sleep 600` (which inherits + holds stdout open, idle) then
+    # exits 0. Neither clean-exit (pipe still open) nor stall (leader exited) fires — the
+    # OLD code burned the full deadline. Must now reclaim ~post-exit-grace after the
+    # leader exits, killing the lingering group member.
+    monkeypatch.setattr(pi, "_LEG_POST_EXIT_GRACE_S", 2.0)
+    t0 = time.monotonic()
+    result = _run(
+        ["bash", "-c", "sleep 600 & echo started; exit 0"],
+        deadline_s=60,
+        stall_threshold_s=120,
+    )
+    elapsed = time.monotonic() - t0
+    assert "started" in result.stdout
+    assert elapsed < 15, f"took {elapsed:.1f}s — should reclaim ~post-exit-grace, not the 60s deadline"
