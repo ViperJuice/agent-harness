@@ -78,9 +78,9 @@ _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude
 # review-path model is decoupled from the implementer model and can never silently
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
-    "codex": "gpt-5.6-sol",
+    "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "Gemini 3.1 Pro (High)",
-    "claude": "claude-fable-5",
+    "claude": "claude-fable-5",  # model-id-source: panel per-leg default (single source of truth)
 }
 # Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
 # board fans them out across threads for REAL parallelism — a 3-frontier max-effort

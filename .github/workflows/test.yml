@@ -29,6 +29,13 @@ jobs:
         # No test extra is defined in pyproject; install the package + pytest.
         run: python -m pip install ./phase-loop-runtime pytest
 
+      - name: Guard — no scattered/duplicated hardcoded model IDs
+        # Enforces the "reference the central constant, don't inline the model ID"
+        # convention (model-id-source hybrid: registry allowlist + per-line marker).
+        # Pure stdlib; fails the build on any unsanctioned concrete model-ID pin.
+        working-directory: phase-loop-runtime
+        run: python3 scripts/check_model_id_sources.py
+
       - name: Run standalone test suite
         # conftest.py lives under phase-loop-runtime/tests and skips
         # dotfiles_integration-marked tests when no fleet tree is present.

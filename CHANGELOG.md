@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **CI guard against hardcoded model IDs (`model-id-source` convention).** Adds
+  `scripts/check_model_id_sources.py`, wired into CI, enforcing "reference the
+  central constant, don't inline" for concrete model IDs in
+  `src/phase_loop_runtime/**`. A quoted model-ID literal fails the build unless
+  the file is a sanctioned *registry* file (the advisor-board matrix/presets/
+  fixtures + `profiles.py`) or the line carries a `# model-id-source: <reason>`
+  marker. Catches the scatter/duplication class that let a stale `"gpt-5.5"`
+  fallback linger in `panel_invoker.py`; a self-test proves the guard flags a
+  planted violation, not just that it passes.
+
 - **CERT / SCHEMA tier in the shared conformance library (#153).** Adds
   `phase_loop_runtime.conformance.validate_certificate(cert) -> dict` — the rung
   above `hash-checked`. It structurally validates a *declared* parity

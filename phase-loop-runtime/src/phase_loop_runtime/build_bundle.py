@@ -47,9 +47,9 @@ OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 # bundle. (Applied uniformly to base + override; model ids never appear in the
 # codex base, so masking is a no-op there and the dedup comparison is unaffected.)
 PRESERVE_LITERALS: tuple[str, ...] = (
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-    "claude-haiku-4-5",
+    "claude-opus-4-8",  # model-id-source: verbatim literal preserved through brand-collapse
+    "claude-sonnet-5",  # model-id-source: verbatim literal preserved through brand-collapse
+    "claude-haiku-4-5",  # model-id-source: verbatim literal preserved through brand-collapse
     "claude-in-chrome",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
     # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer

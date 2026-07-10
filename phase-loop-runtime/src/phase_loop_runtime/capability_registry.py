@@ -18,7 +18,7 @@ from .state_degradation import active_degraded_executors
 
 DEFAULT_EXECUTOR = "codex"
 DEFAULT_LANE_EXECUTOR = "pi"
-CLAUDE_HEAVY_MODEL = "claude-opus-4-8"
+CLAUDE_HEAVY_MODEL = "claude-opus-4-8"  # model-id-source: SSOT constant definition (can't reference itself)
 _CLAUDE_BASE_ALLOWED_TOOLS = ("Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "LS")
 _CLAUDE_COLLABORATION_TOOLS = (
     "Agent",
