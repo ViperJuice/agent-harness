@@ -42,6 +42,8 @@ def _capture_run(monkeypatch, stdout: str = ""):
     def fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
         captured["timeout"] = kwargs.get("timeout")
+        captured["input"] = kwargs.get("input")
+        captured["stdin"] = kwargs.get("stdin")
 
         class _R:
             returncode = 0
@@ -112,3 +114,24 @@ def test_gemini_leg_argv_uses_add_dir_and_scaled_print_timeout(monkeypatch):
     assert "--print-timeout" in cmd
     assert cmd[cmd.index("--print-timeout") + 1] == f"{expected_timeout}s"
     assert captured["timeout"] == expected_timeout + 60
+
+
+def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
+    """Regression: ``agy -p -`` IGNORES stdin and runs an EMPTY prompt (it prints its
+    "How can I help you today?" greeting), so the gemini leg silently returned a
+    non-review on every run. The prompt MUST be the inline ``-p`` argv value, and the
+    leg MUST NOT feed stdin. Mirrors the grok leg's inline-prompt convention."""
+    captured = _capture_run(monkeypatch, stdout="AGREE")
+    with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        rdp = Path(rd)
+        (rdp / "artifact.py").write_text("some code to review")
+        pi._exec_leg("gemini", rdp, Path(od), artifact="REVIEW THIS ARTIFACT", mode="review")
+    cmd = captured["cmd"]
+    # the arg right after -p is the composed leg prompt (the staged-bundle pointer),
+    # never the stdin sentinel "-" that made agy run an empty prompt.
+    prompt_arg = cmd[cmd.index("-p") + 1]
+    assert prompt_arg != "-"
+    assert "review-bundle.md" in prompt_arg  # the real staged-bundle pointer prompt
+    # and nothing is fed on stdin (feeding stdin was the empty-prompt bug)
+    assert captured["input"] is None
+    assert captured["stdin"] is subprocess.DEVNULL

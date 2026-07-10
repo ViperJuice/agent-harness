@@ -357,13 +357,19 @@ class BundleStagingTest(unittest.TestCase):
         self.assertIn("AGREE", review_text)
         self.assertIn("--add-dir", captured["cmd"])
         self.assertEqual(captured["cmd"][captured["cmd"].index("--add-dir") + 1], str(review_dir))
-        self.assertEqual(captured["cmd"][-1], "-")
-        self.assertNotIn("SENTINEL-GEMINI-ARTIFACT", captured["kwargs"]["input"])
-        self.assertIn("review-instructions.md", captured["kwargs"]["input"])
-        self.assertIn("review-bundle.md", captured["kwargs"]["input"])
-        self.assertIn(str(review_dir / "review-instructions.md"), captured["kwargs"]["input"])
-        self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input"])
-        self.assertNotIn("stdin", captured["kwargs"])
+        # BUGFIX: the prompt is now the inline ``-p`` argv value (last arg), NOT the
+        # stdin sentinel "-" + ``input=`` (agy ``-p -`` ignored stdin → empty prompt).
+        prompt_arg = captured["cmd"][-1]
+        self.assertEqual(captured["cmd"][captured["cmd"].index("-p") + 1], prompt_arg)
+        self.assertNotEqual(prompt_arg, "-")
+        self.assertIsNone(captured["kwargs"].get("input"))
+        self.assertIs(captured["kwargs"].get("stdin"), subprocess.DEVNULL)
+        # the prompt still POINTS at the staged files, never inlines the artifact body
+        self.assertNotIn("SENTINEL-GEMINI-ARTIFACT", prompt_arg)
+        self.assertIn("review-instructions.md", prompt_arg)
+        self.assertIn("review-bundle.md", prompt_arg)
+        self.assertIn(str(review_dir / "review-instructions.md"), prompt_arg)
+        self.assertIn(str(review_dir / "review-bundle.md"), prompt_arg)
 
     def test_timeout_log_mentions_timeout_without_artifact_payload(self):
         with tempfile.TemporaryDirectory() as td:

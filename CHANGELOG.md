@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix: the gemini (agy) review leg silently ran an EMPTY prompt.** The leg passed
+  `agy … -p -` and fed the composed prompt on stdin (`input=prompt`), but `agy -p -`
+  IGNORES stdin and runs an empty prompt — agy printed its "How can I help you
+  today?" greeting (~26 bytes), which the panel classified as a non-review and
+  degraded on every run. The gemini leg was effectively non-functional (the
+  root cause of the observed "dying agy sessions"). The prompt is now passed inline
+  as the `-p` argv value (`stdin` closed via `DEVNULL`), exactly like the grok leg;
+  the prompt is the small staged-bundle pointer so argv length stays bounded.
+
 ## [0.6.0] — 2026-07-10
 
 - **4-vendor panel reports cross-vendor independence.** `advisor_board.board_independence(board)` returns `independent`/`degraded`/`none` + `distinct_vendors` so a governed consumer (gp's `degraded_independence` gate) can distinguish a backfilled same-vendor board from a true cross-vendor one — the availability-aware fallback previously surfaced no such signal (unanimous 4-vendor CR finding).

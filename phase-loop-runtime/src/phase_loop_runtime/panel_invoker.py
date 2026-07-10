@@ -1480,9 +1480,16 @@ def _exec_leg(
             if effort is None
             else render_seat_invocation("gemini", model or "Gemini 3.1 Pro", effort).model
         )
+        # BUGFIX: the prompt MUST be passed inline as the ``-p`` argv value, NOT via
+        # ``-p -`` + ``input=prompt`` on stdin. Empirically ``agy -p -`` IGNORES stdin
+        # and runs an EMPTY prompt (agy prints its "How can I help you today?" greeting,
+        # ~26 bytes), so the gemini leg silently returned a non-review and degraded on
+        # every run. Inline it exactly like the grok leg (`-p prompt`); the prompt is
+        # the small staged-bundle POINTER (files live under --add-dir), so argv length
+        # is bounded.
         cmd = [
             "agy", "--model", gemini_model, "--add-dir", str(review_dir),
-            "--print-timeout", f"{timeout_s}s", "-p", "-",
+            "--print-timeout", f"{timeout_s}s", "-p", prompt,
         ]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
@@ -1503,7 +1510,7 @@ def _exec_leg(
                 # wall-clock stays ~1.5x one budget, never a full double.
                 proc = subprocess.run(
                     cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
-                    timeout=timeout_s + 60, check=False, input=prompt,
+                    timeout=timeout_s + 60, check=False, stdin=subprocess.DEVNULL,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {timeout_s}s"
