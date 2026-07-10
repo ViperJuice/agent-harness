@@ -102,16 +102,16 @@ is_orphan_worktree() {
   [[ -n "$gitdir" ]] || return 1
   # Relative gitdir → resolve against the worktree dir.
   [[ "$gitdir" == /* ]] || gitdir="$path/$gitdir"
-  # Orphan iff the owning admin dir is genuinely ABSENT. Fail-safe against EACCES:
-  # `! -e` is ALSO false when a parent dir is unsearchable, which would misread an
-  # existing-but-inaccessible gitdir as absent and delete recoverable work. Only
-  # classify orphan when absence is POSITIVELY confirmable: the gitdir's parent is
-  # itself gone, or present AND searchable. Parent present-but-unsearchable → KEEP.
-  [[ -e "$gitdir" ]] && return 1
-  local gd_parent
-  gd_parent=$(dirname -- "$gitdir")
-  [[ -e "$gd_parent" && ! -x "$gd_parent" ]] && return 1
-  return 0
+  # Orphan iff the owning admin dir is genuinely ABSENT. `-e` alone conflates
+  # absence (ENOENT) with inaccessibility (EACCES anywhere in the ancestor chain),
+  # which would misread an existing-but-unreadable gitdir as absent and delete
+  # recoverable work. `stat`'s error text is the reliable discriminator: only a
+  # genuine "no such file" means orphan; ANY other stat failure → cannot confirm
+  # absence → KEEP.
+  local st
+  st=$(stat -- "$gitdir" 2>&1) && return 1          # exists → not an orphan
+  grep -qiE 'no such file|not found' <<<"$st" && return 0   # genuinely absent → orphan
+  return 1                                           # EACCES / other → KEEP (fail-safe)
 }
 
 # Guard: only source the predicates (for the self-test) without running the sweep.
@@ -205,6 +205,10 @@ remove_dir() {
   # Escalate ONLY on a genuine permission lock (foreign-uid build output). Strip the
   # candidate path from the error first, so a worktree path that itself contains the
   # literal "permission denied" cannot coincidentally trigger a sudo escalation.
+  # BOUNDED: even a residual false match (a descendant filename literally containing
+  # "permission denied") can only `sudo rm` a path that has ALREADY passed
+  # path_under_base (base-confined), is NOT a primary checkout, and was classified
+  # prunable — i.e. it merely force-completes an intended removal, never escapes.
   if ! grep -qi 'permission denied' <<<"${err//"$path"/}"; then
     echo "WARN:  $path — removal failed (not a permission lock): ${err%%$'\n'*}; skipping" >&2
     return 1
