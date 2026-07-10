@@ -101,8 +101,15 @@ class DoctorImportIsolationTest(unittest.TestCase):
             "leaked=[m for m in forbidden if m in sys.modules]; "
             "assert not leaked, leaked; print('clean')"
         )
+        # Propagate the parent's sys.path so the fresh subprocess can import the
+        # package whether it is pip-installed (CI/Gate A) or run from an
+        # uninstalled checkout without PYTHONPATH=src. Isolation still holds: the
+        # child imports only phase_loop_runtime.doctor and asserts no dotfiles
+        # module is present.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
         result = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("clean", result.stdout)
