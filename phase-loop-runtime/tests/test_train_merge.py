@@ -1503,3 +1503,113 @@ class TestInjectReverifyExceptionHalted:
             "repo-a must remain merged after downstream reverify raised (forward-only)"
         )
         assert state["repo-b/specs/plan-b.md"].status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# P3-LIVE: prune-on-merge hook fires per merged node, best-effort (never fatal)
+
+class TestPostMergeHook:
+    """The live prune-on-merge trigger runs once per successfully-merged node,
+    with the node's workspace + id, and a hook failure never fails the train."""
+
+    def test_hook_called_per_merged_node_with_workspace(self, tmp_path: Path):
+        """post_merge_hook is invoked once per merged node, in merge (topo) order,
+        each with that node's workspace and node_id."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        hook_calls: List[tuple] = []
+
+        def _spy_hook(workspace: Path, node_id: str) -> None:
+            hook_calls.append((Path(workspace).name, node_id))
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub([]),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+            _post_merge_hook=_spy_hook,
+        )
+
+        assert result["status"] == "merged"
+        assert hook_calls == [
+            ("repo-a", "repo-a/specs/plan-a.md"),
+            ("repo-b", "repo-b/specs/plan-b.md"),
+        ], f"hook must fire once per merged node in topo order; got {hook_calls}"
+
+    def test_hook_failure_never_fails_the_train(self, tmp_path: Path):
+        """A raising post_merge_hook is swallowed: the train still reports merged
+        and both nodes stay merged (forward-only; prune is best-effort)."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        def _boom(workspace: Path, node_id: str) -> None:
+            raise RuntimeError("prune helper blew up")
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub([]),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+            _post_merge_hook=_boom,
+        )
+
+        assert result["status"] == "merged", (
+            f"a prune-hook exception must NOT fail the train; got {result['status']!r}"
+        )
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "merged"
+        assert state["repo-b/specs/plan-b.md"].status == "merged"
+
+    def test_live_default_hook_no_op_when_helper_unresolvable(self, tmp_path: Path):
+        """With no prune helper resolvable, _live_post_merge_prune is a quiet no-op
+        and never removes the node's per-repo workspace."""
+        from phase_loop_runtime import train_runner
+
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        (ws / "keep").write_text("x")
+        with patch.object(train_runner, "_resolve_prune_helper", return_value=None):
+            train_runner._live_post_merge_prune(ws, "repo-a/specs/plan-a.md")
+        assert ws.exists() and (ws / "keep").exists(), (
+            "workspace must survive when no prune helper resolves"
+        )
+
+    def test_live_default_hook_never_prunes_the_node_workspace(self, tmp_path: Path):
+        """_live_post_merge_prune runs the REAL guarded helper with cwd=workspace
+        and NEVER removes the workspace itself (the per-repo checkout): the helper
+        classifies via `git worktree list`, and the standalone workspace dir here is
+        not a linked worktree, so nothing is removed."""
+        from phase_loop_runtime import train_runner
+
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        (ws / "keep").write_text("x")
+        train_runner._live_post_merge_prune(ws, "repo-a/specs/plan-a.md")
+        assert ws.exists() and (ws / "keep").exists(), (
+            "the node's per-repo workspace must never be removed by the prune hook"
+        )

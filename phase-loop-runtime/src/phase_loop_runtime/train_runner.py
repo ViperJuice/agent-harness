@@ -57,6 +57,7 @@ module is fully testable without live network access.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
@@ -272,6 +273,86 @@ def _live_merge_pr(workspace: Path, branch: str) -> str:
             f"'{workspace}'; gh pr view returned no mergeCommit.oid after merge"
         )
     return sha
+
+
+def _resolve_prune_helper() -> Optional[Path]:
+    """Locate the safety-verified ``prune_merged_worktrees.sh`` helper.
+
+    Prefers the WHEEL-PACKAGED copy under ``phase_loop_runtime/skills_bundle/`` —
+    it ships as package-data, so a bare ``pip install phase-loop-runtime`` (no
+    dotfiles bootstrap) still resolves it and the live trigger actually fires.
+    Falls back to the installed harness skill pack (``~/.<harness>/skills``) for
+    environments where only that is present. Returns ``None`` if neither resolves.
+    """
+    # (1) Packaged bundle — always present in the wheel.
+    try:
+        from importlib import resources
+
+        bundle = resources.files("phase_loop_runtime") / "skills_bundle"
+        if bundle.is_dir():
+            hits = sorted(
+                p for p in bundle.glob("*-execute-phase/scripts/prune_merged_worktrees.sh")
+            )
+            if hits:
+                # as_file would be needed for zip installs; agent-harness ships an
+                # unzipped wheel, so the Path is directly usable.
+                return Path(str(hits[0]))
+    except Exception:  # noqa: BLE001 — fall through to the installed-skill-pack path
+        pass
+    # (2) Installed harness skill pack (dotfiles-bootstrapped fleet).
+    try:
+        from .skill_paths import resolve_skill_bundle_root
+
+        root = resolve_skill_bundle_root()
+        hits = sorted(root.glob("*-execute-phase/scripts/prune_merged_worktrees.sh"))
+        if hits:
+            return hits[0]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _live_post_merge_prune(workspace: Path, node_id: str) -> None:
+    """LIVE prune-on-merge trigger: the moment a train node's PR merges, sweep the
+    just-merged branch's worktree instead of waiting for the next execute-phase
+    closeout sweep.
+
+    This is the genuine merge-observe point for the accumulating per-branch
+    worktrees. It does NOT prune ``workspace`` itself — that is the node's per-repo
+    checkout (``<workspace-root>/<repo>``), NOT a disposable worktree. Instead it
+    delegates to the existing, safety-verified ``prune_merged_worktrees.sh`` with
+    ``cwd=workspace`` so ``git worktree list`` there enumerates THAT repo's sibling
+    worktrees; the just-merged branch's worktree is caught by the helper's proven
+    MERGED+CLEAN criterion (never the primary, never the current tree). The runtime
+    never names a path to delete — the helper's ironclad guards decide.
+
+    Best-effort: merges are forward-only, so a prune failure must NEVER fail the
+    train. Any error (helper absent, non-zero exit, timeout) is logged and swallowed.
+
+    Stubbable seam: inject ``_post_merge_hook`` into :func:`run_train`.
+    """
+    try:
+        script = _resolve_prune_helper()
+        if script is None:
+            print(
+                f"post-merge prune ({node_id}): prune_merged_worktrees.sh not resolvable "
+                f"(no packaged skills_bundle, no installed skill pack); skipping live "
+                f"prune (the next execute-phase closeout sweep will catch it)",
+                file=sys.stderr,
+            )
+            return
+        subprocess.run(
+            ["bash", str(script)],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except Exception as exc:  # noqa: BLE001 — forward-only: never fail the train on prune
+        print(
+            f"post-merge prune ({node_id}): swallowed non-fatal error: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _train_reverify_enforcement_mode() -> str:
@@ -538,6 +619,7 @@ def run_train(
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
     _train_review_fn: Optional[Callable] = None,     # (artifact, run_mode) → LoopResult
     _pr_merged_sha_fn: Optional[Callable] = None,    # (workspace, branch) → Optional[str]
+    _post_merge_hook: Optional[Callable] = None,     # (workspace, node_id) → None; live prune-on-merge
 ) -> Dict:
     """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open [+ merge].
 
@@ -991,6 +1073,9 @@ def run_train(
     pr_merged_sha_fn = (
         _pr_merged_sha_fn if _pr_merged_sha_fn is not None else _live_pr_merged_sha
     )
+    post_merge_hook = (
+        _post_merge_hook if _post_merge_hook is not None else _live_post_merge_prune
+    )
 
     # Re-read ledger to recover P4 state from a previous partial run
     # (idempotent resume: skip already-merged nodes, recover their SHA).
@@ -1183,6 +1268,18 @@ def run_train(
                 merge_order=_i_m,
             ),
         )
+
+        # LIVE prune-on-merge: this is the merge-observe point. Sweep the
+        # just-merged branch's worktree now (via the guarded helper) rather than
+        # waiting for the next execute-phase closeout. Best-effort by contract —
+        # merges are forward-only, so post_merge_hook must never raise here.
+        try:
+            post_merge_hook(_ws_m, _nid_m)
+        except Exception as _hook_exc_m:  # noqa: BLE001 — never fail the train on prune
+            print(
+                f"post-merge hook ({_nid_m}): swallowed non-fatal error: {_hook_exc_m}",
+                file=sys.stderr,
+            )
 
     return {
         "status": "merged",

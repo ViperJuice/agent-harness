@@ -6,6 +6,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Live prune-on-merge trigger + fleet-wide detection backstop.** Two hardening
+  items that shorten the window merged worktrees linger and add a cross-repo
+  safety net, both reusing the ironclad safety of `prune_merged_worktrees.sh`
+  (skip every owning repo's primary + the current tree; base-confined,
+  permission-only `sudo -n rm -rf`; MERGED+CLEAN criterion).
+  - *Live trigger (P3):* the release-train coordinator (`train_runner.run_train`)
+    now fires a best-effort `post_merge_hook` the moment each node's PR merges —
+    the genuine merge-observe point — instead of waiting for the next
+    `execute-phase` closeout sweep. The live default delegates to the guarded
+    `prune_merged_worktrees.sh` with `cwd` = the node's workspace, so `git worktree
+    list` there enumerates that repo's siblings and the just-merged branch's
+    worktree is swept by the proven criterion. The hook never prunes the node's
+    own per-repo checkout (that is not a disposable worktree), and — because merges
+    are forward-only — any hook error is logged and swallowed so a prune failure
+    can never fail the train. The `run-train` SKILLs are intentionally unchanged:
+    they are thin bridges with no per-node merge event to hook, and the merge
+    happens inside the coordinator.
+  - *Fleet detection (P2):* new `phase-loop-runtime/scripts/sweep_fleet_worktrees.sh`
+    periodically sweeps ALL worktrees under `${PHASE_LOOP_WORKTREES_BASE:-/mnt/workspace/worktrees}`
+    across every owning repo (not just the one the current run is in). It prunes
+    only MERGED+CLEAN worktrees or genuinely ORPHANED dirs (owning gitdir absent —
+    not merely unreachable), resolves and excludes each candidate's owning-repo
+    primary, defaults to `--dry-run` (opt-in `--prune`), and offers
+    `--alert-threshold N` (exit 2 when N+ prunable dirs accumulate) for scheduled
+    alerting. No cron is installed by this change; the script header, this entry,
+    and the PR document a recommended daily dry-run cron/systemd-timer line for the
+    fleet owner to schedule. Self-tests (`test_sweep_fleet_worktrees_script.py`,
+    `TestPostMergeHook`) prove the fleet sweep never selects a primary checkout of
+    any owning repo, never removes outside the approved base, alerts at threshold,
+    and that the live hook fires per merged node and never fails the train.
 - **Multi-repo issue/PR reference convention.** Adds a root `AGENTS.md`
   (imported by a root `CLAUDE.md`) documenting that issue/PR numbers must be
   qualified with their repo (`agent-harness#130` or
