@@ -6,6 +6,22 @@ wall-clock. A hung leg (agy thrashing, wedged backend — pipe/PTY open, no outp
 burns the full `_LEG_TIMEOUT_BOUNDS` deadline (up to 30 min). Fix with a **hybrid stdout-OR-CPU
 heartbeat** (Option C, agreed with the maintainer).
 
+## Empirical measurement (2026-07-10, real CLIs through PIPEs) — DRIVES the design
+Probed each leg's real invocation, timestamping byte arrivals on stdout+stderr + /proc CPU:
+
+| leg | heartbeat wire | max healthy silence gap | CPU during silence |
+|-----|---------------|------------------------|--------------------|
+| grok | **stdout** | 22s | low, present |
+| codex | **stderr** (stdout EMPTY until the final message) | **72.6s** (xhigh reasoning) | low, steady |
+| agy (fixed) | **stdout** (after ~22s silent "thinking") | 22s pre-first-byte, 0.2s streaming | low, present |
+
+**Design decisions locked by the data:**
+- Watch **BOTH stdout+stderr** (codex heartbeats only on stderr; grok/agy on stdout) → reliable heartbeat, **NO PTY** needed for the print-mode legs.
+- **stall_threshold = 180s** (2.5× the 72.6s binding max) — a dead leg reclaims in ~180s, a deep-reasoning leg with a 72.6s stderr gap survives.
+- **wall-clock backstop = `_MAX_LEG_TIMEOUT_S` (1800s)**, DECOUPLED from the input-scaled 600s base. The 600s `timeout_s` passed to `subprocess.run` was the wall-clock that killed *working* legs — raising the backstop + making silence-stall the PRIMARY kill is the actual fix (reliable stall detection is what makes an 1800s backstop safe: a dead leg dies ~180s after death, so the backstop rarely fires → no return of the #114 wall-clock blowup).
+- **CPU is a SECONDARY, NON-KILLING reset only** (sampled ~5s; advancing ticks reset the heartbeat). It can only EXTEND a leg's life, never false-kill — asymmetric safety for a hypothetical >180s-silent-but-alive leg (not observed; max gap 72.6s). `group_cpu_ticks` already built + tested in `_proc_cpu.py`.
+- Separately shipped as its own PR first: the **gemini `-p -`+stdin → inlined `-p <prompt>` argv** bug (agy ignored stdin → empty prompt = the dying-agy root cause). This branch is based on that fix.
+
 ## Research summary (verified against source)
 - `panel_invoker._exec_leg` runs **codex / gemini / grok** legs via `subprocess.run(..., timeout=timeout_s)`
   — NON-streaming, wall-clock only. gemini/codex carry a post-hoc #114 transient-stall retry.
