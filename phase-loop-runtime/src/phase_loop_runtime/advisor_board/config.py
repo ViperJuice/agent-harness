@@ -31,6 +31,7 @@ except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .validation import SeatValidationError, validate_board
+from .composition import compose_review_board
 from .presets import DEFAULT_BOARD_NAME, PRESETS
 from .schema import (
     AUTH_LANES,
@@ -166,6 +167,7 @@ def load_boards(
     env: Mapping[str, str] | None = None,
     matrix: Any | None = None,
     validate: bool = True,
+    is_available: "Callable[[str], bool] | None" = None,
 ) -> BoardConfig:
     """Load the board config, layering user boards over the built-in presets.
 
@@ -174,9 +176,25 @@ def load_boards(
     False`` only for shape-parsing without availability (kept for tests). Raises
     ``BoardConfigError`` for any unknown key, malformed value, or matrix-invalid
     board — never a silent drop.
+
+    The ``code-review`` board is composed AVAILABILITY-AWARE (down vendors are
+    backfilled with distinct lenses onto available vendors, so a convened panel
+    never collapses to 1–2 reviewers) via ``composition.compose_review_board``.
+    ``is_available(vendor) -> bool`` decides which vendors are up; when omitted it
+    is taken from a probe-backed ``matrix`` (its harness registry probe, so the
+    availability view is single-sourced) and otherwise defaults to the advisor-
+    board PATH probe. Composition happens BEFORE the user overlay, so a
+    user-defined ``code-review`` board still wins.
     """
     boards: dict[str, Board] = dict(PRESETS)
     default_board = DEFAULT_BOARD_NAME
+
+    # Availability-aware code-review (before the user overlay so a user override wins).
+    compose_probe = is_available
+    if compose_probe is None and matrix is not None:
+        compose_probe = getattr(getattr(matrix, "harnesses", None), "is_available", None)
+    composed_review = compose_review_board(is_available=compose_probe)
+    boards[composed_review.name] = composed_review
 
     cfg_path = path if path is not None else board_config_path(env)
     if cfg_path.exists():

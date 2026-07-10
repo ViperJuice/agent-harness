@@ -49,6 +49,62 @@ class PresetSelfValidationTests(unittest.TestCase):
         self.assertEqual(len(cfg.get().seats), 3)
 
 
+class CodeReviewAvailabilityAwareTests(unittest.TestCase):
+    """The LIVE convening path — ``load_boards().get("code-review")`` — reflects
+    vendor availability, so a convened panel never collapses to 1–2 reviewers. This
+    is the integration proof (the pure composer is proven in
+    test_advisor_board_composition.py); it guards against the code-review board
+    silently reverting to a frozen all-vendors-up snapshot on the runtime path."""
+
+    _NONEXISTENT = Path("/nonexistent/advisor-boards.toml")
+
+    def _load_code_review(self, absent: set[str]):
+        # A matrix whose PATH probe reports every vendor's CLI present EXCEPT the
+        # `absent` ones — the same probe seam load_boards single-sources for
+        # composition. (gemini's CLI is `agy`, so name it here, not "gemini".)
+        cli_absent = {"grok": "grok", "claude": "claude", "codex": "codex", "gemini": "agy"}
+        down = {cli_absent[v] for v in absent}
+        matrix = default_matrix(probe=lambda cli: cli not in down, env={})
+        return load_boards(self._NONEXISTENT, matrix=matrix).get("code-review")
+
+    def test_all_vendors_up_is_the_four_vendor_board(self) -> None:
+        board = self._load_code_review(absent=set())
+        self.assertEqual(len(board.seats), 4)
+        self.assertEqual({s.harness for s in board.seats}, {"grok", "claude", "codex", "gemini"})
+
+    def test_grok_down_backfills_rather_than_leaving_a_dead_grok_seat(self) -> None:
+        # THE regression guard: a frozen preset would keep a grok seat that then
+        # fails-closed to DEGRADED; the availability-aware path drops grok and
+        # backfills a 4th seat onto an available vendor with a distinct lens.
+        board = self._load_code_review(absent={"grok"})
+        self.assertEqual(len(board.seats), 4)  # still a full board, never choked
+        self.assertTrue(all(s.harness != "grok" for s in board.seats))
+        keys = [(s.harness, s.model, s.lens) for s in board.seats]
+        self.assertEqual(len(keys), len(set(keys)))  # no duplicate seat
+
+    def test_two_vendors_down_still_yields_a_full_four_seat_board(self) -> None:
+        board = self._load_code_review(absent={"grok", "gemini"})
+        self.assertEqual(len(board.seats), 4)
+        self.assertTrue(all(s.harness in {"claude", "codex"} for s in board.seats))
+
+    def test_user_defined_code_review_overrides_the_composed_board(self) -> None:
+        # A user board named code-review wins over availability-aware composition.
+        body = """
+[[boards]]
+name = "code-review"
+purpose = "code-review"
+  [[boards.seats]]
+  model = "gpt-5.6-sol"
+  effort = "high"
+  harness = "codex"
+"""
+        with TemporaryDirectory() as tmp:
+            cfg = load_boards(_write(tmp, body), matrix=_MATRIX)
+        board = cfg.get("code-review")
+        self.assertEqual(len(board.seats), 1)
+        self.assertEqual(board.seats[0].model, "gpt-5.6-sol")
+
+
 class ConfigLoadTests(unittest.TestCase):
     def test_user_board_layers_over_presets(self) -> None:
         body = """
