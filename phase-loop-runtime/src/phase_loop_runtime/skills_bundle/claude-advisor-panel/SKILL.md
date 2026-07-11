@@ -13,7 +13,7 @@ The advisor-board (formerly advisor-panel) implementation is owned by `agent-har
 
 - Runtime primitive: `phase_loop_runtime.panel_invoker`
 - Board model: `phase_loop_runtime.advisor_board` (seats, boards, resolver, validation)
-- Entry points: `available_panel_legs`, `invoke_panel`, and `invoke_panel_request` (from a `PanelRequest`)
+- Entry points (runnable default): `advisor_board.composition.compose_review_board` + `panel_invoker.invoke_board`, exposed as the `phase-loop advisor-board <artifact>` CLI. The legacy `available_panel_legs`/`invoke_panel`/`invoke_panel_request` stay in place for the governed review/pre-merge gates (unchanged, byte-identical golden).
 - Governed workflow integration: phase-loop governed review/pre-merge paths
 
 Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts, or introduce a separate implementation in the skill body. The skill is a thin operator guide over the runtime primitive.
@@ -22,7 +22,7 @@ Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts
 
 Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel — one seat per frontier vendor (grok, claude, codex, gemini), each at its MAXIMUM thinking with a DISTINCT review lens (adversarial / correctness / red-team / alternative-approach).
 
-Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor present on PATH gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The bare `advisor-board` (`default`/premerge) board is unchanged — the byte-frozen 3-leg panel.
+Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor that is both present on PATH AND authenticated gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available (up + authed) vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The bare `advisor-board` (`default`/premerge) board is unchanged — the byte-frozen 3-leg panel.
 
 ## Three Ways To Feed Material
 
@@ -39,10 +39,10 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
-**On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, invoke the runtime for the `codex` and `gemini` legs only; the runtime returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the third leg yourself with the Task tool (a Fable/Harness Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile all three. A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable 2-leg board.
+**On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, the runtime runs the non-<harness> board legs (`grok`, `codex`, `gemini` — whichever are available AND authenticated) and returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the <harness> leg yourself with the Task tool (a Fable/Harness Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile it with ALL the runtime legs (do NOT drop `grok` — the board is 4-vendor, not the old 3-leg panel). A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable board short a seat.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
-2. For a standalone smoke or diagnostic, stage the review material in a file and pass its path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_panel`.
+2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
@@ -50,11 +50,15 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 ## Standalone Smoke Shape
 
 ```python
-from phase_loop_runtime.panel_invoker import available_panel_legs, invoke_panel
+from phase_loop_runtime.advisor_board.composition import compose_review_board
+from phase_loop_runtime.panel_invoker import invoke_board
 
-panel = invoke_panel("", available_panel_legs(), artifact_ref="path/to/bundle.md")
-for leg in panel.legs:
-    print(leg.leg, leg.status)
+# Availability-aware by default: compose_review_board seats only vendors that are
+# BOTH on PATH and authenticated (unauthed vendors are dropped and backfilled).
+board = compose_review_board()
+result = invoke_board(board, "", artifact_ref="path/to/bundle.md")
+for leg in result.legs:
+    print(leg.seat_key, leg.status)
 ```
 
-Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Harness TUI here. Supply that third leg natively (Task tool) and reconcile it with the `codex` + `gemini` results.
+Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Harness TUI here. Supply the <harness> leg natively (Task tool) and reconcile it with ALL the runtime legs (`grok` + `codex` + `gemini`, whichever are up and authed) — the board is 4-vendor, so do not drop `grok`.

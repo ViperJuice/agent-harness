@@ -33,7 +33,9 @@ STRICT SUPERSET — ``.leg`` is preserved, ``.seat_key`` is enriched so two
 same-vendor seats become expressible — and it is asserted explicitly here as the
 sole difference, never silently dropped. Existing callers key on ``.leg`` /
 ``.status`` / ``.usable`` and are unaffected (they also still call
-``invoke_panel``, which is untouched — ``invoke_board`` has no live caller yet).
+``invoke_panel``, which is untouched). As of LEGACY (CLEANSHIP P7) ``invoke_board``
+has a live caller — the ``phase-loop advisor-board`` CLI (the runnable board
+default) — but ``invoke_panel``'s body and this golden stay byte-identical.
 
 Absolute-literal anchoring already lives in ``fixtures.py`` (the hard-coded
 ``DEFAULT_SEAT_RENDERED_MODEL`` / effort args) cross-checked against the live

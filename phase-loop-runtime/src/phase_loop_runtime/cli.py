@@ -16,7 +16,7 @@ from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
-from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
+from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
@@ -733,6 +733,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Repo-relative ref submitted to governed-pipeline; may be repeated.",
     )
+    # advisor-board (LEGACY / CLEANSHIP P7): the RUNNABLE agent-facing default for
+    # the 4-vendor board. Composes availability-aware via compose_review_board
+    # (REVIEWGOV IF-0-REVIEWGOV-1: is_available ∧ auth_ok) and dispatches via
+    # invoke_board — the legacy invoke_panel is untouched. Registered outside the
+    # common-args loop: it takes a single positional artifact and its own --json.
+    advisor_board_sub = subparsers.add_parser(
+        "advisor-board",
+        help=(
+            "Run an availability-aware cross-vendor advisor board over an artifact "
+            "(composes via compose_review_board; dispatches via invoke_board)."
+        ),
+    )
+    advisor_board_sub.add_argument(
+        "artifact", metavar="artifact",
+        help="Path to the review material staged into the board bundle.",
+    )
+    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.")
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,
@@ -760,22 +777,39 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
-    # Issue #83: --allow-branchgov opts into the convention-branch switch even when
-    # it would orphan a locally-committed roadmap, by exporting the explicit
-    # override the runtime preflight reads (flag.branchgov_override_explicit). Scope
-    # the env mutation to this invocation (restore the prior value) so it does not
-    # leak process-globally — the override applies for THIS run, not the process.
-    if getattr(args, "allow_branchgov", False):
-        _previous_branchgov = os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE")
-        os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = "true"
-        try:
-            return _main(parser, args, command)
-        finally:
-            if _previous_branchgov is None:
-                os.environ.pop("PHASE_LOOP_BRANCHGOV_ENABLE", None)
-            else:
-                os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = _previous_branchgov
-    return _main(parser, args, command)
+    try:
+        # Issue #83: --allow-branchgov opts into the convention-branch switch even when
+        # it would orphan a locally-committed roadmap, by exporting the explicit
+        # override the runtime preflight reads (flag.branchgov_override_explicit). Scope
+        # the env mutation to this invocation (restore the prior value) so it does not
+        # leak process-globally — the override applies for THIS run, not the process.
+        if getattr(args, "allow_branchgov", False):
+            _previous_branchgov = os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE")
+            os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = "true"
+            try:
+                return _main(parser, args, command)
+            finally:
+                if _previous_branchgov is None:
+                    os.environ.pop("PHASE_LOOP_BRANCHGOV_ENABLE", None)
+                else:
+                    os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = _previous_branchgov
+        return _main(parser, args, command)
+    except AmbiguousRoadmapError as exc:
+        # LEGACY (CLEANSHIP P7) safety net: ANY command that auto-selects a roadmap and
+        # finds >1 candidate with nothing to disambiguate degrades to a RECOVERABLE,
+        # actionable error (exit 2) — never an uncaught traceback. This is load-bearing
+        # with the completed-skip: once a frozen/all-completed manifest stops resolving,
+        # commands like `execute`/`validate-roadmap`/`fleet-map`/`reconcile` (which call
+        # select_roadmap outside the run-path handler) would otherwise crash. Commands
+        # with a RICHER blocker snapshot (run/resume/dry-run/status/state/monitor/handoff)
+        # catch it earlier in `_main` and still emit their snapshot; this covers the rest.
+        candidates = ", ".join(str(c) for c in exc.candidates)
+        print(
+            f"phase-loop {command}: ambiguous roadmap selection — pass --roadmap"
+            + (f" (candidates: {candidates})" if candidates else ""),
+            file=sys.stderr,
+        )
+        return 2
 
 
 def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> int:
@@ -850,6 +884,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _outside_agent_validate_command(args=args)
     if command in {"task-message-probe", "task-message-resolve"}:
         return _task_message_command(args=args, resolve=command == "task-message-resolve")
+    if command == "advisor-board":
+        return _advisor_board_command(args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -1028,9 +1064,13 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     try:
         roadmap = select_roadmap(repo, args.roadmap)
         _warn_roadmap_validation(roadmap)
-    except RuntimeError as exc:
-        if "ambiguous roadmap selection" not in str(exc):
-            raise
+    except AmbiguousRoadmapError:
+        # LEGACY (CLEANSHIP P7): a bare run with >1 specs/phase-plans-v*.md and no
+        # state/manifest/handoff to disambiguate is a RECOVERABLE blocker, not an
+        # uncaught RuntimeError traceback. agent-harness itself ships v1–v9, so once
+        # the frozen-at-v4 manifest stops resolving (completed-skip), a bare run
+        # reaches exactly this branch — it must surface an actionable "specify
+        # --roadmap" blocker (blocker_class in BLOCKER_CLASSES), never crash.
         if command == "state":
             print(render_state_inspection(inspect_state(repo), as_json=as_json))
             return 0
@@ -1227,6 +1267,115 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _advisor_board_command(*, args: argparse.Namespace) -> int:
+    """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
+    agent-facing default. Composes availability-aware seats via
+    ``compose_review_board`` (REVIEWGOV IF-0-REVIEWGOV-1: ``is_available ∧ auth_ok``,
+    so an unauthed vendor is dropped and backfilled) and dispatches them through
+    ``invoke_board``. The load-bearing legacy ``invoke_panel`` is NOT used here — this
+    is the additive board surface. Function-local imports keep the advisor_board /
+    panel_invoker graph off the bare ``import cli`` path and let tests patch the
+    composition/dispatch seams without shelling out to real vendor CLIs."""
+    import tempfile
+
+    from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
+    from .panel_invoker import invoke_board
+
+    artifact_path = Path(args.artifact)
+    # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
+    # artifact resolver. Fail closed with a recoverable exit, never a traceback.
+    if not artifact_path.is_file():
+        print(f"advisor-board: artifact not found (not a file): {artifact_path}", file=sys.stderr)
+        return 2
+    # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
+    # already auth-aware — with no args, ``compose_review_board`` defaults
+    # ``auth_ok`` to ``default_board_auth_ok``, so a vendor is seated only when it is
+    # BOTH on PATH and authenticated (a PATH-present-but-unauthed vendor is dropped at
+    # compose and backfilled). Do NOT pass a predicate here: the PATH-only
+    # pass-through is a test affordance that activates ONLY when ``is_available`` is
+    # injected alone. (Pinned by test: bare compose drops an unauthed vendor + the
+    # call takes no kwargs.)
+    board = compose_review_board()
+    if not board.seats:
+        print(
+            "advisor-board: no vendor is both available and authenticated — nothing to compose.",
+            file=sys.stderr,
+        )
+        return 2
+    # Constrain the spawn cwd (write boundary): the native/claude route otherwise
+    # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
+    # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so
+    # the constrained cwd never hides it.
+    try:
+        with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
+            result = invoke_board(
+                board, "", artifact_ref=str(artifact_path.resolve()), repo_dir=scratch
+            )
+    except (OSError, ValueError) as exc:
+        # Artifact staging / resolution failures fail closed with a recoverable exit,
+        # not a traceback.
+        print(f"advisor-board: could not stage the artifact: {exc}", file=sys.stderr)
+        return 2
+    independence = board_independence(board)
+    usable_count = len(result.usable_legs)
+    # A runnable review command must signal when the result is NOT a usable review.
+    # Tie the exit code to the board's own contract: it targets 4 independent
+    # reviewers with a HARD FLOOR of ``FLOOR_SEATS`` (3). If fewer than the floor of
+    # legs returned an OK verdict with text (the rest DEGRADED / ERROR / TIMEOUT /
+    # EMPTY / UNAVAILABLE — e.g. the claude leg deferring under Claude Code is one
+    # expected non-OK), the board is below its independence floor → exit nonzero.
+    usable = usable_count >= FLOOR_SEATS
+    exit_code = 0 if usable else 1
+    if bool(getattr(args, "json", False)):
+        payload = {
+            "board": board.name,
+            "usable": usable,
+            "independence": {
+                "level": independence.level,
+                "distinct_vendors": independence.distinct_vendors,
+                "seats": independence.seats,
+            },
+            # ``text`` is the leg's actual review (findings + AGREE/PARTIALLY
+            # AGREE/DISAGREE verdict) — the whole point of running a board — so it
+            # MUST be in the payload, not just status/detail metadata.
+            "legs": [
+                {
+                    "seat_key": leg.seat_key,
+                    "leg": leg.leg,
+                    "status": leg.status,
+                    "detail": leg.detail,
+                    "text": leg.text,
+                }
+                for leg in result.legs
+            ],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return exit_code
+    print(
+        f"advisor-board: {board.name} — independence={independence.level} "
+        f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
+    )
+    for leg in result.legs:
+        detail = f" — {leg.detail}" if leg.detail else ""
+        print(f"  [{leg.status}] {leg.seat_key}{detail}")
+        # Print each reviewer's actual verdict text so the board can be reconciled
+        # from the command's output (not just leg statuses).
+        text = (leg.text or "").strip()
+        if text:
+            for line in text.splitlines():
+                print(f"      {line}")
+    # The statuses/verdicts are ADVISORY evidence — the operator reconciles them; a
+    # non-OK leg (DEGRADED/UNAVAILABLE/…) is a gap to fill, not a passed review.
+    print("advisor-board: verdicts are advisory — reconcile the legs; check each leg status.")
+    if not usable:
+        print(
+            f"advisor-board: only {usable_count} usable review leg(s) < floor {FLOOR_SEATS} "
+            "— below the board's independence floor, not a usable board.",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 def _outside_agent_preflight_command(args: argparse.Namespace) -> int:

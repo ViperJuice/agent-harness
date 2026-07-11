@@ -31,7 +31,9 @@ from phase_loop_runtime.plan_manifest import DotfilesPlanEntry, append_entry, re
 from phase_loop_runtime.reconcile import reconcile
 from phase_loop_runtime.runner import status_snapshot
 
-from phase_loop_test_utils import make_repo, write_phase_plan
+from phase_loop_runtime.state import write_state
+
+from phase_loop_test_utils import make_repo, provenanced_state, write_phase_plan
 
 
 def _git_porcelain(repo: Path) -> str:
@@ -199,6 +201,96 @@ class Dedup62VerificationTest(unittest.TestCase):
                 "v1-RUNNER", slugs,
                 "without the #46 file+phase dedup, reconcile SHOULD re-append the duplicate import",
             )
+
+
+class OrphanRenamedPlanParity162Test(unittest.TestCase):
+    """agent-harness#162 (LEGACY / CLEANSHIP P7) — read/write parity on an
+    orphaned-entry + renamed-plan repo.
+
+    The #162 follow-up (grok CR of READONLY #62) hypothesized that a read-only
+    ``reconcile()`` over a manifest entry whose plan file was RENAMED (a stale
+    live-missing entry + a regex-reachable renamed plan, phase ``planned`` in state)
+    would DIVERGE from the write-intent path — a DUPLICATE ``manifest_plan_file_missing``
+    warning plus the classifier-default phase instead of ``planned``.
+
+    This does NOT reproduce on the current base, and this test pins that as a
+    regression guard. The reason is structural, not a fix that made them match: the
+    ``manifest_plan_file_missing`` branch in ``discovery.manifest_plan_artifact`` is
+    UNREACHABLE — a missing-file entry fails ``validate_manifest`` (its existence
+    check), and ``_phase_manifest_entries`` is validate-gated, so it hides ALL entries
+    SYMMETRICALLY in read and write mode. Both modes therefore fall through to the
+    regex-reachable renamed plan and emit exactly the one orphan-loop warning. If a
+    future change relaxes the validate gate or the orphan logic, this test fails and
+    forces the read/write views back into agreement.
+    """
+
+    def _build(self, td: Path, status: str) -> tuple[Path, Path]:
+        repo = make_repo(td)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        # The renamed (current) plan exists on disk and is regex-reachable for RUNNER.
+        write_phase_plan(repo, "RUNNER", roadmap)
+        # A stale manifest entry points at a now-MISSING (old) plan file for the same
+        # phase, non-orphaned.
+        append_entry(
+            repo,
+            DotfilesPlanEntry(
+                slug="v1-RUNNER-old",
+                file="plans/phase-plan-v1-RUNNER-old.md",
+                type="phase",
+                status=status,
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:00Z",
+                owner_skill="claude-plan-phase",
+                phase_alias="RUNNER",
+            ),
+        )
+        # The state snapshot has RUNNER planned (load-bearing: it is what makes the
+        # write path resolve RUNNER to planned via the provenance-matched override).
+        write_state(repo, provenanced_state(repo, roadmap, {"RUNNER": "planned"}))
+        return repo, roadmap
+
+    @staticmethod
+    def _warns(snapshot) -> list[tuple[str, str]]:
+        return sorted((w.get("reason"), w.get("phase")) for w in snapshot.ledger_warnings)
+
+    def test_read_matches_write_across_statuses(self):
+        # The EXACT expected warning content per status (not just read==write list
+        # equality — CR item 7: a bare equality could silently lose the warning on both
+        # sides and still pass). The orphan-detection loop emits ONE
+        # manifest_plan_file_missing warning for a live-missing NON-terminal entry
+        # (committed/executing) in BOTH read and write mode; a `completed` entry is
+        # skipped by that loop, so NO such warning fires — on both sides.
+        expected_warns = {
+            "committed": [("manifest_plan_file_missing", "RUNNER")],
+            "executing": [("manifest_plan_file_missing", "RUNNER")],
+            "completed": [],
+        }
+        for status in ("committed", "executing", "completed"):
+            with tempfile.TemporaryDirectory() as td:
+                repo, roadmap = self._build(Path(td), status)
+                write = reconcile(repo, roadmap, read_only=False)
+            with tempfile.TemporaryDirectory() as td:
+                repo, roadmap = self._build(Path(td), status)
+                read = reconcile(repo, roadmap, read_only=True)
+            self.assertEqual(
+                dict(read.phases), dict(write.phases),
+                f"[status={status}] read-mode phases must match the write path",
+            )
+            # Assert the CONCRETE warning set on BOTH sides (non-vacuous): the write
+            # path is the source of truth and read must match it exactly.
+            self.assertEqual(
+                self._warns(write), expected_warns[status],
+                f"[status={status}] write-mode warnings must be exactly {expected_warns[status]}",
+            )
+            self.assertEqual(
+                self._warns(read), expected_warns[status],
+                f"[status={status}] read-mode warnings must equal the write path (no duplicate, "
+                "no dropped manifest_plan_file_missing)",
+            )
+            # The concrete converged view: RUNNER resolves to planned (via the
+            # regex-reachable renamed plan), not the classifier default.
+            self.assertEqual(read.phases.get("RUNNER"), "planned")
+            self.assertEqual(write.phases.get("RUNNER"), "planned")
 
 
 if __name__ == "__main__":

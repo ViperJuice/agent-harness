@@ -215,7 +215,7 @@
       "updated_at": "2026-06-30T21:06:48Z"
     },
     {
-      "acceptance_criteria_count": 6,
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T22:00:00Z",
       "file": "plans/phase-plan-v4-PNLCLAUDE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2200-PNLCLAUDE.md",
@@ -268,15 +268,15 @@
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PNLCLAUDE",
       "reflection_ref": null,
-      "roadmap_ref": "specs/phase-plans-v4.md",
+      "roadmap_ref": null,
       "slug": "v4-PNLCLAUDE",
       "status": "completed",
-      "task_summary": "Phase plan for repo-grounded Claude TUI advisor-panel leg.",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T22:18:00Z"
     },
     {
-      "acceptance_criteria_count": 5,
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T22:20:00Z",
       "file": "plans/phase-plan-v4-PNLSKILL.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2220-PNLSKILL.md",
@@ -327,15 +327,15 @@
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PNLSKILL",
       "reflection_ref": null,
-      "roadmap_ref": "specs/phase-plans-v4.md",
+      "roadmap_ref": null,
       "slug": "v4-PNLSKILL",
       "status": "completed",
-      "task_summary": "Phase plan for canonical advisor-panel skill source and generated bundle packaging.",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T22:36:00Z"
     },
     {
-      "acceptance_criteria_count": 5,
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T22:40:00Z",
       "file": "plans/phase-plan-v4-PNLREDACT.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2240-PNLREDACT.md",
@@ -402,15 +402,15 @@
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PNLREDACT",
       "reflection_ref": null,
-      "roadmap_ref": "specs/phase-plans-v4.md",
+      "roadmap_ref": null,
       "slug": "v4-PNLREDACT",
       "status": "completed",
-      "task_summary": "Phase plan for dotfiles advisor-panel redaction and fleet cutover evidence.",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T23:02:00Z"
     },
     {
-      "acceptance_criteria_count": 5,
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T23:05:00Z",
       "file": "plans/phase-plan-v4-PNLVERIFY.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2305-PNLVERIFY.md",
@@ -466,10 +466,10 @@
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PNLVERIFY",
       "reflection_ref": null,
-      "roadmap_ref": "specs/phase-plans-v4.md",
+      "roadmap_ref": null,
       "slug": "v4-PNLVERIFY",
       "status": "completed",
-      "task_summary": "Final advisor-panel roadmap verification matrix and release-closeout evidence.",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T23:28:00Z"
     }

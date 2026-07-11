@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 try:  # Optional in stripped adapter runtimes; normal installs and tests provide it.
     import yaml
@@ -389,6 +389,25 @@ def _git(root: Path, *args: str) -> str:
         return ""
 
 
+class AmbiguousRoadmapError(RuntimeError):
+    """Multiple ``specs/phase-plans-v*.md`` are plausible and nothing disambiguates.
+
+    LEGACY (CLEANSHIP P7): raised by ``select_roadmap`` when the glob fall-through
+    finds >1 roadmap and there is no explicit ``--roadmap``, no active state file,
+    no manifest-backed roadmap, and no handoff. The CLI converts this into a
+    RECOVERABLE ``blocker_class="ambiguous_roadmap_selection"`` snapshot ("pass
+    ``--roadmap``") rather than letting a bare ``RuntimeError`` escape as an uncaught
+    traceback — agent-harness itself ships ``v1``–``v9``, so once the frozen-at-v4
+    manifest stops resolving, a bare run reaches exactly this branch. Subclasses
+    ``RuntimeError`` (and keeps the historical message substring) so any legacy
+    ``except RuntimeError``/string-match caller keeps working. ``candidates`` carries
+    the resolved roadmap paths for diagnostics."""
+
+    def __init__(self, candidates: Sequence[Path] = ()):
+        self.candidates: tuple[Path, ...] = tuple(candidates)
+        super().__init__("ambiguous roadmap selection")
+
+
 def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
     if explicit:
         path = Path(explicit).expanduser()
@@ -414,7 +433,7 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
     if not candidates:
         raise FileNotFoundError("no specs/phase-plans-v*.md roadmap found")
     if len(candidates) != 1:
-        raise RuntimeError("ambiguous roadmap selection")
+        raise AmbiguousRoadmapError([c.resolve() for c in candidates])
     return candidates[0].resolve()
 
 
@@ -443,9 +462,17 @@ def active_state_roadmap(repo: Path) -> Path | None:
 def manifest_backed_roadmap(repo: Path) -> Path | None:
     if _phase_manifest_disabled():
         return None
+    allow_completed = _discovery_allow_completed()
     candidates: list[Path] = []
     for entry in _phase_manifest_entries(repo):
         if entry.roadmap_ref is None or entry.status == "orphaned":
+            continue
+        # LEGACY (CLEANSHIP P7): also skip completed entries by default so an
+        # all-completed manifest FALLS THROUGH to the glob branch instead of
+        # silently auto-selecting a finished roadmap (this is why agent-harness's
+        # own frozen-at-v4 manifest used to pick a stale completed roadmap). The
+        # one-release escape hatch restores the pre-change behavior.
+        if entry.status == "completed" and not allow_completed:
             continue
         path = repo / entry.roadmap_ref.file
         try:
@@ -1072,6 +1099,18 @@ def _regex_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) ->
 
 def _phase_manifest_disabled() -> bool:
     return os.environ.get("PHASE_LOOP_MANIFEST_DISABLED") == "1"
+
+
+def _discovery_allow_completed() -> bool:
+    """One-release escape hatch (LEGACY / CLEANSHIP P7).
+
+    By default ``manifest_backed_roadmap`` skips ``status == "completed"`` entries so
+    a bare run never silently auto-selects a finished roadmap. Setting
+    ``PHASE_LOOP_DISCOVERY_ALLOW_COMPLETED=1`` restores the pre-change behavior for
+    one release (completed entries are candidates again). Genuine resumption never
+    needed this hatch — the state-file ladder (``active_state_roadmap``) precedes the
+    manifest branch in ``select_roadmap``."""
+    return os.environ.get("PHASE_LOOP_DISCOVERY_ALLOW_COMPLETED") == "1"
 
 
 def _phase_manifest_entries(repo: Path) -> tuple[object, ...]:
