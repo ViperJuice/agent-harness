@@ -9,7 +9,11 @@
   The auth gate reuses each executor's own cached, timeout-bounded, fail-closed
   `auth_ok` (`executor_availability.auth_ok_for` over the record's
   `auth_preflight_probes`), so the board's verdict is single-sourced with the
-  dispatch path's and never re-implements probing.
+  dispatch path's and never re-implements probing. The LIVE convening path
+  (`config.load_boards` → the composed `code-review` board) is auth-aware **by
+  default** (the gate short-circuits for vendors with no CLI on PATH, so a host
+  without a vendor installed never shells out); pass `auth_ok=lambda _v: True` to
+  isolate the availability dimension in a test.
 
 ## Added
 - **Opt-in streaming verdict delivery on the shared `_run_legs_ordered`

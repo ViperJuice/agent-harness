@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, cast
 
 from .agent_runtime_provider import (
     CreateSessionRequest,
@@ -1984,7 +1984,7 @@ def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegRe
     try:
         review_dir.mkdir(parents=True, exist_ok=True)
         label = re.sub(r"[^0-9A-Za-z._-]+", "_", str(result.seat_key or result.leg))
-        path = review_dir / f"leg-{index:02d}-{label}.verdict.json"
+        path = review_dir / f"leg-{index:04d}-{label}.verdict.json"
         payload = {
             "index": index,
             "leg": result.leg,
@@ -1994,7 +1994,12 @@ def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegRe
             "text": result.text,
             "detail": result.detail,
         }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        # Atomic publish: write a temp sibling then os.replace, so a directory
+        # watcher never observes/parses a partially-written verdict file.
+        body = json.dumps(payload, indent=2, sort_keys=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)
     except Exception:  # fail-open: streaming side-channel never breaks the review
         logging.getLogger(__name__).warning(
             "streaming verdict write failed for leg %s", getattr(result, "leg", "?"), exc_info=True
@@ -2051,7 +2056,9 @@ def _run_legs_ordered(
     **consolidated return is still re-sorted to submission order** (``result[i]`` ↔
     ``items[i]``) so the ordered contract every consolidating caller relies on holds
     identically in both modes. The callback is fail-OPEN (a raising callback can
-    never break the pool or fail a leg).
+    never break the pool or fail a leg). Delivery (callback + file write) runs on
+    the single collector thread, so a SLOW ``on_leg_complete`` delays delivery of
+    the later-completing legs — "the moment it lands" holds for a fast consumer.
     """
     seq = list(items)
     if not seq:
@@ -2080,7 +2087,13 @@ def _run_legs_ordered(
                     logging.getLogger(__name__).warning(
                         "on_leg_complete callback raised for leg %s", result.leg, exc_info=True
                     )
-        return [r for r in results if r is not None]
+        # Every future produced a result (run_one is fail-closed). Fail LOUD if a
+        # slot stayed None rather than silently shrinking the list — a length change
+        # would break the positional ``result[i] ↔ items[i]`` contract worse than a
+        # crash would.
+        if any(r is None for r in results):
+            raise RuntimeError("streaming fan-out lost a leg result (positional contract broken)")
+        return cast("list[PanelLegResult]", results)
 
 
 def invoke_panel(

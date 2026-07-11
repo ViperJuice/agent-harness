@@ -10,6 +10,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from phase_loop_runtime.advisor_board import (
     DEFAULT_BOARD,
@@ -65,7 +66,12 @@ class CodeReviewAvailabilityAwareTests(unittest.TestCase):
         cli_absent = {"grok": "grok", "claude": "claude", "codex": "codex", "gemini": "agy"}
         down = {cli_absent[v] for v in absent}
         matrix = default_matrix(probe=lambda cli: cli not in down, env={})
-        return load_boards(self._NONEXISTENT, matrix=matrix).get("code-review")
+        # Isolate the AVAILABILITY dimension: pin auth to pass-through so the loader
+        # never shells out to the real auth probe (the auth dimension is proven
+        # separately below and in test_advisor_board_composition.py).
+        return load_boards(
+            self._NONEXISTENT, matrix=matrix, auth_ok=lambda _v: True
+        ).get("code-review")
 
     def test_all_vendors_up_is_the_four_vendor_board(self) -> None:
         board = self._load_code_review(absent=set())
@@ -100,12 +106,18 @@ class CodeReviewAvailabilityAwareTests(unittest.TestCase):
         self.assertEqual(len(board.seats), 4)                       # never choked
         self.assertTrue(all(s.harness != "grok" for s in board.seats))
 
-    def test_auth_ok_omitted_keeps_the_board_availability_only(self) -> None:
-        # Back-compat + hermetic: with no ``auth_ok`` the composed board is
-        # availability-only (grok on PATH stays seated; no real auth probe runs).
+    def test_auth_ok_defaults_to_the_real_auth_gate_on_the_live_path(self) -> None:
+        # #151: with no explicit ``auth_ok`` the live path defaults to the REAL
+        # (cached, fail-closed) auth gate — it is not silently availability-only.
+        # Patch the module default so grok is PATH-present but unauthed, with no
+        # subprocess: grok is dropped and backfilled.
+        import phase_loop_runtime.advisor_board.config as cfg_mod
+
         matrix = default_matrix(probe=lambda cli: True, env={})
-        board = load_boards(self._NONEXISTENT, matrix=matrix).get("code-review")
-        self.assertEqual({s.harness for s in board.seats}, {"grok", "claude", "codex", "gemini"})
+        with patch.object(cfg_mod, "default_board_auth_ok", lambda v: v != "grok"):
+            board = load_boards(self._NONEXISTENT, matrix=matrix).get("code-review")
+        self.assertEqual(len(board.seats), 4)                       # never choked
+        self.assertTrue(all(s.harness != "grok" for s in board.seats))
 
     def test_user_defined_code_review_overrides_the_composed_board(self) -> None:
         # A user board named code-review wins over availability-aware composition.

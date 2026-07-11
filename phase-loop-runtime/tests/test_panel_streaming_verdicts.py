@@ -82,7 +82,9 @@ class SharedOutOfOrderFixtureTests(unittest.TestCase):
         items, run_one, release_slow, fast_done = _out_of_order_fixture()
         box: dict[str, list[pi.PanelLegResult]] = {}
         runner = threading.Thread(
-            target=lambda: box.__setitem__("results", pi._run_legs_ordered(items, run_one))
+            target=lambda: box.__setitem__(
+                "results", pi._run_legs_ordered(items, run_one, max_concurrency=2)
+            )
         )
         runner.start()
         self.assertTrue(fast_done.wait(timeout=5.0), "fast leg never completed")
@@ -109,12 +111,13 @@ class SharedOutOfOrderFixtureTests(unittest.TestCase):
                     if result.leg == "fast":
                         # fast's file is already on disk (the helper writes BEFORE the
                         # callback) and slow's is NOT — slow is still blocked.
-                        snap["fast_file_present"] = (review_dir / "leg-01-fast.verdict.json").exists()
-                        snap["slow_file_absent"] = not (review_dir / "leg-00-slow.verdict.json").exists()
+                        snap["fast_file_present"] = (review_dir / "leg-0001-fast.verdict.json").exists()
+                        snap["slow_file_absent"] = not (review_dir / "leg-0000-slow.verdict.json").exists()
                         release_slow.set()  # only now may slow complete
 
             results = pi._run_legs_ordered(
-                items, run_one, on_leg_complete=on_leg_complete, review_dir=review_dir
+                items, run_one, on_leg_complete=on_leg_complete, review_dir=review_dir,
+                max_concurrency=2,
             )
 
             # Callbacks fired in COMPLETION order (fast strictly before slow).
@@ -126,8 +129,8 @@ class SharedOutOfOrderFixtureTests(unittest.TestCase):
             self.assertEqual([r.leg for r in results], ["slow", "fast"])
             # Incremental per-leg verdict files written for BOTH, index-prefixed.
             names = sorted(p.name for p in review_dir.glob("*.verdict.json"))
-            self.assertEqual(names, ["leg-00-slow.verdict.json", "leg-01-fast.verdict.json"])
-            payload = json.loads((review_dir / "leg-00-slow.verdict.json").read_text())
+            self.assertEqual(names, ["leg-0000-slow.verdict.json", "leg-0001-fast.verdict.json"])
+            payload = json.loads((review_dir / "leg-0000-slow.verdict.json").read_text())
             self.assertEqual(payload["leg"], "slow")
             self.assertEqual(payload["status"], "OK")
             self.assertTrue(payload["usable"])
@@ -145,7 +148,7 @@ class StreamingFailOpenTests(unittest.TestCase):
         def boom(_result: pi.PanelLegResult) -> None:
             raise RuntimeError("callback boom")
 
-        results = pi._run_legs_ordered(items, run_one, on_leg_complete=boom)
+        results = pi._run_legs_ordered(items, run_one, on_leg_complete=boom, max_concurrency=2)
         self.assertEqual([r.leg for r in results], ["slow", "fast"])  # full ordered results
 
     def test_unwritable_review_dir_is_fail_open(self) -> None:
@@ -153,7 +156,7 @@ class StreamingFailOpenTests(unittest.TestCase):
         release_slow.set()
         with tempfile.NamedTemporaryFile() as f:
             bad = Path(f.name) / "sub"  # parent is a FILE → mkdir raises → swallowed
-            results = pi._run_legs_ordered(items, run_one, review_dir=bad)
+            results = pi._run_legs_ordered(items, run_one, review_dir=bad, max_concurrency=2)
         self.assertEqual([r.leg for r in results], ["slow", "fast"])
 
 

@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .validation import SeatValidationError, validate_board
-from .composition import compose_review_board
+from .composition import compose_review_board, default_board_auth_ok
 from .presets import DEFAULT_BOARD_NAME, PRESETS
 from .schema import (
     AUTH_LANES,
@@ -189,12 +189,13 @@ def load_boards(
 
     ``auth_ok(vendor) -> bool`` (REVIEWGOV-W1 / #151) additionally gates the
     composed ``code-review`` board on AUTHENTICATION so a PATH-present-but-unauthed
-    vendor is dropped and backfilled. It is **opt-in**: when omitted the composed
-    board stays availability-only (back-compat, and hermetic — it never shells out
-    to the real auth probe during a plain ``load_boards`` call). A caller convening
-    a real board (e.g. the ``advisor-board`` CLI) passes
-    ``advisor_board.default_board_auth_ok`` to make the live path genuinely
-    auth-aware.
+    vendor is dropped and backfilled. When omitted it defaults to
+    ``composition.default_board_auth_ok`` — the cached, timeout-bounded, fail-closed
+    ``auth_ok_for`` gate — so the LIVE convening path is genuinely auth-aware (the
+    real fix for #151). The gate only runs for vendors that pass the availability
+    (PATH) probe, so a host with no vendor CLI installed short-circuits without
+    shelling out. Inject ``auth_ok`` (e.g. ``lambda _v: True``) to isolate the
+    availability dimension in a test.
     """
     boards: dict[str, Board] = dict(PRESETS)
     default_board = DEFAULT_BOARD_NAME
@@ -203,11 +204,13 @@ def load_boards(
     compose_probe = is_available
     if compose_probe is None and matrix is not None:
         compose_probe = getattr(getattr(matrix, "harnesses", None), "is_available", None)
-    # Auth gate is OPT-IN (default availability-only, hermetic + back-compat). When
-    # a probe IS injected for availability but no ``auth_ok`` is passed, hand the
-    # composer an explicit pass-through so it never falls through to the real,
-    # subprocess-backed auth default on this loader path.
-    compose_auth = auth_ok if auth_ok is not None else (lambda _vendor: True)
+    # #151: the LIVE convening path is auth-aware by DEFAULT — a PATH-present but
+    # unauthenticated vendor is dropped and backfilled. Pass an explicit ``auth_ok``
+    # so the composer never falls through to its is_available-injected pass-through
+    # affordance (which exists only for the static presets / simulation tests). The
+    # gate short-circuits for vendors that fail the availability probe, so a host
+    # with no vendor CLI never shells out.
+    compose_auth = auth_ok if auth_ok is not None else default_board_auth_ok
     composed_review = compose_review_board(is_available=compose_probe, auth_ok=compose_auth)
     boards[composed_review.name] = composed_review
 

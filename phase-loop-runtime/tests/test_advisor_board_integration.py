@@ -112,8 +112,10 @@ class PresetsSmokeTests(unittest.TestCase):
     def test_all_presets_load_and_self_validate(self) -> None:
         # load_boards with no config file → just the presets, each validated against
         # the real default_matrix. A preset on an invalid pairing would raise here.
+        # Pin auth to pass-through so composing the live code-review board does not
+        # shell out to the real auth probe (auth is exercised in the config tests).
         with tempfile.TemporaryDirectory() as d:
-            cfg = load_boards(Path(d) / "no-such-file.toml")
+            cfg = load_boards(Path(d) / "no-such-file.toml", auth_ok=lambda _v: True)
         self.assertEqual(set(PRESET_NAMES), set(cfg.boards) & set(PRESET_NAMES))
         for name in PRESET_NAMES:
             self.assertIn(name, cfg.boards)
