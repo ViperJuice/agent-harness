@@ -4411,7 +4411,7 @@ def run_loop(
                     continue
                 # "serial": fall through to single-phase dispatch below.
             alias = (
-                _select_parallel_dispatch_phase(coordinator_waves, classifications)
+                _select_parallel_dispatch_phase(coordinator_waves, classifications, phase)
                 if coordinator_waves
                 else _select_ready_phase(repo, roadmap, classifications, phase)
             )
@@ -5584,7 +5584,20 @@ def _relocate_under(worktree: Path, repo: Path, path: Path) -> Path:
         return path
 
 
-def _select_parallel_dispatch_phase(waves: tuple[tuple[str, ...], ...], classifications: dict[str, str]) -> str | None:
+def _select_parallel_dispatch_phase(
+    waves: tuple[tuple[str, ...], ...],
+    classifications: dict[str, str],
+    phase: str | None = None,
+) -> str | None:
+    if phase:
+        # NEW-BUG: honor an explicit --phase on the concurrent (coordinator-waves)
+        # path exactly as the serial path does (_select_ready_phase). Previously the
+        # explicit phase was dropped here, so wave order picked the phase and a
+        # fully-blocked earlier wave halted the loop even when the operator asked for
+        # a ready independent phase in a later wave. Only dispatch it if it belongs to
+        # the wave structure; otherwise there is nothing for this scheduler to run.
+        target = phase.upper()
+        return target if any(target in wave for wave in waves) else None
     for wave in waves:
         if any(classifications.get(alias) not in {"complete", "blocked"} for alias in wave):
             return next(

@@ -38,3 +38,11 @@
   planned/clean evidence and a clean tree, not on `blocker_class` alone, so a
   genuinely un-repaired blocker still repairs and a later interrupted repair does
   not clear.
+
+- **Explicit `--phase` is honored on the concurrent scheduler path (new bug found
+  during CLEANSHIP).** The serial selector already honored an explicit `--phase`,
+  but the concurrent coordinator-waves selector `_select_parallel_dispatch_phase`
+  dropped it — wave order picked the phase and a fully-blocked earlier wave halted
+  the loop even when the operator asked for a ready independent phase in a later
+  wave. The selector now accepts and applies the explicit phase, mirroring the
+  serial path.
