@@ -17,26 +17,13 @@ The resolver returns the raw byte fields as base64 only after every identity, fr
 
 ## Authenticated source
 
-Run the source Codex app-server on a tailnet-only listener with either capability-token or signed-bearer-token authentication. `--authority` must be exactly `codex-app-server://<endpoint-hostname>`; this binds the proof identity to the authenticated route instead of accepting a caller-selected label. Use the source host's tailnet DNS name or tailnet address in `--endpoint`; do not expose the listener to a public interface.
-
-Keep the bearer value in a secret-backed environment variable. Pass only its variable name to the CLI:
-
-```sh
-phase-loop task-message-probe \
-  --endpoint ws://claw.example.ts.net:8765 \
-  --authority codex-app-server://claw.example.ts.net \
-  --token-env CODEX_TASK_MESSAGE_TOKEN
-```
-
-The probe performs only the authenticated app-server initialization handshake and emits authority/status metadata. It does not read a task or message.
-
 Codex app-server 0.144.1's owner-only Unix control socket is itself a WebSocket
 transport. For a managed source task, run the resolver on the source host
-against that socket and carry the JSON result back over a separately
-authenticated channel such as tailnet SSH:
+against that socket. When SSH is unavailable, use the task-message broker below;
+do not start another app-server or copy task state.
 
 ```sh
-ssh claw.example.ts.net phase-loop task-message-resolve \
+phase-loop task-message-resolve \
   --control-socket /home/operator/.codex/app-server-control/app-server-control.sock \
   --authority codex-app-server://claw.example.ts.net \
   --thread-id 019f4454-2012-7061-847d-1a9ab0e9ef00 \
@@ -48,16 +35,61 @@ ssh claw.example.ts.net phase-loop task-message-resolve \
 Upgrade directly over the Unix socket with compression disabled, matching
 Codex 0.144.1's supported transport. It does not expose the socket or add a
 network listener. The caller is responsible for authenticating the outer
-channel and pinning `--authority` to that source host. Network WebSocket mode
+channel and pinning `--authority` to that source host. Direct network WebSocket mode
 continues to require `--token-env`; control-socket mode never accepts or reads a
 bearer. A missing socket, failed handshake, or unavailable task fails closed
 with `source_task_unavailable`.
+
+### Tailnet broker
+
+The broker is a separate read-only wrapper around the local resolver, not an
+app-server proxy. Install `deploy/phase-loop-task-message-broker.service` as a
+user unit on the source host. Its environment file contains only the SHA-256 of
+the capability token and the merged 40-hex Agent Harness commit; it never
+contains the raw token. Source the raw token from 1Password only into the caller
+environment.
+
+The service binds `127.0.0.1:18765`. Expose that loopback endpoint only through
+Tailscale Serve HTTPS:
+
+```sh
+tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 http://127.0.0.1:18765
+```
+
+Never use Tailscale Funnel. Probe from the authenticated caller:
+
+The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`
+and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus
+`AGENT_HARNESS_SHA=<merged-40-hex>`. Restrict it to the owning user.
+
+```sh
+phase-loop task-message-probe \
+  --broker-url https://<tailnet-service-url>:8765 \
+  --authority codex-app-server://claw.example.ts.net \
+  --token-env CODEX_TASK_MESSAGE_TOKEN
+```
+
+The broker authenticates before opening the owner socket. Successful responses
+are NDJSON: strictly increasing metadata-only heartbeat frames every five
+seconds, followed by one exact result frame containing the existing resolver
+payload and the merged Agent Harness SHA. The client has no total wall-clock
+request timeout while heartbeats remain fresh; three missed heartbeats fail
+closed. The heartbeat-less local app-server hop retains a ten-second inactivity
+bound.
+
+To remove the broker boundary, clear the Tailscale Serve route first and then
+stop the broker unit:
+
+```sh
+tailscale serve clear svc:phase-loop-task-message-broker
+systemctl --user disable --now phase-loop-task-message-broker.service
+```
 
 Resolve one exact source after the probe is ready:
 
 ```sh
 phase-loop task-message-resolve \
-  --endpoint ws://claw.example.ts.net:8765 \
+  --broker-url https://<tailnet-service-url>:8765 \
   --authority codex-app-server://claw.example.ts.net \
   --token-env CODEX_TASK_MESSAGE_TOKEN \
   --thread-id 019f4454-2012-7061-847d-1a9ab0e9ef00 \
@@ -81,4 +113,10 @@ Authentication failures, malformed app-server responses, wrong or duplicate clie
 
 ## ai-stack boundary
 
-When the source daemon supports proxying, ai-stack should invoke control-socket mode on the source host over its authenticated tailnet SSH boundary, decode the two successful base64 fields into its `TrustedSourceMessage(message_bytes, approval_body_bytes)` interface, and independently repeat schema, identity, source-message SHA-256, and RFC 8785 canonical approval checks before constructing an adapter or actuator. A ready resolver proves only the source boundary; it does not authorize a service restart or any other mutation.
+ai-stack should invoke broker mode, require the broker's merged Agent Harness SHA
+to match its reviewed pin, decode the two successful base64 fields into its
+`TrustedSourceMessage(message_bytes, approval_body_bytes)` interface, and
+independently repeat schema, identity, source-message SHA-256, and RFC 8785
+canonical approval checks before constructing an adapter or actuator. A ready
+resolver proves only the source boundary; it does not authorize a service
+restart or any other mutation.
