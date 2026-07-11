@@ -76,11 +76,13 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 Never use Tailscale Funnel. Probe from the authenticated caller:
 
 The unit hides the user's home, binds back only the dedicated broker venv and
-the exact `app-server-control.sock` inode read-only, uses private devices and temporary
+the exact `app-server-control.sock` inode read-only, uses private temporary
 storage, and retains an address-family allowlist. The user service does not use
-systemd `IPAddressDeny`/`IPAddressAllow`: those directives require an IP-firewall
-capability unavailable to claw's user manager and fail before `ExecStart`. The
-broker command itself rejects every non-loopback bind, and Tailscale Serve is the
+systemd `IPAddressDeny`/`IPAddressAllow`, `PrivateDevices`, or
+`ProtectKernelModules`: on claw's user manager, each device/kernel-module
+directive independently requires a forbidden capability drop and fails before
+`ExecStart`, while the IP-firewall directives likewise require unavailable
+privilege. The broker command itself rejects every non-loopback bind, and Tailscale Serve is the
 only tailnet exposure. The unit does not expose the rest of
 `~/.local` or any adjacent Codex logs/sockets. Do not weaken those restrictions to make deployment succeed. The
 client rejects redirects rather than forwarding its bearer to another origin.
