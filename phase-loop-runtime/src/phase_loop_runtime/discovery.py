@@ -1119,13 +1119,27 @@ def _phase_manifest_entries(repo: Path) -> tuple[object, ...]:
     except Exception:
         return ()
     manifest_path = repo / "plans" / "manifest.json"
-    if manifest_path.exists() and not validate_manifest(manifest_path).valid:
-        return ()
+    valid_indices: frozenset[int] | None = None
+    if manifest_path.exists():
+        # agent-harness#164 (IF-0-MANIFEST-1): validate PER-ENTRY. A structural
+        # failure (unparseable / bad schema / plans-not-array) still hides the
+        # whole manifest, but a single stale/renamed/missing entry is skipped
+        # (treated orphaned) instead of silently degrading ALL entries to regex
+        # discovery. The skipped entry's operator signal (manifest_plan_file_missing)
+        # is emitted independently by reconcile._reconcile_plan_manifest.
+        result = validate_manifest(manifest_path)
+        if not result.structural_valid:
+            return ()
+        valid_indices = result.valid_indices()
     try:
         manifest = read_manifest(repo)
     except Exception:
         return ()
-    return tuple(entry for entry in manifest.plans if entry.type == "phase")
+    return tuple(
+        entry
+        for index, entry in enumerate(manifest.plans)
+        if entry.type == "phase" and (valid_indices is None or index in valid_indices)
+    )
 
 
 def plan_is_stale(plan: Path, roadmap: Path) -> bool:
