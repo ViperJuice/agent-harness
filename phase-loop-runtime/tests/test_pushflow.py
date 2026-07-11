@@ -53,7 +53,9 @@ def _commit(repo: Path, msg: str, files: dict[str, str]) -> str:
 # --------------------------------------------------------------------------- #
 class CloseoutModeDefaultTest(unittest.TestCase):
     def _mode(self, argv: list[str]) -> str:
-        return _resolve_run_closeout_mode(build_parser().parse_args(argv))
+        args = build_parser().parse_args(argv)
+        command = args.command or ("dry-run" if args.dry_run else "run")
+        return _resolve_run_closeout_mode(args, command)
 
     def test_run_defaults_to_push(self):
         # The lived fix: a bare `phase-loop run` now pushes on closeout instead of
@@ -62,19 +64,35 @@ class CloseoutModeDefaultTest(unittest.TestCase):
         self.assertEqual(self._mode(["resume", "--repo", "."]), "push")
         self.assertEqual(self._mode(["dry-run", "--repo", "."]), "push")
 
+    def test_implicit_run_forms_default_to_push(self):
+        # `phase-loop` with no subcommand is an implicit `run`; `phase-loop --dry-run`
+        # is an implicit `dry-run`. Both must get the push default too (CR: codex).
+        self.assertEqual(self._mode(["--repo", "."]), "push")
+        self.assertEqual(self._mode(["--repo", ".", "--dry-run"]), "push")
+
     def test_no_push_suppresses_to_manual(self):
         self.assertEqual(self._mode(["run", "--repo", ".", "--no-push"]), "manual")
         self.assertEqual(self._mode(["dry-run", "--repo", ".", "--no-push"]), "manual")
 
-    def test_explicit_closeout_mode_always_wins(self):
+    def test_explicit_closeout_mode_always_wins_after_subcommand(self):
         self.assertEqual(self._mode(["run", "--repo", ".", "--closeout-mode", "manual"]), "manual")
         self.assertEqual(self._mode(["run", "--repo", ".", "--closeout-mode", "commit"]), "commit")
         # An explicit --closeout-mode beats --no-push (the operator asked for it).
         self.assertEqual(self._mode(["run", "--repo", ".", "--closeout-mode", "push", "--no-push"]), "push")
 
+    def test_explicit_closeout_mode_wins_before_subcommand(self):
+        # CR (codex): a value in the BEFORE-subcommand position must survive the
+        # subcommand parse (was clobbered to the subparser default -> push).
+        self.assertEqual(self._mode(["--closeout-mode", "commit", "run", "--repo", "."]), "commit")
+        self.assertEqual(self._mode(["--closeout-mode", "manual", "run", "--repo", "."]), "manual")
+        # Before-subcommand explicit push still beats a trailing --no-push.
+        self.assertEqual(self._mode(["--closeout-mode", "push", "run", "--repo", ".", "--no-push"]), "push")
+        # Implicit run with a before-subcommand explicit mode.
+        self.assertEqual(self._mode(["--repo", ".", "--closeout-mode", "manual"]), "manual")
+
     def test_execute_leg_stays_manual(self):
-        # The inner execute leg keeps the parent parser default; the flip is scoped
-        # to the outer run loop and must NOT turn execute legs into pushers.
+        # The inner execute leg keeps the manual default; the flip is scoped to the
+        # outer run loop and must NOT turn execute legs into pushers.
         self.assertEqual(self._mode(["execute", "FOO", "--repo", ".", "--output", "x"]), "manual")
 
 
