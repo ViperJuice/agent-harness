@@ -192,6 +192,7 @@ def test_cli_broker_mode_fails_closed_without_token(monkeypatch) -> None:
     assert json.loads(stdout.getvalue())["code"] == "attestation_invalid"
 
 
+@pytest.mark.dotfiles_integration
 def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
     unit = (Path(__file__).resolve().parents[2] / "deploy" / "phase-loop-task-message-broker.service").read_text()
     assert "--host 127.0.0.1" in unit
