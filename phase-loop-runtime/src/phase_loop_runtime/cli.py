@@ -757,6 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         task_message_transport = task_message_sub.add_mutually_exclusive_group(required=True)
         task_message_transport.add_argument("--endpoint", help="Authenticated Codex app-server ws:// or wss:// endpoint.")
+        task_message_transport.add_argument("--broker-url", help="Authenticated task-message broker HTTPS endpoint.")
         task_message_transport.add_argument(
             "--control-socket",
             help="Absolute local managed app-server control socket; use only on the source host over an independently authenticated channel.",
@@ -768,10 +769,23 @@ def build_parser() -> argparse.ArgumentParser:
             help="Environment variable containing the app-server bearer token; the token is never printed.",
         )
         task_message_sub.add_argument("--timeout-seconds", type=float, default=10.0)
+        task_message_sub.add_argument("--heartbeat-timeout-seconds", type=float, default=15.0)
         if name == "task-message-resolve":
             task_message_sub.add_argument("--thread-id", required=True)
             task_message_sub.add_argument("--message-id", required=True)
             task_message_sub.add_argument("--max-source-age-seconds", type=int, default=900)
+    task_message_broker_sub = subparsers.add_parser(
+        "task-message-broker-serve",
+        help="Serve the loopback-only authenticated task-message broker.",
+    )
+    task_message_broker_sub.add_argument("--host", default="127.0.0.1")
+    task_message_broker_sub.add_argument("--port", type=int, default=18765)
+    task_message_broker_sub.add_argument("--control-socket", required=True)
+    task_message_broker_sub.add_argument("--authority", required=True)
+    task_message_broker_sub.add_argument("--token-sha256", required=True)
+    task_message_broker_sub.add_argument("--agent-harness-sha", required=True)
+    task_message_broker_sub.add_argument("--heartbeat-seconds", type=float, default=5.0)
+    task_message_broker_sub.add_argument("--timeout-seconds", type=float, default=10.0)
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -889,6 +903,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _outside_agent_validate_command(args=args)
     if command in {"task-message-probe", "task-message-resolve"}:
         return _task_message_command(args=args, resolve=command == "task-message-resolve")
+    if command == "task-message-broker-serve":
+        return _task_message_broker_serve_command(args=args)
     if command == "advisor-board":
         return _advisor_board_command(args=args)
     if command == "docs-audit":
@@ -1467,8 +1483,9 @@ def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
         )
         print(json.dumps(error.metadata(), indent=2, sort_keys=True))
         return 2
-    token = os.environ.get(args.token_env, "") if args.endpoint and args.token_env else ""
-    if args.endpoint and not token:
+    remote_transport = bool(args.endpoint or args.broker_url)
+    token = os.environ.get(args.token_env, "") if remote_transport and args.token_env else ""
+    if remote_transport and not token:
         error = TaskMessageResolverError(
             "attestation_invalid",
             authority=args.authority,
@@ -1478,19 +1495,38 @@ def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
         print(json.dumps(error.metadata(), indent=2, sort_keys=True))
         return 2
     try:
-        resolver = CodexAppServerTaskMessageResolver(
-            endpoint=args.endpoint,
-            bearer_token=token or None,
-            control_socket=args.control_socket,
-            authority=args.authority,
-            max_source_age_seconds=getattr(args, "max_source_age_seconds", 900),
-            timeout_seconds=args.timeout_seconds,
-        )
-        payload = (
-            resolver.resolve(thread_id=args.thread_id, message_id=args.message_id).payload()
-            if resolve
-            else resolver.probe()
-        )
+        if args.broker_url:
+            from .task_message_broker_client import TaskMessageBrokerClient
+
+            broker = TaskMessageBrokerClient(
+                broker_url=args.broker_url,
+                bearer_token=token,
+                authority=args.authority,
+                heartbeat_timeout_seconds=args.heartbeat_timeout_seconds,
+            )
+            payload = (
+                broker.resolve(
+                    thread_id=args.thread_id,
+                    message_id=args.message_id,
+                    max_source_age_seconds=args.max_source_age_seconds,
+                )
+                if resolve
+                else broker.probe()
+            )
+        else:
+            resolver = CodexAppServerTaskMessageResolver(
+                endpoint=args.endpoint,
+                bearer_token=token or None,
+                control_socket=args.control_socket,
+                authority=args.authority,
+                max_source_age_seconds=getattr(args, "max_source_age_seconds", 900),
+                timeout_seconds=args.timeout_seconds,
+            )
+            payload = (
+                resolver.resolve(thread_id=args.thread_id, message_id=args.message_id).payload()
+                if resolve
+                else resolver.probe()
+            )
     except ValueError:
         error = TaskMessageResolverError(
             "attestation_invalid",
@@ -1504,6 +1540,39 @@ def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
         print(json.dumps(exc.metadata(), indent=2, sort_keys=True))
         return 2
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _task_message_broker_serve_command(args: argparse.Namespace) -> int:
+    from .task_message_broker import BrokerConfig, TaskMessageBroker, build_server, verified_installed_agent_harness_sha
+    from .task_message_resolver import CodexAppServerTaskMessageResolver
+
+    try:
+        agent_harness_sha = verified_installed_agent_harness_sha(args.agent_harness_sha)
+        config = BrokerConfig(
+            authority=args.authority,
+            token_sha256=args.token_sha256,
+            agent_harness_sha=agent_harness_sha,
+            heartbeat_seconds=args.heartbeat_seconds,
+        )
+
+        def resolver_factory(max_source_age_seconds: int) -> CodexAppServerTaskMessageResolver:
+            return CodexAppServerTaskMessageResolver(
+                control_socket=args.control_socket,
+                authority=args.authority,
+                max_source_age_seconds=max_source_age_seconds,
+                timeout_seconds=args.timeout_seconds,
+            )
+
+        server = build_server(args.host, args.port, TaskMessageBroker(config, resolver_factory))
+    except ValueError:
+        return 2
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        server.server_close()
     return 0
 
 

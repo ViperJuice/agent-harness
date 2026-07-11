@@ -25,6 +25,7 @@ FAILURE_CODES = frozenset(
     }
 )
 APPROVAL_CLIENT_ID_SUFFIX = "-approval"
+APPROVAL_CONTRACT_VERSION = "embedding_provenance_deploy_approval.v2"
 
 
 class TaskMessageResolverError(LookupError):
@@ -59,9 +60,14 @@ class TaskMessageProof:
     approval_message_id: str
     source_item_id: str
     approval_item_id: str
+    source_turn_index: int
+    source_item_index: int
+    approval_turn_index: int
+    approval_item_index: int
     message_bytes: bytes
     approval_body_bytes: bytes
     source_started_at: int
+    approval_started_at: int
     resolved_at: int
 
     @property
@@ -87,10 +93,15 @@ class TaskMessageProof:
             "approval_message_id": self.approval_message_id,
             "source_item_id": self.source_item_id,
             "approval_item_id": self.approval_item_id,
+            "source_turn_index": self.source_turn_index,
+            "source_item_index": self.source_item_index,
+            "approval_turn_index": self.approval_turn_index,
+            "approval_item_index": self.approval_item_index,
             "message_sha256": self.message_sha256,
             "approval_body_sha256": self.approval_body_sha256,
             "approval_canonical_sha256": self.approval_canonical_sha256,
             "source_started_at": self.source_started_at,
+            "approval_started_at": self.approval_started_at,
             "resolved_at": self.resolved_at,
         }
 
@@ -426,7 +437,11 @@ class CodexAppServerTaskMessageResolver:
             "source_message_id",
             "source_message_sha256",
         }
-        if not required_claims.issubset(approval) or approval.get("authorized") is not True:
+        if (
+            not required_claims.issubset(approval)
+            or approval.get("contract_version") != APPROVAL_CONTRACT_VERSION
+            or approval.get("authorized") is not True
+        ):
             raise self._error("approval_body_unavailable", thread_id, message_id)
         if approval.get("source_thread_id") != thread_id or approval.get("source_message_id") != message_id:
             raise self._error("source_identity_mismatch", thread_id, message_id)
@@ -455,9 +470,14 @@ class CodexAppServerTaskMessageResolver:
             approval_message_id=approval_message_id,
             source_item_id=source_item["id"],
             approval_item_id=approval_item["id"],
+            source_turn_index=source_turn_index,
+            source_item_index=source_item_index,
+            approval_turn_index=approval_turn_index,
+            approval_item_index=approval_item_index,
             message_bytes=message_bytes,
             approval_body_bytes=approval_body_bytes,
             source_started_at=source_started_at,
+            approval_started_at=approval_started_at,
             resolved_at=resolved_at,
         )
 

@@ -219,6 +219,7 @@ def test_stored_item_identities_must_be_nonempty_and_distinct() -> None:
         ({"thread": {"id": THREAD_ID, "turns": []}}, THREAD_ID, MESSAGE_ID, "source_message_unavailable"),
         (_thread(approval="not-json"), THREAD_ID, MESSAGE_ID, "approval_body_unavailable"),
         (_thread(approval=json.dumps({"source_message_sha256": "0" * 64})), THREAD_ID, MESSAGE_ID, "approval_body_unavailable"),
+        (_thread(approval=_approval("FM approves exact PROVDEPLOY body.", contract_version="wrong")), THREAD_ID, MESSAGE_ID, "approval_body_unavailable"),
         (_thread(approval=_approval("different source")), THREAD_ID, MESSAGE_ID, "attestation_invalid"),
         (_thread(approval=_approval("FM approves exact PROVDEPLOY body.", source_message_id="wrong")), THREAD_ID, MESSAGE_ID, "source_identity_mismatch"),
         (_thread(startedAt=NOW - 901), THREAD_ID, MESSAGE_ID, "source_stale"),

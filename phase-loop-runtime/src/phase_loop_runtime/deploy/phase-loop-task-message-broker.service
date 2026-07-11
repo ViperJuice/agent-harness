@@ -1,0 +1,33 @@
+[Unit]
+Description=Phase-loop task-message source broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/phase-loop/task-message-broker.env
+ExecStart=%h/.local/share/phase-loop-task-message-broker/bin/phase-loop task-message-broker-serve --host 127.0.0.1 --port 18765 --control-socket %h/.codex/app-server-control/app-server-control.sock --authority codex-app-server://claw.taile09692.ts.net --token-sha256 ${TASK_MESSAGE_TOKEN_SHA256} --agent-harness-sha ${AGENT_HARNESS_SHA}
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=tmpfs
+BindReadOnlyPaths=%h/.local/share/phase-loop-task-message-broker
+BindReadOnlyPaths=%h/.codex/app-server-control/app-server-control.sock
+ProtectSystem=strict
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=default.target

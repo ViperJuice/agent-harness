@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Add the authenticated local task-message source broker.** A loopback-only
+  user service wraps the real Codex owner socket, authenticates capability
+  tokens by pinned SHA-256 before socket access, and streams exact metadata-only
+  heartbeats plus one release-SHA-bound resolver result. New `--broker-url`
+  probe/resolve mode consumes this channel without a total wall-clock timeout
+  while heartbeats remain fresh. Tailscale Serve HTTPS is the only documented
+  tailnet exposure; SSH workarounds, Funnel, second app-servers, and arbitrary
+  proxy methods remain forbidden.
+
 - **Fix task-message persistence compatibility (`ViperJuice/agent-harness#165`).**
   Resolve governed approval sources by Codex app-server's persisted
   `userMessage.clientId`, not its separately assigned item `id`, and require a

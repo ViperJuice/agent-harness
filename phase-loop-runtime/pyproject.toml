@@ -111,6 +111,7 @@ phase_loop_runtime = [
     "_contract_docs/**",
     "_test_fixtures/**",
     "skills_bundle/**",
+    "deploy/*.service",
     # advisor_board ships its frozen config-format fixture + contract doc so a
     # pinned install resolves them via importlib.resources (ABDFREEZE).
     "advisor_board/fixtures/*.toml",
