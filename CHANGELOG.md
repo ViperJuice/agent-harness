@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **SPIKE-DISSECT research artifacts (EXECDISPATCH Phase 3, gate IF-0-DISSECT-1).**
+  Added a research-only spike under `spikes/execdispatch-dissect/` — a versioned
+  tool-usage-profile schema (`schema.v0.draft.json` → frozen `schema.v1.json`), a
+  metadata-only extractor (`extract_profile.py`), a stdlib-only validator with an
+  active semantic redaction gate (`validate_profile.py`), claude-code + codex
+  datasets, and a per-harness feasibility verdict. No production `src/` change; the
+  CHANGELOG entry accompanies the committed `schema*.json` public-surface files so
+  the docs-freshness audit stays green. Answers north-star B1 (profiles extractable
+  for ≥2 harnesses: claude-code + codex).
+
 - **`consiliency-harness` publish uses the `pypi` environment.** The
   trusted-publishing workflow now gates on the same `pypi` GitHub environment as the
   runtime's `publish-pypi.yml` (instead of a bespoke `pypi-consiliency-harness`
