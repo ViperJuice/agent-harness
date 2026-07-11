@@ -99,7 +99,8 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     # Belt-and-suspenders: no write / privileged tool can appear in the allow-list.
     for forbidden in ("write", "search_replace", "run_terminal_command", "scheduler", "spawn_subagent", "memory", "image"):
         assert forbidden not in tools_value.split(","), f"{forbidden!r} must not be a grok reviewer tool"
-    # `--disable-web-search` is moot: any web-search tool is already outside the list.
+    # The allow-list (not `--disable-web-search`) is the read-only lever, so that flag
+    # is intentionally left off; assert it is not what enforces read-only here.
     assert "--disable-web-search" not in cmd
     # grok is a SLOW leg: the hard-kill is the raised _MAX_LEG_TIMEOUT_S backstop (no
     # longer a short input-scaled wall-clock); liveness rides the 180s stall default.

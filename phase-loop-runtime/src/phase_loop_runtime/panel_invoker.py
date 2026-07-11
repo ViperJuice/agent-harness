@@ -1783,11 +1783,13 @@ def _exec_leg(
         # read-only. Panel legs are REVIEWERS — the only lever that holds is a
         # `--tools` ALLOW-LIST of grok's read/search built-ins
         # (``GROK_REVIEW_READONLY_TOOLS``, shared with launcher.build_grok_command's
-        # review path). With the write built-ins (`write`, `search_replace`,
-        # `run_terminal_command`) and every other tool (scheduler / spawn_subagent /
-        # memory / image / web search) absent from the allow-list, the review leg
-        # cannot mutate the workspace. (The `--disable-web-search` flag is moot here:
-        # any web-search tool is already outside the allow-list.)
+        # review path). The security-load-bearing guarantee: the write/mutation
+        # built-ins (`write`, `search_replace`, `run_terminal_command`) and every
+        # privileged tool (scheduler / spawn_subagent / memory / image) are absent
+        # from the allow-list, so the review leg CANNOT mutate the workspace. Only
+        # the four read/search built-ins remain; whatever `search_tool` covers, it is
+        # read-only, so the `--disable-web-search` flag is not the read-only lever
+        # here (the allow-list is) and is intentionally left off.
         # effort-absent defaults to grok's max reasoning; a seat renders its canonical
         # effort through the map (``--reasoning-effort <token>``, grok's own ``max``).
         grok_effort_args = (
