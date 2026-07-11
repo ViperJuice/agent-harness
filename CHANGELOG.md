@@ -6,6 +6,249 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+_Nothing yet._
+
+## [0.7.0] — 2026-07-11
+
+CLEANSHIP — a single-writer backlog closeout of confirmed phase-loop **runner**,
+**executor-governance**, **status**, **skill**, and **advisor-board** correctness
+bugs plus **roadmap-discovery** hygiene, landed on top of the post-`0.6.2`
+EXECDISPATCH (default-executor AUTOSEL) and adoptability platform work below.
+Behavioral changes in the executor-governance AUTO gate
+(`ViperJuice/agent-harness#153`) and advisor-board availability
+(`ViperJuice/agent-harness#151`) motivate the minor bump.
+
+### Added
+
+- **The 4-vendor advisor board is now the runnable agent-facing default.** A new
+  `phase-loop advisor-board <artifact>` CLI subcommand runs a real
+  availability-aware review by composing seats through
+  `advisor_board.composition.compose_review_board` (auth-aware: a vendor is seated
+  only when it is BOTH on PATH and authenticated, REVIEWGOV IF-0-REVIEWGOV-1) and
+  dispatching them via `panel_invoker.invoke_board`. The 8 harness advisor skills'
+  RUNNABLE code blocks now call this board path instead of
+  `invoke_panel(available_panel_legs())`. The load-bearing legacy `invoke_panel`
+  (kept by the governed review/premerge gates) is **untouched** — its body and its
+  byte-identical golden are unchanged.
+
+- **Opt-in streaming verdict delivery on the shared `_run_legs_ordered`
+  (IF-0-REVIEWGOV-2).** `invoke_panel` / `invoke_board` gain optional
+  `on_leg_complete` (a per-leg callback) and `stream_dir` (incremental per-leg
+  verdict files) parameters. When set, each leg's verdict is delivered the moment
+  it lands — no head-of-line blocking on the slowest leg — while the consolidated
+  return is still re-sorted to submission order. Both default to the exact
+  historical behavior, so the load-bearing `invoke_panel` path and its
+  byte-identical advisor-board golden are untouched. The streaming side-channel is
+  fail-open (a raising callback or an unwritable `stream_dir` never breaks the pool
+  or fails a leg).
+
+- **`default_board_auth_ok`** — the reusable, fail-closed board auth probe, exported
+  from `advisor_board`. It is the default gate `load_boards` applies (so the live
+  `code-review` board is auth-aware by default); a caller can also inject its own
+  `auth_ok` to override or, in a test, isolate the availability dimension.
+
+### Fixed
+
+- **Governed dry-run no longer performs closeout side effects
+  (`ViperJuice/agent-harness#78`).** A `phase-loop run … --dry-run
+  --closeout-mode commit` against a phase already in `awaiting_phase_closeout`
+  entered `_perform_phase_closeout` — launching the governed premerge panel and
+  staging the worktree — instead of remaining side-effect-free. The two
+  `_perform_phase_closeout` call sites inside the dispatch closure (the
+  awaiting-closeout dispatch and the repair-recovery re-closeout) now preview the
+  pending closeout and break under `--dry-run`, emitting a `dry_run` terminal
+  with no panel launch, no `git add`, and no commit. `dry_run` is not threaded
+  into `_perform_phase_closeout` itself — the guard lives at the call site so the
+  closeout body stays side-effect-free by construction.
+
+- **`--closeout-allow-unowned` breaks through a sticky closeout scope violation on
+  rerun (`ViperJuice/agent-harness#71`).** After a partial closeout committed the
+  phase-owned subset and blocked human-required with
+  `blocker_class=closeout_scope_violation` over a live unowned remainder, an
+  operator rerun with a non-empty `--closeout-allow-unowned <reason>` recorded the
+  attestation event but never recovered — the dispatch closure short-circuited at
+  the human-required guard before closeout could consume the reason. The guard now
+  routes a break-glassable `closeout_scope_violation` into `_perform_phase_closeout`
+  with the reason (this is the "SL-1 rerun" the BREAKGLASS protocol promises); all
+  other human-required blockers still short-circuit. The closeout fallback
+  re-derives the unowned remainder from live git when the reconciled blocked
+  snapshot carries no dirty summary, **scoped to the remainder the prior closeout
+  recorded** (the paths the operator's reason attests to) intersected with what is
+  still dirty — so an unrelated live edit can never be force-committed under a reason
+  that named only the phase's remainder. Secrets remain non-break-glassable and keep
+  the phase blocked. The closeout now **isolates the index** before staging, review,
+  and commit — it resets the index to `HEAD`, stages only the accepted
+  `closeout_dirty_paths`, and commits the reviewed staged index (pathspec-less);
+  previously a pre-staged unrelated file — including a `.env`/secret the fallback
+  deliberately excluded — was swept into the commit, silently defeating the
+  secrets-never-break-glassable contract. A **secret-only** break-glass remainder now
+  also keeps the sticky `closeout_scope_violation` (`human_required`) gate instead of
+  downgrading to a non-human `dirty_worktree_conflict`.
+
+- **A valid planned repair closeout clears the stale blocker instead of looping
+  repair (`ViperJuice/agent-harness#59`).** When a bounded repair child reshaped
+  the plan and emitted a valid closeout (`terminal_status=planned`,
+  `verification_status=not_run`, `dirty_paths=[]`, no blocker, `human_required=null`)
+  leaving the tree clean, the parent runner kept the stale non-human blocked state
+  and relaunched the same repair path. `repair_precondition_for_snapshot` now clears
+  the planned-repair-closeout case (beyond `dirty_worktree_conflict`) so the phase
+  re-executes from the repaired plan — conditioned on the repair child's own
+  planned/not_run/clean evidence (every field required present) and a clean tree,
+  not on `blocker_class` alone. The evidence predicate is **fail-closed**: a
+  truncated/partial child payload cannot clear a blocker.
+
+- **Claude `subagent`/`agent_team` authoring actions auto-degrade to solo instead
+  of an opaque TEAMGOV block (`ViperJuice/agent-harness#153`).** A claude run in
+  `subagent` or `agent_team` mode whose sub-step is an authoring action
+  (`plan`/`roadmap`/`maintain-skills` — the modes' `disallowed_actions`) previously
+  terminated with a bare policy sentence even though team semantics are meaningless
+  for a single authoring action. `build_claude_launch_spec` now AUTO-DEGRADES that
+  case to solo and dispatches (solo tool policy, recorded
+  `claude_execution_mode=solo`); the authoring set is read from the mode's own
+  `ClaudeTeamPolicy.disallowed_actions`, never re-hardcoded. Additionally,
+  `default_executor_resolver._gate_candidate` now consults claude's
+  `claude_execution_policies`: on the AUTO path an authoring action under
+  `subagent`/`agent_team` skips claude rather than seeding a pick the launcher would
+  then block. The seed-gate and the launch-time auto-degrade are LAYERED: the gate
+  removes claude from the AUTO seed; the auto-degrade is the backstop that dispatches
+  claude-solo in the residual session-degraded case. A residual (non-authoring) team
+  block now carries actionable remediation in the runner terminal.
+
+- **`phase-loop status` no longer dirties `plans/manifest.json`
+  (`ViperJuice/agent-harness#62`).** A `phase-loop status` (or `handoff`) that
+  reconciled the plan manifest could append a synthetic auto-import row or flip a
+  missing-file entry to `orphaned`, silently mutating a tracked file on a pure read
+  path. `reconcile()` now takes a keyword-only `read_only` flag (default `False`,
+  so every write-intent caller is byte-for-byte unchanged) threaded into
+  `_reconcile_plan_manifest`, where it skips the `append_entry` and
+  `update_lifecycle` writers by construction while still surfacing the same ledger
+  warnings. `status_snapshot()` defaults to `read_only=True`, and the `status` and
+  `handoff` CLI commands pass it explicitly — so a read invocation leaves the
+  worktree byte-clean. The duplicate-ACCEPT drift is confirmed already resolved by
+  the `#46` `_manifest_file_phase_key` dedup (verified load-bearing end-to-end); no
+  new dedup logic was required.
+
+- **Advisor board no longer seats an unauthenticated vendor
+  (`ViperJuice/agent-harness#151`, IF-0-REVIEWGOV-1).** `compose_review_board` now
+  composes on `is_available ∧ auth_ok`: a PATH-present-but-unauthenticated vendor
+  (e.g. a `grok` binary on PATH with no logged-in session) is treated as **down** —
+  dropped and backfilled onto an authenticated vendor with a distinct lens, exactly
+  like a PATH-absent vendor. The auth gate reuses each executor's own cached,
+  timeout-bounded, fail-closed `auth_ok` (`executor_availability.auth_ok_for`), so
+  the board's verdict is single-sourced with the dispatch path's and never
+  re-implements probing. The live convening path is auth-aware **by default**.
+
+- **Roadmap discovery no longer auto-selects a stale/completed roadmap on a bare
+  run.** `discovery.manifest_backed_roadmap` now also skips manifest entries with
+  `status == "completed"` (previously only `"orphaned"`), so an all-completed
+  manifest falls through to the glob branch instead of silently resuming finished
+  work. Default ON, with a one-release env escape hatch
+  `PHASE_LOOP_DISCOVERY_ALLOW_COMPLETED=1` that restores the pre-change behavior.
+  Genuine resumption is unaffected — the state-file ladder (`active_state_roadmap`)
+  precedes the manifest branch.
+
+- **The ambiguous-glob roadmap selection is now a recoverable blocker, not a
+  crash.** With multiple `specs/phase-plans-v*.md` present (agent-harness itself
+  ships `v1`–`v9`) and no state/manifest/handoff to disambiguate, `select_roadmap`
+  raised a bare `RuntimeError` that surfaced as an uncaught traceback. It now
+  raises a typed `AmbiguousRoadmapError`, which the CLI converts to a
+  `blocker_class="ambiguous_roadmap_selection"` snapshot with an actionable
+  "pass `--roadmap`" summary (exit 2). This ships as a UNIT with the
+  `completed`-skip above.
+
+- **`plans/manifest.json` repaired.** The tracked manifest was frozen at `v4` and
+  never recorded `v5`–`v9`, so a bare run resolved a single completed roadmap. Its
+  stale entries are marked to no longer resolve a completed roadmap on a bare run.
+
+- **Regression guard: read/write status parity on an orphaned-entry + renamed-plan
+  repo (`ViperJuice/agent-harness#162`).** The `#162` follow-up (grok CR of READONLY
+  `#62`) hypothesized that a read-only `phase-loop status`/`handoff` over a manifest
+  entry whose plan file was renamed would diverge from a write-intent `reconcile()`.
+  Verified at primary source that this does NOT reproduce on this base (the
+  `manifest_plan_file_missing` branch is unreachable — a missing-file entry fails
+  `validate_manifest` and `_phase_manifest_entries` hides all entries symmetrically
+  in read and write mode). A parity test pins read-mode `phases` and
+  `ledger_warnings` equal to the write path across `committed`/`executing`/`completed`
+  statuses, guarding against a future change to the validate gate or orphan logic.
+
+### Changed
+
+- **Explicit `--phase` consistency on the concurrent coordinator-waves selector.**
+  `_select_parallel_dispatch_phase` did not accept a `phase` argument, so it could
+  only pick by wave order. It now accepts and honors an explicit phase (bounded to
+  the wave structure), mirroring the serial `_select_ready_phase`. This is a
+  **defensive consistency** change, not a currently reachable bug fix: through
+  `run_loop`, `coordinator_waves` is populated only when no explicit `--phase` is set,
+  so an explicit phase is already served by the serial selector today; the guarantee
+  matters only if that invariant changes.
+
+- **`claude-plan-detailed` is usable outside Plan Mode and defaults to
+  `.consiliency/plans/` (`ViperJuice/agent-harness#87`).** Non-Plan-Mode invocation
+  is now a first-class path: the skill writes the plan artifact + handoff without
+  calling `ExitPlanMode` or gating on a plan-approval flow. When Plan Mode is active
+  it still calls `ExitPlanMode`. Detailed plans now default to
+  `.consiliency/plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` (dir auto-created) instead
+  of `plans/` at repo root; `--output` still overrides, and the `plans/manifest.json`
+  registry location is unchanged (the entry `file` field records the new path).
+  Claude-only skill source edit; gemini/opencode/codex sources untouched; regenerated
+  `phase-loop-skills/` + packaged `skills_bundle/` copy, `test_skills_canon_parity.py`
+  green.
+
+- **Advisor `-panel`/`-board` skill twins collapsed to one canonical skill per
+  harness plus an alias.** The canonical source is `<harness>-advisor-board`;
+  `<harness>-advisor-panel` is installed as an alias of it (`SKILL_ALIASES`), so a
+  historical `/<harness>-advisor-panel` invocation resolves to today's board skill
+  and the two can never drift.
+
+### Security
+
+- **grok `execute` runs with a `--disallowed-tools` deny-list that removes privileged
+  non-coding built-ins (`ViperJuice/agent-harness#154`).** The grok `execute` leg now
+  subtracts the scheduler (`scheduler_create`/`scheduler_delete`/`scheduler_list`/
+  `monitor`) and image/video (`image_gen`/`image_edit`/`image_to_video`/
+  `reference_to_video`) built-in families while keeping grok's coding tools
+  (read/search + write/edit + terminal), so a headless execute leg cannot schedule
+  work or generate media outside the phase-loop's governance. Scoped to `execute`;
+  `review` keeps its stricter read-only `--tools` allow-list. Live-proven against grok
+  0.2.93 (an argv-verified deny-list; a behavioral tripwire test documents the
+  still-open subagent gap — see Known open below). The originally-specified `--tools`
+  ALLOW-LIST is unusable for a write leg (grok force-adds `run_terminal_command`, whose
+  default config aborts the session), so a deny-list is used instead.
+
+### Known open / deferred
+
+- **`ViperJuice/agent-harness#154` (residual) — grok `spawn_subagent` cannot be
+  disabled from the CLI.** NEITHER `--disallowed-tools spawn_subagent` NOR the
+  dedicated `--no-subagents` flag stops a headless grok leg from spawning (both
+  verified BEHAVIORALLY — a forced spawn still succeeds with a live `subagent_id`).
+  Both levers are passed anyway as forward-compat, and a behavioral tripwire test
+  (`test_grok_spawn_subagent_denial_tripwire`) trips the moment a future grok blocks
+  it, so the gap is documented, not silently over-claimed. #154 stays open on this
+  residual.
+
+- **`ViperJuice/agent-harness#164` — advisor-board manifest fragility (open).** The
+  advisor-board manifest ingestion remains fragile to malformed/partial manifests;
+  tracked separately from the READONLY `#62` read-only fix and the `#162` parity
+  guard above. Not addressed in this release.
+
+- **`ViperJuice/agent-harness#84` — explicit-`--phase` serial selection
+  (investigation).** The reported serial-path symptom (`--phase ROOM` repairs a
+  blocked `SEAL` instead of dispatching the explicit ready phase) does **not**
+  reproduce on current `main`: the serial selector already honors an explicit
+  `--phase` and AUTOSEL/#152 touches zero phase-selection code (confirmed). The
+  adjacent concurrent coordinator-waves selector was hardened for consistency (see
+  Changed above); a regression guard pins `(ROOM, execute)` on the serial path. See
+  `plans/decision-issue-84-explicit-phase-20260711.md`. #84 kept open pending a
+  reproducible case.
+
+- **REVIEWGOV W3/W4 deferred to the next roadmap (non-goals).** The review-policy
+  layer — `ViperJuice/agent-harness#88` (SHA-bound review gate),
+  `ViperJuice/agent-harness#145`/`#146` (release-dispatch approval + concurrency),
+  and `governed-pipeline#74` (governed merge-policy consumer) — is out of scope for
+  CLEANSHIP and recorded here as an explicit non-goal.
+
+### Platform work landed since 0.6.2 (EXECDISPATCH + adoptability)
+
 - **Authenticated cross-host task-message proof resolver (`ViperJuice/agent-harness#155`).**
   Added neutral `task-message-probe` and `task-message-resolve` commands backed by
   the Codex app-server's authenticated WebSocket `thread/read` protocol. The
