@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from phase_loop_runtime.task_message_resolver import (
     CodexAppServerTaskMessageResolver,
     TaskMessageResolverError,
+    _ConnectionFailure,
     _ControlSocketJsonRpcConnection,
 )
 from phase_loop_runtime.cli import main
@@ -195,6 +196,22 @@ def test_approval_client_identity_must_be_unique() -> None:
     assert _code(exc) == "source_identity_mismatch"
 
 
+def test_stored_item_identities_must_be_nonempty_and_distinct() -> None:
+    duplicate = _thread()
+    duplicate["thread"]["turns"][1]["items"][0]["id"] = "item-source"
+    duplicate_resolver, _ = _resolver(duplicate)
+    with pytest.raises(TaskMessageResolverError) as duplicate_exc:
+        duplicate_resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+    assert _code(duplicate_exc) == "source_identity_mismatch"
+
+    empty = _thread()
+    empty["thread"]["turns"][0]["items"][0]["id"] = ""
+    empty_resolver, _ = _resolver(empty)
+    with pytest.raises(TaskMessageResolverError) as empty_exc:
+        empty_resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+    assert _code(empty_exc) == "source_identity_mismatch"
+
+
 @pytest.mark.parametrize(
     ("result", "thread_id", "message_id", "expected"),
     [
@@ -234,6 +251,27 @@ def test_unavailable_remote_authority_fails_closed() -> None:
         resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
     assert _code(exc) == "source_task_unavailable"
     assert "secret payload" not in json.dumps(exc.value.metadata())
+
+
+def test_initialize_transport_failure_closes_the_open_connection() -> None:
+    connection = FakeConnection(_thread())
+
+    def fail_initialize(method: str, params: dict[str, object]) -> dict[str, object]:
+        raise _ConnectionFailure("source_task_unavailable")
+
+    connection.request = fail_initialize  # type: ignore[method-assign]
+    resolver = CodexAppServerTaskMessageResolver(
+        endpoint="ws://claw.test:8765",
+        bearer_token="test-token",
+        authority=AUTHORITY,
+        connection_factory=lambda endpoint, token, timeout: connection,
+    )
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.probe()
+
+    assert _code(exc) == "source_task_unavailable"
+    assert connection.closed is True
 
 
 def test_probe_is_metadata_only() -> None:
@@ -374,3 +412,29 @@ def test_cli_missing_token_is_typed_and_metadata_only(monkeypatch: pytest.Monkey
         "thread_id": None,
         "message_id": None,
     }
+
+
+def test_cli_control_socket_rejects_token_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TASK_MESSAGE_TEST_TOKEN", "must-not-be-read")
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = main(
+            [
+                "task-message-probe",
+                "--control-socket",
+                "/tmp/app-server.sock",
+                "--authority",
+                AUTHORITY,
+                "--token-env",
+                "TASK_MESSAGE_TEST_TOKEN",
+            ]
+        )
+    assert code == 2
+    assert json.loads(output.getvalue()) == {
+        "status": "blocked",
+        "code": "attestation_invalid",
+        "authority": AUTHORITY,
+        "thread_id": None,
+        "message_id": None,
+    }
+    assert "must-not-be-read" not in output.getvalue()

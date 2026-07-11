@@ -280,6 +280,8 @@ class CodexAppServerTaskMessageResolver:
             connection.notify("initialized", {})
             return connection
         except _ConnectionFailure as exc:
+            if connection is not None:
+                connection.close()
             raise TaskMessageResolverError(
                 exc.code,
                 authority=self._authority,
@@ -376,6 +378,9 @@ class CodexAppServerTaskMessageResolver:
             or not isinstance(approval_turn.get("id"), str)
             or not isinstance(source_item.get("id"), str)
             or not isinstance(approval_item.get("id"), str)
+            or not source_item["id"]
+            or not approval_item["id"]
+            or source_item["id"] == approval_item["id"]
         ):
             raise self._error("source_identity_mismatch", thread_id, message_id)
 

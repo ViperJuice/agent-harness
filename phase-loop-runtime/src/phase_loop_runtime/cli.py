@@ -1458,7 +1458,16 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
 def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
     from .task_message_resolver import CodexAppServerTaskMessageResolver, TaskMessageResolverError
 
-    token = os.environ.get(args.token_env, "") if args.token_env else ""
+    if args.control_socket and args.token_env:
+        error = TaskMessageResolverError(
+            "attestation_invalid",
+            authority=args.authority,
+            thread_id=getattr(args, "thread_id", None),
+            message_id=getattr(args, "message_id", None),
+        )
+        print(json.dumps(error.metadata(), indent=2, sort_keys=True))
+        return 2
+    token = os.environ.get(args.token_env, "") if args.endpoint and args.token_env else ""
     if args.endpoint and not token:
         error = TaskMessageResolverError(
             "attestation_invalid",
