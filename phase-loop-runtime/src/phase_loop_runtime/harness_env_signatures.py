@@ -99,11 +99,19 @@ def _marker_matches(env: Mapping[str, str], var: str, expected: str | None) -> b
 #     other two corroborate. These leak to children, so the sentinel matters.
 #   * codex (VERIFIED_IN_LANE): CODEX_THREAD_ID=<uuid> is exported into the shell
 #     codex runs commands in (i.e. exactly the run-from context — phase-loop
-#     invoked from a codex tool-call) and is present for every codex session;
-#     CODEX_SANDBOX corroborates on sandboxed hosts. Captured via a real
-#     `codex exec 'env'` dump during this lane. (That same dump also showed the
-#     host's CLAUDECODE/AI_AGENT markers leaking into the codex child — the live
-#     proof that inbound markers cannot self-vs-child disambiguate.)
+#     invoked from a codex tool-call) and is present for every codex session. It is
+#     the SOLE codex marker (CODEX_SANDBOX is intentionally not matched — see the
+#     record note). Captured via a real `codex exec 'env'` dump during this lane.
+#     (That same dump also showed the host's CLAUDECODE/AI_AGENT markers leaking
+#     into the codex child — the live proof that inbound markers cannot
+#     self-vs-child disambiguate.)
+#
+# Nested-phase-loop tradeoff (intentional): a phase-loop invoked from INSIDE a
+# phase-loop-spawned executor inherits the PHASE_LOOP_CHILD sentinel, so it loses
+# layer-2 run-from detection (it falls to layer 3/4 = single-available / codex).
+# This is the correct executor self-vs-child behavior; the alternative (a nested
+# phase-loop re-detecting the tool shell it runs in) is not worth re-stamping the
+# sentinel, and codex/grok round-1 review confirmed the fall-through is acceptable.
 HARNESS_ENV_SIGNATURES: dict[str, HarnessEnvSignature] = {
     "codex": HarnessEnvSignature(
         executor="codex",

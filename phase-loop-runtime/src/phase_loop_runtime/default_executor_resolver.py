@@ -229,15 +229,19 @@ def resolve_default_executor(
         #   * short-circuit once a SECOND executor passes — we already know it is not
         #     single-available, so probing the rest is pointless (bounds the healthy
         #     multi-executor case to two probe sets);
-        #   * a wall-clock scan budget — once exceeded, remaining executors are not
-        #     probed (they degrade to codex legacy), so a cold resolution with wedged
-        #     CLIs can stall at most ~budget + one in-flight probe, never minutes.
+        #   * a wall-clock scan budget — once exceeded, the scan is treated as
+        #     INCOMPLETE and can never conclude single-available (an unprobed
+        #     executor might also have passed), so it degrades to codex legacy. This
+        #     bounds a cold resolution with wedged CLIs to ~budget + one in-flight
+        #     probe, and never auto-picks a non-codex default on partial evidence.
         passing: list[str] = []
+        scan_incomplete = False
         scan_deadline = time.monotonic() + _LAYER3_SCAN_BUDGET_SECONDS
         for executor, record in registry.items():
             if time.monotonic() > scan_deadline:
                 rejected.append(RejectedCandidate(executor, "scan:budget_exhausted"))
-                continue
+                scan_incomplete = True
+                break  # remaining executors are unproved; a partial scan is not single-available
             reason = _gate_candidate(executor, record, ctx=ctx)
             if reason is None:
                 passing.append(executor)
@@ -245,7 +249,9 @@ def resolve_default_executor(
                     break  # not single-available; stop scanning (bounded)
             else:
                 rejected.append(RejectedCandidate(executor, f"scan:{reason}"))
-        if len(passing) == 1:
+        # Only a COMPLETE scan with exactly one passer is single-available; an
+        # incomplete (budget-exhausted) scan degrades to codex legacy (grok r3 #1).
+        if len(passing) == 1 and not scan_incomplete:
             return DefaultSelection(
                 executor=passing[0],
                 layer=LAYER_SINGLE_AVAILABLE,

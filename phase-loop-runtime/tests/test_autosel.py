@@ -505,16 +505,45 @@ def test_cr_r2_layer3_scan_is_wall_clock_bounded(monkeypatch):
     assert any("budget_exhausted" in c.reason for c in sel.rejected)
 
 
+def test_cr_r3_incomplete_scan_with_one_passer_is_not_single_available(monkeypatch):
+    # grok r3 #1: if the budget elapses AFTER one executor passed, the scan is
+    # INCOMPLETE — an unprobed executor might also pass — so it must NOT conclude
+    # single-available. It degrades to codex legacy, never a wrong non-codex default.
+    import phase_loop_runtime.default_executor_resolver as der
+
+    # gemini (3rd in registry order) passes under budget; then the budget elapses
+    # before grok (4th, which would also pass) is probed. Each monotonic() call:
+    # [0]=deadline init, [1]=codex check, [2]=claude check, [3]=gemini check (all
+    # under budget), [4]=grok check (over budget -> break).
+    reg = _registry(available={"gemini", "grok"}, authed={"gemini", "grok"})
+    over = der._LAYER3_SCAN_BUDGET_SECONDS + 1.0
+    ticks = iter([0.0, 0.0, 0.0, 0.0] + [over] * 50)
+    monkeypatch.setattr(der.time, "monotonic", lambda: next(ticks))
+    sel = resolve_default_executor(_ctx(), registry=reg, env={})
+    assert sel.layer == LAYER_CODEX_LEGACY  # NOT single_available on a partial scan
+    assert sel.executor == "codex"
+    assert any("budget_exhausted" in c.reason for c in sel.rejected)
+
+
 def test_cr_r2_layer3_short_circuits_after_two_passers():
     # With two executors passing the gate it is not single-available; the scan
-    # stops early and falls to codex legacy (the two-passer short-circuit).
-    reg = _registry(available={"codex", "gemini"}, authed={"codex", "gemini"})
+    # stops early (grok r3 #5: prove the early stop with a probe counter, not a
+    # tautology). codex + gemini both pass -> after the 2nd, later executors
+    # (grok/opencode/pi) must never be probed.
+    probed: list[str] = []
+
+    reg = {}
+    for name, rec in capability_registry().items():
+        reg[name] = rec.bind_runtime(
+            is_available=(lambda n=name: (probed.append(n), n in {"codex", "gemini"})[1]),
+            auth_ok=(lambda n=name: n in {"codex", "gemini"}),
+        )
     sel = resolve_default_executor(_ctx(), registry=reg, env={})
-    assert sel.layer == LAYER_CODEX_LEGACY
-    passers = [c.executor for c in sel.rejected if c.reason.startswith("scan:")]
-    # Not every executor needs to have been scanned (short-circuit); but the two
-    # that passed are not in the rejected list.
-    assert "codex" not in passers or "gemini" not in passers
+    assert sel.layer == LAYER_CODEX_LEGACY  # two passers -> not single-available
+    # codex (1st) and gemini (3rd) are probed; the scan breaks after gemini, so
+    # grok/opencode/pi (later in registry order) are never is_available-probed.
+    assert "codex" in probed and "gemini" in probed
+    assert "grok" not in probed and "pi" not in probed
 
 
 def test_cr_r2_codex_sandbox_alone_is_not_run_from_codex():
