@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -119,7 +120,7 @@ def test_build_launch_spec_delegates_to_record_build_command(monkeypatch):
 
     real = capability_registry()
     patched = dict(real)
-    patched["codex"] = dataclasses.replace(real["codex"], build_command=fake_build)
+    patched["codex"] = real["codex"].bind_runtime(build_command=fake_build)
     monkeypatch.setattr(launcher, "capability_registry", lambda: patched)
 
     class _Req:
@@ -134,7 +135,7 @@ def test_build_launch_spec_delegates_to_record_build_command(monkeypatch):
 def test_build_launch_spec_raises_when_build_command_unbound(monkeypatch):
     real = capability_registry()
     patched = dict(real)
-    patched["codex"] = dataclasses.replace(real["codex"], build_command=None)
+    patched["codex"] = real["codex"].bind_runtime(build_command=None)
     monkeypatch.setattr(launcher, "capability_registry", lambda: patched)
 
     class _Req:
@@ -142,3 +143,37 @@ def test_build_launch_spec_raises_when_build_command_unbound(monkeypatch):
 
     with pytest.raises(ValueError, match="no build_command"):
         launcher.build_launch_spec(_Req())
+
+
+def test_asdict_and_to_json_never_carry_callables_on_bound_records():
+    # CR guard: the runtime callables are ClassVar bindings, not dataclass fields,
+    # so asdict() / to_json() on a BOUND record stay JSON-serializable (no function
+    # objects leak). Both must round-trip through json.dumps.
+    record = capability_registry()["codex"]
+    assert record.build_command is not None  # it IS bound
+    for payload in (dataclasses.asdict(record), record.to_json()):
+        assert "build_command" not in payload
+        assert "is_available" not in payload
+        json.dumps(payload)  # must not raise
+
+
+def test_capability_registry_reflects_patched_default_registry():
+    # CR regression (both reviewers): the bound-registry cache must NOT freeze a
+    # stale snapshot. Warming the cache, then replacing DEFAULT_CAPABILITY_REGISTRY,
+    # must be reflected on the next capability_registry() call (the mixedrun fallback
+    # tests rely on exactly this patch pattern).
+    from unittest.mock import patch
+
+    import phase_loop_runtime.capability_registry as cr
+
+    warmed = cr.capability_registry()  # warm the cache first
+    assert warmed["claude"].live_available == cr.DEFAULT_CAPABILITY_REGISTRY["claude"].live_available
+
+    patched = dict(cr.DEFAULT_CAPABILITY_REGISTRY)
+    patched["claude"] = dataclasses.replace(patched["claude"], live_available=False)
+    with patch("phase_loop_runtime.capability_registry.DEFAULT_CAPABILITY_REGISTRY", patched):
+        got = cr.capability_registry()
+        assert got["claude"].live_available is False, "patched DEFAULT_CAPABILITY_REGISTRY was ignored (stale cache)"
+        assert got["claude"].build_command is not None  # still fully bound
+    # After the patch is undone the registry rebinds back to the real source.
+    assert cr.capability_registry()["claude"].live_available is True

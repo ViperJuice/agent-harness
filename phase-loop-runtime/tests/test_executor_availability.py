@@ -97,6 +97,21 @@ def test_auth_ok_honors_cache_bound():
     assert calls["n"] == 2, "auth_ok did not re-run probes after the TTL bound elapsed"
 
 
+def test_auth_ok_cache_keyed_by_probes_not_just_executor():
+    # CR regression (codex minor): a call with a DIFFERENT probe tuple must not
+    # reuse a prior verdict cached under the same executor.
+    ea.clear_auth_cache()
+    passing = ("agy --version",)
+    failing = ("agy --version", "agy login status")
+
+    assert ea.auth_ok_for("gemini", passing, now=0.0, runner=lambda _p: _completed(0)) is True
+    # Same executor, different probes that fail -> must re-evaluate, not reuse True.
+    def runner(probe):
+        return _completed(0) if probe.endswith("--version") else _completed(1)
+
+    assert ea.auth_ok_for("gemini", failing, now=1.0, runner=runner) is False
+
+
 def test_record_auth_ok_callable_bound():
     record = capability_registry()["codex"]
     assert callable(record.auth_ok)

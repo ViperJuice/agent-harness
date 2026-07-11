@@ -53,8 +53,9 @@ def is_executor_available(executor: str, *, which: Callable[[str], object | None
 # --- auth_ok: cached, bounded probe gate -----------------------------------
 
 _AUTH_TTL_SECONDS = 300.0
-# executor -> (captured_at_monotonic, ok)
-_auth_cache: dict[str, tuple[float, bool]] = {}
+# (executor, probes) -> (captured_at_monotonic, ok). Keyed by the probe tuple too,
+# so a call with a changed probe set never reuses a prior executor's verdict.
+_auth_cache: dict[tuple[str, tuple[str, ...]], tuple[float, bool]] = {}
 
 
 def _run_probe(probe: str) -> subprocess.CompletedProcess:
@@ -95,11 +96,12 @@ def auth_ok_for(
     """Cached, bounded auth gate for an executor. Re-runs the probes only after
     the TTL elapses; within the window returns the cached verdict."""
     stamp = time.monotonic() if now is None else now
-    cached = _auth_cache.get(executor)
+    key = (executor, tuple(probes))
+    cached = _auth_cache.get(key)
     if cached is not None and (stamp - cached[0]) < ttl_seconds:
         return cached[1]
     ok = _probes_pass(executor, probes, runner)
-    _auth_cache[executor] = (stamp, ok)
+    _auth_cache[key] = (stamp, ok)
     return ok
 
 
