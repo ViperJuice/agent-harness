@@ -15,6 +15,7 @@ EXECREG's zero-dispatch-edit proof, guarded separately in
 """
 from __future__ import annotations
 
+import os
 import shutil
 import urllib.parse
 import uuid
@@ -73,7 +74,10 @@ def test_grok_capability_record_present_and_bound():
     record = capability_registry()["grok"]
     assert record.executor == "grok"
     assert record.injection_mode == "context_file"
-    assert record.build_command is not None and callable(record.build_command)
+    # Identity, not just callability: pins the exact bound builder so a mis-wired
+    # LAUNCH_COMMAND_BUILDERS entry (or a None binding) can't slip through.
+    assert record.build_command is not None
+    assert record.build_command.__name__ == "build_grok_launch_spec"
     assert record.auth_preflight_probes == ("grok --version", "grok --help")
 
 
@@ -246,11 +250,16 @@ def test_grok_requires_shared_automation_closeout():
     assert runner._requires_shared_automation_closeout(_Result(), _Spec()) is True
 
 
-@pytest.mark.skipif(shutil.which("grok") is None, reason="grok CLI not on PATH")
+@pytest.mark.skipif(
+    not os.environ.get("PHASE_LOOP_RUN_LIVE_GROK") or shutil.which("grok") is None,
+    reason="live grok proof is opt-in (set PHASE_LOOP_RUN_LIVE_GROK=1 with an authed grok on PATH)",
+)
 def test_grok_live_session_is_preserved(tmp_path):
     """Live proof: a real `grok -p` run under a fresh cwd persists a session that the
-    metadata hook then discovers. Bounded single-turn prompt; skipped where grok is
-    absent so CI without the CLI stays green."""
+    metadata hook then discovers. OPT-IN only (PHASE_LOOP_RUN_LIVE_GROK=1): it makes a
+    real network/CLI call, so it must never run in the default unit suite — a
+    PATH-present-but-UNAUTHENTICATED CI would otherwise hang or fail on the live call.
+    Bounded single-turn prompt."""
     import subprocess
 
     cwd = tmp_path / "live"
