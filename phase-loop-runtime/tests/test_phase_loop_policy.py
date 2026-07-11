@@ -23,7 +23,7 @@ class PhaseLoopPolicyTest(unittest.TestCase):
         capabilities = provider_policy_capabilities()
         self.assertEqual(
             set(capabilities),
-            {"codex", "claude", "gemini", "gemini-api", "opencode", "pi", "command", "manual"},
+            {"codex", "claude", "gemini", "gemini-api", "grok", "opencode", "pi", "command", "manual"},
         )
         for capability in capabilities.values():
             self.assertIsInstance(capability, ProviderPolicyCapability)

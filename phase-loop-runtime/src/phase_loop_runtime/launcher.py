@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
@@ -57,6 +58,7 @@ CLAUDE_ADAPTER_DISALLOWED_TOOLS = (
     "EnterWorktree,ExitWorktree,AskUserQuestion,ExitPlanMode,ToolSearch,advisor"
 )
 GEMINI_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
+GROK_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 OPENCODE_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 PI_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 COMMAND_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
@@ -552,7 +554,7 @@ def _prompt_bundle_with_closeout_schema(
     prompt_bundle: PromptBundle,
     closeout_schema: dict[str, Any] | None,
 ) -> PromptBundle:
-    if closeout_schema is None or executor not in {"gemini", "opencode", "pi"}:
+    if closeout_schema is None or executor not in {"gemini", "grok", "opencode", "pi"}:
         return prompt_bundle
     from .baml_modular import inject_schema_description
 
@@ -623,6 +625,52 @@ def _gemini_cli_model(model: str) -> str:
     if candidate in {"", "auto", "pro"} or candidate.startswith("gemini-"):
         return "Gemini 3.1 Pro (High)"
     return candidate
+
+
+def build_grok_command(
+    repo: Path,
+    selection: ModelSelection,
+    *,
+    action: str,
+    context_file: str,
+    bypass_approvals: bool = False,
+) -> list[str]:
+    # GROKEXEC: the grok executor runs headless single-turn (`grok -p`), printing a
+    # plain response to stdout and exiting — the same context-file delivery the
+    # gemini/opencode/pi legs use. The prompt is a pointer at the staged workflow
+    # bundle (files live under --cwd); the closeout is injected into the prompt
+    # (_prompt_bundle_with_closeout_schema, which now targets "grok") and parsed from
+    # grok's `--output-format plain` output.
+    #
+    # Effort passes straight through to grok's `--reasoning-effort` flag — grok's CLI
+    # accepts the full normalized set (none/minimal/low/medium/high/xhigh/max), so no
+    # mapping/clamp is needed (unlike codex's `max -> xhigh`). The model is passed
+    # verbatim via `-m`.
+    #
+    # Permission posture: grok's `--permission-mode` is per-run all-or-nothing. Write
+    # actions auto-approve via `bypassPermissions`; `review` stays read-only on grok's
+    # default mode (an analysis-only prompt needs no tool approvals), mirroring the
+    # gemini executor's read-only-review posture.
+    command = [
+        "grok",
+        "-p",
+        (
+            f"Read and follow the workflow instructions in `{context_file}` exactly. "
+            "Use that file as the authoritative workflow bundle, do not try to read installed skill files outside the workspace, "
+            "and emit the required shared automation closeout."
+        ),
+        "--output-format",
+        "plain",
+        "--cwd",
+        str(repo),
+        "-m",
+        selection.model,
+        "--reasoning-effort",
+        selection.effort,
+    ]
+    if action != "review":
+        command.extend(["--permission-mode", "bypassPermissions"])
+    return command
 
 
 def build_opencode_command(
@@ -1075,6 +1123,42 @@ def build_gemini_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
     )
 
 
+def build_grok_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    return LaunchSpec(
+        executor="grok",
+        command=build_grok_command(
+            request.repo,
+            request.model_selection,
+            action=request.action,
+            context_file=GROK_CONTEXT_PLACEHOLDER,
+            bypass_approvals=request.bypass_approvals,
+        ),
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_model=request.model_selection.model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        wrapped_cwd=str(request.repo),
+        launch_timeout_seconds=request.launch_timeout_seconds,
+    )
+
+
 def build_opencode_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
     capability = record
     closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
@@ -1195,10 +1279,61 @@ LAUNCH_COMMAND_BUILDERS: dict[str, Callable[[LaunchRequest, ExecutorCapabilityRe
     "codex": build_codex_launch_spec,
     "claude": build_claude_launch_spec,
     "gemini": build_gemini_launch_spec,
+    "grok": build_grok_launch_spec,
     "opencode": build_opencode_launch_spec,
     "pi": build_pi_launch_spec,
     "command": build_command_launch_spec,
     "manual": build_manual_launch_spec,
+}
+
+
+def grok_session_transcript(
+    request: LaunchRequest, *, sessions_root: Path | None = None
+) -> dict[str, Any] | None:
+    """EXECREG session-preservation hook for the grok executor — METADATA ONLY.
+
+    grok persists each headless session under
+    ``~/.grok/sessions/<url-encoded-cwd>/<uuid>/events.jsonl`` (the cwd is
+    percent-encoded whole, e.g. ``/repo`` -> ``%2Frepo``). This returns the path +
+    event_count for the newest session under the launch cwd and NEVER any raw event
+    body (no prompts, no tool output) — a pointer + count the runner/observability
+    layer can record without capturing model content. Returns ``None`` when no grok
+    session exists for the cwd yet.
+
+    ``sessions_root`` defaults to ``~/.grok/sessions`` and is injectable so a test
+    can fabricate a session tree without touching the real home dir. Bound onto the
+    grok capability record via ``SESSION_TRANSCRIPT_HOOKS`` (registry-driven, like
+    ``build_command``); other executors register no hook and resolve to ``None``.
+    """
+    root = Path(sessions_root) if sessions_root is not None else Path.home() / ".grok" / "sessions"
+    encoded = urllib.parse.quote(str(request.repo), safe="")
+    base = root / encoded
+    if not base.is_dir():
+        return None
+    candidates = sorted(
+        base.glob("*/events.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    events_path = candidates[0]
+    with events_path.open("r", encoding="utf-8") as handle:
+        event_count = sum(1 for line in handle if line.strip())
+    return {
+        "executor": "grok",
+        "session_dir": str(events_path.parent),
+        "events_path": str(events_path),
+        "event_count": event_count,
+    }
+
+
+# EXECREG session-preservation seam: executor -> metadata-only transcript hook.
+# Registry-driven (mirrors LAUNCH_COMMAND_BUILDERS); capability_registry binds each
+# record's get_session_transcript from this map. Only grok persists a discoverable
+# session today, so it is the sole entry — every other executor resolves to None.
+SESSION_TRANSCRIPT_HOOKS: dict[str, Callable[[LaunchRequest], Any]] = {
+    "grok": grok_session_transcript,
 }
 
 

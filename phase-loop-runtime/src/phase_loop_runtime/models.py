@@ -22,7 +22,7 @@ EVENT_STATUSES = PHASE_STATUSES + ("plan_skipped",)
 
 COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor", "hotfix")
 MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maintenance")
-EXECUTORS = ("codex", "claude", "gemini", "opencode", "pi", "command", "manual")
+EXECUTORS = ("codex", "claude", "gemini", "grok", "opencode", "pi", "command", "manual")
 # Vendor-agnostic model roles (model-routing-v1). "class" not "tier" — tier
 # already denotes evidence-audit budgets (--tier-2/--tier-3).
 MODEL_CLASSES = ("planner", "implementer", "worker")

@@ -35,6 +35,7 @@ _COMMAND_BUILD_FUNCTIONS = {
     "build_codex_launch_spec",
     "build_claude_launch_spec",
     "build_gemini_launch_spec",
+    "build_grok_launch_spec",
     "build_opencode_launch_spec",
     "build_pi_launch_spec",
     "build_command_launch_spec",

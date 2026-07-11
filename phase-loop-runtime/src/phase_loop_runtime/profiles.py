@@ -21,6 +21,9 @@ GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
 GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
 PI_AUTO_ROUTED_MODEL = "auto"
+# xAI-family grok executor default (GROKEXEC). Single source for the grok live
+# adapter model alias; the grok CLI takes it verbatim via `-m`.
+GROK_DEFAULT_MODEL = "grok-4.5"  # model-id-source: SSOT constant definition (can't reference itself)
 
 DEFAULT_PROFILES = {
     "roadmap": (OPENAI_HEAVY_MODEL, "high"),
@@ -61,6 +64,13 @@ EXECUTOR_MODEL_OVERRIDES = {
         "execute": GEMINI_AUTO_ROUTED_MODEL,
         "repair": GEMINI_AUTO_ROUTED_MODEL,
         "review": GEMINI_PRO_ROUTED_MODEL,
+    },
+    "grok": {
+        "roadmap": GROK_DEFAULT_MODEL,
+        "plan": GROK_DEFAULT_MODEL,
+        "execute": GROK_DEFAULT_MODEL,
+        "repair": GROK_DEFAULT_MODEL,
+        "review": GROK_DEFAULT_MODEL,
     },
     "pi": {
         "roadmap": PI_AUTO_ROUTED_MODEL,
@@ -117,6 +127,13 @@ CLASS_MODEL_OVERRIDES = {
         "planner": GEMINI_PRO_ROUTED_MODEL,
         "implementer": GEMINI_IMPLEMENTER_MODEL,
         "worker": GEMINI_WORKER_MODEL,
+    },
+    # grok exposes no separate implementer/worker tier — every class maps to its
+    # single model (like pi), passed through the CLI's `-m` verbatim.
+    "grok": {
+        "planner": GROK_DEFAULT_MODEL,
+        "implementer": GROK_DEFAULT_MODEL,
+        "worker": GROK_DEFAULT_MODEL,
     },
     "pi": {
         "planner": PI_AUTO_ROUTED_MODEL,
