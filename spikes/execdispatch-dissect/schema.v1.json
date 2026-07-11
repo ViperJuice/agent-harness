@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agent-harness/spikes/execdispatch-dissect/schema.v1.json",
+  "title": "IF-0-DISSECT-1 tool-usage profile — v1 FROZEN",
+  "description": "Frozen after the first real jsonl inspection (claude-code + codex). METADATA ONLY: tool names, argument KEYS, argument SHAPE/type, counts, frequencies, and a per-harness feasibility verdict record. NEVER raw argument values, file contents, or prompt/message bodies. The companion validator (validate_profile.py) enforces this schema AND runs an independent semantic redaction pass that rejects any leaf value that is not a shape/type token. v0->v1 delta recorded in report.md.",
+  "type": "object",
+  "required": ["schema_version", "verdicts", "rows"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "string", "const": "if-0-dissect-1.v1" },
+    "generated_by": { "type": "string" },
+    "verdicts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["harness", "extractable", "session_files_sampled", "sessions_with_tool_calls", "tool_call_count", "distinct_tools", "blockers"],
+        "additionalProperties": false,
+        "properties": {
+          "harness": { "type": "string", "enum": ["claude", "codex", "gemini", "agy", "grok", "opencode", "pi"] },
+          "extractable": { "type": "boolean" },
+          "session_files_sampled": { "type": "integer", "minimum": 0 },
+          "sessions_with_tool_calls": { "type": "integer", "minimum": 0 },
+          "tool_call_count": { "type": "integer", "minimum": 0 },
+          "distinct_tools": { "type": "integer", "minimum": 0 },
+          "blockers": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_type", "tool_name", "call_count", "arg_keys", "arg_shape_sample", "frequency"],
+        "additionalProperties": false,
+        "properties": {
+          "task_type": {
+            "type": "string",
+            "enum": ["code-modification", "delegation-orchestration", "execution", "exploration", "mixed", "tooling-mcp", "unknown", "web-research"]
+          },
+          "tool_name": { "type": "string" },
+          "call_count": { "type": "integer", "minimum": 0 },
+          "arg_keys": { "type": "array", "items": { "type": "string" } },
+          "arg_shape_sample": {
+            "type": "object",
+            "description": "Recursive SHAPE map. Every scalar leaf MUST be a type token in {string,integer,number,boolean,null}; objects nest; arrays hold one element shape. Recursive type-vocabulary enforcement lives in validate_profile.py's redaction pass (kept out of JSON Schema so the mini stdlib interpreter stays small AND so redaction is provably independent of schema shape)."
+          },
+          "frequency": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

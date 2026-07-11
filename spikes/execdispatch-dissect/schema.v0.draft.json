@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agent-harness/spikes/execdispatch-dissect/schema.v0.draft.json",
+  "title": "IF-0-DISSECT-1 tool-usage profile — v0 DRAFT (pre-inspection)",
+  "description": "DRAFT schema emitted BEFORE any real jsonl inspection, derived ONLY from the roadmap spec (specs/phase-plans-v8.md, IF-0-DISSECT-1, ~line 281-287). Holds NO data-derived specifics (no discovered task_type enum, no tool-name list, no type vocabulary). It exists so the v0->v1 ordering is auditable in git history. The frozen v1 schema (schema.v1.json) supersedes this after lane (a)'s first real jsonl inspection. Do NOT validate datasets against v0.",
+  "type": "object",
+  "required": ["schema_version", "verdicts", "rows"],
+  "properties": {
+    "schema_version": {
+      "description": "Must be the v0 draft marker; v1 uses a distinct value.",
+      "const": "if-0-dissect-1.v0-draft"
+    },
+    "verdicts": {
+      "description": "Top-level per-harness feasibility verdict records (metadata only). IF-0-DISSECT-1: 'plus a top-level per-harness feasibility verdict record'.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["harness", "extractable"],
+        "properties": {
+          "harness": { "type": "string" },
+          "extractable": { "type": "boolean" }
+        }
+      }
+    },
+    "rows": {
+      "description": "per-(task_type, tool_name) rows. Shape dictated by the spec: {call_count, arg_keys, arg_shape_sample, frequency}. METADATA ONLY.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_type", "tool_name", "call_count", "arg_keys", "arg_shape_sample", "frequency"],
+        "properties": {
+          "task_type": {
+            "description": "Coarse task classification (heuristic documented in report.md). Enum values NOT fixed at v0 — frozen in v1 after inspection.",
+            "type": "string"
+          },
+          "tool_name": { "type": "string" },
+          "call_count": { "type": "integer" },
+          "arg_keys": {
+            "description": "Argument KEYS only (never values).",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "arg_shape_sample": {
+            "description": "Argument SHAPE/type only, e.g. {\"file_path\":\"string\"}. NEVER raw values. Leaf-value type vocabulary frozen in v1.",
+            "type": "object"
+          },
+          "frequency": { "type": "number" }
+        }
+      }
+    }
+  }
+}

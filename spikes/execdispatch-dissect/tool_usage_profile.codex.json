@@ -1,0 +1,156 @@
+{
+  "schema_version": "if-0-dissect-1.v1",
+  "generated_by": "spikes/execdispatch-dissect/extract_profile.py",
+  "verdicts": [
+    {
+      "harness": "codex",
+      "extractable": true,
+      "session_files_sampled": 40,
+      "sessions_with_tool_calls": 30,
+      "tool_call_count": 2319,
+      "distinct_tools": 10,
+      "blockers": []
+    }
+  ],
+  "rows": [
+    {
+      "task_type": "execution",
+      "tool_name": "exec_command",
+      "call_count": 1942,
+      "arg_keys": [
+        "cmd",
+        "max_output_tokens",
+        "tty",
+        "workdir",
+        "yield_time_ms"
+      ],
+      "arg_shape_sample": {
+        "cmd": "string",
+        "workdir": "string",
+        "yield_time_ms": "integer",
+        "max_output_tokens": "integer",
+        "tty": "boolean"
+      },
+      "frequency": 0.83743
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "apply_patch",
+      "call_count": 201,
+      "arg_keys": [],
+      "arg_shape_sample": {},
+      "frequency": 0.086675
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "write_stdin",
+      "call_count": 133,
+      "arg_keys": [
+        "chars",
+        "max_output_tokens",
+        "session_id",
+        "yield_time_ms"
+      ],
+      "arg_shape_sample": {
+        "session_id": "integer",
+        "chars": "string",
+        "yield_time_ms": "integer",
+        "max_output_tokens": "integer"
+      },
+      "frequency": 0.057352
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "view_image",
+      "call_count": 18,
+      "arg_keys": [
+        "detail",
+        "path"
+      ],
+      "arg_shape_sample": {
+        "path": "string",
+        "detail": "string"
+      },
+      "frequency": 0.007762
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "update_plan",
+      "call_count": 17,
+      "arg_keys": [
+        "explanation",
+        "plan"
+      ],
+      "arg_shape_sample": {
+        "plan": [
+          {
+            "step": "string",
+            "status": "string"
+          }
+        ],
+        "explanation": "string"
+      },
+      "frequency": 0.007331
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "gateway_catalog_search",
+      "call_count": 3,
+      "arg_keys": [
+        "filters",
+        "include_offline",
+        "limit",
+        "query"
+      ],
+      "arg_shape_sample": {
+        "query": "string",
+        "include_offline": "boolean",
+        "limit": "integer",
+        "filters": {
+          "risk_max": "string"
+        }
+      },
+      "frequency": 0.001294
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "js_repl",
+      "call_count": 2,
+      "arg_keys": [],
+      "arg_shape_sample": {},
+      "frequency": 0.000862
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "browser_navigate",
+      "call_count": 1,
+      "arg_keys": [
+        "url"
+      ],
+      "arg_shape_sample": {
+        "url": "string"
+      },
+      "frequency": 0.000431
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "browser_snapshot",
+      "call_count": 1,
+      "arg_keys": [
+        "depth"
+      ],
+      "arg_shape_sample": {
+        "depth": "integer"
+      },
+      "frequency": 0.000431
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "web_search_call",
+      "call_count": 1,
+      "arg_keys": [],
+      "arg_shape_sample": {},
+      "frequency": 0.000431
+    }
+  ]
+}

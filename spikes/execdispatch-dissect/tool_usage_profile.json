@@ -1,0 +1,520 @@
+{
+  "schema_version": "if-0-dissect-1.v1",
+  "generated_by": "spikes/execdispatch-dissect/extract_profile.py",
+  "verdicts": [
+    {
+      "harness": "claude",
+      "extractable": true,
+      "session_files_sampled": 48,
+      "sessions_with_tool_calls": 43,
+      "tool_call_count": 3177,
+      "distinct_tools": 19,
+      "blockers": []
+    }
+  ],
+  "rows": [
+    {
+      "task_type": "execution",
+      "tool_name": "Bash",
+      "call_count": 1926,
+      "arg_keys": [
+        "command",
+        "description",
+        "run_in_background",
+        "timeout"
+      ],
+      "arg_shape_sample": {
+        "command": "string",
+        "description": "string",
+        "run_in_background": "boolean",
+        "timeout": "integer"
+      },
+      "frequency": 0.66072
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "Edit",
+      "call_count": 305,
+      "arg_keys": [
+        "file_path",
+        "new_string",
+        "old_string",
+        "replace_all"
+      ],
+      "arg_shape_sample": {
+        "replace_all": "boolean",
+        "file_path": "string",
+        "old_string": "string",
+        "new_string": "string"
+      },
+      "frequency": 0.104631
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "Read",
+      "call_count": 293,
+      "arg_keys": [
+        "file_path",
+        "limit",
+        "offset"
+      ],
+      "arg_shape_sample": {
+        "file_path": "string",
+        "limit": "integer",
+        "offset": "integer"
+      },
+      "frequency": 0.100515
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "Read",
+      "call_count": 192,
+      "arg_keys": [
+        "file_path",
+        "limit",
+        "offset"
+      ],
+      "arg_shape_sample": {
+        "file_path": "string",
+        "limit": "integer",
+        "offset": "integer"
+      },
+      "frequency": 0.741313
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "TaskUpdate",
+      "call_count": 93,
+      "arg_keys": [
+        "addBlockedBy",
+        "description",
+        "owner",
+        "status",
+        "subject",
+        "taskId"
+      ],
+      "arg_shape_sample": {
+        "taskId": "string",
+        "status": "string",
+        "owner": "string",
+        "addBlockedBy": [
+          "string"
+        ],
+        "subject": "string",
+        "description": "string"
+      },
+      "frequency": 0.031904
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "Write",
+      "call_count": 82,
+      "arg_keys": [
+        "content",
+        "file_path"
+      ],
+      "arg_shape_sample": {
+        "file_path": "string",
+        "content": "string"
+      },
+      "frequency": 0.02813
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "Bash",
+      "call_count": 50,
+      "arg_keys": [
+        "command",
+        "description"
+      ],
+      "arg_shape_sample": {
+        "command": "string",
+        "description": "string"
+      },
+      "frequency": 0.19305
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "Agent",
+      "call_count": 44,
+      "arg_keys": [
+        "description",
+        "model",
+        "name",
+        "prompt",
+        "run_in_background",
+        "subagent_type",
+        "team_name"
+      ],
+      "arg_shape_sample": {
+        "description": "string",
+        "subagent_type": "string",
+        "model": "string",
+        "prompt": "string",
+        "run_in_background": "boolean",
+        "team_name": "string",
+        "name": "string"
+      },
+      "frequency": 0.015094
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "TaskCreate",
+      "call_count": 44,
+      "arg_keys": [
+        "activeForm",
+        "description",
+        "status",
+        "subject"
+      ],
+      "arg_shape_sample": {
+        "subject": "string",
+        "description": "string",
+        "activeForm": "string",
+        "status": "string"
+      },
+      "frequency": 0.015094
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "SendMessage",
+      "call_count": 29,
+      "arg_keys": [
+        "content",
+        "message",
+        "recipient",
+        "summary",
+        "to",
+        "type"
+      ],
+      "arg_shape_sample": {
+        "to": "string",
+        "message": {
+          "type": "string",
+          "reason": "string"
+        },
+        "type": "string",
+        "recipient": "string",
+        "content": "string",
+        "summary": "string"
+      },
+      "frequency": 0.009949
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "AskUserQuestion",
+      "call_count": 23,
+      "arg_keys": [
+        "questions"
+      ],
+      "arg_shape_sample": {
+        "questions": [
+          {
+            "question": "string",
+            "header": "string",
+            "multiSelect": "boolean",
+            "options": [
+              {
+                "label": "string",
+                "description": "string",
+                "preview": "string"
+              }
+            ]
+          }
+        ]
+      },
+      "frequency": 0.00789
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "Skill",
+      "call_count": 19,
+      "arg_keys": [
+        "args",
+        "skill"
+      ],
+      "arg_shape_sample": {
+        "skill": "string",
+        "args": "string"
+      },
+      "frequency": 0.006518
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "TeamDelete",
+      "call_count": 15,
+      "arg_keys": [],
+      "arg_shape_sample": {},
+      "frequency": 0.005146
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "ToolSearch",
+      "call_count": 13,
+      "arg_keys": [
+        "max_results",
+        "query"
+      ],
+      "arg_shape_sample": {
+        "query": "string",
+        "max_results": "integer"
+      },
+      "frequency": 0.00446
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "StructuredOutput",
+      "call_count": 9,
+      "arg_keys": [
+        "candidates",
+        "evidence",
+        "note",
+        "real",
+        "verdict",
+        "verdicts"
+      ],
+      "arg_shape_sample": {
+        "verdicts": [
+          {
+            "index": "integer",
+            "verdict": "string",
+            "evidence": "string"
+          }
+        ],
+        "candidates": [
+          {
+            "file": "string",
+            "line": "integer",
+            "summary": "string",
+            "failure_scenario": "string"
+          }
+        ],
+        "verdict": "string",
+        "evidence": "string",
+        "real": "boolean",
+        "note": "string"
+      },
+      "frequency": 0.003087
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "TeamCreate",
+      "call_count": 9,
+      "arg_keys": [
+        "agent_type",
+        "description",
+        "team_name"
+      ],
+      "arg_shape_sample": {
+        "team_name": "string",
+        "agent_type": "string",
+        "description": "string"
+      },
+      "frequency": 0.003087
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "StructuredOutput",
+      "call_count": 8,
+      "arg_keys": [
+        "claims",
+        "dataBoundaryNotes",
+        "fidelityNotes",
+        "filesWritten",
+        "issues",
+        "page_range",
+        "pages",
+        "slug",
+        "status",
+        "summary",
+        "variant_id",
+        "verdict"
+      ],
+      "arg_shape_sample": {
+        "variant_id": "string",
+        "page_range": "string",
+        "verdict": "string",
+        "pages": [
+          {
+            "page": "integer",
+            "visible_balances": [
+              "string"
+            ],
+            "leaks": [],
+            "coverage_gaps": [],
+            "notes": "string"
+          }
+        ],
+        "summary": "string",
+        "slug": "string",
+        "status": "string",
+        "filesWritten": [
+          "string"
+        ],
+        "dataBoundaryNotes": "string",
+        "fidelityNotes": "string",
+        "issues": "string",
+        "claims": [
+          {
+            "claim": "string",
+            "doc": "string",
+            "evidence_type": "string",
+            "citation": "string",
+            "quote": "string"
+          }
+        ]
+      },
+      "frequency": 0.030888
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "WebSearch",
+      "call_count": 7,
+      "arg_keys": [
+        "query"
+      ],
+      "arg_shape_sample": {
+        "query": "string"
+      },
+      "frequency": 0.002401
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "Write",
+      "call_count": 4,
+      "arg_keys": [
+        "content",
+        "file_path"
+      ],
+      "arg_shape_sample": {
+        "file_path": "string",
+        "content": "string"
+      },
+      "frequency": 0.015444
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "SendUserFile",
+      "call_count": 3,
+      "arg_keys": [
+        "caption",
+        "files",
+        "status"
+      ],
+      "arg_shape_sample": {
+        "files": [
+          "string"
+        ],
+        "status": "string",
+        "caption": "string"
+      },
+      "frequency": 0.001029
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "Edit",
+      "call_count": 3,
+      "arg_keys": [
+        "file_path",
+        "new_string",
+        "old_string",
+        "replace_all"
+      ],
+      "arg_shape_sample": {
+        "replace_all": "boolean",
+        "file_path": "string",
+        "old_string": "string",
+        "new_string": "string"
+      },
+      "frequency": 0.011583
+    },
+    {
+      "task_type": "execution",
+      "tool_name": "WebFetch",
+      "call_count": 1,
+      "arg_keys": [
+        "prompt",
+        "url"
+      ],
+      "arg_shape_sample": {
+        "url": "string",
+        "prompt": "string"
+      },
+      "frequency": 0.000343
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "SendMessage",
+      "call_count": 1,
+      "arg_keys": [
+        "content",
+        "message",
+        "recipient",
+        "summary",
+        "to",
+        "type"
+      ],
+      "arg_shape_sample": {
+        "to": "string",
+        "summary": "string",
+        "message": "string",
+        "type": "string",
+        "recipient": "string",
+        "content": "string"
+      },
+      "frequency": 0.003861
+    },
+    {
+      "task_type": "exploration",
+      "tool_name": "ToolSearch",
+      "call_count": 1,
+      "arg_keys": [
+        "max_results",
+        "query"
+      ],
+      "arg_shape_sample": {
+        "query": "string",
+        "max_results": "integer"
+      },
+      "frequency": 0.003861
+    },
+    {
+      "task_type": "mixed",
+      "tool_name": "EnterWorktree",
+      "call_count": 1,
+      "arg_keys": [
+        "name"
+      ],
+      "arg_shape_sample": {
+        "name": "string"
+      },
+      "frequency": 0.333333
+    },
+    {
+      "task_type": "mixed",
+      "tool_name": "ExitWorktree",
+      "call_count": 1,
+      "arg_keys": [
+        "action"
+      ],
+      "arg_shape_sample": {
+        "action": "string"
+      },
+      "frequency": 0.333333
+    },
+    {
+      "task_type": "mixed",
+      "tool_name": "ToolSearch",
+      "call_count": 1,
+      "arg_keys": [
+        "max_results",
+        "query"
+      ],
+      "arg_shape_sample": {
+        "query": "string",
+        "max_results": "integer"
+      },
+      "frequency": 0.333333
+    }
+  ]
+}
