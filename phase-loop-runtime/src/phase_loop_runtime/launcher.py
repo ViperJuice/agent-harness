@@ -97,6 +97,42 @@ PROMPT_INJECTED_CLOSEOUT_EXECUTORS = frozenset({"gemini", "grok", "opencode", "p
 # live grok tool set (`read_file`/`grep`/`list_dir`/`search_tool`).
 GROK_REVIEW_READONLY_TOOLS = "read_file,grep,list_dir,search_tool"
 
+# grok execute-time tool DENY-list (#154). Removes the privileged non-coding
+# built-ins that have no place in a single-turn headless execute leg — scheduling,
+# image/video generation, and (best-effort) subagent fanout — while keeping grok's
+# coding built-ins (read/search + write/edit + terminal) so it can still implement a
+# phase. Names are grok's REAL built-in tool ids (verified live against grok 0.2.93,
+# `grok -p "list your tools"`): `scheduler`→scheduler_create/delete/list, `image`→
+# image_gen/image_edit/image_to_video/reference_to_video, plus the monitor + subagent
+# family. (`memory` is NOT a built-in tool — it is the `--experimental-memory` flag,
+# which the harness never passes, so it is already off.)
+#
+# WHY a deny-list and not an allow-list (the review leg uses `--tools`): a write-capable
+# `--tools` ALLOW-LIST is unusable on grok 0.2.93 — grok force-adds `run_terminal_command`
+# and its default config trips `auto_background_on_timeout requires enabled_background`,
+# aborting the session before launch (reproduced across every write allow-list). The
+# deny-list keeps grok's working default config and subtracts the privileged tools. If
+# a future grok fixes the allow-list constraint, this can revert to the review-style
+# `--tools` shape.
+#
+# LIMITATION (grok 0.2.93, verified behaviorally): the subagent family CANNOT be
+# disabled from the CLI. NEITHER `--disallowed-tools spawn_subagent` NOR the dedicated
+# `--no-subagents` flag actually stops a headless `grok -p` leg from spawning — a forced
+# spawn still succeeds under both (proven: a subagent returned its token with a live
+# subagent_id even with `--no-subagents` set). So subagent fanout persists at runtime.
+# We pass BOTH levers anyway (deny-list entry below + `--no-subagents` on the execute
+# argv) as forward-compat belt-and-suspenders: a future grok that honors either will
+# then genuinely disable spawning, and `test_grok_spawn_subagent_denial_tripwire`
+# (a BEHAVIORAL spawn-attempt test) trips at that moment so the #154 guarantee is
+# tightened rather than silently over-claimed. `--disallowed-tools` also SILENTLY
+# ignores unknown names. Execute still runs `--permission-mode bypassPermissions`
+# (headless writes auto-approve regardless).
+GROK_EXECUTE_DISALLOWED_TOOLS = (
+    "scheduler_create,scheduler_delete,scheduler_list,monitor,"
+    "image_gen,image_edit,image_to_video,reference_to_video,"
+    "spawn_subagent,kill_command_or_subagent,get_command_or_subagent_output"
+)
+
 
 @dataclass(frozen=True)
 class LaunchSpec:
@@ -695,7 +731,20 @@ def build_grok_command(
     if action == "review":
         command.extend(["--tools", GROK_REVIEW_READONLY_TOOLS])
     else:
+        # Write actions auto-approve (headless grok bypasses approval regardless).
         command.extend(["--permission-mode", "bypassPermissions"])
+        # #154: the `execute` leg additionally carries a `--disallowed-tools` deny-list
+        # that subtracts the privileged non-coding built-ins (scheduler/image/subagent
+        # families) while keeping grok's coding tools — a write-capable `--tools`
+        # allow-list is unusable on grok 0.2.93 (see GROK_EXECUTE_DISALLOWED_TOOLS).
+        # `--no-subagents` is grok's DEDICATED subagent-disable flag; it is INEFFECTIVE
+        # in 0.2.93 (verified behaviorally — a forced spawn still succeeds), so it buys
+        # no guarantee today, but is passed as forward-compat belt-and-suspenders (a
+        # future grok that honors it disables spawning, and the behavioral tripwire
+        # catches that transition). Scoped to `execute` (its exact target);
+        # repair/roadmap/plan keep the unrestricted write branch. bypassPermissions stays.
+        if action == "execute":
+            command.extend(["--no-subagents", "--disallowed-tools", GROK_EXECUTE_DISALLOWED_TOOLS])
     return command
 
 
@@ -892,14 +941,38 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
     closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
     delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
     route_selection = resolve_claude_route()
-    claude_policy = request.claude_team_policy or _claude_policy_for_mode(
-        capability,
-        request.claude_execution_mode or capability.default_claude_execution_mode or "solo",
+    requested_mode = request.claude_execution_mode or capability.default_claude_execution_mode or "solo"
+    requested_policy = request.claude_team_policy or _claude_policy_for_mode(capability, requested_mode)
+    # #153 authoring auto-degrade: a claude `subagent`/`agent_team` run whose
+    # sub-step is an authoring action (`plan`/`roadmap`/`maintain-skills` — exactly
+    # the modes' `disallowed_actions`) carries no team semantics to preserve (a
+    # single authoring action is inherently solo work). Degrade to solo and dispatch
+    # instead of returning the opaque TEAMGOV block.
+    #
+    # Relationship to the AUTO gate (`default_executor_resolver._gate_candidate`): the
+    # gate removes claude from the AUTO DEFAULT SEED for this same predicate, so the
+    # common path never selects claude for authoring+team. But that gate acts only on
+    # the seed — `resolve_dispatch_decision`'s fallback can still route claude for an
+    # authoring action (e.g. when the seeded executor is session-degraded). This degrade
+    # is the BACKSTOP for exactly that case: whenever claude IS selected for an authoring
+    # action under a team mode, it dispatches claude-solo rather than an opaque block.
+    # The two are layered (seed-gate + launch-backstop), NOT mutually exclusive.
+    # The authoring set is read from the mode's own policy (`disallowed_actions`), the
+    # single source of truth, never re-hardcoded here.
+    authoring_team_degrade = (
+        requested_mode in {"subagent", "agent_team"}
+        and request.action in requested_policy.disallowed_actions
     )
+    if authoring_team_degrade:
+        execution_mode = "solo"
+        claude_policy = _claude_policy_for_mode(capability, "solo")
+    else:
+        execution_mode = requested_mode
+        claude_policy = requested_policy
     eligibility = request.phase_team_eligibility or classify_phase_team_eligibility(request.repo, request.roadmap, request.plan)
     policy_error = _claude_team_policy_error(
         action=request.action,
-        execution_mode=request.claude_execution_mode or "solo",
+        execution_mode=execution_mode,
         policy=claude_policy,
         eligibility=eligibility,
     )
@@ -950,7 +1023,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_execution_mode=execution_mode,
             claude_team_policy=claude_policy,
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
@@ -985,7 +1058,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_execution_mode=execution_mode,
             claude_team_policy=claude_policy,
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
@@ -1025,7 +1098,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_execution_mode=execution_mode,
             claude_team_policy=claude_policy,
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
@@ -1065,7 +1138,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_execution_mode=execution_mode,
             claude_team_policy=claude_policy,
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
@@ -1104,7 +1177,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
         override_reason=request.model_selection.override_reason,
         wrapped_cwd=str(request.repo),
         launch_timeout_seconds=request.launch_timeout_seconds,
-        claude_execution_mode=request.claude_execution_mode or "solo",
+        claude_execution_mode=execution_mode,
         claude_team_policy=claude_policy,
         phase_team_eligibility=eligibility,
         claude_route=route_selection.route,

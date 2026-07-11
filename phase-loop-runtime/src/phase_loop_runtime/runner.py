@@ -490,6 +490,36 @@ def _branchgov_orphan_blocker_before_dispatch(
     return _branchgov_orphan_blocker(summary)
 
 
+def _claude_team_block_remediation(spec, phase: str) -> str | None:
+    """#153: when a claude `subagent`/`agent_team` launch is blocked by a TEAMGOV
+    team-policy denial, return actionable remediation naming the phase and the two
+    escape hatches (`--claude-execution-mode solo` or plan-the-phase-first), instead
+    of surfacing the bare policy sentence as the operator's only guidance.
+
+    Derived entirely from fields already on the LaunchSpec (no new LaunchSpec field,
+    so every non-team golden case stays byte-identical). Returns ``None`` for any
+    non-team-mode or non-policy block so route/auth blockers keep their own guidance.
+    An authoring action never reaches here — `build_claude_launch_spec` auto-degrades
+    it to solo — so this covers the residual `execute`/`repair`/`review` team blocks
+    (plan not team-safe, or non-disjoint write ownership)."""
+    if getattr(spec, "executor", None) != "claude":
+        return None
+    mode = getattr(spec, "claude_execution_mode", None)
+    if mode not in {"subagent", "agent_team"}:
+        return None
+    reason = getattr(spec, "reason", None) or ""
+    # Only enrich genuine team-policy denials (all emitted by _claude_team_policy_error
+    # as "Claude <mode> mode ..."), not orthogonal route/channel prerequisites.
+    if "mode is denied" not in reason and "requires disjoint write ownership" not in reason:
+        return None
+    return (
+        f"Claude `{mode}` mode was blocked for phase `{phase}`: {reason} "
+        f"Re-run this phase with `--claude-execution-mode solo` (team semantics add "
+        f"nothing for a single-owner sub-step), or plan the phase first so it declares "
+        f"team-safe disjoint write lanes."
+    )
+
+
 def _branchgov_orphan_blocker(summary: str) -> dict[str, object]:
     return {
         "human_required": True,
@@ -2549,6 +2579,10 @@ def run_loop(
                         allowed_executors=_merged_hints.allowed_executors,
                         disabled_executors=_merged_hints.disabled_executors,
                         required_capabilities=_merged_hints.required_capabilities,
+                        # #153 AUTO-gate coupling: feed the effective claude team mode
+                        # so the resolver skips claude for an authoring action under
+                        # subagent/agent_team (a pick the launcher would then block).
+                        claude_execution_mode=claude_execution_mode,
                     )
                 )
             dispatch_decision = resolve_dispatch_decision(
@@ -2976,6 +3010,10 @@ def run_loop(
                     "blocker_summary": spec.reason,
                     "required_human_inputs": (),
                 }
+                # #153: a claude team-mode TEAMGOV block carries actionable remediation
+                # (name the phase + the solo/plan-first escape hatches) rather than the
+                # bare policy sentence. `None` for any other block keeps prior guidance.
+                _team_remediation = _claude_team_block_remediation(spec, alias)
                 artifacts = run_artifacts(repo, alias, launch_action, len(results) + 1, spec) if observe else {}
                 terminal_summary = _persist_terminal_summary(
                     artifacts,
@@ -2983,7 +3021,7 @@ def run_loop(
                         terminal_status="blocked",
                         terminal_blocker=event_blocker,
                         verification_status="blocked",
-                        next_action=spec.reason or "Provide a valid explicit adapter configuration before retrying.",
+                        next_action=_team_remediation or spec.reason or "Provide a valid explicit adapter configuration before retrying.",
                         artifact_paths={key: str(value) for key, value in artifacts.items()} if artifacts else {},
                     ),
                 )

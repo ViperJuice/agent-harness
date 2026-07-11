@@ -81,6 +81,14 @@ class DefaultResolutionContext:
     allowed_executors: tuple[str, ...] = ()
     disabled_executors: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
+    # The effective claude execution mode for this dispatch (`solo`/`subagent`/
+    # `agent_team`). Consulted ONLY to gate claude (#153 AUTO-gate coupling): an
+    # authoring action under `subagent`/`agent_team` would hit claude's TEAMGOV
+    # `disallowed_actions` block, so the AUTO layers must not select claude for it —
+    # an inert subagent flag in a Claude Code session must not become load-bearing by
+    # having run-from pick claude only for the launcher to then block it. `None` (or
+    # `solo`) never gates claude.
+    claude_execution_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +160,22 @@ def _gate_candidate(
     missing = tuple(cap for cap in ctx.required_capabilities if cap not in record.capabilities)
     if missing:
         return f"missing_required_capabilities:{','.join(missing)}"
+    # #153 AUTO-gate coupling: skip claude for an authoring action under a team mode.
+    # The claude launcher hard-blocks `subagent`/`agent_team` × an authoring action
+    # (`plan`/`roadmap`/`maintain-skills`) via TEAMGOV `disallowed_actions`, so
+    # selecting claude here would seed a pick the launcher then blocks — the exact
+    # "inert subagent flag becomes load-bearing" trap in a Claude Code session. The
+    # authoring set is read from claude's own mode policy (`disallowed_actions`), the
+    # single source of truth. NOTE: this gate acts on the AUTO DEFAULT SEED only — it
+    # removes claude from the common seed so an inert subagent flag does not force a
+    # claude pick. It is NOT a complete guarantee that claude is never dispatched for
+    # authoring+team: `resolve_dispatch_decision`'s fallback (outside this resolver) can
+    # still route claude when the seeded executor is session-degraded. That residual
+    # case is caught by the launch-time BACKSTOP in `build_claude_launch_spec`, which
+    # degrades authoring+team to claude-solo rather than blocking. Seed-gate + launch-
+    # backstop are LAYERED, not mutually exclusive.
+    if _claude_authoring_disallowed_under_mode(executor, record, action, ctx.claude_execution_mode):
+        return f"claude_authoring_disallowed_under_{ctx.claude_execution_mode}"
     if not is_launch_complete(executor):
         return "not_launch_complete"
     if not record.headless_launchable:
@@ -170,6 +194,25 @@ def _gate_candidate(
     if auth_ok is None or not _safe_probe(auth_ok):
         return "auth_not_ok"
     return None
+
+
+def _claude_authoring_disallowed_under_mode(
+    executor: str,
+    record: ExecutorCapabilityRecord,
+    action: str,
+    execution_mode: str | None,
+) -> bool:
+    """True iff ``executor`` is claude AND ``action`` is disallowed for the effective
+    team ``execution_mode`` by claude's own capability policy (#153 AUTO-gate). Reads
+    ``disallowed_actions`` from the mode's ``ClaudeTeamPolicy`` — the single source of
+    truth shared with the launcher's degrade path — so the authoring set is never
+    re-hardcoded. `solo`/`None`/an unknown mode never gates."""
+    if executor != "claude" or execution_mode in (None, "solo"):
+        return False
+    for policy in getattr(record, "claude_execution_policies", ()) or ():
+        if policy.execution_mode == execution_mode:
+            return action in policy.disallowed_actions
+    return False
 
 
 def _safe_probe(probe) -> bool:

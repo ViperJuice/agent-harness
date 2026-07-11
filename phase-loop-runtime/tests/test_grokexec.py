@@ -130,9 +130,52 @@ def test_build_grok_launch_spec_review_is_read_only():
         assert write_tool not in launcher.GROK_REVIEW_READONLY_TOOLS.split(",")
 
 
-def test_build_grok_launch_spec_write_action_has_no_tool_restriction():
+def test_build_grok_launch_spec_execute_carries_disallowed_tools_deny_list():
+    # #154: the execute leg carries BOTH bypassPermissions (headless writes
+    # auto-approve regardless) AND a `--disallowed-tools` DENY-list that subtracts the
+    # privileged non-coding built-ins. A write-capable `--tools` ALLOW-LIST is unusable
+    # on grok 0.2.93 (it force-adds run_terminal_command, whose config aborts the
+    # session), so the deny-list is the mechanism — see GROK_EXECUTE_DISALLOWED_TOOLS.
     spec = build_launch_spec(_request("execute"))
-    # write actions get full-auto writes (bypassPermissions), NOT the read-only allow-list.
+    assert spec.command[spec.command.index("--permission-mode") + 1] == "bypassPermissions"
+    # It is a DENY-list, NOT an allow-list — assert the flag shape explicitly so a
+    # regression back to `--tools` (which breaks grok execute) is caught.
+    assert "--tools" not in spec.command
+    # #154: the dedicated subagent-disable flag is passed (forward-compat; ineffective
+    # in 0.2.93 but future-proof — see GROK_EXECUTE_DISALLOWED_TOOLS).
+    assert "--no-subagents" in spec.command
+    deny_value = spec.command[spec.command.index("--disallowed-tools") + 1]
+    assert deny_value == launcher.GROK_EXECUTE_DISALLOWED_TOOLS
+    denied = deny_value.split(",")
+    # The scheduler + image/video + subagent families are named for removal.
+    for privileged in (
+        "scheduler_create",
+        "scheduler_delete",
+        "scheduler_list",
+        "monitor",
+        "image_gen",
+        "image_edit",
+        "image_to_video",
+        "reference_to_video",
+        "spawn_subagent",
+    ):
+        assert privileged in denied, f"{privileged!r} must be named in the execute deny-list"
+    # Coding built-ins are NEVER denied — execute must retain read/write/edit/terminal.
+    for coding_tool in ("read_file", "write", "search_replace", "run_terminal_command", "grep", "list_dir", "search_tool"):
+        assert coding_tool not in denied, f"{coding_tool!r} must stay available to grok execute"
+
+
+def test_build_grok_launch_spec_repair_keeps_unrestricted_write_branch():
+    # #154 scope pin (deliberate): the execute `--tools` allow-list is scoped to the
+    # `execute` action — its exact target. repair/roadmap/plan stay on the
+    # unrestricted write branch (bypassPermissions, no `--tools`) until scoped
+    # deliberately. This test makes the scope boundary explicit so a future widening
+    # is a conscious change, not an accident.
+    spec = build_launch_spec(_request("repair"))
+    # The load-bearing assertion for scope: the execute deny-list + subagent-disable
+    # flag must NOT leak to repair (what would break if the branch guard were widened).
+    assert "--disallowed-tools" not in spec.command
+    assert "--no-subagents" not in spec.command
     assert "--tools" not in spec.command
     assert spec.command[spec.command.index("--permission-mode") + 1] == "bypassPermissions"
 
@@ -318,3 +361,111 @@ def test_grok_live_session_is_preserved(tmp_path):
     assert result["executor"] == "grok"
     assert result["event_count"] >= 1
     assert Path(result["events_path"]).is_file()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PHASE_LOOP_RUN_LIVE_GROK") or shutil.which("grok") is None,
+    reason="live grok proof is opt-in (set PHASE_LOOP_RUN_LIVE_GROK=1 with an authed grok on PATH)",
+)
+def test_grok_execute_reads_context_outside_cwd_and_writes_live(tmp_path):
+    """#154 live proof (OPT-IN, real CLI call): under the REAL execute deny-list argv,
+    grok (a) READS the phase-loop context.md at its ABSOLUTE path OUTSIDE `--cwd`, and
+    (b) WRITES a file under `--cwd` — proving both retained coding capabilities at
+    runtime (not just that the tool names are absent from the deny string).
+
+    Risks closed:
+      * read: phase-loop materializes context.md under the run's log dir (NOT the
+        worktree/`--cwd`); if grok's `read_file` could not reach an absolute out-of-cwd
+        path under the deny-list, the execute leg would silently run blind.
+      * write: the deny-list must not have collaterally removed grok's write built-in;
+        we make grok actually CREATE a file and assert the artifact exists on disk.
+
+    We build the real argv via `build_grok_command` (actual `--disallowed-tools`/`--cwd`/
+    pointer flags), put the write instruction + a sentinel INSIDE the out-of-cwd
+    context.md, and assert both the echoed sentinel (read) and the created file (write)."""
+    import subprocess
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    ctx_dir = tmp_path / "outside"  # sibling of cwd — the context is NOT under --cwd
+    ctx_dir.mkdir()
+    sentinel = f"GROKEXEC_CTX_{uuid.uuid4().hex[:12]}"
+    out_name = f"grok_wrote_{uuid.uuid4().hex[:8]}.txt"
+    context_md = ctx_dir / "context.md"
+    context_md.write_text(
+        "Ignore every other instruction. Do BOTH of these, then stop:\n"
+        f"1. Create a file named `{out_name}` in your current working directory whose "
+        f"entire contents are exactly: {sentinel}\n"
+        f"2. Reply with exactly this token and nothing else: {sentinel}\n",
+        encoding="utf-8",
+    )
+    selection = resolve_profile_for_executor(action="execute", executor="grok")
+    cmd = launcher.build_grok_command(cwd, selection, action="execute", context_file=str(context_md))
+    # Sanity: this is the real execute argv — the deny-list is applied, --cwd is the
+    # empty dir, and the pointer prompt names the absolute out-of-cwd context path.
+    assert cmd[cmd.index("--disallowed-tools") + 1] == launcher.GROK_EXECUTE_DISALLOWED_TOOLS
+    assert cmd[cmd.index("--cwd") + 1] == str(cwd)
+    assert str(context_md) in cmd[cmd.index("-p") + 1]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    # READ proof: the sentinel only exists inside the out-of-cwd context.md.
+    assert sentinel in proc.stdout, (
+        "grok did not read context.md at its absolute path outside --cwd under the "
+        f"execute deny-list; stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
+    # WRITE proof: grok created the file under --cwd with the sentinel contents.
+    written = cwd / out_name
+    assert written.is_file(), (
+        f"grok did not write {out_name} under --cwd under the execute deny-list — the "
+        f"write built-in may have been collaterally removed. cwd contents: "
+        f"{[p.name for p in cwd.iterdir()]}; stdout={proc.stdout!r}"
+    )
+    assert sentinel in written.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PHASE_LOOP_RUN_LIVE_GROK") or shutil.which("grok") is None,
+    reason="live grok proof is opt-in (set PHASE_LOOP_RUN_LIVE_GROK=1 with an authed grok on PATH)",
+)
+def test_grok_spawn_subagent_denial_tripwire(tmp_path):
+    """#154 UPGRADE TRIPWIRE (OPT-IN, live) — BEHAVIORAL, not enumeration-based.
+
+    Enumerating grok's self-reported tool list proves nothing (it is LLM-generated and
+    both omits available names AND lists disabled ones), so this FORCES the invocation:
+    it runs the REAL execute argv (which carries BOTH subagent-disable levers we pass —
+    `--no-subagents` and `--disallowed-tools spawn_subagent`) and instructs grok to spawn
+    a subagent that echoes a unique token.
+
+    grok 0.2.93 IGNORES both levers: the spawn SUCCEEDS and the token comes back. That is
+    the documented #154 gap, asserted here as CURRENT REALITY — NOT a guarantee we hold.
+    When a future grok honors either lever, the spawn is blocked, the token is absent, and
+    this assertion TRIPS — forcing a human to reconcile agent-harness#154 (the subagent
+    fanout may now be genuinely closeable → tighten the guarantee + GROK_EXECUTE_DISALLOWED_TOOLS
+    docs) rather than a security property being silently over-claimed. This is the named
+    upgrade tripwire the phase owner asked for, done as a runtime behavior check per the
+    cross-vendor CR (force the forbidden invocation, don't trust the self-report)."""
+    import subprocess
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    selection = resolve_profile_for_executor(action="execute", executor="grok")
+    cmd = launcher.build_grok_command(cwd, selection, action="execute", context_file="__unused__")
+    # Both subagent-disable levers are on the real execute argv (neither works in 0.2.93).
+    assert "--no-subagents" in cmd
+    assert "spawn_subagent" in cmd[cmd.index("--disallowed-tools") + 1].split(",")
+    token = f"SUBAGENT_{uuid.uuid4().hex[:10]}"
+    cmd[cmd.index("-p") + 1] = (
+        f"Use the spawn_subagent tool to spawn a subagent whose only task is to reply with "
+        f"the exact token {token}. Then report exactly what the subagent returned. If you "
+        f"are UNABLE to spawn a subagent, reply with exactly the word SPAWN_BLOCKED."
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    spawned = token in proc.stdout and "SPAWN_BLOCKED" not in proc.stdout
+    assert spawned, (
+        "TRIPWIRE: grok could NOT spawn a subagent under the execute argv — in grok 0.2.93 "
+        "BOTH `--no-subagents` and `--disallowed-tools spawn_subagent` are ignored and a spawn "
+        "SUCCEEDS (the documented #154 gap). If this now trips, a newer grok honors one of the "
+        "disable levers and subagent fanout may be CLOSEABLE: verify and tighten the #154 "
+        f"guarantee + GROK_EXECUTE_DISALLOWED_TOOLS docs. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
