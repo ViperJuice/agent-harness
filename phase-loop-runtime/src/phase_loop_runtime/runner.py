@@ -1501,6 +1501,49 @@ def run_loop(
     with dispatch_lock_context, loop_context:
         def _prepare_phase_launch() -> "tuple[_DispatchOutcome | None, _DispatchPrep | None]":
             nonlocal blocker, current, executor, phase_aliases, selection, snapshot, wave_index
+
+            def _dry_run_closeout_preview(pending_status: str) -> _DispatchOutcome:
+                # #78: a dry run must never perform closeout side effects (governed
+                # premerge panel, ``git add``, commit). Preview the pending closeout
+                # and break WITHOUT threading ``dry_run`` into ``_perform_phase_closeout`` —
+                # the guard lives at the call site so the closeout body stays
+                # side-effect-free by construction (mirrors the launch-path dry-run
+                # short-circuit that terminates with a ``dry_run`` terminal).
+                terminal_summary = build_terminal_summary(
+                    terminal_status="dry_run",
+                    terminal_blocker=None,
+                    verification_status="not_run",
+                    next_action=(
+                        f"Dry run only; closeout for {alias} was previewed, not performed "
+                        "(no panel launched, index and worktree unchanged)."
+                    ),
+                )
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action=action,
+                        status=classifications.get(alias, pending_status),
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        metadata={
+                            "dry_run_only": True,
+                            "closeout_preview": {
+                                "pending_status": pending_status,
+                                "closeout_mode": closeout_mode,
+                            },
+                            "terminal_summary": terminal_summary,
+                            "pipeline_mode": effective_pipeline_mode,
+                        },
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                return _DispatchOutcome("break", None)
             if stop_requested(repo):
                 current = alias
                 append_event(
@@ -1921,6 +1964,10 @@ def run_loop(
                 classifications[alias] = "executing"
                 return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
+                if dry_run:
+                    # #78: preview the pending closeout and break — do not enter
+                    # _perform_phase_closeout (governed panel / git add / commit).
+                    return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                 if closeout_mode != "manual":
                     # model-routing-v2: the governed pre-merge gate now lives INSIDE
                     # _perform_phase_closeout (after `git add`, before the commit), so it
@@ -1946,6 +1993,39 @@ def run_loop(
             launch_action = None
             if explicit_product_action == "repair" or status == "blocked":
                 if snapshot.human_required:
+                    # BREAKGLASS (#71): a non-empty operator
+                    # ``--closeout-allow-unowned`` reason breaks through a sticky
+                    # human-required ``closeout_scope_violation`` — route into
+                    # closeout so the unowned remainder is force-committed under the
+                    # audited reason (secrets stay non-break-glassable inside
+                    # ``_perform_phase_closeout``). This is "SL-1's rerun" that the
+                    # BREAKGLASS protocol promises; the pre-fix short-circuit here
+                    # meant the reason was recorded as an attestation event but never
+                    # consumed. All OTHER human-required blockers (missing_secret,
+                    # admin_approval, …) still short-circuit, and a dry run never
+                    # force-commits.
+                    break_glass_reason = allow_unowned_reason.strip() if allow_unowned_reason else None
+                    if (
+                        break_glass_reason
+                        and snapshot.blocker_class == "closeout_scope_violation"
+                        and closeout_mode != "manual"
+                        and not dry_run
+                    ):
+                        classifications[alias], closeout_event = _perform_phase_closeout(
+                            repo,
+                            roadmap,
+                            alias,
+                            snapshot,
+                            selection,
+                            action=action,
+                            closeout_mode=closeout_mode,
+                            allow_unowned_reason=allow_unowned_reason,
+                            run_mode=run_mode,
+                        )
+                        append_event(repo, closeout_event)
+                        if phase:
+                            return (_DispatchOutcome("break", None), None)
+                        return (_DispatchOutcome("continue", None), None)
                     return (_DispatchOutcome("break", None), None)
                 recovered = _recover_verified_dirty_closeout(
                     repo,
@@ -1958,6 +2038,13 @@ def run_loop(
                 )
                 if recovered is not None:
                     recovered_status, recovered_event = recovered
+                    if recovered_status == "awaiting_phase_closeout" and closeout_mode != "manual" and dry_run:
+                        # #78: the repair-recovery re-closeout is equally side-effecting
+                        # (governed panel / git add / commit). Preview and break BEFORE
+                        # persisting the recovery reclassification event, so a dry run of
+                        # a blocked phase with verified-dirty automation stays fully inert
+                        # (no ledger write, no panel, no commit).
+                        return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                     append_event(repo, recovered_event)
                     classifications[alias] = recovered_status
                     if recovered_status == "awaiting_phase_closeout" and closeout_mode != "manual":
@@ -4326,8 +4413,15 @@ def run_loop(
                 if wave_signal == "dispatched":
                     continue
                 # "serial": fall through to single-phase dispatch below.
+            # NOTE (lane d): today `coordinator_waves` is non-empty only when `phase`
+            # is None (see its derivation, gated on `phase is None`), so this branch
+            # is reached with `phase=None` and the explicit-phase case is served by
+            # `_select_ready_phase` below. Passing `phase` here is a defensive
+            # consistency guarantee: if that invariant ever changes, the wave selector
+            # honors an explicit phase (bounded to the wave structure) exactly as the
+            # serial selector does, rather than silently dropping it.
             alias = (
-                _select_parallel_dispatch_phase(coordinator_waves, classifications)
+                _select_parallel_dispatch_phase(coordinator_waves, classifications, phase)
                 if coordinator_waves
                 else _select_ready_phase(repo, roadmap, classifications, phase)
             )
@@ -5500,7 +5594,20 @@ def _relocate_under(worktree: Path, repo: Path, path: Path) -> Path:
         return path
 
 
-def _select_parallel_dispatch_phase(waves: tuple[tuple[str, ...], ...], classifications: dict[str, str]) -> str | None:
+def _select_parallel_dispatch_phase(
+    waves: tuple[tuple[str, ...], ...],
+    classifications: dict[str, str],
+    phase: str | None = None,
+) -> str | None:
+    if phase:
+        # NEW-BUG: honor an explicit --phase on the concurrent (coordinator-waves)
+        # path exactly as the serial path does (_select_ready_phase). Previously the
+        # explicit phase was dropped here, so wave order picked the phase and a
+        # fully-blocked earlier wave halted the loop even when the operator asked for
+        # a ready independent phase in a later wave. Only dispatch it if it belongs to
+        # the wave structure; otherwise there is nothing for this scheduler to run.
+        target = phase.upper()
+        return target if any(target in wave for wave in waves) else None
     for wave in waves:
         if any(classifications.get(alias) not in {"complete", "blocked"} for alias in wave):
             return next(
@@ -6102,6 +6209,17 @@ def repair_precondition_for_snapshot(
             "dirty_summary": {},
         }
     if blocker_class != "dirty_worktree_conflict":
+        # #59: a bounded repair child that reshaped the plan and emitted a valid
+        # planned/not_run/clean closeout (no blocker) resolves the stale non-human
+        # blocker — clear it so the phase re-executes from the repaired plan instead
+        # of looping repair. Keyed on the child's OWN evidence (not blocker_class
+        # alone) AND a clean tree, so a genuinely un-repaired blocker still repairs.
+        if _latest_planned_repair_child_automation(repo, phase) is not None and not _dirty_paths(repo):
+            return {
+                "status": "cleared",
+                "reason": "planned_repair_closeout_cleared",
+                "dirty_summary": {},
+            }
         return {
             "status": "repair_required",
             "reason": "unsupported_live_repair_precondition",
@@ -6226,6 +6344,63 @@ def _latest_verified_dirty_child_automation(repo: Path, phase: str) -> dict[str,
             and str(automation.get("automation_human_required", "")).lower() != "true"
         ):
             return dict(automation)
+    return None
+
+
+def _planned_repair_closeout(automation: dict[str, object]) -> bool:
+    # #59: the repair child reshaped the plan and emitted a VALID planned closeout —
+    # planned + explicitly not_run, a clean tree (no dirty paths), no blocker, not
+    # human-required. The signal that the stale non-human blocker is resolved and the
+    # phase should re-execute from the repaired plan rather than loop repair.
+    #
+    # Fail-CLOSED (CR): the load-bearing positive signals a valid planned-repair
+    # closeout ALWAYS emits non-null — `status=planned`, `verification_status=not_run`,
+    # and an empty `dirty_paths` LIST — are each required present-and-valid (an absent
+    # field yields None via `.get()` and fails its check). The human/blocker fields are
+    # deliberately NOT presence-required: the event ledger strips null values on
+    # serialization, so a clean closeout's `human_required=null` / `blocker_class=null`
+    # can be legitimately absent on read-back (this is exactly the #59 payload). A
+    # genuinely human-required child instead carries the non-null `"true"` rejected
+    # below, and a real blocker carries a non-null class; so absence is safe.
+    if _phase_status_literal(automation.get("automation_status")) != "planned":
+        return False
+    if automation.get("automation_verification_status") != "not_run":
+        return False
+    dirty = automation.get("dirty_paths")
+    if not isinstance(dirty, list) or dirty:
+        return False
+    # Not human-required: false / null / none / absent all pass; only an explicit
+    # `true` keeps the human gate.
+    if str(automation.get("automation_human_required", "")).lower() == "true":
+        return False
+    if _optional_automation_literal(automation.get("automation_blocker_class")):
+        return False
+    if _optional_automation_literal(automation.get("automation_blocker_summary")):
+        return False
+    return True
+
+
+def _latest_planned_repair_child_automation(repo: Path, phase: str) -> dict[str, object] | None:
+    # #59: clear ONLY when the most recent DECISIVE event for the phase is a valid
+    # planned repair closeout. A later blocked / blocker event — even one that carries
+    # no `child_automation` (e.g. a runner-emitted repeated_verification_failure) —
+    # supersedes an earlier planned child and must NOT clear. Walk newest→oldest and
+    # decide on the first decisive event.
+    #
+    # A BLOCK is checked BEFORE the child payload (CR): a single launch event can be
+    # blocked parent-side (e.g. missing produced gates / a governed block) while STILL
+    # carrying a `child_automation` whose `automation_status=="planned"` — that event
+    # is a block, not a repair, so a planned child payload on a blocked event must not
+    # be read as cleared.
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        if event.get("status") == "blocked" or event.get("blocker"):
+            return None
+        metadata = event.get("metadata")
+        automation = metadata.get("child_automation") if isinstance(metadata, dict) else None
+        if isinstance(automation, dict):
+            return dict(automation) if _planned_repair_closeout(automation) else None
     return None
 
 
@@ -7502,6 +7677,26 @@ def _closeout_lane_ir_blocker(repo: Path, roadmap: Path, phase: str) -> dict[str
     }
 
 
+def _recorded_closeout_unowned_remainder(repo: Path, phase: str) -> frozenset[str]:
+    # #71 CR: an operator `--closeout-allow-unowned` reason attests to the unowned
+    # remainder the PRIOR closeout recorded — not to arbitrary live worktree dirt. On
+    # the break-glass rerun the reconciled blocked snapshot carries no dirty summary,
+    # so the fallback re-derives from live git; scope that re-derive to THIS recorded
+    # remainder so an unrelated edit the operator happens to have in the tree can never
+    # be force-committed under a reason that named only the phase's remainder.
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        metadata = event.get("metadata")
+        closeout = metadata.get("closeout") if isinstance(metadata, dict) else None
+        if not isinstance(closeout, dict):
+            continue
+        recorded = closeout.get("unowned_dirty_paths") or closeout.get("closeout_unowned_remainder")
+        if recorded:
+            return frozenset(str(p) for p in recorded)
+    return frozenset()
+
+
 def _perform_phase_closeout(
     repo: Path,
     roadmap: Path,
@@ -7563,7 +7758,21 @@ def _perform_phase_closeout(
     # trail (operator_override_missing_reason); None is "no override requested".
     break_glass_reason = allow_unowned_reason.strip() if allow_unowned_reason else None
     override_attempted_empty = allow_unowned_reason is not None and not break_glass_reason
-    if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
+    # BREAKGLASS/#71: on the "SL-1 rerun" break-through, the reconciled BLOCKED
+    # snapshot carries no dirty summary (the blocking closeout event records the
+    # remainder under `closeout` metadata, not `completion_dirty_worktree`, so
+    # reconcile surfaces empty `dirty_paths`). Re-derive the remainder from LIVE
+    # git ONLY when an operator reason is present, and SCOPE it to the remainder the
+    # prior closeout actually recorded (the paths the operator's reason attests to),
+    # intersected with what is still dirty — so an unrelated live edit can never be
+    # force-committed under a reason that named only the phase's remainder. With no
+    # reason this is a byte-identical no-op (`fallback_dirty_paths` is exactly
+    # `snapshot.dirty_paths`).
+    fallback_dirty_paths = snapshot.dirty_paths
+    if break_glass_reason and not fallback_dirty_paths:
+        attested_remainder = _recorded_closeout_unowned_remainder(repo, phase)
+        fallback_dirty_paths = tuple(p for p in _dirty_paths(repo) if p in attested_remainder)
+    if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and fallback_dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
             ownership_for_fallback = parse_plan_ownership(repo, roadmap, plan_for_fallback)
@@ -7574,10 +7783,10 @@ def _perform_phase_closeout(
                 # run) defeated `all(...)` and blocked every verified-owned path.
                 # Auto-classify the matching subset so verified owned work commits.
                 matched = tuple(
-                    p for p in snapshot.dirty_paths if ownership_for_fallback.matches_dirty_output(p)
+                    p for p in fallback_dirty_paths if ownership_for_fallback.matches_dirty_output(p)
                 )
                 matched_set = set(matched)
-                remainder = tuple(p for p in snapshot.dirty_paths if p not in matched_set)
+                remainder = tuple(p for p in fallback_dirty_paths if p not in matched_set)
                 # GATE: split the beyond-ownership remainder by sensitivity class.
                 # SAFE paths join the commit as a recorded `soft` exception; UNSAFE
                 # paths carry forward to the human-required scope blocker below.
@@ -7614,7 +7823,7 @@ def _perform_phase_closeout(
                     unowned_remainder = unsafe_unowned
                     if unsafe_unowned:
                         metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
-                elif ownership_for_fallback.is_control_only and unsafe_unowned:
+                elif (ownership_for_fallback.is_control_only or break_glass_reason) and unsafe_unowned:
                     # CLOSEOUT (#42 / IF-0-CLOSEOUT-1): a verified control/backfill
                     # phase owns no files, so there is no owned subset to commit
                     # (commit_set is empty) — yet it produced UNSAFE unowned dirt
@@ -7626,6 +7835,15 @@ def _perform_phase_closeout(
                     # commit_set non-empty and divert to the `if` above); secrets are never
                     # folded into break_glass_unowned, so a secret stays in unsafe_unowned
                     # here and keeps blocking regardless of any reason.
+                    #
+                    # #71 CR (secret-only break-glass): the same must hold for a plan that
+                    # DOES own files when the operator supplied a break-glass reason but the
+                    # whole live remainder is secrets — commit_set is empty and the secret is
+                    # (correctly) never break-glassed, so without this the refuse branch would
+                    # fall through to a NON-human `dirty_worktree_conflict`, silently
+                    # DOWNGRADING the sticky human-required `closeout_scope_violation` gate.
+                    # Gating on `break_glass_reason` keeps the non-break-glass path
+                    # (missing_phase_owned_dirty_paths for an all-unowned tree) byte-identical.
                     unowned_remainder = unsafe_unowned
                     metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
@@ -7725,6 +7943,25 @@ def _perform_phase_closeout(
             coauthor_trailers=_closeout_coauthor_trailers(repo, roadmap, phase),
             continuation=bool(snapshot.previous_phase_owned_paths),
         )
+        # SECURITY (#71 CR): ISOLATE the index to exactly the accepted closeout paths
+        # before staging + review + commit. Reset the index to HEAD first so any file
+        # the operator/executor pre-staged (e.g. a `.env`/secret the fallback
+        # deliberately excluded, or an unrelated edit) is UNSTAGED — its worktree copy
+        # is untouched. The governed panel then reviews, and the pathspec-less commit
+        # below then commits, the EXACT isolated staged index: "reviewed == committed"
+        # by construction, and nothing outside `closeout_dirty_paths` can ever land.
+        reset_result = _run_git_closeout(repo, "reset", "--quiet", "HEAD")
+        if reset_result.returncode != 0:
+            # Fail-CLOSED (CR): if index isolation itself fails, do NOT proceed to a
+            # commit that could still carry pre-staged content — surface it as a commit
+            # failure rather than committing an un-isolated index.
+            status, blocker = _commit_failure_closeout(
+                metadata,
+                stage="index_isolation",
+                returncode=reset_result.returncode,
+                stderr=reset_result.stderr or reset_result.stdout,
+            )
+            return status, _closeout_event()
         add_result = _run_git_closeout(repo, "add", "--", *closeout_dirty_paths)
         if add_result.returncode != 0:
             status, blocker = _commit_failure_closeout(
@@ -7733,7 +7970,7 @@ def _perform_phase_closeout(
                 returncode=add_result.returncode,
                 stderr=add_result.stderr or add_result.stdout,
             )
-        elif terminal_status == "complete" and _closeout_nothing_staged(repo):
+        elif terminal_status == "complete" and _closeout_nothing_staged(repo, closeout_dirty_paths):
             # Issue #6: the phase's verified work is already on the base branch (committed
             # out-of-band, e.g. via a merged PR), so nothing is staged. `git commit` would
             # exit non-zero and be mistaken for a commit failure, leaving the phase
@@ -7774,6 +8011,9 @@ def _perform_phase_closeout(
                 # block returns a non-human review_gate_block and does NOT commit. The
                 # nothing-staged no-op finalize (issue #6) is handled above and never
                 # reaches here, so the gate never blocks a legitimate empty commit.
+                # Capture the exact staged tree the panel is about to review so the
+                # commit can prove it is byte-identical (below).
+                reviewed_tree = _git_output(repo, "write-tree")
                 _governed = _governed_premerge_review(
                     repo, roadmap, phase, plan, terminal_status,
                     closeout_dirty_paths, snapshot.terminal_summary, run_mode,
@@ -7791,6 +8031,24 @@ def _perform_phase_closeout(
                     # constructor). The early return SKIPS the commit — a block must
                     # not commit — but reuses the canonical event shape.
                     return status, _closeout_event()
+                # reviewed == committed (CR): if anything (a hook, a concurrent
+                # process) changed the staged index during the review window, the tree
+                # hash will differ — refuse to commit unreviewed bytes rather than land
+                # them. In the autonomous no-op-review path this is trivially equal.
+                if _git_output(repo, "write-tree") != reviewed_tree:
+                    status, blocker = _commit_failure_closeout(
+                        metadata,
+                        stage="index_drift_after_review",
+                        returncode=1,
+                        stderr="staged index changed between governed review and commit",
+                    )
+                    return status, _closeout_event()
+                # Commit the STAGED index (pathspec-less), which the index-isolation
+                # above narrowed to exactly the reviewed closeout paths. A pathspec
+                # commit (`git commit -- <paths>`) would instead re-read the WORKING
+                # TREE for those paths and could land bytes different from the reviewed
+                # staged index (breaking "reviewed == committed"); committing the index
+                # preserves the governed panel's exact bytes.
                 commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
@@ -8047,14 +8305,23 @@ def _run_git_closeout(repo: Path, *args: str, input_text: str | None = None) -> 
     )
 
 
-def _closeout_nothing_staged(repo: Path) -> bool:
-    """True when there is nothing staged to commit (the index matches HEAD).
+def _closeout_nothing_staged(repo: Path, paths: tuple[str, ...] = ()) -> bool:
+    """True when there is nothing staged to commit for the closeout ``paths`` (they
+    match HEAD).
 
     Used by closeout to distinguish "the phase's verified work is already on the base
     branch" (a successful no-op finalize, issue #6) from a real commit failure. `git
     diff --cached --quiet` exits 0 when there are no staged changes, 1 when there are.
+
+    Scoped to the closeout ``paths`` (CR): the closeout stages only these paths onto
+    an isolated index, so this no-op check asks "are the CLOSEOUT paths already
+    committed" specifically. (With index isolation the whole-index check would agree,
+    but scoping keeps the no-op decision correct and independent of that isolation.)
     """
-    return _run_git_closeout(repo, "diff", "--cached", "--quiet").returncode == 0
+    args = ["diff", "--cached", "--quiet"]
+    if paths:
+        args += ["--", *paths]
+    return _run_git_closeout(repo, *args).returncode == 0
 
 
 def _commit_failure_closeout(
