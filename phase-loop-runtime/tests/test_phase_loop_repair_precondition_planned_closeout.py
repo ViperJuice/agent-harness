@@ -190,6 +190,39 @@ def test_planned_child_missing_verification_status_does_not_clear(tmp_path):
     assert result["status"] != "cleared", result
 
 
+def test_blocked_event_carrying_planned_child_payload_does_not_clear(tmp_path):
+    # CR: a single launch event can be blocked parent-side (e.g. missing produced
+    # gates / a governed block) while STILL carrying a child_automation whose
+    # automation_status == "planned". The block is authoritative — a planned child
+    # payload on a BLOCKED event must not be read as a repaired/planned closeout.
+    repo, roadmap, plan = _setup(tmp_path)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="execute", status="blocked", model="gpt-5.6-terra",
+            reasoning_effort="medium", source="fixture",
+            blocker={
+                "human_required": False, "blocker_class": "contract_bug",
+                "blocker_summary": "parent blocked despite a planned child report",
+                "required_human_inputs": (), "access_attempts": (),
+            },
+            metadata={"child_automation": {
+                "automation_status": "planned",
+                "automation_verification_status": "not_run",
+                "automation_human_required": "false",
+                "automation_blocker_class": None,
+                "automation_blocker_summary": None,
+                "dirty_paths": [],
+            }},
+            **event_provenance(roadmap, "CONTRACT"),
+        ),
+    )
+    snapshot = _blocked_snapshot(repo, roadmap, blocker_class="contract_bug")
+    result = repair_precondition_for_snapshot(repo, roadmap, "CONTRACT", plan, snapshot)
+    assert result["status"] != "cleared", result
+
+
 def test_planned_child_with_null_human_required_still_clears(tmp_path):
     # #59 real-payload guard: the repair child emits `human_required: null`
     # (parsed to the string "null"); the event ledger strips genuine None values, so

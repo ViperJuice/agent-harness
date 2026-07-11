@@ -6385,16 +6385,22 @@ def _latest_planned_repair_child_automation(repo: Path, phase: str) -> dict[str,
     # planned repair closeout. A later blocked / blocker event — even one that carries
     # no `child_automation` (e.g. a runner-emitted repeated_verification_failure) —
     # supersedes an earlier planned child and must NOT clear. Walk newest→oldest and
-    # decide on the first decisive event: a `child_automation` payload or a block.
+    # decide on the first decisive event.
+    #
+    # A BLOCK is checked BEFORE the child payload (CR): a single launch event can be
+    # blocked parent-side (e.g. missing produced gates / a governed block) while STILL
+    # carrying a `child_automation` whose `automation_status=="planned"` — that event
+    # is a block, not a repair, so a planned child payload on a blocked event must not
+    # be read as cleared.
     for event in reversed(read_events(repo)):
         if str(event.get("phase", "")).upper() != phase.upper():
             continue
+        if event.get("status") == "blocked" or event.get("blocker"):
+            return None
         metadata = event.get("metadata")
         automation = metadata.get("child_automation") if isinstance(metadata, dict) else None
         if isinstance(automation, dict):
             return dict(automation) if _planned_repair_closeout(automation) else None
-        if event.get("status") == "blocked" or event.get("blocker"):
-            return None
     return None
 
 
