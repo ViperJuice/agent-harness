@@ -1114,18 +1114,23 @@ def _discovery_allow_completed() -> bool:
 
 
 def _phase_manifest_entries(repo: Path) -> tuple[object, ...]:
+    # agent-harness#164 (IF-0-MANIFEST-1): consume the manifest PER-ENTRY. A
+    # structural failure (unparseable / bad schema / plans-not-array) hides the
+    # whole manifest, but a single stale/renamed/missing/parse-hostile entry is
+    # skipped (treated orphaned) instead of silently degrading ALL entries to
+    # regex discovery. `valid_phase_entries` materializes only the valid rows,
+    # tolerating an unparseable sibling; the skipped entry's operator signal
+    # (manifest_plan_file_missing) is emitted independently by
+    # reconcile._reconcile_plan_manifest.
     try:
-        from .plan_manifest import read_manifest, validate_manifest
+        from .plan_manifest import valid_phase_entries
     except Exception:
         return ()
     manifest_path = repo / "plans" / "manifest.json"
-    if manifest_path.exists() and not validate_manifest(manifest_path).valid:
+    if not manifest_path.exists():
         return ()
-    try:
-        manifest = read_manifest(repo)
-    except Exception:
-        return ()
-    return tuple(entry for entry in manifest.plans if entry.type == "phase")
+    entries = valid_phase_entries(manifest_path)
+    return entries if entries is not None else ()
 
 
 def plan_is_stale(plan: Path, roadmap: Path) -> bool:

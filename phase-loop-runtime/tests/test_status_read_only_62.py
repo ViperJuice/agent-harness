@@ -216,12 +216,15 @@ class OrphanRenamedPlanParity162Test(unittest.TestCase):
     This does NOT reproduce on the current base, and this test pins that as a
     regression guard. The reason is structural, not a fix that made them match: the
     ``manifest_plan_file_missing`` branch in ``discovery.manifest_plan_artifact`` is
-    UNREACHABLE — a missing-file entry fails ``validate_manifest`` (its existence
-    check), and ``_phase_manifest_entries`` is validate-gated, so it hides ALL entries
-    SYMMETRICALLY in read and write mode. Both modes therefore fall through to the
-    regex-reachable renamed plan and emit exactly the one orphan-loop warning. If a
-    future change relaxes the validate gate or the orphan logic, this test fails and
-    forces the read/write views back into agreement.
+    UNREACHABLE — a missing-file entry fails PER-ENTRY validation (its existence
+    check), so ``_phase_manifest_entries`` excludes it (IF-0-MANIFEST-1 / #164:
+    per-entry validation replaced the old all-or-nothing validate gate). Here the
+    stale entry is the ONLY entry, so both read and write mode still see NO manifest
+    entries and fall through to the regex-reachable renamed plan, emitting exactly
+    the one orphan-loop warning (from reconcile's independent ``read_manifest`` loop,
+    not the discovery filter). If a future change breaks the per-entry exclusion or
+    the orphan logic, this test fails and forces the read/write views back into
+    agreement.
     """
 
     def _build(self, td: Path, status: str) -> tuple[Path, Path]:
