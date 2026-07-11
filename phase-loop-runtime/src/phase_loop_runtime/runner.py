@@ -1993,6 +1993,39 @@ def run_loop(
             launch_action = None
             if explicit_product_action == "repair" or status == "blocked":
                 if snapshot.human_required:
+                    # BREAKGLASS (#71): a non-empty operator
+                    # ``--closeout-allow-unowned`` reason breaks through a sticky
+                    # human-required ``closeout_scope_violation`` — route into
+                    # closeout so the unowned remainder is force-committed under the
+                    # audited reason (secrets stay non-break-glassable inside
+                    # ``_perform_phase_closeout``). This is "SL-1's rerun" that the
+                    # BREAKGLASS protocol promises; the pre-fix short-circuit here
+                    # meant the reason was recorded as an attestation event but never
+                    # consumed. All OTHER human-required blockers (missing_secret,
+                    # admin_approval, …) still short-circuit, and a dry run never
+                    # force-commits.
+                    break_glass_reason = allow_unowned_reason.strip() if allow_unowned_reason else None
+                    if (
+                        break_glass_reason
+                        and snapshot.blocker_class == "closeout_scope_violation"
+                        and closeout_mode != "manual"
+                        and not dry_run
+                    ):
+                        classifications[alias], closeout_event = _perform_phase_closeout(
+                            repo,
+                            roadmap,
+                            alias,
+                            snapshot,
+                            selection,
+                            action=action,
+                            closeout_mode=closeout_mode,
+                            allow_unowned_reason=allow_unowned_reason,
+                            run_mode=run_mode,
+                        )
+                        append_event(repo, closeout_event)
+                        if phase:
+                            return (_DispatchOutcome("break", None), None)
+                        return (_DispatchOutcome("continue", None), None)
                     return (_DispatchOutcome("break", None), None)
                 recovered = _recover_verified_dirty_closeout(
                     repo,
@@ -7614,7 +7647,17 @@ def _perform_phase_closeout(
     # trail (operator_override_missing_reason); None is "no override requested".
     break_glass_reason = allow_unowned_reason.strip() if allow_unowned_reason else None
     override_attempted_empty = allow_unowned_reason is not None and not break_glass_reason
-    if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
+    # BREAKGLASS/#71: on the "SL-1 rerun" break-through, the reconciled BLOCKED
+    # snapshot carries no dirty summary (the blocking closeout event records the
+    # remainder under `closeout` metadata, not `completion_dirty_worktree`, so
+    # reconcile surfaces empty `dirty_paths`). Re-derive the remainder from LIVE
+    # git ONLY when an operator reason is present, so the force-commit below has
+    # something to accept. With no reason this is a byte-identical no-op
+    # (`fallback_dirty_paths` is exactly `snapshot.dirty_paths`).
+    fallback_dirty_paths = snapshot.dirty_paths
+    if break_glass_reason and not fallback_dirty_paths:
+        fallback_dirty_paths = tuple(_dirty_paths(repo))
+    if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and fallback_dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
             ownership_for_fallback = parse_plan_ownership(repo, roadmap, plan_for_fallback)
@@ -7625,10 +7668,10 @@ def _perform_phase_closeout(
                 # run) defeated `all(...)` and blocked every verified-owned path.
                 # Auto-classify the matching subset so verified owned work commits.
                 matched = tuple(
-                    p for p in snapshot.dirty_paths if ownership_for_fallback.matches_dirty_output(p)
+                    p for p in fallback_dirty_paths if ownership_for_fallback.matches_dirty_output(p)
                 )
                 matched_set = set(matched)
-                remainder = tuple(p for p in snapshot.dirty_paths if p not in matched_set)
+                remainder = tuple(p for p in fallback_dirty_paths if p not in matched_set)
                 # GATE: split the beyond-ownership remainder by sensitivity class.
                 # SAFE paths join the commit as a recorded `soft` exception; UNSAFE
                 # paths carry forward to the human-required scope blocker below.

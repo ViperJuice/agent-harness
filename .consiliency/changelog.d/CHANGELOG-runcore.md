@@ -12,3 +12,17 @@
   with no panel launch, no `git add`, and no commit. `dry_run` is not threaded
   into `_perform_phase_closeout` itself — the guard lives at the call site so the
   closeout body stays side-effect-free by construction.
+
+- **`--closeout-allow-unowned` breaks through a sticky closeout scope violation on
+  rerun (`ViperJuice/agent-harness#71`).** After a partial closeout committed the
+  phase-owned subset and blocked human-required with
+  `blocker_class=closeout_scope_violation` over a live unowned remainder, an
+  operator rerun with a non-empty `--closeout-allow-unowned <reason>` recorded the
+  attestation event but never recovered — the dispatch closure short-circuited at
+  the human-required guard before closeout could consume the reason. The guard now
+  routes a break-glassable `closeout_scope_violation` into `_perform_phase_closeout`
+  with the reason (this is the "SL-1 rerun" the BREAKGLASS protocol promises); all
+  other human-required blockers still short-circuit. The closeout fallback
+  re-derives the unowned remainder from live git when the reconciled blocked
+  snapshot carries no dirty summary, so the remainder is force-committed under the
+  audited reason. Secrets remain non-break-glassable and keep the phase blocked.
