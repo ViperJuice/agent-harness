@@ -6,7 +6,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
-<<<<<<< HEAD
 - **Registry-driven launch dispatch (EXECDISPATCH EXECREG, IF-0-EXECREG-1).**
   `ExecutorCapabilityRecord` (`models.py`) now carries optional
   `build_command` / `is_available` / `auth_ok` / `provider_backing` /
