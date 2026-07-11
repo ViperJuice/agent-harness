@@ -1747,8 +1747,9 @@ class ExecutorCapabilityRecord:
     live_available: bool = False
     dry_run_available: bool = True
     # AUTOSEL (IF-0-AUTOSEL-2): can this executor be launched WITHOUT a controlling
-    # terminal? Only ``claude`` is tty-only today (its panel/TUI leg needs a real
-    # terminal); codex/gemini/grok/opencode/pi run headless via ``-p``. The AUTO
+    # terminal? The non-headless executors are ``claude`` (its panel/TUI leg needs a
+    # real terminal) and ``manual`` (operator handoff, no spawned CLI at all);
+    # codex/gemini/grok/opencode/pi run headless via ``-p``. The AUTO
     # default-resolution layers gate on this so they never auto-pick an executor the
     # runner cannot launch headlessly (e.g. under Claude Code / detached / CI).
     # Distinct from ``promotion_status`` — grok is ``proof_gated`` yet headless.
