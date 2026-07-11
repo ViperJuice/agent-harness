@@ -1501,6 +1501,49 @@ def run_loop(
     with dispatch_lock_context, loop_context:
         def _prepare_phase_launch() -> "tuple[_DispatchOutcome | None, _DispatchPrep | None]":
             nonlocal blocker, current, executor, phase_aliases, selection, snapshot, wave_index
+
+            def _dry_run_closeout_preview(pending_status: str) -> _DispatchOutcome:
+                # #78: a dry run must never perform closeout side effects (governed
+                # premerge panel, ``git add``, commit). Preview the pending closeout
+                # and break WITHOUT threading ``dry_run`` into ``_perform_phase_closeout`` —
+                # the guard lives at the call site so the closeout body stays
+                # side-effect-free by construction (mirrors the launch-path dry-run
+                # short-circuit that terminates with a ``dry_run`` terminal).
+                terminal_summary = build_terminal_summary(
+                    terminal_status="dry_run",
+                    terminal_blocker=None,
+                    verification_status="not_run",
+                    next_action=(
+                        f"Dry run only; closeout for {alias} was previewed, not performed "
+                        "(no panel launched, index and worktree unchanged)."
+                    ),
+                )
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action=action,
+                        status=classifications.get(alias, pending_status),
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        metadata={
+                            "dry_run_only": True,
+                            "closeout_preview": {
+                                "pending_status": pending_status,
+                                "closeout_mode": closeout_mode,
+                            },
+                            "terminal_summary": terminal_summary,
+                            "pipeline_mode": effective_pipeline_mode,
+                        },
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                return _DispatchOutcome("break", None)
             if stop_requested(repo):
                 current = alias
                 append_event(
@@ -1921,6 +1964,10 @@ def run_loop(
                 classifications[alias] = "executing"
                 return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
+                if dry_run:
+                    # #78: preview the pending closeout and break — do not enter
+                    # _perform_phase_closeout (governed panel / git add / commit).
+                    return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                 if closeout_mode != "manual":
                     # model-routing-v2: the governed pre-merge gate now lives INSIDE
                     # _perform_phase_closeout (after `git add`, before the commit), so it
@@ -1961,6 +2008,10 @@ def run_loop(
                     append_event(repo, recovered_event)
                     classifications[alias] = recovered_status
                     if recovered_status == "awaiting_phase_closeout" and closeout_mode != "manual":
+                        if dry_run:
+                            # #78: the repair-recovery re-closeout is equally
+                            # side-effecting — preview and break rather than commit.
+                            return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                         closeout_snapshot = reconcile(repo, roadmap)
                         classifications[alias], closeout_event = _perform_phase_closeout(
                             repo,
