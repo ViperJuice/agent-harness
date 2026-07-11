@@ -137,6 +137,44 @@ def test_build_grok_launch_spec_write_action_has_no_tool_restriction():
     assert spec.command[spec.command.index("--permission-mode") + 1] == "bypassPermissions"
 
 
+@pytest.mark.parametrize("action", ["review", "execute"])
+def test_grok_dispatch_end_to_end_no_keyerror(action):
+    """Explicit end-to-end dispatch guard (audit-proof): `build_launch_spec` on a real
+    grok `LaunchRequest` must route through `capability_registry()[request.executor]`
+    and return a valid LaunchSpec — NO `KeyError: 'grok'`.
+
+    This pins THE line that would break if grok were ever dropped from the capability
+    registry (the actual dispatch entry point, not just the command builder). It is
+    deliberately self-contained — constructs the request from scratch via
+    build_launch_request rather than a helper — so a future auditor (or someone on a
+    stale checkout) can confirm grok is a live, dispatchable executor at a glance."""
+    from phase_loop_runtime.launcher import build_launch_request
+
+    selection = resolve_profile_for_executor(action=action, executor="grok")
+    bundle = build_prompt(action, _ROADMAP, phase=_PHASE, plan=_PLAN, harness_target="grok")
+    request = build_launch_request(
+        executor="grok",
+        action=action,
+        repo=_REPO,
+        roadmap=_ROADMAP,
+        phase=_PHASE,
+        plan=_PLAN,
+        model_selection=selection,
+        prompt_bundle=bundle,
+        json_output=True,
+        bypass_approvals=False,
+        launch_timeout_seconds=1800,
+    )
+    # The dispatch entry point: build_launch_spec does capability_registry()[executor].
+    spec = build_launch_spec(request)  # must NOT raise KeyError('grok')
+    assert spec.executor == "grok"
+    assert spec.command[0] == "grok"
+    assert spec.available is True
+    # sanity: grok is genuinely present + bound in the registry it dispatched through.
+    assert "grok" in capability_registry()
+    assert capability_registry()["grok"].build_command.__name__ == "build_grok_launch_spec"
+
+
 # --- session-preservation hook (metadata only) ------------------------------
 
 
