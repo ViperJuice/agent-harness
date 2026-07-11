@@ -10,7 +10,10 @@
   per-gate `DEFAULT_RATIFICATION_POLICIES` for `plan-ratify` / `design-ratify` /
   `pre-merge-CR` / `release-dispatch`, and a PURE `evaluate_ratification(policy, facts)`
   that returns a `RatificationDecision` (status + shortfalls + durable `to_audit()`
-  record). Board facts are projected from the availability-aware board via
+  record). The vendor quorum binds to vendors that produced a USABLE review
+  (`min(distinct_seated, usable_legs)`), so a seated-but-silent board (legs
+  empty/timed-out under contention) fails CLOSED — it never ratifies an N-vendor
+  gate on a single usable review. Board facts are projected from the availability-aware board via
   `board_facts_from` (imports `advisor_board.composition.board_independence` for the
   distinct-vendor count; the distinct-lens count is computed in POLICY's own file, never
   by touching SANDBOX's `composition.py`). The freeze **is** that import surface — the

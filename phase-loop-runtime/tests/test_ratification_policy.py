@@ -114,6 +114,24 @@ class EvaluatorTest(unittest.TestCase):
         self.assertFalse(d.satisfied)
         self.assertEqual(set(d.shortfalls), {"vendors", "lens_coverage"})
 
+    def test_seated_but_silent_board_fails_closed(self):
+        # Regression (CR, convergent codex+grok finding): a fully SEATED 3-vendor
+        # board whose legs mostly dropped (only 1 usable review — the normal
+        # contention condition) must NOT ratify a 3-vendor gate. The vendor quorum
+        # binds to USABLE reviewers, not seated ones, so this escalates (fail-closed)
+        # rather than fail-open on a single reviewer.
+        pol = DEFAULT_RATIFICATION_POLICIES["pre-merge-CR"]  # required_vendors=3, escalate
+        facts = BoardFacts(distinct_vendors=3, lens_coverage=3, agreeing=1, reviewing=1)
+        d = evaluate_ratification(pol, facts, gate="pre-merge-CR")
+        self.assertEqual(d.status, ESCALATE)
+        self.assertIn("vendors", d.shortfalls)
+        self.assertTrue(d.blocks)
+        # The detail names the effective (usable) count, not just the seated count.
+        self.assertIn("usable reviewer vendors 1", shortfall_detail(d))
+        # A genuinely full 3-vendor board (3 usable reviews) still ratifies.
+        full = BoardFacts(distinct_vendors=3, lens_coverage=3, agreeing=3, reviewing=3)
+        self.assertEqual(evaluate_ratification(pol, full, gate="pre-merge-CR").status, RATIFIED)
+
     def test_consensus_shortfall_detected(self):
         pol = RatificationPolicy(1, 1, "unanimous", "escalate")
         facts = BoardFacts(distinct_vendors=1, lens_coverage=1, agreeing=1, reviewing=2)

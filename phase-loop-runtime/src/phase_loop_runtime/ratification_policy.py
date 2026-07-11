@@ -218,6 +218,14 @@ class RatificationDecision:
         }
 
 
+def _effective_vendors(facts: BoardFacts) -> int:
+    """Vendors that count toward the independence quorum: distinct SEATED vendors
+    capped at the number of USABLE reviewing legs. A vendor that produced no usable
+    review cannot vouch for independence, so it must not satisfy ``required_vendors``
+    (otherwise the gate fails OPEN on a seated-but-silent board)."""
+    return min(facts.distinct_vendors, max(facts.reviewing, 0))
+
+
 def evaluate_ratification(
     policy: RatificationPolicy,
     facts: BoardFacts,
@@ -230,9 +238,17 @@ def evaluate_ratification(
     present, applies ``policy.on_shortfall`` (``escalate`` -> a NON-human hold;
     ``proceed_degraded`` -> proceed with an audit record). No IO, no board
     composition, no CLI — safe to unit-test with plain objects.
+
+    The vendor quorum is enforced against the number of vendors that actually
+    produced a USABLE review, not merely the number seated: a seat that returned
+    no usable review (empty/timeout/degraded — the normal contention condition)
+    cannot vouch for independence. The effective vendor count is therefore capped
+    at ``reviewing`` (``min(distinct_vendors, reviewing)``); without this cap a
+    fully seated board whose legs mostly dropped would fail OPEN — ratifying an
+    N-vendor gate on a single usable review.
     """
     shortfalls: list[str] = []
-    if facts.distinct_vendors < policy.required_vendors:
+    if _effective_vendors(facts) < policy.required_vendors:
         shortfalls.append("vendors")
     if facts.lens_coverage < policy.required_lens_coverage:
         shortfalls.append("lens_coverage")
@@ -264,7 +280,9 @@ def shortfall_detail(decision: RatificationDecision) -> str:
     parts: list[str] = []
     if "vendors" in decision.shortfalls:
         parts.append(
-            f"distinct reviewer vendors {f.distinct_vendors} < required {p.required_vendors}"
+            f"usable reviewer vendors {_effective_vendors(f)} "
+            f"(distinct seated {f.distinct_vendors}, usable legs {f.reviewing}) "
+            f"< required {p.required_vendors}"
         )
     if "lens_coverage" in decision.shortfalls:
         parts.append(
