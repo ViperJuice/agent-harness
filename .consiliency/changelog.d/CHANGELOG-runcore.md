@@ -46,3 +46,12 @@
   the loop even when the operator asked for a ready independent phase in a later
   wave. The selector now accepts and applies the explicit phase, mirroring the
   serial path.
+
+- **#84 investigation (`ViperJuice/agent-harness#84`).** The reported serial-path
+  symptom (`--phase ROOM` repairs a blocked `SEAL` instead of dispatching the
+  explicit independent phase) does not reproduce on current `main`: the serial
+  selector already honors an explicit `--phase` and the full dispatch launches
+  `ROOM` execute. AUTOSEL/#152 touches zero phase-selection code (confirmed). The
+  adjacent concurrent coordinator-waves variant WAS a real drop and is fixed above.
+  A regression guard pins `(ROOM, execute)` on the serial path; see
+  `plans/decision-issue-84-explicit-phase-20260711.md`.
