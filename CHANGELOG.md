@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **EXECDISPATCH roadmap + pi-native north star (docs).** Adds
+  `specs/phase-plans-v8.md` (the panel-ratified EXECDISPATCH phase plan —
+  EXECREG → GROKEXEC → AUTOSEL serial spine plus the SPIKE-DISSECT parallel
+  root) and `specs/north-star-pi-native.md` (the vision + gated backlog the
+  roadmap executes against). Docs-only; no runtime change.
+
 - **`consiliency-harness` publish uses the `pypi` environment.** The
   trusted-publishing workflow now gates on the same `pypi` GitHub environment as the
   runtime's `publish-pypi.yml` (instead of a bespoke `pypi-consiliency-harness`
