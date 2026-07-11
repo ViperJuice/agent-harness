@@ -179,6 +179,14 @@ def validate_manifest(manifest_path: Path) -> ValidationResult:
         return ValidationResult(False, ("manifest file does not exist",))
     except json.JSONDecodeError as exc:
         return ValidationResult(False, (f"manifest JSON is malformed at line {exc.lineno} column {exc.colno}",))
+    return _validate_manifest_data(data, manifest_path.parent.parent)
+
+
+def _validate_manifest_data(data: Any, repo: Path) -> ValidationResult:
+    """Validate an ALREADY-PARSED manifest object. Split out from
+    ``validate_manifest`` so ``valid_phase_entries`` can validate and materialize
+    from the SAME in-memory snapshot — a concurrent manifest rewrite between two
+    reads would otherwise misalign per-entry indices (single-writer TOCTOU)."""
     if not isinstance(data, dict):
         return ValidationResult(False, ("manifest must be an object",))
     # Structural errors invalidate the WHOLE manifest (nothing is trustworthy);
@@ -190,7 +198,6 @@ def validate_manifest(manifest_path: Path) -> ValidationResult:
     if not isinstance(plans, list):
         structural_errors.append("plans must be an array")
         return ValidationResult(False, tuple(structural_errors))
-    repo = manifest_path.parent.parent
     seen: set[str] = set()
     entry_results: list[EntryValidationResult] = []
     for index, raw_entry in enumerate(plans):
@@ -226,6 +233,44 @@ def validate_manifest(manifest_path: Path) -> ValidationResult:
         structural_errors=tuple(structural_errors),
         entries=tuple(entry_results),
     )
+
+
+def valid_phase_entries(manifest_path: Path) -> tuple[DotfilesPlanEntry, ...] | None:
+    """Materialize ONLY the per-entry-VALID ``phase`` entries — IF-0-MANIFEST-1 (#164).
+
+    Returns ``None`` when the manifest is STRUCTURALLY invalid (unparseable JSON,
+    wrong ``schema_version``, non-array ``plans``): nothing in it is trustworthy, so
+    the caller must consume no entry. Otherwise returns the valid phase entries,
+    tolerating parse-hostile *sibling* rows (a non-dict entry / ``roadmap_ref`` /
+    lifecycle event): those rows are per-entry INVALID (excluded from
+    ``valid_indices``), and this materializes each surviving row on its own so one
+    unparseable sibling cannot re-hide the valid entries the way the all-or-nothing
+    ``read_manifest`` load would. Every index in ``valid_indices`` passed per-entry
+    validation, so ``_entry_from_json`` never raises on it; the guarded ``except``
+    is belt-and-suspenders.
+
+    The manifest is read EXACTLY ONCE and both validated and materialized from that
+    single in-memory snapshot, so a concurrent rewrite cannot desync the per-entry
+    indices from the rows they select."""
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    result = _validate_manifest_data(data, manifest_path.parent.parent)
+    if not result.structural_valid:
+        return None
+    valid = result.valid_indices()
+    entries: list[DotfilesPlanEntry] = []
+    for index, raw_entry in enumerate(data.get("plans", [])):
+        if index not in valid:
+            continue
+        try:
+            entry = _entry_from_json(raw_entry)
+        except ValueError:
+            continue
+        if entry.type == "phase":
+            entries.append(entry)
+    return tuple(entries)
 
 
 def import_existing_phase_plans(repo: Path) -> DotfilesPlanManifest:

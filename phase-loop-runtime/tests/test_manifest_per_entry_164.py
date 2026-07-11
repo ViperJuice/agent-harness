@@ -12,6 +12,7 @@ manifest, no fleet/dotfiles tree.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ from phase_loop_runtime.plan_manifest import (
     DotfilesPlanEntry,
     DotfilesPlanRef,
     append_entry,
+    read_manifest,
     validate_manifest,
 )
 
@@ -167,6 +169,60 @@ class ManifestPerEntryValidation164Test(unittest.TestCase):
             self.assertEqual([e.slug for e in good], ["manifest-runner"])
             # valid_indices excludes only the bad entry's index.
             self.assertEqual(result.valid_indices(), {good[0].index})
+
+    def test_valid_entry_survives_parse_hostile_sibling(self):
+        # A sibling whose lifecycle event is NOT an object makes read_manifest()
+        # (all-or-nothing _entry_from_json) RAISE. The pre-hardening consumer's
+        # `except: return ()` would then re-hide the valid entry -- recreating the
+        # whole-manifest degrade #164 is meant to close, for this malformation class.
+        # The per-entry consumer must materialize the valid entry regardless.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap)
+            append_entry(
+                repo,
+                _phase_entry(
+                    "manifest-runner",
+                    plan.relative_to(repo).as_posix(),
+                    "RUNNER",
+                    roadmap_rel="specs/phase-plans-v1.md",
+                ),
+            )
+            manifest_path = repo / "plans" / "manifest.json"
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data["plans"].append(
+                {
+                    "slug": "manifest-bad-lifecycle",
+                    "file": "plans/phase-plan-v1-BAD.md",
+                    "type": "phase",
+                    "status": "committed",
+                    "created_at": "2026-05-30T00:00:00Z",
+                    "updated_at": "2026-05-30T00:00:00Z",
+                    "owner_skill": "codex-plan-phase",
+                    "phase_alias": "BAD",
+                    "lifecycle": ["not-an-object"],
+                }
+            )
+            manifest_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            # The hazard is real: read_manifest itself raises on the sibling.
+            with self.assertRaises(ValueError):
+                read_manifest(repo)
+            # ...but discovery still resolves the valid entry's roadmap.
+            self.assertEqual(manifest_backed_roadmap(repo), roadmap.resolve())
+
+    def test_non_array_plans_is_structural(self):
+        # grok CR nit: a non-array `plans` is a STRUCTURAL failure, not per-entry.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            (repo / "plans" / "manifest.json").write_text(
+                '{"schema_version": 1, "plans": {}}', encoding="utf-8"
+            )
+            result = validate_manifest(repo / "plans" / "manifest.json")
+            self.assertFalse(result.structural_valid)
+            self.assertFalse(result.valid)
+            self.assertIsNone(manifest_backed_roadmap(repo))
 
     def test_structural_failure_still_hides_whole_manifest(self):
         # A structural failure (schema_version) is NOT per-entry: the whole manifest

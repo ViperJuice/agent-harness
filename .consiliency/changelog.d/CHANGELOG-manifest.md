@@ -12,7 +12,12 @@
   failure (unparseable JSON, wrong `schema_version`, or a non-array `plans`) still
   hides the whole manifest, since nothing in it is trustworthy. The skipped
   entry's operator signal (`manifest_plan_file_missing`) continues to fire
-  independently from `reconcile._reconcile_plan_manifest`.
+  independently from `reconcile._reconcile_plan_manifest`. The consumer
+  materializes only the valid rows via `plan_manifest.valid_phase_entries`
+  (index-aligned to `validate_manifest`), so even a *parse-hostile* sibling row
+  (a non-object entry / `roadmap_ref` / lifecycle event that the all-or-nothing
+  `read_manifest` load raises on) no longer re-hides the valid entries — closing
+  the residual whole-manifest-degrade class flagged by the cross-vendor review.
 
 - **IF-0-MANIFEST-1 — per-entry manifest validation result shape (frozen).**
   `plan_manifest.validate_manifest` now returns a `ValidationResult` with
