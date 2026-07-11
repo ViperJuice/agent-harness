@@ -166,6 +166,17 @@ HARNESS_WORKFLOW_COMMANDS = {
         "plan": lambda roadmap, phase, plan: f"opencode-plan-phase {roadmap} {phase}",
         "execute": lambda roadmap, phase, plan: f"opencode-execute-phase {plan}",
     },
+    # grok has no bespoke phase-loop skill bundle (unlike codex/gemini/opencode);
+    # like the generic `command` executor it reads the staged context bundle and
+    # runs under the harness-neutral `phase-loop <action>` workflow header. Real,
+    # non-empty workflow text without inventing grok-* skills that don't exist.
+    "grok": {
+        "roadmap": lambda roadmap, phase, plan: f"phase-loop roadmap {roadmap}",
+        "plan": lambda roadmap, phase, plan: f"phase-loop plan {roadmap} {phase}",
+        "execute": lambda roadmap, phase, plan: f"phase-loop execute {plan}",
+        "repair": lambda roadmap, phase, plan: f"phase-loop repair {roadmap} {phase}",
+        "review": lambda roadmap, phase, plan: f"phase-loop review {roadmap} {phase or 'STATUS'}",
+    },
     "pi": {
         "roadmap": lambda roadmap, phase, plan: f"pi-agent-watch --roadmap {roadmap} --max-phases 1 --closeout-mode manual",
         "plan": lambda roadmap, phase, plan: f"pi-agent-watch --roadmap {roadmap} --phase {phase} --max-phases 1 --closeout-mode manual",
@@ -186,6 +197,10 @@ HARNESS_INJECTION_MODES = {
     "codex": ("prompt_only", None),
     "claude": ("inline", "context_file"),
     "gemini": ("context_file", "inline"),
+    # grok delivers the staged workflow bundle via a context file (mirrors gemini);
+    # falls back to inline. Required here or build_prompt(harness_target="grok")
+    # KeyErrors before any grok launch (GROKEXEC).
+    "grok": ("context_file", "inline"),
     "opencode": ("context_file", "inline"),
     "pi": ("context_file", "manual"),
     "command": ("context_file", "manual"),

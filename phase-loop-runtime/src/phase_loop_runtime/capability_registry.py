@@ -248,11 +248,13 @@ DEFAULT_CAPABILITY_REGISTRY = {
         # like the agy/gemini leg it has NO structured-output flag on this path (the
         # closeout is prompt-injected + text-parsed). Its permission model is
         # all-or-nothing per-run (`--permission-mode`), so `explicit_approval_controls`
-        # is dropped, mirroring gemini.
+        # is dropped, mirroring gemini. `skill_bundle_injection` is ALSO dropped: grok
+        # ships no bespoke phase-loop skill bundle, so it is driven purely by the
+        # staged context file (`context_file_instructions`) — claiming bundle injection
+        # would be dishonest (no grok-* skills exist to inject).
         capabilities=(
             "live_launch",
             "dry_run",
-            "skill_bundle_injection",
             "inline_instructions",
             "context_file_instructions",
         ),
@@ -488,7 +490,7 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         default_effort="medium",
         effort_map={effort: effort for effort in _ALL_EFFORTS},
         notes=(
-            "grok's `--reasoning-effort` CLI flag accepts the full normalized effort set (none/minimal/low/medium/high/xhigh/max), so effort passes through directly with no clamp.",
+            "grok's `--reasoning-effort` CLI flag accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so every normalized effort passes through directly with no clamp.",
         ),
     ),
     "gemini-api": ProviderPolicyCapability(

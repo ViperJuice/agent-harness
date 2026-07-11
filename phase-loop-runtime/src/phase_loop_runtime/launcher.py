@@ -79,6 +79,16 @@ CLAUDE_CHANNEL_SESSION_ID_ENV = "PHASE_LOOP_CHANNEL_SESSION_ID"
 CLAUDE_CHANNEL_SESSION_ID_ALT_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID"
 CLAUDE_CHANNEL_BEARER_TOKEN_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN"
 
+# Executors whose CLI has no structured-output schema flag on the phase-loop path,
+# so the closeout contract is injected into the PROMPT (and text-parsed from plain
+# output) rather than enforced by the provider. A named registry, not an inline
+# literal, so adding a plain-output executor is a single obvious edit here (CR:
+# codex+grok reviewers). Deliberately NOT derived from a capability field —
+# `output_capture_format="terminal_summary"` also matches claude (which enforces a
+# real JSON schema) and opencode carries `structured_output`, so no existing field
+# cleanly delimits this set.
+PROMPT_INJECTED_CLOSEOUT_EXECUTORS = frozenset({"gemini", "grok", "opencode", "pi"})
+
 
 @dataclass(frozen=True)
 class LaunchSpec:
@@ -554,7 +564,7 @@ def _prompt_bundle_with_closeout_schema(
     prompt_bundle: PromptBundle,
     closeout_schema: dict[str, Any] | None,
 ) -> PromptBundle:
-    if closeout_schema is None or executor not in {"gemini", "grok", "opencode", "pi"}:
+    if closeout_schema is None or executor not in PROMPT_INJECTED_CLOSEOUT_EXECUTORS:
         return prompt_bundle
     from .baml_modular import inject_schema_description
 
@@ -642,8 +652,9 @@ def build_grok_command(
     # (_prompt_bundle_with_closeout_schema, which now targets "grok") and parsed from
     # grok's `--output-format plain` output.
     #
-    # Effort passes straight through to grok's `--reasoning-effort` flag — grok's CLI
-    # accepts the full normalized set (none/minimal/low/medium/high/xhigh/max), so no
+    # Effort passes straight through to grok's `--reasoning-effort` flag. grok's CLI
+    # accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so
+    # every normalized level (minimal/low/medium/high/xhigh/max) is valid and no
     # mapping/clamp is needed (unlike codex's `max -> xhigh`). The model is passed
     # verbatim via `-m`.
     #
@@ -2411,6 +2422,15 @@ def _resolve_command_context(spec: LaunchSpec, log_path: Path | None) -> list[st
             insert_at = command.index("-p")
             command[insert_at:insert_at] = ["--add-dir", mirror_root]
         return command
+    if spec.executor == "grok" and GROK_CONTEXT_PLACEHOLDER in " ".join(spec.command):
+        # GROKEXEC: materialize the run-local context.md and substitute the pointer,
+        # mirroring opencode/pi. grok reads the absolute path under `--cwd` (no
+        # gemini-style --add-dir mirror dir). Without this branch the placeholder is
+        # never replaced and grok is told to read a literal `__PHASE_LOOP_CONTEXT_FILE__`.
+        context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
+        if context_path is None:
+            return spec.command
+        return [part.replace(GROK_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
     if spec.executor == "opencode" and OPENCODE_CONTEXT_PLACEHOLDER in " ".join(spec.command):
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
         if context_path is None:

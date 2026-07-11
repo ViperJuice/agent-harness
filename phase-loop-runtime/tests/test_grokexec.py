@@ -42,9 +42,11 @@ _PLAN = Path("/repo/plans/phase-plan-v1-ADAPTER.md")
 _PHASE = "ADAPTER"
 
 
-def _request(action: str, executor: str = "grok"):
+def _request(action: str, executor: str = "grok", harness_target: str | None = None):
     selection = resolve_profile_for_executor(action=action, executor=executor)
-    bundle = build_prompt(action, _ROADMAP, phase=_PHASE, plan=_PLAN)
+    bundle = build_prompt(
+        action, _ROADMAP, phase=_PHASE, plan=_PLAN, harness_target=harness_target or executor
+    )
     return build_launch_request(
         executor=executor,
         action=action,
@@ -169,6 +171,36 @@ def test_grok_session_transcript_hook_bound_on_record():
     for name in EXECUTORS:
         if name != "grok":
             assert capability_registry()[name].get_session_transcript is None
+
+
+# --- live launch-path regressions (CR: caught by the grok reviewer) -----------
+
+
+def test_grok_build_prompt_does_not_keyerror():
+    # A real `--executor grok` run calls build_prompt(harness_target="grok"); before
+    # HARNESS_INJECTION_MODES gained a grok entry this KeyError'd before launch.
+    bundle = build_prompt("execute", _ROADMAP, phase=_PHASE, plan=_PLAN, harness_target="grok")
+    assert bundle.injection_mode == "context_file"
+    # workflow header is non-empty (generic phase-loop command, no invented skills).
+    assert bundle.render_prompt().strip()
+
+
+def test_grok_resolve_command_context_materializes(tmp_path):
+    # The launch-time context materialization must replace GROK_CONTEXT_PLACEHOLDER
+    # and write the run-local context.md; without the grok branch in
+    # _resolve_command_context the placeholder leaked into grok's `-p` prompt verbatim.
+    spec = build_launch_spec(_request("execute", harness_target="grok"))
+    assert launcher.GROK_CONTEXT_PLACEHOLDER in " ".join(spec.command)
+    log_path = tmp_path / "run" / "launch.log"
+    log_path.parent.mkdir(parents=True)
+    resolved = launcher._resolve_command_context(spec, log_path)
+    joined = " ".join(resolved)
+    assert launcher.GROK_CONTEXT_PLACEHOLDER not in joined, "context placeholder was never substituted"
+    context_file = log_path.parent / "context.md"
+    assert context_file.is_file()
+    # the resolved path is embedded in grok's `-p` pointer prompt (not a standalone arg).
+    assert str(context_file) in joined
+    assert context_file.read_text(encoding="utf-8").strip() == spec.prompt_bundle.render_context().rstrip()
 
 
 @pytest.mark.skipif(shutil.which("grok") is None, reason="grok CLI not on PATH")
