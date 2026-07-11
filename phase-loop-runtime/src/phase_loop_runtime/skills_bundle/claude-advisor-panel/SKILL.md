@@ -39,7 +39,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
-**On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, invoke the runtime for the `codex` and `gemini` legs only; the runtime returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the third leg yourself with the Task tool (a Fable/Harness Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile all three. A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable 2-leg board.
+**On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, the runtime runs the non-<harness> board legs (`grok`, `codex`, `gemini` — whichever are available AND authenticated) and returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the <harness> leg yourself with the Task tool (a Fable/Harness Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile it with ALL the runtime legs (do NOT drop `grok` — the board is 4-vendor, not the old 3-leg panel). A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable board short a seat.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
@@ -61,4 +61,4 @@ for leg in result.legs:
     print(leg.seat_key, leg.status)
 ```
 
-Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Harness TUI here. Supply that third leg natively (Task tool) and reconcile it with the `codex` + `gemini` results.
+Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Harness TUI here. Supply the <harness> leg natively (Task tool) and reconcile it with ALL the runtime legs (`grok` + `codex` + `gemini`, whichever are up and authed) — the board is 4-vendor, so do not drop `grok`.

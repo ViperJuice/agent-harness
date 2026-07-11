@@ -1304,8 +1304,17 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 "distinct_vendors": independence.distinct_vendors,
                 "seats": independence.seats,
             },
+            # ``text`` is the leg's actual review (findings + AGREE/PARTIALLY
+            # AGREE/DISAGREE verdict) — the whole point of running a board — so it
+            # MUST be in the payload, not just status/detail metadata.
             "legs": [
-                {"seat_key": leg.seat_key, "leg": leg.leg, "status": leg.status, "detail": leg.detail}
+                {
+                    "seat_key": leg.seat_key,
+                    "leg": leg.leg,
+                    "status": leg.status,
+                    "detail": leg.detail,
+                    "text": leg.text,
+                }
                 for leg in result.legs
             ],
         }
@@ -1318,6 +1327,12 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     for leg in result.legs:
         detail = f" — {leg.detail}" if leg.detail else ""
         print(f"  [{leg.status}] {leg.seat_key}{detail}")
+        # Print each reviewer's actual verdict text so the board can be reconciled
+        # from the command's output (not just leg statuses).
+        text = (leg.text or "").strip()
+        if text:
+            for line in text.splitlines():
+                print(f"      {line}")
     return 0
 
 

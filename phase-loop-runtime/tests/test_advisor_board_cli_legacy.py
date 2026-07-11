@@ -83,6 +83,27 @@ class AdvisorBoardCliTest(unittest.TestCase):
             payload = json.loads(buf.getvalue())
             self.assertIn("independence", payload)
             self.assertEqual([leg["status"] for leg in payload["legs"]], ["OK", "OK"])
+            # The reviewer's actual verdict TEXT must be preserved (CR codex, major):
+            # a board whose output drops the verdicts cannot be reconciled.
+            self.assertEqual([leg["text"] for leg in payload["legs"]], ["AGREE", "PARTIALLY AGREE"])
+
+    def test_cli_human_output_includes_verdict_text(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            with unittest.mock.patch.object(
+                comp_mod, "compose_review_board", side_effect=_hermetic_board
+            ), unittest.mock.patch.object(pi_mod, "invoke_board", return_value=_CANNED):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = cli_main(["advisor-board", str(artifact)])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("AGREE", out)
+            self.assertIn("PARTIALLY AGREE", out)
 
     def test_cli_missing_artifact_fails_closed(self):
         rc = cli_main(["advisor-board", "/no/such/artifact.md"])

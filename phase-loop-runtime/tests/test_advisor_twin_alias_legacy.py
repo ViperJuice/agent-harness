@@ -15,10 +15,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import phase_loop_runtime
 from phase_loop_runtime.build_bundle import ACTIVE_HARNESSES
 from phase_loop_runtime.skill_install import REQUIRED_SKILLS, SKILL_ALIASES, canonical_skill_name
 
-_BUNDLE = Path(__file__).resolve().parents[1] / "src" / "phase_loop_runtime" / "skills_bundle"
+# Resolve the packaged bundle via the INSTALLED package location (works both from
+# the src tree AND from a wheel install — the standalone-from-wheel clean-room gate
+# has no src/ tree).
+_BUNDLE = Path(phase_loop_runtime.__file__).resolve().parent / "skills_bundle"
 
 
 class AdvisorTwinAliasTest(unittest.TestCase):
