@@ -842,9 +842,12 @@ def _stale_pipeline_plan_candidate(repo: Path, roadmap: Path, phase: str):
     return None
 
 
-def status_snapshot(repo: Path, roadmap: Path, pipeline_mode: str = "standalone") -> StateSnapshot:
+def status_snapshot(repo: Path, roadmap: Path, pipeline_mode: str = "standalone", *, read_only: bool = True) -> StateSnapshot:
     require_literal(pipeline_mode, ("standalone", "pipeline_optional", "pipeline_required"), "pipeline mode")
-    snapshot = reconcile(repo, roadmap)
+    # #62: status_snapshot is a read path — reconcile in read-only mode by
+    # construction so a `phase-loop status` invocation can never dirty
+    # plans/manifest.json. Write-intent callers use reconcile() directly.
+    snapshot = reconcile(repo, roadmap, read_only=read_only)
     recent_metrics = read_work_unit_metrics(repo, limit=50)
     return StateSnapshot(
         timestamp=utc_now(),

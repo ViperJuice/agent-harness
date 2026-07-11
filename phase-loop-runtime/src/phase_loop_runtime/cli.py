@@ -1067,7 +1067,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         print(result["rendered"])
         return int(result["returncode"])
     if command == "status":
-        snapshot = status_snapshot(repo, roadmap, pipeline_mode=args.pipeline_mode or "standalone")
+        snapshot = status_snapshot(repo, roadmap, pipeline_mode=args.pipeline_mode or "standalone", read_only=True)
         write_state(repo, snapshot)
         write_tui_handoff(repo, roadmap, snapshot, action="status")
         if bool(getattr(args, "tier_3_history", False)):
@@ -1089,7 +1089,9 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         print(render_status(snapshot, as_json=as_json, ledger_debug=bool(getattr(args, "ledger_debug", False))))
         return 0
     if command == "handoff":
-        snapshot = reconcile(repo, roadmap)
+        # #62: handoff is a read/render path — reconcile read-only so it cannot
+        # dirty plans/manifest.json (matches the status guarantee).
+        snapshot = reconcile(repo, roadmap, read_only=True)
         write_state(repo, snapshot)
         path = write_tui_handoff(repo, roadmap, snapshot, action="handoff")
         if as_json:

@@ -32,7 +32,7 @@ RECONCILE_EVENT_STATUSES = {
 }
 
 
-def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
+def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSnapshot:
     phases = classify_all(repo, roadmap)
     current_roadmap_sha = roadmap_sha256(roadmap)
     current_phase_sha = phase_provenance_map(roadmap)
@@ -60,7 +60,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     dirty_summary_by_phase: dict[str, dict[str, object]] = {}
     closeout_summary_by_phase: dict[str, dict[str, object]] = {}
     terminal_summary_by_phase: dict[str, dict[str, object]] = {}
-    ledger_warnings.extend(_reconcile_plan_manifest(repo, roadmap, phases))
+    ledger_warnings.extend(_reconcile_plan_manifest(repo, roadmap, phases, read_only=read_only))
     if snapshot:
         same_roadmap = Path(snapshot.roadmap).expanduser().resolve() == roadmap.resolve()
         if same_roadmap:
@@ -479,7 +479,7 @@ def _manifest_file_phase_key(entry) -> tuple[str, str]:
     return (file_norm, phase_norm)
 
 
-def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) -> list[dict]:
+def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str], *, read_only: bool = False) -> list[dict]:
     from .discovery import _phase_manifest_disabled
 
     if _phase_manifest_disabled():
@@ -507,16 +507,20 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
         if entry.type != "phase" or entry.status in {"orphaned", "completed", "failed"}:
             continue
         if not (repo / entry.file).exists():
-            try:
-                update_lifecycle(
-                    repo,
-                    entry.slug,
-                    "orphaned",
-                    "phase-loop-reconcile",
-                    {"reason": "manifest_plan_file_missing", "file": entry.file},
-                )
-            except Exception as exc:
-                warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), entry.status, "manifest_orphan_update_failed", value=str(exc)))
+            # #62: on a read-only path (status/handoff) the orphan detection is
+            # still surfaced as a ledger warning, but the lifecycle transition is
+            # NOT persisted — a read must never dirty plans/manifest.json.
+            if not read_only:
+                try:
+                    update_lifecycle(
+                        repo,
+                        entry.slug,
+                        "orphaned",
+                        "phase-loop-reconcile",
+                        {"reason": "manifest_plan_file_missing", "file": entry.file},
+                    )
+                except Exception as exc:
+                    warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), entry.status, "manifest_orphan_update_failed", value=str(exc)))
             warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), "orphaned", "manifest_plan_file_missing", value=entry.file))
     try:
         imported = import_existing_phase_plans(repo)
@@ -531,6 +535,13 @@ def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) 
             # committed entry — do not append a second `imported` row.
             continue
         if entry.phase_alias and entry.phase_alias.upper() not in phases:
+            continue
+        if read_only:
+            # #62: read-only status/reconcile must not persist auto-imports.
+            # Track the entry in-memory so subsequent iterations dedup against
+            # it exactly as the write path would, but skip the disk append.
+            known_slugs.add(entry.slug)
+            known_file_phase.add(_manifest_file_phase_key(entry))
             continue
         try:
             append_entry(repo, entry)
