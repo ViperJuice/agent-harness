@@ -89,7 +89,17 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     # runs the grok-4.5 default model at max reasoning
     assert cmd[cmd.index("-m") + 1] == "grok-4.5"
     assert cmd[cmd.index("--reasoning-effort") + 1] == "max"
-    # web search / tools stay ON — never disabled (matches codex/gemini convention)
+    # HARD READ-ONLY (GROKEXEC, agent-harness#147): headless `grok -p` auto-approves
+    # writes, so the panel/CR reviewer leg is constrained by a `--tools` ALLOW-LIST of
+    # read/search built-ins only. Assert EXACT equality with the shared allow-list —
+    # because `--tools` is an allow-list, anything not named is excluded, so equality
+    # is the airtight guard a regression cannot silently defeat.
+    tools_value = cmd[cmd.index("--tools") + 1]
+    assert tools_value == pi.GROK_REVIEW_READONLY_TOOLS == "read_file,grep,list_dir,search_tool"
+    # Belt-and-suspenders: no write / privileged tool can appear in the allow-list.
+    for forbidden in ("write", "search_replace", "run_terminal_command", "scheduler", "spawn_subagent", "memory", "image"):
+        assert forbidden not in tools_value.split(","), f"{forbidden!r} must not be a grok reviewer tool"
+    # `--disable-web-search` is moot: any web-search tool is already outside the list.
     assert "--disable-web-search" not in cmd
     # grok is a SLOW leg: the hard-kill is the raised _MAX_LEG_TIMEOUT_S backstop (no
     # longer a short input-scaled wall-clock); liveness rides the 180s stall default.

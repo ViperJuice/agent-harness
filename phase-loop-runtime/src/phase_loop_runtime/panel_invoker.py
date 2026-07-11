@@ -37,6 +37,7 @@ from .agent_runtime_provider import (
     SendTurnRequest,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
+from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
 from .advisor_board.backing import resolve_seat_env, select_backing
 from .advisor_board.backing_omnigent import (
@@ -1774,8 +1775,19 @@ def _exec_leg(
         # grok's headless single-turn (`-p`) prints the clean response to stdout and
         # exits — like agy, its stdout IS the review (no --output-last-message file).
         # The prompt is the small STAGED-BUNDLE POINTER (files live under --cwd), so
-        # passing it via `-p <PROMPT>` on argv is bounded. Web search / tools stay ON
-        # (no --disable-web-search), matching the codex/gemini leg convention.
+        # passing it via `-p <PROMPT>` on argv is bounded.
+        #
+        # HARD READ-ONLY (GROKEXEC finding, agent-harness#147): headless `grok -p`
+        # AUTO-APPROVES writes regardless of `--permission-mode`/`--sandbox` (no
+        # interactive approver to pause), so those levers do NOT make a panel/CR leg
+        # read-only. Panel legs are REVIEWERS — the only lever that holds is a
+        # `--tools` ALLOW-LIST of grok's read/search built-ins
+        # (``GROK_REVIEW_READONLY_TOOLS``, shared with launcher.build_grok_command's
+        # review path). With the write built-ins (`write`, `search_replace`,
+        # `run_terminal_command`) and every other tool (scheduler / spawn_subagent /
+        # memory / image / web search) absent from the allow-list, the review leg
+        # cannot mutate the workspace. (The `--disable-web-search` flag is moot here:
+        # any web-search tool is already outside the allow-list.)
         # effort-absent defaults to grok's max reasoning; a seat renders its canonical
         # effort through the map (``--reasoning-effort <token>``, grok's own ``max``).
         grok_effort_args = (
@@ -1787,6 +1799,7 @@ def _exec_leg(
             "grok", "-p", prompt, "--output-format", "plain",
             "--cwd", str(review_dir), "-m", model or DEFAULT_LEG_MODELS["grok"],
             *grok_effort_args,
+            "--tools", GROK_REVIEW_READONLY_TOOLS,
         ]
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT

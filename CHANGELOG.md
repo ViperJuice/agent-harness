@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Security: hard read-only `--tools` allow-list on the advisor-panel / CR grok
+  leg.** The GROKEXEC finding (agent-harness#147) established that headless
+  `grok -p` AUTO-APPROVES file writes regardless of `--permission-mode` and
+  `--sandbox` — the only lever that holds grok to read-only is an explicit
+  `--tools` allow-list of its read/search built-ins. The launcher's grok
+  *review* path already applied this; the advisor-panel / cross-vendor-CR grok
+  leg in `panel_invoker._exec_leg` did NOT, so panel/CR grok reviewer legs (which
+  are read-only by contract) ran with write access. The panel grok argv now
+  appends `--tools GROK_REVIEW_READONLY_TOOLS` (`read_file,grep,list_dir,search_tool`),
+  the same constant `launcher.build_grok_command` uses — a single shared
+  source of truth for the read-only reviewer tool set. With the write built-ins
+  (`write`, `search_replace`, `run_terminal_command`) and every other tool
+  (scheduler / spawn_subagent / memory / image) excluded from the allow-list, the
+  panel/CR grok leg can no longer mutate the workspace. A regression guard asserts
+  the panel grok argv carries the exact allow-list and that no write/privileged
+  tool appears in it. No behavior change for the grok EXECUTOR (execute-path)
+  argv, which stays proof-gated and out of scope.
+
 - **Registry-driven launch dispatch (EXECDISPATCH EXECREG, IF-0-EXECREG-1).**
   `ExecutorCapabilityRecord` (`models.py`) now carries optional
   `build_command` / `is_available` / `auth_ok` / `provider_backing` /
