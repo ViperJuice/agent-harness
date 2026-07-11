@@ -67,7 +67,15 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
     sub.add_argument("--model")
     sub.add_argument("--effort")
-    sub.add_argument("--executor", choices=EXECUTORS)
+    sub.add_argument(
+        "--executor",
+        choices=EXECUTORS,
+        help=(
+            "Explicit executor override (Layer 1). When omitted, the default is "
+            "resolved by AUTOSEL: run-from harness -> single-available -> codex. "
+            "Set EXECDISPATCH_DISABLE_AUTOSEL=1 to force the legacy codex default."
+        ),
+    )
     sub.add_argument("--command-name")
     sub.add_argument("--command-template")
     sub.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES)
@@ -220,7 +228,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
     parser.add_argument("--model")
     parser.add_argument("--effort")
-    parser.add_argument("--executor", choices=EXECUTORS)
+    parser.add_argument(
+        "--executor",
+        choices=EXECUTORS,
+        help=(
+            "Explicit executor override (Layer 1). When omitted, the default is "
+            "resolved by AUTOSEL: run-from harness -> single-available -> codex. "
+            "Set EXECDISPATCH_DISABLE_AUTOSEL=1 to force the legacy codex default."
+        ),
+    )
     parser.add_argument("--command-name")
     parser.add_argument("--command-template")
     parser.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES)

@@ -115,3 +115,37 @@ def test_auth_ok_cache_keyed_by_probes_not_just_executor():
 def test_record_auth_ok_callable_bound():
     record = capability_registry()["codex"]
     assert callable(record.auth_ok)
+
+
+# --- probe timeout + fail-closed (AUTOSEL change #2) ------------------------
+
+def test_run_probe_passes_a_strict_timeout():
+    # The real probe runner must bound the subprocess so a hung CLI cannot freeze
+    # the dispatch hot path. A sleep longer than the bound raises TimeoutExpired.
+    import pytest
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        ea._run_probe(f"sleep {ea._PROBE_TIMEOUT_SECONDS + 5}")
+
+
+def test_auth_ok_fails_closed_on_probe_timeout():
+    ea.clear_auth_cache()
+    probes = ("codex --version", "codex login status")
+
+    def timing_out(_probe):
+        raise subprocess.TimeoutExpired(cmd=_probe, timeout=ea._PROBE_TIMEOUT_SECONDS)
+
+    # A wedged CLI => auth gate fails CLOSED (unusable), never a crash, never a pass.
+    assert ea.auth_ok_for("codex", probes, runner=timing_out) is False
+
+
+def test_auth_ok_fails_closed_when_first_probe_times_out_before_later_pass():
+    ea.clear_auth_cache()
+    probes = ("agy --version", "agy --help")
+
+    def runner(probe):
+        if probe.endswith("--version"):
+            raise subprocess.TimeoutExpired(cmd=probe, timeout=ea._PROBE_TIMEOUT_SECONDS)
+        return _completed(0)
+
+    assert ea.auth_ok_for("gemini", probes, runner=runner) is False

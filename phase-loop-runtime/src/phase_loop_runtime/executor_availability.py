@@ -53,27 +53,43 @@ def is_executor_available(executor: str, *, which: Callable[[str], object | None
 # --- auth_ok: cached, bounded probe gate -----------------------------------
 
 _AUTH_TTL_SECONDS = 300.0
+# Strict per-probe subprocess timeout. Auth/version probes are near-instant; a
+# hung CLI (network wedge, prompt-for-input) must NOT freeze the runner because
+# ``auth_ok_for`` is on the dispatch hot path. On timeout the gate fails CLOSED.
+_PROBE_TIMEOUT_SECONDS = 10.0
 # (executor, probes) -> (captured_at_monotonic, ok). Keyed by the probe tuple too,
 # so a call with a changed probe set never reuses a prior executor's verdict.
 _auth_cache: dict[tuple[str, tuple[str, ...]], tuple[float, bool]] = {}
 
 
 def _run_probe(probe: str) -> subprocess.CompletedProcess:
-    return subprocess.run(probe, shell=True, text=True, capture_output=True, check=False)
+    return subprocess.run(
+        probe,
+        shell=True,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=_PROBE_TIMEOUT_SECONDS,
+    )
 
 
 def _probes_pass(executor: str, probes: tuple[str, ...], runner: Callable[[str], subprocess.CompletedProcess]) -> bool:
     """All probes must exit 0. For codex/claude the login-status probe must also
     report an authenticated session (mirroring ``run_auth_preflight``'s core).
     Deeper auth semantics stay in ``run_auth_preflight`` at launch — this is the
-    cheap cached gate AUTOSEL scans with."""
+    cheap cached gate AUTOSEL scans with. A probe that TIMES OUT (or otherwise
+    raises) fails the gate CLOSED — a wedged CLI is treated as unusable, never a
+    runner crash and never an optimistic pass."""
     if not probes:
         # No probe surface (gemini/pi already only version+help; command/manual
         # have none) — nothing to fail, treat as authed-if-reachable.
         return True
     outputs: dict[str, str] = {}
     for probe in probes:
-        completed = runner(probe)
+        try:
+            completed = runner(probe)
+        except subprocess.TimeoutExpired:
+            return False
         if completed.returncode != 0:
             return False
         outputs[probe] = ((completed.stdout or "") + " " + (completed.stderr or "")).strip().lower()

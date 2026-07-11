@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Behavior change: phase-loop now resolves the DEFAULT executor by AUTOSEL
+  (EXECDISPATCH Phase 2) instead of always falling back to `codex`.** When no
+  operator/CLI/plan/roadmap hint names an executor, the default is resolved in
+  four ordered layers: (1) explicit override (unchanged) → (2) the harness
+  phase-loop is *run from* (env-signature detection) → (3) a single-available
+  registry scan → (4) the `codex` legacy default. The two new AUTO layers
+  hard-gate every candidate on `is_available ∧ auth_ok ∧ launch_complete ∧
+  headless_launchable ∧ live_available` and fall through on failure, so an AUTO
+  layer never picks an executor dispatch would then reject (e.g. the tty-only
+  `claude` leg is never auto-picked headlessly; a proof-gated-but-live executor
+  like `grok` still is). Selection provenance (which layer chose, which
+  candidates were rejected and why) is logged on every auto-pick. **Escape
+  hatch:** set `EXECDISPATCH_DISABLE_AUTOSEL=1` to force the pre-AUTOSEL codex
+  default (explicit-override + codex-legacy only). Wiring is a seed override
+  threaded into `resolve_dispatch_decision` (the historical codex auto-seed
+  site); explicit hints, the work-unit rotation path, and delegation/child
+  defaults are unchanged. Availability/auth probes are now bounded by a strict
+  subprocess timeout and fail CLOSED (a wedged CLI can no longer freeze the
+  dispatch hot path), and every phase-loop-owned child executor spawn now scrubs
+  Claude Code's self-markers and stamps `PHASE_LOOP_CHILD=1` so a child never
+  mis-reads the host harness as its own run-from context. New record field
+  `ExecutorCapabilityRecord.headless_launchable`.
+
 - **Security: hard read-only `--tools` allow-list on the advisor-panel / CR grok
   leg.** The GROKEXEC finding (agent-harness#147) established that headless
   `grok -p` AUTO-APPROVES file writes regardless of `--permission-mode` and

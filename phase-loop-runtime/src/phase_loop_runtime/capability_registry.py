@@ -122,6 +122,9 @@ DEFAULT_CAPABILITY_REGISTRY = {
         subagent_posture="native",
         live_available=True,
         dry_run_available=True,
+        # tty-only: the claude leg drives the interactive TUI and needs a real
+        # controlling terminal, so it must never be auto-picked headlessly.
+        headless_launchable=False,
         live_proof_gate="disposable_proof_required",
         promotion_status="proof_gated",
         promotion_requirements=(
@@ -400,6 +403,8 @@ DEFAULT_CAPABILITY_REGISTRY = {
         subagent_posture="none",
         live_available=False,
         dry_run_available=True,
+        # No headless launch surface at all (operator handoff, not a spawned CLI).
+        headless_launchable=False,
         promotion_status="manual_only",
         promotion_requirements=("manual import", "shared automation handoff"),
         timeout_posture="unknown",
@@ -757,7 +762,16 @@ def resolve_dispatch_decision(
     operator: DispatchHints | None = None,
     plan: DispatchHints | None = None,
     roadmap: DispatchHints | None = None,
+    default_executor: str | None = None,
 ) -> DispatchDecision:
+    # AUTOSEL (IF-0-AUTOSEL-2): ``default_executor`` overrides the seed used ONLY
+    # when no operator/plan/roadmap hint names a preferred executor. It is where
+    # the layered default resolver injects its run-from / single-available pick in
+    # place of the bare codex default. ``None`` reproduces the legacy behavior
+    # exactly (seed = ``default_executor_for_action(action)``), so callers that set
+    # ``preferred_executors`` explicitly (repair pivot, work-unit rotation) are
+    # unaffected — the seed is never consulted when ``preferred_executors`` is set.
+    seed_default = default_executor or default_executor_for_action(action)
     registry = registry or capability_registry()
     if action == "maintain-skills":
         return DispatchDecision(
@@ -772,9 +786,9 @@ def resolve_dispatch_decision(
     allowed = merged.allowed_executors or tuple(
         executor for executor, record in registry.items() if action in record.supported_actions
     )
-    preferred = merged.preferred_executors or (default_executor_for_action(action),)
+    preferred = merged.preferred_executors or (seed_default,)
     fallback = tuple(executor for executor in merged.fallback_executors if executor not in preferred)
-    candidate_order = _dedupe((*preferred, *fallback, *allowed, default_executor_for_action(action)))
+    candidate_order = _dedupe((*preferred, *fallback, *allowed, seed_default))
     considered: list[str] = []
     degraded = active_degraded_executors(repo) if repo is not None and not dry_run else set()
     degraded_viable: list[str] = []

@@ -54,6 +54,7 @@ from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
 from .capability_registry import default_executor_for_work_unit, describe_dispatch_decision, resolve_dispatch_decision
 from .classifier import classify_all
+from .default_executor_resolver import DefaultResolutionContext, resolve_default_executor
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from .consiliency_gates import scan_consiliency_gates
@@ -2414,6 +2415,20 @@ def run_loop(
                 disabled_executors=disabled_executors,
                 required_capabilities=required_capabilities,
             )
+            # AUTOSEL (IF-0-AUTOSEL-2, lane c): resolve the DEFAULT executor via the
+            # layered resolver and feed it as the seed. It is consulted by
+            # resolve_dispatch_decision ONLY when no operator/plan/roadmap hint names
+            # a preferred executor (i.e. the historical codex auto-seed); an explicit
+            # hint still wins (Layer 1) and the seed is ignored. Rotation feeds
+            # operator hints upstream, so the rotation path is unchanged.
+            has_explicit_preferred = bool(
+                (operator_dispatch_hints and operator_dispatch_hints.preferred_executors)
+                or (effective_plan_dispatch_hints and effective_plan_dispatch_hints.preferred_executors)
+                or (effective_roadmap_dispatch_hints and effective_roadmap_dispatch_hints.preferred_executors)
+            )
+            autosel_selection = resolve_default_executor(
+                DefaultResolutionContext(action=launch_action, explicit_executor=None, dry_run=dry_run)
+            )
             dispatch_decision = resolve_dispatch_decision(
                 action=launch_action,
                 dry_run=dry_run,
@@ -2421,7 +2436,12 @@ def run_loop(
                 operator=operator_dispatch_hints,
                 plan=effective_plan_dispatch_hints,
                 roadmap=effective_roadmap_dispatch_hints,
+                default_executor=autosel_selection.executor,
             )
+            if not has_explicit_preferred and autosel_selection.is_auto:
+                # Only a genuine layer-2/3 auto-pick that was actually consulted:
+                # surface the provenance + the discoverable escape hatch (change #6).
+                print(f"[autosel] {autosel_selection.provenance_log()}", file=sys.stderr)
             if rotation_state is not None and rotation_state.mode == "phase" and rotation_preferred_executor is not None:
                 rotation_state.advance(dispatch_decision.selected_executor)
             repair_loop_pivot: dict[str, object] | None = None
