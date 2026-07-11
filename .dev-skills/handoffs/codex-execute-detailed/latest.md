@@ -15,7 +15,7 @@ Implemented the bounded Agent Harness compatibility repair for `ViperJuice/agent
 
 The resolver now uses Codex app-server's persisted `userMessage.clientId`, requires a separate deterministic `-approval` message with one text input, binds both stored item identities and turn timestamps, and rejects the app-server-concatenated one-item shape. A local `--control-socket` transport uses Codex 0.144.1's WebSocket-over-Unix owner socket with compression disabled.
 
-Verification passed: 21 focused tests; 2,241 standalone runtime tests with 35 skipped; sdist and wheel built; live owner-socket initialize passed on ai and claw. Public CLI/operator documentation was updated (`doc_delta_decision=docs_updated`).
+Verification passed: 24 focused tests; 2,244 standalone runtime tests with 35 skipped; 0.7.0 sdist and wheel built; live owner-socket initialize passed on ai and claw. Grok, Gemini, and Fabel agree; Sol's code findings were fixed, with the real round trip retained as the terminal gate. Public CLI/operator documentation was updated (`doc_delta_decision=docs_updated`).
 
 Plan-manifest lifecycle recording was not possible because no manifest entry exists for `plans/detailed-trusted-task-message-resolver-20260711.md`; no manual manifest rewrite was attempted.
 
