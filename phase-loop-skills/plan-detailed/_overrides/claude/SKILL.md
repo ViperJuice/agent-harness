@@ -28,7 +28,7 @@ Standalone planner for one bounded change. Not part of the `<harness>-phase-road
 | Arg | Required | Meaning |
 |---|---|---|
 | `<task>` | no | Free-form task description. Falls back to prior conversation context if omitted. |
-| `--output <path>` | no | Override the generated plan path. Default: `plans/detailed-<slug>-<YYYYMMDD-HHMM>.md`. |
+| `--output <path>` | no | Override the generated plan path. Default: `.consiliency/plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` (dir auto-created). |
 | `--review-external` | no | Run Gemini + Codex review after writing the plan. Requires both CLIs installed and the frontier-model cache populated. |
 
 ## Deferred tool preloading
@@ -100,13 +100,13 @@ Synthesize into a concrete change list. Follow these rules rigorously — they'r
 
 ### Step 4 — Write the plan doc
 
-Derive `<slug>` from the task (kebab-case, 3–5 words: `add-refresh-token-endpoint`, `fix-stale-cache-eviction`). Default path: `plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` at repo root. Override via `--output`.
+Derive `<slug>` from the task (kebab-case, 3–5 words: `add-refresh-token-endpoint`, `fix-stale-cache-eviction`). Default path: `.consiliency/plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` (create the `.consiliency/plans/` dir if missing). Override via `--output`.
 
-Also write to the plan-mode scratch file (path in the plan-mode system reminder — do not guess).
+If Plan Mode is active, also write to the plan-mode scratch file (path in the plan-mode system reminder — do not guess). Outside Plan Mode there is no such reminder; skip this.
 
 Use the template in `## Plan document template` below verbatim.
 
-If invoked outside Plan Mode, still produce the plan and handoff artifacts, but do not begin implementation. Include a one-line note to the user that Plan Mode was not active and the output is a planning artifact only.
+Plan Mode is not required. The artifact and handoff are the deliverables either way — Step 6 handles the two paths (Plan-Mode approval vs. planning-artifact-only / continue-to-implementation).
 
 ### Step 5 — External CLI review (only if `--review-external`)
 
@@ -121,16 +121,22 @@ On stale/missing frontier-model cache, surface via `AskUserQuestion` with `[run 
 
 Tell the user: "Review written to `<path>_reviews.md`. Agreements between Gemini and Codex are real signal; divergences are context."
 
-### Step 6 — ExitPlanMode
+### Step 6 — Resolve the approval path (Plan Mode is optional)
 
-Plan doc is the approval surface.
+Two first-class paths; branch on whether a plan-mode system reminder is present:
+
+- **Plan Mode active** (a plan-mode system reminder is present): call `ExitPlanMode`. The plan doc is the approval surface, and implementation waits for the operator's approval.
+- **Plan Mode not active** (no plan-mode reminder): do **not** call `ExitPlanMode` and do **not** reference an "approval surface" — there is no approval gate to clear. The artifact and handoff are the deliverables. Then:
+  - If the operator's request asked to **implement** (e.g. "plan and implement …", "…then build it"), continue into implementation after the Step 7/8 close-out.
+  - Otherwise, stop after close-out and tell the user, in one line, that Plan Mode was not active and the output is a planning artifact only.
 
 ### Step 7 — Close-out: Commit artifact (clean-tree guarantee)
 
-After `ExitPlanMode` approval, before exiting:
+Run this close-out on **either** path — in Plan Mode after `ExitPlanMode` approval, outside Plan Mode after Step 6 without waiting on approval — before exiting or continuing to implementation:
 
 ```bash
-git add plans/detailed-<slug>-<YYYYMMDD-HHMM>.md
+# <plan-path> is the file written in Step 4: the .consiliency/plans/ default OR the --output override.
+git add <plan-path>
 # Plus the _reviews.md sibling if --review-external produced one.
 git commit -m "chore(plan): detailed plan for <short task summary>"
 ```
@@ -238,12 +244,15 @@ Exit message to user:
 > Plan written to `<plan-path>`.
 > Reflection saved to `<REFLECTION_PATH>`.
 > Handoff written to `<REPO_LOCAL_HANDOFF>`.
->
-> Recommended next step: run `/clear` to reset your context window, then implement the plan. The implementing agent should verify the handoff's `from:` field, timestamp (<7 days), and `artifact:` paths against the current repo before acting.
+
+Then the recommended next step depends on the Step 6 path:
+
+- **Fresh-implementer path** (Plan-Mode approval, or a planning-artifact-only run with no implement ask): recommend `> Recommended next step: run /clear to reset your context window, then implement the plan. The implementing agent should verify the handoff's from: field, timestamp (<7 days), and artifact: paths against the current repo before acting.`
+- **Continue-to-implementation path** (Plan Mode not active and the operator asked to implement): do **not** recommend `/clear` — proceed into implementing the plan in this same session, using the just-written plan doc as the spec.
 
 ## Consumer contract
 
-`<harness>-plan-detailed` has no paired executor skill — the "implementer" is typically a fresh Harness Code session launched after `/clear`. The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template above); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
+`<harness>-plan-detailed` has no paired executor skill — the "implementer" is typically a fresh Harness Code session launched after `/clear` (except on the continue-to-implementation path of Step 6, where Plan Mode was inactive and the operator asked to implement — then this same session implements the plan directly). The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template above); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
 
 1. **`from:` check** — must be `<harness>-plan-detailed`. A mismatch means the file belongs to a different skill and should not be consumed as a <harness>-plan-detailed handoff.
 2. **Timestamp check** — must be within the last 7 days. Older handoffs are likely stale; the plan artifact may already be merged, abandoned, or superseded.
