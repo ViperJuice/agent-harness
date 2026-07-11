@@ -104,6 +104,76 @@ class PhaseLoopHandoffTest(unittest.TestCase):
             self.assertIn("run-parent-2", text)
             self.assertIn("Review findings", text)
 
+    def test_operator_stop_summary_v1_shape_and_content(self):
+        # #119: a compact, harness-agnostic operator stop summary derived from
+        # closeout/handoff state — What happened / Verified / Current state / Next.
+        from phase_loop_runtime.handoff import operator_stop_summary
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            snapshot = StateSnapshot(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phases={"CONTRACT": "complete", "ACCESS": "blocked"},
+                current_phase="ACCESS",
+                last_action="run",
+                human_required=True,
+                blocker_class="admin_approval",
+                blocker_summary="Operator approval required for the release target.",
+                dirty_paths=("src/a.py", "src/b.py"),
+                phase_owned_dirty_paths=("src/a.py",),
+                terminal_summary={
+                    "phase": "ACCESS",
+                    "terminal_status": "blocked",
+                    "verification_status": "passed",
+                    "produced_if_gates": ["IF-0-ACCESS-1"],
+                },
+                **snapshot_provenance(roadmap),
+            )
+
+            summary = operator_stop_summary(repo, roadmap, snapshot, action="run")
+            self.assertEqual(summary["version"], "operator_stop_summary.v1")
+            self.assertFalse(summary["roadmap_complete"])
+            bullets = summary["bullets"]
+            # 1–10 bullets, one per shape line, no raw dirty-path dump (count only).
+            self.assertGreaterEqual(len(bullets), 1)
+            self.assertLessEqual(len(bullets), 10)
+            joined = summary["text"]
+            self.assertTrue(joined.startswith("- What happened:"))
+            self.assertIn("Verified: verification `passed`", joined)
+            self.assertIn("IF-0-ACCESS-1", joined)
+            self.assertIn("Current state:", joined)
+            self.assertIn("2 dirty path(s) (1 phase-owned)", joined)
+            self.assertIn("admin_approval", joined)
+            # token-efficient: dirty paths summarized, not dumped.
+            self.assertNotIn("src/a.py", joined)
+
+            # Rendered into the TUI handoff as a top-of-file section.
+            text = write_tui_handoff(repo, roadmap, snapshot, action="run").read_text(encoding="utf-8")
+            self.assertIn("## Operator Stop Summary", text)
+            self.assertIn("- What happened:", text)
+
+    def test_operator_stop_summary_complete_roadmap_next_is_none(self):
+        from phase_loop_runtime.handoff import operator_stop_summary
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            snapshot = StateSnapshot(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phases={"CONTRACT": "complete", "RUNNER": "complete"},
+                current_phase=None,
+                **snapshot_provenance(roadmap),
+            )
+            summary = operator_stop_summary(repo, roadmap, snapshot)
+            self.assertTrue(summary["roadmap_complete"])
+            self.assertIn("Next: none", summary["text"])
+            self.assertIn("worktree clean", summary["text"])
+
     def test_blocked_dirty_worktree_handoff_links_machine_state_and_required_action(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

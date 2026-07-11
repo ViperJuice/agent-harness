@@ -44,3 +44,14 @@
   `verification.json` — a reconcile rehydration-contract change that must not weaken
   the `verification.json` tamper-evidence gate) and the roadmap-format-handling half
   of agent-harness#60 — both left open.
+
+- **Compact operator stop summary in closeout/handoff (agent-harness#119).** New
+  harness-agnostic `operator_stop_summary.v1` surface (`handoff.operator_stop_summary`)
+  derived from closeout/handoff state: 1-10 short plain-English bullets shaped as
+  What happened / Verified / Current state / Next, suitable for direct display in a
+  Codex/Claude/Gemini final response instead of relying on each model to remember to
+  summarize. Token-efficient by construction — no raw logs, secret values, or
+  dirty-path dumps (dirty paths are summarized as a count). Rendered as a
+  top-of-file "Operator Stop Summary" section in `.phase-loop/tui-handoff.md`. The
+  bridge-skill wiring that injects it into each harness's final response is homed in
+  the skill sources (SKILLREF), not the runtime.

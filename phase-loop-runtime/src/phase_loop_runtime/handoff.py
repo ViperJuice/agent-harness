@@ -78,6 +78,10 @@ def render_tui_handoff(
         f"Current phase: {snapshot.current_phase or 'none'}",
         f"Current status: {current_status}",
         "",
+        "## Operator Stop Summary",
+        "",
+        operator_stop_summary(repo, roadmap, snapshot, action=action)["text"],
+        "",
         "## Machine Sources",
         "",
         f"- State JSON: `{_display_path(repo, state_path(repo))}`",
@@ -221,6 +225,97 @@ def _finish_handoff(lines: list[str], latest: dict[str, str], repo: Path, snapsh
 
     lines.append("")
     return "\n".join(lines)
+
+
+OPERATOR_STOP_SUMMARY_VERSION = "operator_stop_summary.v1"
+
+
+def operator_stop_summary(
+    repo: Path,
+    roadmap: Path,
+    snapshot: StateSnapshot,
+    *,
+    action: str = "run",
+    max_bullets: int = 10,
+) -> dict[str, Any]:
+    """#119 — a compact, harness-agnostic operator stop summary derived from
+    phase-loop closeout/handoff state, suitable for direct display in the final
+    response of Codex/Claude/Gemini/etc. instead of relying on each model to
+    remember to summarize.
+
+    ``operator_stop_summary.v1``: 1–10 short plain-English bullets shaped as
+    What happened / Verified / Current state / Next. Token-efficient by
+    construction — no raw logs, secret values, huge dirty-path dumps, or
+    transcript recaps (dirty paths are summarized as a count). Reuses the same
+    derivations the TUI handoff renders. Whether a bridge skill injects this into
+    the harness's final response is homed in the skill sources, not here."""
+    current_status = _current_status(snapshot)
+    roadmap_complete = current_status == "complete" and snapshot.current_phase is None
+    bullets: list[str] = [f"What happened: {_what_happened(snapshot, action, current_status)}"]
+    verified = _operator_verified_line(snapshot, current_status)
+    if verified:
+        bullets.append(f"Verified: {verified}")
+    bullets.append(f"Current state: {_operator_current_state_line(repo, roadmap, snapshot, current_status)}")
+    bullets.append(f"Next: {_operator_next_line(snapshot, current_status, roadmap_complete)}")
+    bullets = [b for b in bullets if b][:max_bullets]
+    return {
+        "version": OPERATOR_STOP_SUMMARY_VERSION,
+        "phase": snapshot.current_phase,
+        "status": current_status,
+        "roadmap_complete": roadmap_complete,
+        "bullets": tuple(bullets),
+        "text": "\n".join(f"- {bullet}" for bullet in bullets),
+    }
+
+
+def _operator_verified_line(snapshot: StateSnapshot, current_status: str) -> str | None:
+    terminal = _current_terminal_summary(snapshot) or {}
+    verification_status = terminal.get("verification_status")
+    gates = terminal.get("produced_if_gates") or ()
+    if isinstance(gates, (list, tuple)):
+        gate_text = ", ".join(str(gate) for gate in gates if gate)
+    else:
+        gate_text = str(gates)
+    if verification_status:
+        line = f"verification `{verification_status}`"
+        if gate_text:
+            line += f"; produced IF gates: {gate_text}"
+        return line
+    if current_status == "complete":
+        return "phase completion recorded (no separate verification artifact on this snapshot)"
+    return None
+
+
+def _operator_current_state_line(repo: Path, roadmap: Path, snapshot: StateSnapshot, current_status: str) -> str:
+    phase = snapshot.current_phase or "roadmap"
+    parts = [f"`{phase}` is `{current_status}` on `{_display_path(repo, roadmap)}`"]
+    if snapshot.dirty_paths:
+        owned = len(snapshot.phase_owned_dirty_paths or ())
+        parts.append(f"{len(snapshot.dirty_paths)} dirty path(s) ({owned} phase-owned)")
+    else:
+        parts.append("worktree clean")
+    topology = snapshot.git_topology or {}
+    ahead = topology.get("commits_ahead_of_origin")
+    if isinstance(ahead, int) and ahead > 0:
+        parts.append(f"{ahead} commit(s) ahead of origin")
+    if topology.get("main_behind"):
+        parts.append("branch behind main")
+    return "; ".join(parts) + "."
+
+
+def _operator_next_line(snapshot: StateSnapshot, current_status: str, roadmap_complete: bool) -> str:
+    if roadmap_complete:
+        return "none — the roadmap is complete."
+    if snapshot.human_required or current_status in {"blocked", "awaiting_phase_closeout"}:
+        action = _required_action(snapshot)
+        if snapshot.blocker_class:
+            return f"[`{snapshot.blocker_class}`] {action}"
+        return action
+    if current_status == "unplanned":
+        return "plan the current phase, then execute it."
+    if current_status in {"planned", "executed"}:
+        return "execute/repair the current phase to advance the loop."
+    return "resume the loop for the next non-complete phase."
 
 
 def _latest_work_unit_lines(work_unit: dict[str, Any]) -> list[str]:
