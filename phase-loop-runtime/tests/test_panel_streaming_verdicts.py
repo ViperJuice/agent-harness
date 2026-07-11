@@ -10,18 +10,18 @@ an incremental per-leg verdict file), while the consolidated return is still
 re-sorted to submission order.
 
 ONE shared out-of-order-completion fixture (``_out_of_order_fixture``) proves both
-halves, so neither can pass trivially:
+halves, so neither can pass trivially. The fixture's ``slow`` leg blocks on an
+explicit ``release_slow`` event and its ``fast`` leg signals ``fast_done`` — so
+each test can drive a DETERMINISTIC completion order ``fast`` → ``slow`` with no
+sleeps and no scheduling race:
 
-* The DEFAULT-path (golden) assertion runs UNDER a fixture whose legs COMPLETE in
-  the reverse of submission order (``fast`` always lands before ``slow``, by a
-  handshake — no sleeps, no wall-clock). If ``_run_legs_ordered`` returned
-  completion order it would be ``[fast, slow]``; the golden asserts it is still the
-  submission order ``[slow, fast]``. So the default path is proven order-preserving
-  under genuine out-of-order completion, not merely when legs happen to finish in
-  order.
-* The STREAMING assertion uses the SAME fixture and asserts the fast leg's callback
-  fires AND its verdict file is on disk BEFORE the slow leg finishes (no
-  head-of-line blocking), while the consolidated return is still ``[slow, fast]``.
+* The DEFAULT-path (golden) assertion waits for ``fast_done`` (fast has genuinely
+  completed) BEFORE releasing slow, then asserts the consolidated result is still
+  submission order ``[slow, fast]`` — proving order survives real out-of-order
+  completion (it cannot pass trivially).
+* The STREAMING assertion releases slow only from INSIDE the fast leg's callback,
+  so slow provably cannot land until fast's verdict has already been delivered —
+  proving fast fires before slow finishes, with no head-of-line blocking.
 """
 from __future__ import annotations
 
@@ -36,54 +36,67 @@ from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
 
 class _Leg:
-    """A fake leg whose COMPLETION order is deterministic regardless of thread
-    scheduling: the ``slow`` leg blocks until the ``fast`` leg signals it has run,
-    so ``fast`` ALWAYS lands before ``slow`` — the reverse of submission order
-    ``[slow, fast]``. No sleeps ⇒ no wall-clock flakiness."""
+    """A fake leg with a controllable completion barrier. The ``slow`` leg blocks in
+    ``run_one`` until ``release`` is set; the ``fast`` leg returns at once and sets
+    ``done`` — so a test can force the completion order ``fast`` → ``slow``
+    deterministically (no sleeps, no scheduling race)."""
 
-    def __init__(self, name: str, fast_done: threading.Event, *, is_fast: bool):
+    def __init__(self, name: str, *, release: threading.Event | None = None,
+                 done: threading.Event | None = None):
         self.name = name
-        self._fast_done = fast_done
-        self._is_fast = is_fast
+        self._release = release
+        self._done = done
 
     def __call__(self) -> pi.PanelLegResult:
-        if self._is_fast:
-            self._fast_done.set()
-        else:
-            if not self._fast_done.wait(timeout=5.0):  # slow cannot land before fast
-                raise TimeoutError("fast leg never signalled — fixture deadlock")
-        return pi.PanelLegResult(
+        if self._release is not None and not self._release.wait(timeout=5.0):
+            raise TimeoutError("slow leg was never released — fixture deadlock")
+        result = pi.PanelLegResult(
             leg=self.name, status="OK", text=f"{self.name}\nAGREE", seat_key=self.name
         )
+        if self._done is not None:
+            self._done.set()
+        return result
 
 
 def _out_of_order_fixture():
-    """Return ``(items, run_one)`` in SUBMISSION order ``[slow, fast]`` where ``fast``
-    is guaranteed to COMPLETE before ``slow`` (a two-worker fan-out)."""
+    """Return ``(items, run_one, release_slow, fast_done)`` in SUBMISSION order
+    ``[slow, fast]``. ``slow`` blocks until ``release_slow`` is set; ``fast`` sets
+    ``fast_done`` as it completes. A two-worker fan-out runs them concurrently."""
+    release_slow = threading.Event()
     fast_done = threading.Event()
-    items = [_Leg("slow", fast_done, is_fast=False), _Leg("fast", fast_done, is_fast=True)]
+    items = [_Leg("slow", release=release_slow), _Leg("fast", done=fast_done)]
 
     def run_one(item: "_Leg") -> pi.PanelLegResult:
         return item()
 
-    return items, run_one
+    return items, run_one, release_slow, fast_done
 
 
 class SharedOutOfOrderFixtureTests(unittest.TestCase):
     def test_default_path_returns_submission_order_under_out_of_order_completion(self) -> None:
         # GOLDEN half: default path (no streaming params) — the byte-identical
-        # historical behavior. ``fast`` lands first (by construction), yet the
-        # consolidated result is submission order ``[slow, fast]``, so the ordered
-        # contract survives genuine out-of-order completion (cannot pass trivially).
-        items, run_one = _out_of_order_fixture()
-        results = pi._run_legs_ordered(items, run_one)
-        self.assertEqual([r.leg for r in results], ["slow", "fast"])
+        # historical behavior. We wait for ``fast_done`` (fast has genuinely
+        # completed first) BEFORE releasing slow, then assert the consolidated
+        # result is still submission order ``[slow, fast]``. So the ordered contract
+        # survives real out-of-order completion and cannot pass trivially.
+        items, run_one, release_slow, fast_done = _out_of_order_fixture()
+        box: dict[str, list[pi.PanelLegResult]] = {}
+        runner = threading.Thread(
+            target=lambda: box.__setitem__("results", pi._run_legs_ordered(items, run_one))
+        )
+        runner.start()
+        self.assertTrue(fast_done.wait(timeout=5.0), "fast leg never completed")
+        release_slow.set()
+        runner.join(timeout=5.0)
+        self.assertFalse(runner.is_alive(), "run did not finish after releasing slow")
+        self.assertEqual([r.leg for r in box["results"]], ["slow", "fast"])
 
     def test_streaming_delivers_fast_leg_before_slow_finishes(self) -> None:
-        # STREAMING half: SAME fixture. The fast leg's callback + verdict file must
-        # land BEFORE the slow leg finishes, and the consolidated return is still
-        # re-sorted to submission order.
-        items, run_one = _out_of_order_fixture()
+        # STREAMING half: SAME fixture. slow is released ONLY from inside the fast
+        # leg's callback, so slow provably cannot land until fast's verdict has
+        # already been delivered (callback fired + file on disk). This IS "fast
+        # fires before slow finishes", with no head-of-line blocking.
+        items, run_one, release_slow, _fast_done = _out_of_order_fixture()
         landed: list[str] = []
         snap: dict[str, bool] = {}
         lock = threading.Lock()
@@ -94,17 +107,17 @@ class SharedOutOfOrderFixtureTests(unittest.TestCase):
                 with lock:
                     landed.append(result.leg)
                     if result.leg == "fast":
-                        # fast's verdict file is already on disk (the helper writes
-                        # BEFORE the callback), and slow's is NOT — slow is still
-                        # in-flight. This IS "fast fires before slow finishes".
+                        # fast's file is already on disk (the helper writes BEFORE the
+                        # callback) and slow's is NOT — slow is still blocked.
                         snap["fast_file_present"] = (review_dir / "leg-01-fast.verdict.json").exists()
                         snap["slow_file_absent"] = not (review_dir / "leg-00-slow.verdict.json").exists()
+                        release_slow.set()  # only now may slow complete
 
             results = pi._run_legs_ordered(
                 items, run_one, on_leg_complete=on_leg_complete, review_dir=review_dir
             )
 
-            # Callbacks fired in COMPLETION order (fast before slow), not submission.
+            # Callbacks fired in COMPLETION order (fast strictly before slow).
             self.assertEqual(landed, ["fast", "slow"])
             # At fast's landing: its file present, slow's absent (no head-of-line block).
             self.assertTrue(snap.get("fast_file_present"))
@@ -126,7 +139,8 @@ class StreamingFailOpenTests(unittest.TestCase):
     return is authoritative."""
 
     def test_raising_callback_never_breaks_the_pool(self) -> None:
-        items, run_one = _out_of_order_fixture()
+        items, run_one, release_slow, _ = _out_of_order_fixture()
+        release_slow.set()  # both legs complete freely; order is not under test here
 
         def boom(_result: pi.PanelLegResult) -> None:
             raise RuntimeError("callback boom")
@@ -135,7 +149,8 @@ class StreamingFailOpenTests(unittest.TestCase):
         self.assertEqual([r.leg for r in results], ["slow", "fast"])  # full ordered results
 
     def test_unwritable_review_dir_is_fail_open(self) -> None:
-        items, run_one = _out_of_order_fixture()
+        items, run_one, release_slow, _ = _out_of_order_fixture()
+        release_slow.set()
         with tempfile.NamedTemporaryFile() as f:
             bad = Path(f.name) / "sub"  # parent is a FILE → mkdir raises → swallowed
             results = pi._run_legs_ordered(items, run_one, review_dir=bad)
@@ -163,9 +178,7 @@ class InvokeStreamingOptInTests(unittest.TestCase):
                 stream_dir=d,
             )
             self.assertEqual(sorted(seen), sorted(r.leg for r in res.legs))
-            self.assertEqual(
-                len(list(Path(d).glob("*.verdict.json"))), len(res.legs)
-            )
+            self.assertEqual(len(list(Path(d).glob("*.verdict.json"))), len(res.legs))
             # Consolidated return still in canonical seat order.
             self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))
 
