@@ -272,10 +272,50 @@ def test_noop_finalize_ignores_unrelated_staged_file(tmp_path):
 
     assert status == "complete", (status, event.blocker)
     assert event.metadata["closeout"]["closeout_action"] == "noop_already_committed"
-    # No new commit, and the unrelated staged file was neither committed nor touched.
+    # No new commit, and the unrelated file was not committed; its worktree content is
+    # preserved (index-isolation unstages it, so it now shows as untracked).
     assert _git(repo, "rev-parse", "HEAD").strip() == head_before
     assert "utils.py" not in _git(repo, "show", "--name-only", "--format=", "HEAD")
-    assert "A  utils.py" in _git(repo, "status", "--short")
+    assert "utils.py" in _git(repo, "status", "--short")
+    assert (repo / "utils.py").read_text(encoding="utf-8") == "unrelated staged edit\n"
+
+
+def test_closeout_commits_reviewed_staged_bytes_not_worktree(tmp_path, monkeypatch):
+    # CR (reviewed == committed): the closeout commits the STAGED index the governed
+    # panel reviewed, not the current working tree. If the worktree for an owned path
+    # changes AFTER staging/review (a TOCTOU), the reviewed bytes must still be what
+    # lands — a path-scoped `git commit -- <path>` would instead re-read the worktree.
+    import phase_loop_runtime.runner as runner_mod
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("owned_a.py",))
+    commit_fixture_paths(repo, "add CONTRACT plan", plan)
+    (repo / "owned_a.py").write_text("REVIEWED bytes\n", encoding="utf-8")
+
+    def tamper_then_pass(*_args, **_kwargs):
+        # Simulate a worktree change landing during the review window.
+        (repo / "owned_a.py").write_text("UNREVIEWED tampered bytes\n", encoding="utf-8")
+        return None  # no governed block
+
+    monkeypatch.setattr(runner_mod, "_governed_premerge_review", tamper_then_pass)
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"CONTRACT": "awaiting_phase_closeout"}, current_phase="CONTRACT",
+        phase_owned_dirty=True, phase_owned_dirty_paths=("owned_a.py",),
+        dirty_paths=("owned_a.py",),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, _event = _perform_phase_closeout(
+        repo, roadmap, "CONTRACT", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    assert status == "complete"
+    committed_bytes = _git(repo, "show", "HEAD:owned_a.py")
+    assert committed_bytes == "REVIEWED bytes\n"
+    assert "UNREVIEWED" not in committed_bytes
 
 
 def test_break_glass_reason_does_not_break_through_non_closeout_blocker(tmp_path):

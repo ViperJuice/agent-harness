@@ -7943,6 +7943,14 @@ def _perform_phase_closeout(
             coauthor_trailers=_closeout_coauthor_trailers(repo, roadmap, phase),
             continuation=bool(snapshot.previous_phase_owned_paths),
         )
+        # SECURITY (#71 CR): ISOLATE the index to exactly the accepted closeout paths
+        # before staging + review + commit. Reset the index to HEAD first so any file
+        # the operator/executor pre-staged (e.g. a `.env`/secret the fallback
+        # deliberately excluded, or an unrelated edit) is UNSTAGED — its worktree copy
+        # is untouched. The governed panel then reviews, and the pathspec-less commit
+        # below then commits, the EXACT isolated staged index: "reviewed == committed"
+        # by construction, and nothing outside `closeout_dirty_paths` can ever land.
+        _run_git_closeout(repo, "reset", "--quiet", "HEAD")
         add_result = _run_git_closeout(repo, "add", "--", *closeout_dirty_paths)
         if add_result.returncode != 0:
             status, blocker = _commit_failure_closeout(
@@ -8009,15 +8017,13 @@ def _perform_phase_closeout(
                     # constructor). The early return SKIPS the commit — a block must
                     # not commit — but reuses the canonical event shape.
                     return status, _closeout_event()
-                # SECURITY (#71 CR): commit ONLY the closeout paths, never the whole
-                # index. A pathspec-less `git commit` sweeps in any pre-staged
-                # unrelated file — including a `.env`/secret the fallback deliberately
-                # excluded from `closeout_dirty_paths` — silently defeating the
-                # secrets-never-break-glassable contract. Scoping the commit to the
-                # exact accepted paths isolates it from the operator's index state.
-                commit_result = _run_git_closeout(
-                    repo, "commit", "-F", "-", "--", *closeout_dirty_paths, input_text=commit_message
-                )
+                # Commit the STAGED index (pathspec-less), which the index-isolation
+                # above narrowed to exactly the reviewed closeout paths. A pathspec
+                # commit (`git commit -- <paths>`) would instead re-read the WORKING
+                # TREE for those paths and could land bytes different from the reviewed
+                # staged index (breaking "reviewed == committed"); committing the index
+                # preserves the governed panel's exact bytes.
+                commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
                         metadata,

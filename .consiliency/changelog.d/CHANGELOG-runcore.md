@@ -29,13 +29,19 @@
   still dirty — so an unrelated live edit can never be force-committed under a reason
   that named only the phase's remainder. Secrets remain non-break-glassable and keep
   the phase blocked.
-  The closeout commit is now **scoped to the accepted paths** (`git commit -- …`):
-  previously a pathspec-less commit could sweep a pre-staged unrelated file — including
-  a `.env`/secret the fallback deliberately excluded — into the commit, silently
-  defeating the secrets-never-break-glassable contract. A **secret-only** break-glass
-  remainder now also keeps the sticky `closeout_scope_violation` (`human_required`)
-  gate instead of downgrading to a non-human `dirty_worktree_conflict`, so the loop
-  cannot silently leave the human gate and run automation against a secret-dirty tree.
+  The closeout now **isolates the index** before staging, review, and commit — it
+  resets the index to `HEAD`, stages only the accepted `closeout_dirty_paths`, and
+  commits the reviewed staged index (pathspec-less). Previously the pathspec-less
+  commit ran over whatever was staged, so a pre-staged unrelated file — including a
+  `.env`/secret the fallback deliberately excluded — was swept into the commit,
+  silently defeating the secrets-never-break-glassable contract. Committing the
+  isolated **staged** index (rather than a path-scoped `git commit -- <paths>`, which
+  would re-read the working tree) also preserves the governed panel's
+  "reviewed == committed" invariant against a mid-review worktree change. A
+  **secret-only** break-glass remainder now also keeps the sticky
+  `closeout_scope_violation` (`human_required`) gate instead of downgrading to a
+  non-human `dirty_worktree_conflict`, so the loop cannot silently leave the human
+  gate and run automation against a secret-dirty tree.
 
 - **A valid planned repair closeout clears the stale blocker instead of looping
   repair (`ViperJuice/agent-harness#59`).** When a bounded repair child reshaped
