@@ -259,12 +259,13 @@ DEFAULT_CAPABILITY_REGISTRY = {
             "context_file_instructions",
         ),
         strengths=("xAI-family reasoning model", "context-file friendly", "authenticated local CLI"),
-        # grok auto-approves writes via `--permission-mode bypassPermissions` for
-        # write actions; `review` stays read-only (grok's default permission mode,
-        # analysis-only prompt) — the same posture as the gemini executor.
+        # grok write actions auto-approve via `--permission-mode bypassPermissions`;
+        # `review` is HARD read-only via a `--tools` allow-list of read/search
+        # built-ins only (headless grok auto-approves writes regardless of
+        # permission-mode/sandbox, so tool restriction is the only real lever).
         limits=(
             "requires local grok CLI subscription auth",
-            "grok headless permission mode is per-run all-or-nothing: write actions auto-approve, review is read-only",
+            "grok headless auto-approves writes; write actions run bypassPermissions, review is read-only via a read-only --tools allow-list",
             "grok --output-format plain emits no structured JSON; closeout is prompt-injected and text-parsed",
         ),
         injection_mode="context_file",

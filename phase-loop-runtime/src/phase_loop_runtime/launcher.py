@@ -89,6 +89,13 @@ CLAUDE_CHANNEL_BEARER_TOKEN_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN"
 # cleanly delimits this set.
 PROMPT_INJECTED_CLOSEOUT_EXECUTORS = frozenset({"gemini", "grok", "opencode", "pi"})
 
+# grok read-only-review tool allow-list (CR: hard read-only enforcement). Headless
+# grok auto-approves writes, so review passes ONLY these read/search built-ins —
+# grok's write built-ins (`write`, `search_replace`, `run_terminal_command`) are
+# omitted, so the review action cannot mutate the workspace. Verified against the
+# live grok tool set (`read_file`/`grep`/`list_dir`/`search_tool`).
+GROK_REVIEW_READONLY_TOOLS = "read_file,grep,list_dir,search_tool"
+
 
 @dataclass(frozen=True)
 class LaunchSpec:
@@ -658,10 +665,15 @@ def build_grok_command(
     # mapping/clamp is needed (unlike codex's `max -> xhigh`). The model is passed
     # verbatim via `-m`.
     #
-    # Permission posture: grok's `--permission-mode` is per-run all-or-nothing. Write
-    # actions auto-approve via `bypassPermissions`; `review` stays read-only on grok's
-    # default mode (an analysis-only prompt needs no tool approvals), mirroring the
-    # gemini executor's read-only-review posture.
+    # Permission posture (CR: verified empirically against grok 0.2.x). Headless
+    # `grok -p` AUTO-APPROVES writes regardless of `--permission-mode`/`--sandbox`
+    # (no interactive approver to pause), so those levers do NOT make review
+    # read-only. Write actions therefore run with `--permission-mode bypassPermissions`
+    # (explicit full-auto), and `review` is hard-constrained read-only by a
+    # `--tools` ALLOW-LIST of grok's read/search built-ins only — with the write
+    # built-ins (`write`, `search_replace`, `run_terminal_command`) absent, grok
+    # cannot mutate the workspace. This is a stronger guarantee than gemini's
+    # prompt-convention read-only review.
     command = [
         "grok",
         "-p",
@@ -679,7 +691,9 @@ def build_grok_command(
         "--reasoning-effort",
         selection.effort,
     ]
-    if action != "review":
+    if action == "review":
+        command.extend(["--tools", GROK_REVIEW_READONLY_TOOLS])
+    else:
         command.extend(["--permission-mode", "bypassPermissions"])
     return command
 

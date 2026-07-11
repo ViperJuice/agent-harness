@@ -6805,7 +6805,7 @@ def _plain_yaml_value(value: str) -> object:
 
 
 def _requires_shared_automation_closeout(result: LaunchResult, spec) -> bool:
-    if spec.executor not in {"codex", "claude", "gemini", "opencode", "command"}:
+    if spec.executor not in {"codex", "claude", "gemini", "grok", "opencode", "command"}:
         return False
     return result.executor == spec.executor
 
@@ -6915,7 +6915,7 @@ def _launch_contract_blocker(
 
 
 def _executor_launch_failure_blocker(executor: str, phase: str, output: str) -> dict[str, object] | None:
-    if executor not in {"codex", "claude", "gemini", "opencode"}:
+    if executor not in {"codex", "claude", "gemini", "grok", "opencode"}:
         return None
     lowered = output.lower()
     auth_markers = (

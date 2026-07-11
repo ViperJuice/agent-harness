@@ -115,8 +115,22 @@ def test_build_grok_launch_spec_write_action_argv():
 
 def test_build_grok_launch_spec_review_is_read_only():
     spec = build_launch_spec(_request("review"))
-    # review omits the write auto-approve permission mode (read-only, like gemini).
-    assert "--permission-mode" not in spec.command
+    cmd = spec.command
+    # review is HARD read-only via a read/search-only --tools allow-list; no write
+    # auto-approve. (Headless grok auto-approves writes regardless of permission-mode,
+    # so the allow-list is the real lever — verified empirically.)
+    assert "--permission-mode" not in cmd
+    assert cmd[cmd.index("--tools") + 1] == launcher.GROK_REVIEW_READONLY_TOOLS
+    # none of grok's write/mutation built-ins are in the review tool set.
+    for write_tool in ("write", "search_replace", "run_terminal_command"):
+        assert write_tool not in launcher.GROK_REVIEW_READONLY_TOOLS.split(",")
+
+
+def test_build_grok_launch_spec_write_action_has_no_tool_restriction():
+    spec = build_launch_spec(_request("execute"))
+    # write actions get full-auto writes (bypassPermissions), NOT the read-only allow-list.
+    assert "--tools" not in spec.command
+    assert spec.command[spec.command.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 # --- session-preservation hook (metadata only) ------------------------------
