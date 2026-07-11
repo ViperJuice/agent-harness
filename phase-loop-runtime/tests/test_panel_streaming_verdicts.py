@@ -72,6 +72,10 @@ def _out_of_order_fixture():
     return items, run_one, release_slow, fast_done
 
 
+@unittest.skipUnless(
+    pi._PANEL_MAX_WORKERS >= 2,
+    "out-of-order fixture needs >=2 workers (slow + fast must run concurrently)",
+)
 class SharedOutOfOrderFixtureTests(unittest.TestCase):
     def test_default_path_returns_submission_order_under_out_of_order_completion(self) -> None:
         # GOLDEN half: default path (no streaming params) — the byte-identical

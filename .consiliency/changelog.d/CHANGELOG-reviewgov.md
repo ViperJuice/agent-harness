@@ -27,5 +27,6 @@
   fail-open (a raising callback or an unwritable `stream_dir` never breaks the pool
   or fails a leg).
 - **`default_board_auth_ok`** — the reusable, fail-closed board auth probe, exported
-  from `advisor_board` so a live convening path (e.g. `load_boards(auth_ok=…)`) can
-  opt the composed `code-review` board into auth gating.
+  from `advisor_board`. It is the default gate `load_boards` applies (so the live
+  `code-review` board is auth-aware by default); a caller can also inject its own
+  `auth_ok` to override or, in a test, isolate the availability dimension.

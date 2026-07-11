@@ -93,11 +93,11 @@ class CodeReviewAvailabilityAwareTests(unittest.TestCase):
         self.assertEqual(len(board.seats), 4)
         self.assertTrue(all(s.harness in {"claude", "codex"} for s in board.seats))
 
-    def test_auth_ok_opt_in_drops_an_unauthed_vendor_on_the_live_path(self) -> None:
-        # REVIEWGOV-W1 / #151: passing ``auth_ok`` makes the LIVE convening path
-        # auth-aware — a PATH-present-but-unauthed vendor (grok) is dropped and
-        # backfilled, exactly like a PATH-absent one. Availability all-up, grok
-        # unauthed.
+    def test_explicit_auth_ok_drops_an_unauthed_vendor_on_the_live_path(self) -> None:
+        # REVIEWGOV-W1 / #151: an explicit ``auth_ok`` on the LIVE convening path
+        # drops a PATH-present-but-unauthed vendor (grok) and backfills it, exactly
+        # like a PATH-absent one. Availability all-up, grok unauthed. (The DEFAULT
+        # gate is exercised in test_auth_ok_defaults_to_the_real_auth_gate...)
         matrix = default_matrix(probe=lambda cli: True, env={})
         board = load_boards(
             self._NONEXISTENT, matrix=matrix,

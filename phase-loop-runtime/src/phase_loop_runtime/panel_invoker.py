@@ -2001,6 +2001,12 @@ def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegRe
         tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, path)
     except Exception:  # fail-open: streaming side-channel never breaks the review
+        # Best-effort cleanup of a half-written temp sibling (a failure between the
+        # write and the replace); harmless to watchers (the .tmp misses the glob).
+        try:
+            tmp.unlink(missing_ok=True)  # type: ignore[possibly-undefined]
+        except Exception:
+            pass
         logging.getLogger(__name__).warning(
             "streaming verdict write failed for leg %s", getattr(result, "leg", "?"), exc_info=True
         )
