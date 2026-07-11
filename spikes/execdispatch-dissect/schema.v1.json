@@ -15,7 +15,7 @@
       "items": {
         "type": "object",
         "required": ["harness", "extractable", "session_files_sampled", "sessions_with_tool_calls", "tool_call_count", "distinct_tools", "blockers"],
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "harness": { "type": "string", "enum": ["claude", "codex", "gemini", "agy", "grok", "opencode", "pi"] },
           "extractable": { "type": "boolean" },
