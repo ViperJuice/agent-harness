@@ -764,13 +764,15 @@ def resolve_dispatch_decision(
     roadmap: DispatchHints | None = None,
     default_executor: str | None = None,
 ) -> DispatchDecision:
-    # AUTOSEL (IF-0-AUTOSEL-2): ``default_executor`` overrides the seed used ONLY
-    # when no operator/plan/roadmap hint names a preferred executor. It is where
-    # the layered default resolver injects its run-from / single-available pick in
-    # place of the bare codex default. ``None`` reproduces the legacy behavior
-    # exactly (seed = ``default_executor_for_action(action)``), so callers that set
-    # ``preferred_executors`` explicitly (repair pivot, work-unit rotation) are
-    # unaffected — the seed is never consulted when ``preferred_executors`` is set.
+    # AUTOSEL (IF-0-AUTOSEL-2): ``default_executor`` replaces the bare codex seed.
+    # It is the PRIMARY ``preferred`` only when no operator/plan/roadmap hint names
+    # one; when a preferred hint IS set the seed is demoted to a TRAILING fallback
+    # candidate (last in ``candidate_order``). ``None`` reproduces legacy behavior
+    # exactly (seed = ``default_executor_for_action(action)`` == codex in both roles),
+    # so callers that set ``preferred_executors`` explicitly (repair pivot, work-unit
+    # rotation, delegation broker) are unaffected — they pass ``None`` and the trailing
+    # candidate stays legacy codex. The runner only passes a non-None seed when there
+    # is NO preferred hint, so an AUTOSEL pick never displaces an operator's choice.
     seed_default = default_executor or default_executor_for_action(action)
     registry = registry or capability_registry()
     if action == "maintain-skills":

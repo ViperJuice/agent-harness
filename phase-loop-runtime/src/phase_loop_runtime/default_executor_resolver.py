@@ -43,7 +43,7 @@ from .capability_registry import (
 from .harness_env_signatures import detect_run_from_harness
 from .injection import HARNESS_INJECTION_MODES
 
-# Escape-hatch env var. When truthy, layers 2-3 are skipped entirely.
+# Escape-hatch env var. When set to exactly "1", layers 2-3 are skipped entirely.
 DISABLE_AUTOSEL_ENV = "EXECDISPATCH_DISABLE_AUTOSEL"
 
 LAYER_EXPLICIT = "explicit_override"
@@ -65,6 +65,15 @@ class DefaultResolutionContext:
     action: str
     explicit_executor: str | None = None
     dry_run: bool = False
+    # Merged operator/plan/roadmap dispatch constraints. The AUTO gate must reject
+    # any candidate that `resolve_dispatch_decision` would HARD-BLOCK as a preferred
+    # pick — otherwise AUTOSEL seeds X and dispatch blocks on X. Dispatch hard-blocks
+    # a preferred candidate on: disabled, not-in-allowed, unsupported-action,
+    # missing-required-capability, and not-live-available. (degraded and dry-run
+    # unavailability are soft-continue in dispatch, so they are not gated here.)
+    allowed_executors: tuple[str, ...] = ()
+    disabled_executors: tuple[str, ...] = ()
+    required_capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,16 +121,30 @@ def _gate_candidate(
     executor: str,
     record: ExecutorCapabilityRecord | None,
     *,
-    action: str,
-    dry_run: bool,
+    ctx: DefaultResolutionContext,
 ) -> str | None:
     """Return ``None`` if ``executor`` passes the AUTO gate, else a short reason
     string for provenance. Every probe failure is a *reason*, never a raise —
-    a hung/absent CLI degrades to a rejected candidate, not a resolver crash."""
+    a hung/absent CLI degrades to a rejected candidate, not a resolver crash.
+
+    The gate mirrors every condition under which ``resolve_dispatch_decision``
+    would HARD-BLOCK ``executor`` as a preferred pick, so an AUTO selection is
+    always something dispatch can actually launch."""
+    action, dry_run = ctx.action, ctx.dry_run
     if record is None:
         return "no_registry_record"
+    # Operator/plan/roadmap policy constraints (dispatch hard-blocks a preferred
+    # candidate on each of these). Empty allowed == no constraint (dispatch treats
+    # an empty allow-list as "every supporting executor").
+    if executor in ctx.disabled_executors:
+        return "disabled_by_hints"
+    if ctx.allowed_executors and executor not in ctx.allowed_executors:
+        return "not_in_allowed_set"
     if action not in record.supported_actions:
         return f"action_unsupported:{action}"
+    missing = tuple(cap for cap in ctx.required_capabilities if cap not in record.capabilities)
+    if missing:
+        return f"missing_required_capabilities:{','.join(missing)}"
     if not is_launch_complete(executor):
         return "not_launch_complete"
     if not record.headless_launchable:
@@ -174,29 +197,27 @@ def resolve_default_executor(
     rejected: list[RejectedCandidate] = []
 
     if not autosel_disabled:
-        # Layer 2 — run-from harness (honors the self-vs-child sentinel).
+        # Layer 2 — run-from harness (honors the self-vs-child sentinel). Multiple
+        # signatures can match (leaky host markers alongside session-specific ones);
+        # adopt the first candidate that passes the gate, so a self-eliminating
+        # match (e.g. tty-only claude) never masks the real run-from harness.
         detection = detect_run_from_harness(e)
-        if detection.executor is not None:
-            reason = _gate_candidate(
-                detection.executor,
-                registry.get(detection.executor),
-                action=ctx.action,
-                dry_run=ctx.dry_run,
-            )
+        for candidate in detection.candidates:
+            reason = _gate_candidate(candidate, registry.get(candidate), ctx=ctx)
             if reason is None:
                 return DefaultSelection(
-                    executor=detection.executor,
+                    executor=candidate,
                     layer=LAYER_RUN_FROM,
                     reason=f"detected run-from harness ({detection.reason})",
                     rejected=tuple(rejected),
                 )
-            rejected.append(RejectedCandidate(detection.executor, f"run_from:{reason}"))
+            rejected.append(RejectedCandidate(candidate, f"run_from:{reason}"))
 
         # Layer 3 — single-available registry scan. Pick iff exactly one executor
         # passes the AUTO gate (never guess among several).
         passing: list[str] = []
         for executor, record in registry.items():
-            reason = _gate_candidate(executor, record, action=ctx.action, dry_run=ctx.dry_run)
+            reason = _gate_candidate(executor, record, ctx=ctx)
             if reason is None:
                 passing.append(executor)
             else:

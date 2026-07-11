@@ -85,8 +85,13 @@ def _marker_matches(env: Mapping[str, str], var: str, expected: str | None) -> b
     return val == expected
 
 
-# The signature map (IF-0-AUTOSEL-1). Ordered by preference; the first matching
-# entry wins in :func:`detect_run_from_harness`.
+# The signature map (IF-0-AUTOSEL-1). Ordered by preference: SESSION-SPECIFIC /
+# non-leaky markers first (codex's per-session CODEX_THREAD_ID) before LEAKY host
+# markers (claude-code's CLAUDECODE, which the module notes leak into children).
+# :func:`detect_run_from_harness` returns every match in this order and the
+# resolver adopts the first that passes its launch gate — so even if a leaky
+# marker also matched, a self-eliminating candidate (e.g. tty-only claude) never
+# masks the real run-from harness.
 #
 # Verified markers (as of AUTOSEL lane a, captured on this host):
 #   * claude-code (VERIFIED_LIVE): CLAUDECODE=1, CLAUDE_CODE_ENTRYPOINT=cli,
@@ -100,15 +105,6 @@ def _marker_matches(env: Mapping[str, str], var: str, expected: str | None) -> b
 #     host's CLAUDECODE/AI_AGENT markers leaking into the codex child — the live
 #     proof that inbound markers cannot self-vs-child disambiguate.)
 HARNESS_ENV_SIGNATURES: dict[str, HarnessEnvSignature] = {
-    "claude": HarnessEnvSignature(
-        executor="claude",
-        markers=(("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", None)),
-        verification=VERIFIED_LIVE,
-        discriminator_note=(
-            "Leaks to children; PHASE_LOOP_CHILD sentinel disambiguates self from "
-            "a phase-loop-spawned child."
-        ),
-    ),
     "codex": HarnessEnvSignature(
         executor="codex",
         markers=(("CODEX_THREAD_ID", None), ("CODEX_SANDBOX", None)),
@@ -116,7 +112,19 @@ HARNESS_ENV_SIGNATURES: dict[str, HarnessEnvSignature] = {
         discriminator_note=(
             "CODEX_THREAD_ID (per-session UUID) is set in the shell codex runs "
             "commands in (the run-from context); CODEX_SANDBOX corroborates on "
-            "sandboxed hosts. Sentinel disambiguates a phase-loop child."
+            "sandboxed hosts. Session-specific, so ordered before the leaky claude "
+            "markers. Sentinel disambiguates a phase-loop child."
+        ),
+    ),
+    "claude": HarnessEnvSignature(
+        executor="claude",
+        markers=(("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", None)),
+        verification=VERIFIED_LIVE,
+        discriminator_note=(
+            "Leaks to children; PHASE_LOOP_CHILD sentinel disambiguates self from "
+            "a phase-loop-spawned child. Ordered AFTER codex because these markers "
+            "leak into codex children — evaluating codex first avoids adopting a "
+            "leaked claude marker over the real run-from harness."
         ),
     ),
 }
@@ -124,10 +132,17 @@ HARNESS_ENV_SIGNATURES: dict[str, HarnessEnvSignature] = {
 
 @dataclass(frozen=True)
 class RunFromDetection:
-    """Result of run-from detection, carrying provenance for the resolver log."""
+    """Result of run-from detection, carrying provenance for the resolver log.
+
+    ``candidates`` is every signature that matched, in map order (session-specific
+    before leaky). The resolver adopts the first candidate that passes its launch
+    gate, so a leaky-but-self-eliminating marker never masks the real harness.
+    ``executor`` is the first candidate (or ``None``) as a convenience.
+    """
 
     executor: str | None
     reason: str
+    candidates: tuple[str, ...] = ()
     matched_verification: str | None = None
 
 
@@ -148,16 +163,21 @@ def detect_run_from_harness(env: Mapping[str, str] | None = None) -> RunFromDete
     e = os.environ if env is None else env
     if str(e.get(PHASE_LOOP_CHILD_ENV, "")).strip() == "1":
         return RunFromDetection(executor=None, reason="phase_loop_child_sentinel")
+    matches: list[tuple[str, str]] = []  # (executor, verification), in map order
     for name, sig in HARNESS_ENV_SIGNATURES.items():
         if sig.verification == UNKNOWN:
             continue
         if sig.matches(e):
-            return RunFromDetection(
-                executor=sig.executor,
-                reason=f"run_from:{name}",
-                matched_verification=sig.verification,
-            )
-    return RunFromDetection(executor=None, reason="no_signature_match")
+            matches.append((sig.executor, sig.verification))
+    if not matches:
+        return RunFromDetection(executor=None, reason="no_signature_match")
+    candidates = tuple(executor for executor, _ in matches)
+    return RunFromDetection(
+        executor=candidates[0],
+        reason="run_from:" + ",".join(candidates),
+        candidates=candidates,
+        matched_verification=matches[0][1],
+    )
 
 
 def child_executor_env(base: Mapping[str, str] | None = None) -> dict[str, str]:

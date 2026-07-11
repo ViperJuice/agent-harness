@@ -386,6 +386,96 @@ def test_composition_autosel_pick_is_never_a_spurious_dispatch_block():
 # Outbound child-env marker on the real spawn path (change #5).
 # ==========================================================================
 
+# ==========================================================================
+# CR fixes (grok cross-vendor review) — regression guards.
+# ==========================================================================
+
+def test_cr1_explicit_hint_short_circuits_before_probing():
+    # grok #1: Layer 1 must return WITHOUT running any availability/auth probe.
+    # A registry whose probes raise if called proves no probe fired.
+    def _boom():
+        raise AssertionError("probe must not run when an explicit hint is present")
+
+    reg = {}
+    for name, rec in capability_registry().items():
+        reg[name] = rec.bind_runtime(is_available=_boom, auth_ok=_boom)
+    sel = resolve_default_executor(_ctx(explicit_executor="grok"), registry=reg, env={"CODEX_THREAD_ID": "u"})
+    assert sel.executor == "grok"
+    assert sel.layer == LAYER_EXPLICIT
+
+
+def test_cr2_auto_pick_respects_allowed_set_falls_to_codex_legacy():
+    # grok #2 exact scenario: operator restricts to {codex, gemini}, both unauthed,
+    # only pi authed. AUTOSEL must NOT pick pi (dispatch would block it as
+    # not-allowed); it falls to codex legacy -> dispatch SELECTS codex, not blocked.
+    reg = _registry(available={"codex", "gemini", "pi"}, authed={"pi"})
+    sel = resolve_default_executor(
+        _ctx(allowed_executors=("codex", "gemini")), registry=reg, env={}
+    )
+    assert sel.executor == "codex"
+    assert sel.layer == LAYER_CODEX_LEGACY
+    pi_reason = next(c.reason for c in sel.rejected if c.executor == "pi")
+    assert "not_in_allowed_set" in pi_reason
+    # Composition: the codex-legacy fall-through actually dispatches (no block).
+    decision = resolve_dispatch_decision(action="execute", dry_run=False, default_executor=sel.executor)
+    assert not decision.blocked
+    assert decision.selected_executor == "codex"
+
+
+def test_cr2_auto_pick_selects_an_allowed_available_executor():
+    # The intended improvement: operator restricts to {gemini, grok}; gemini is the
+    # only available+authed member -> AUTOSEL selects gemini (dispatch accepts it),
+    # instead of the legacy blind-codex default that dispatch would then block.
+    reg = _registry(available={"gemini"}, authed={"gemini"})
+    sel = resolve_default_executor(
+        _ctx(allowed_executors=("gemini", "grok")), registry=reg, env={}
+    )
+    assert sel.executor == "gemini"
+    assert sel.layer == LAYER_SINGLE_AVAILABLE
+
+
+def test_cr2_auto_gate_respects_disabled_and_required_capabilities():
+    reg = _registry(available={"codex", "grok"}, authed={"codex", "grok"})
+    # Disable codex -> only grok can pass -> single-available grok.
+    sel = resolve_default_executor(_ctx(disabled_executors=("codex",)), registry=reg, env={})
+    assert sel.executor == "grok"
+    codex_reason = next(c.reason for c in sel.rejected if c.executor == "codex")
+    assert "disabled_by_hints" in codex_reason
+    # Require a capability grok lacks -> grok rejected too -> codex legacy.
+    sel2 = resolve_default_executor(
+        _ctx(required_capabilities=("a_capability_no_executor_has",)), registry=reg, env={}
+    )
+    assert sel2.layer == LAYER_CODEX_LEGACY
+    rej2 = {c.executor: c.reason for c in sel2.rejected}
+    # codex/grok support execute + are available, so they reach the caps check and
+    # are rejected specifically for the missing required capability.
+    assert "missing_required_capabilities" in rej2["codex"]
+    assert "missing_required_capabilities" in rej2["grok"]
+
+
+def test_cr3_dual_claude_and_codex_markers_adopt_codex_run_from():
+    # grok #3: phase-loop run from codex, but the host claude-code markers leaked in
+    # (no PHASE_LOOP_CHILD sentinel). Both signatures match; claude self-eliminates
+    # on headless, so Layer 2 must adopt CODEX as run-from (not fall past it).
+    det = detect_run_from_harness({"CLAUDECODE": "1", "CODEX_THREAD_ID": "u"})
+    assert det.candidates[0] == "codex"  # session-specific ordered first
+    assert "claude" in det.candidates
+    reg = _registry(available={"codex", "claude"}, authed={"codex", "claude"})
+    sel = resolve_default_executor(_ctx(), registry=reg, env={"CLAUDECODE": "1", "CODEX_THREAD_ID": "u"})
+    assert sel.executor == "codex"
+    assert sel.layer == LAYER_RUN_FROM
+
+
+def test_cr5_non_timeout_probe_exception_fails_closed():
+    # grok #5: any runner exception (not just TimeoutExpired) fails the gate closed.
+    ea.clear_auth_cache()
+
+    def raiser(_probe):
+        raise OSError("boom")
+
+    assert ea.auth_ok_for("codex", ("codex login status",), runner=raiser) is False
+
+
 def test_launch_scrubs_and_stamps_child_env(monkeypatch):
     captured: dict[str, object] = {}
 

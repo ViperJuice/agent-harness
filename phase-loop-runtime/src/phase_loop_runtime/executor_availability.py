@@ -88,7 +88,9 @@ def _probes_pass(executor: str, probes: tuple[str, ...], runner: Callable[[str],
     for probe in probes:
         try:
             completed = runner(probe)
-        except subprocess.TimeoutExpired:
+        except Exception:
+            # A wedged/timed-out/erroring probe (TimeoutExpired, OSError, any
+            # runner exception) fails the gate CLOSED — never a crash, never a pass.
             return False
         if completed.returncode != 0:
             return False

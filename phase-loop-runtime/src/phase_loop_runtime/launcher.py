@@ -1966,11 +1966,15 @@ def launch(
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
 ) -> LaunchResult:
-    # AUTOSEL (change #5): every phase-loop-owned child executor spawn gets a
-    # scrubbed + sentinel-stamped env — Claude Code's self-markers removed and
-    # PHASE_LOOP_CHILD=1 stamped — so a child never mis-reads the host harness as
-    # its own run-from context. ``env`` is injectable for tests; None => derive
-    # from the live environment.
+    # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
+    # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
+    # stamped — so a spawned child never mis-reads the host harness as its own run-from
+    # context. This covers every ``launch_with_spec`` -> ``launch`` CLI child. The
+    # claude channel / agent-view routes (HTTP / adapter, not a CLI child) and the
+    # advisor-panel legs (their own ``_subscription_env`` surface) are a separate,
+    # env-managed spawn surface and intentionally not routed through here; AUTOSEL
+    # never auto-picks claude, so those routes don't need the run-from sentinel.
+    # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
     if log_path is not None and heartbeat_path is None:
         heartbeat_path = heartbeat_path_for_log(log_path)
