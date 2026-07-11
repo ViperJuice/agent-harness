@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Authenticated cross-host task-message proof resolver (`ViperJuice/agent-harness#155`).**
+  Added neutral `task-message-probe` and `task-message-resolve` commands backed by
+  the Codex app-server's authenticated WebSocket `thread/read` protocol. The
+  resolver accepts only an exact, pre-identified user-message item with a fixed
+  two-text-input envelope (source message plus JSON approval body), binds the
+  body's source identity and SHA-256 claim to the exact first-input UTF-8 bytes,
+  computes the RFC 8785 canonical approval digest, enforces freshness, and fails
+  closed with a frozen typed error set. Probe/failure output is metadata-only;
+  raw bytes are returned as base64 only on successful exact resolution. No
+  caller-authored digest-only record or copied session JSONL can satisfy the
+  interface.
+
 - **Behavior change: phase-loop now resolves the DEFAULT executor by AUTOSEL
   (EXECDISPATCH Phase 2) instead of always falling back to `codex`.** When no
   operator/CLI/plan/roadmap hint names an executor, the default is resolved in

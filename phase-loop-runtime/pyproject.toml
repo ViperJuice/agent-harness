@@ -50,6 +50,10 @@ dependencies = [
     # and its transitive packaging — is not present); the doctor still degrades to
     # `unknown` rather than crash if it is somehow absent.
     "packaging>=21",
+    # Governed task-message resolver: authenticated Codex app-server transport
+    # plus contract-identical RFC 8785 approval-body hashing.
+    "websockets>=12,<16",
+    "rfc8785>=0.1.4,<0.2",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in
     # the tomli backport there (import shim in advisor_board/config.py).

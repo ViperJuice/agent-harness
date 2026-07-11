@@ -733,6 +733,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Repo-relative ref submitted to governed-pipeline; may be repeated.",
     )
+    for name in ("task-message-probe", "task-message-resolve"):
+        task_message_sub = subparsers.add_parser(
+            name,
+            help="Probe or resolve an exact authenticated Codex task-message source.",
+        )
+        task_message_sub.add_argument("--endpoint", required=True, help="Authenticated Codex app-server ws:// or wss:// endpoint.")
+        task_message_sub.add_argument("--authority", required=True, help="Pinned source authority identity.")
+        task_message_sub.add_argument(
+            "--token-env",
+            required=True,
+            help="Environment variable containing the app-server bearer token; the token is never printed.",
+        )
+        task_message_sub.add_argument("--timeout-seconds", type=float, default=10.0)
+        if name == "task-message-resolve":
+            task_message_sub.add_argument("--thread-id", required=True)
+            task_message_sub.add_argument("--message-id", required=True)
+            task_message_sub.add_argument("--max-source-age-seconds", type=int, default=900)
     # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
     # plugin is installed/opted-in. A clean wheel registers none.
     _register_profile_commands(subparsers)
@@ -831,6 +848,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _outside_agent_preflight_command(args=args)
     if command == "outside-agent-validate":
         return _outside_agent_validate_command(args=args)
+    if command in {"task-message-probe", "task-message-resolve"}:
+        return _task_message_command(args=args, resolve=command == "task-message-resolve")
     if command == "docs-audit":
         from . import docs_audit
 
@@ -1278,6 +1297,48 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
     Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
     return int(validation.exit_code)
+
+
+def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
+    from .task_message_resolver import CodexAppServerTaskMessageResolver, TaskMessageResolverError
+
+    token = os.environ.get(args.token_env, "")
+    if not token:
+        error = TaskMessageResolverError(
+            "attestation_invalid",
+            authority=args.authority,
+            thread_id=getattr(args, "thread_id", None),
+            message_id=getattr(args, "message_id", None),
+        )
+        print(json.dumps(error.metadata(), indent=2, sort_keys=True))
+        return 2
+    try:
+        resolver = CodexAppServerTaskMessageResolver(
+            endpoint=args.endpoint,
+            bearer_token=token,
+            authority=args.authority,
+            max_source_age_seconds=getattr(args, "max_source_age_seconds", 900),
+            timeout_seconds=args.timeout_seconds,
+        )
+        payload = (
+            resolver.resolve(thread_id=args.thread_id, message_id=args.message_id).payload()
+            if resolve
+            else resolver.probe()
+        )
+    except ValueError:
+        error = TaskMessageResolverError(
+            "attestation_invalid",
+            authority=args.authority,
+            thread_id=getattr(args, "thread_id", None),
+            message_id=getattr(args, "message_id", None),
+        )
+        print(json.dumps(error.metadata(), indent=2, sort_keys=True))
+        return 2
+    except TaskMessageResolverError as exc:
+        print(json.dumps(exc.metadata(), indent=2, sort_keys=True))
+        return 2
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
 
 
 def _parse_lane_ir_override(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> tuple[str, ...]:
