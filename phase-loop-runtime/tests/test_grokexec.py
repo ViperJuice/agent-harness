@@ -217,6 +217,35 @@ def test_grok_resolve_command_context_materializes(tmp_path):
     assert context_file.read_text(encoding="utf-8").strip() == spec.prompt_bundle.render_context().rstrip()
 
 
+# --- runner executor-set parity (CR: grok must join gemini's live-executor sets) ---
+
+
+def test_grok_auth_failure_classifies_not_keyerror():
+    # grok is a live subscription CLI: an auth/quota failure must map to the
+    # account/billing blocker, not KeyError on a stale label map (CR: both
+    # convergence legs caught grok crashing here).
+    from phase_loop_runtime import runner
+
+    blocker = runner._executor_launch_failure_blocker("grok", "PHASE", "Error: not logged in; please login")
+    assert blocker is not None
+    assert blocker["blocker_class"] == "account_or_billing_setup"
+    assert "Grok" in blocker["blocker_summary"]
+
+
+def test_grok_requires_shared_automation_closeout():
+    # grok (live, plain-output, prompt-injected closeout) must be held to the same
+    # fail-closed closeout enforcement as gemini.
+    from phase_loop_runtime import runner
+
+    class _Spec:
+        executor = "grok"
+
+    class _Result:
+        executor = "grok"
+
+    assert runner._requires_shared_automation_closeout(_Result(), _Spec()) is True
+
+
 @pytest.mark.skipif(shutil.which("grok") is None, reason="grok CLI not on PATH")
 def test_grok_live_session_is_preserved(tmp_path):
     """Live proof: a real `grok -p` run under a fresh cwd persists a session that the

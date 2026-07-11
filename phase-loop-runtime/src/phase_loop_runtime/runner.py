@@ -6934,12 +6934,10 @@ def _executor_launch_failure_blocker(executor: str, phase: str, output: str) -> 
     )
     if not any(marker in lowered for marker in auth_markers):
         return None
-    label = {
-        "codex": "Codex",
-        "claude": "Claude",
-        "gemini": "Gemini",
-        "opencode": "OpenCode",
-    }[executor]
+    # Reuse the shared display-name helper (grok -> "Grok" via its capitalize
+    # fallback) rather than a second executor-literal map that would KeyError on any
+    # executor added to the membership set above (CR: caught grok crashing here).
+    label = _executor_display_name(executor)
     return {
         "human_required": False,
         "blocker_class": "account_or_billing_setup",
