@@ -6186,6 +6186,17 @@ def repair_precondition_for_snapshot(
             "dirty_summary": {},
         }
     if blocker_class != "dirty_worktree_conflict":
+        # #59: a bounded repair child that reshaped the plan and emitted a valid
+        # planned/not_run/clean closeout (no blocker) resolves the stale non-human
+        # blocker — clear it so the phase re-executes from the repaired plan instead
+        # of looping repair. Keyed on the child's OWN evidence (not blocker_class
+        # alone) AND a clean tree, so a genuinely un-repaired blocker still repairs.
+        if _latest_planned_repair_child_automation(repo, phase) is not None and not _dirty_paths(repo):
+            return {
+                "status": "cleared",
+                "reason": "planned_repair_closeout_cleared",
+                "dirty_summary": {},
+            }
         return {
             "status": "repair_required",
             "reason": "unsupported_live_repair_precondition",
@@ -6310,6 +6321,43 @@ def _latest_verified_dirty_child_automation(repo: Path, phase: str) -> dict[str,
             and str(automation.get("automation_human_required", "")).lower() != "true"
         ):
             return dict(automation)
+    return None
+
+
+def _planned_repair_closeout(automation: dict[str, object]) -> bool:
+    # #59: the repair child reshaped the plan and emitted a VALID planned closeout —
+    # planned/not_run, a clean tree (no dirty paths), no blocker, not human-required.
+    # The signal that the stale non-human blocker is resolved and the phase should
+    # re-execute from the repaired plan rather than loop repair.
+    if _phase_status_literal(automation.get("automation_status")) != "planned":
+        return False
+    if automation.get("automation_verification_status") not in (None, "not_run"):
+        return False
+    if str(automation.get("automation_human_required", "")).lower() == "true":
+        return False
+    if _optional_automation_literal(automation.get("automation_blocker_class")):
+        return False
+    if _optional_automation_literal(automation.get("automation_blocker_summary")):
+        return False
+    dirty = automation.get("dirty_paths")
+    if isinstance(dirty, list) and dirty:
+        return False
+    return True
+
+
+def _latest_planned_repair_child_automation(repo: Path, phase: str) -> dict[str, object] | None:
+    # #59: consult ONLY the most recent child automation for the phase — a later
+    # blocked/interrupted repair must NOT be cleared by an earlier planned closeout.
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        automation = metadata.get("child_automation")
+        if not isinstance(automation, dict):
+            continue
+        return dict(automation) if _planned_repair_closeout(automation) else None
     return None
 
 

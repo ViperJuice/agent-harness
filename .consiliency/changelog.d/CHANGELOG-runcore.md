@@ -26,3 +26,15 @@
   re-derives the unowned remainder from live git when the reconciled blocked
   snapshot carries no dirty summary, so the remainder is force-committed under the
   audited reason. Secrets remain non-break-glassable and keep the phase blocked.
+
+- **A valid planned repair closeout clears the stale blocker instead of looping
+  repair (`ViperJuice/agent-harness#59`).** When a bounded repair child reshaped
+  the plan and emitted a valid closeout (`terminal_status=planned`,
+  `verification_status=not_run`, `dirty_paths=[]`, no blocker, `human_required=null`)
+  leaving the tree clean, the parent runner kept the stale non-human blocked state
+  and relaunched the same repair path. `repair_precondition_for_snapshot` now clears
+  the planned-repair-closeout case (beyond `dirty_worktree_conflict`) so the phase
+  re-executes from the repaired plan — conditioned on the repair child's own
+  planned/clean evidence and a clean tree, not on `blocker_class` alone, so a
+  genuinely un-repaired blocker still repairs and a later interrupted repair does
+  not clear.
