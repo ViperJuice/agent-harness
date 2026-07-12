@@ -1044,7 +1044,13 @@ def _amendment_drift_fields(
     if reason != "phase_mismatch" or status not in {"complete", "executed"}:
         return {}
     return {
-        "blocker_class": "gold_record_amendment",
+        # `diagnostic_class`, NOT `blocker_class`: this is a warning-only marker on a
+        # ledger warning, never a snapshot blocker — nothing elevates it into
+        # `snapshot.blocker_class`/`human_required`. Using the real blocker key here
+        # would mislead consumers/tools that scan any non-null `blocker_class` (CR:
+        # codex/grok/agy). The `gold_record_amendment` VALUE reuses the same
+        # vocabulary `invalidate_stale_downstream_plans` stamps for downstream plans.
+        "diagnostic_class": "gold_record_amendment",
         "repairable": True,
         "amendment_drift": {
             "phase_status": status,
@@ -1052,9 +1058,13 @@ def _amendment_drift_fields(
             "current_phase_sha256": current_phase_sha,
         },
         "repair_hint": (
-            "A roadmap amendment changed this completed phase's section hash. "
-            "Restore the amended completed-phase wording, or re-attest the "
-            "completion against the amended roadmap, then rerun reconcile."
+            # A phase-hash mismatch is amendment-SHAPED but not proof of an amendment
+            # (it could also be a tampered/hand-edited ledger); frame it as drift, not
+            # a confirmed amendment (CR: codex).
+            "Provenance drift (amendment-shaped): this completed phase's section hash "
+            "no longer matches the roadmap. If a roadmap amendment changed it, restore "
+            "the amended completed-phase wording or re-attest the completion against the "
+            "amended roadmap, then rerun reconcile."
         ),
     }
 

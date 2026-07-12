@@ -506,7 +506,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             # as a repairable gold_record_amendment so status can tell it apart from a
             # genuinely-never-planned phase.
             amendment_warnings = [
-                w for w in snapshot.ledger_warnings if w.get("blocker_class") == "gold_record_amendment"
+                w for w in snapshot.ledger_warnings if w.get("diagnostic_class") == "gold_record_amendment"
             ]
             self.assertTrue(amendment_warnings)
             self.assertTrue(all(w.get("repairable") for w in amendment_warnings))
@@ -529,7 +529,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
 
             self.assertEqual(snapshot.phases["ALPHA"], "unplanned")
             self.assertEqual(snapshot.phases["BETA"], "unplanned")
-            marked = {w["phase"] for w in snapshot.ledger_warnings if w.get("blocker_class") == "gold_record_amendment"}
+            marked = {w["phase"] for w in snapshot.ledger_warnings if w.get("diagnostic_class") == "gold_record_amendment"}
             self.assertIn("ALPHA", marked)
             self.assertNotIn("BETA", marked)
 

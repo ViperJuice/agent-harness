@@ -88,6 +88,7 @@ def test_malformed_and_secret_bearing_records_fail_closed_not_crash():
         _write_approval(repo, secret)
         metadata, blocker = _resolve(repo, roadmap, plan)
         assert metadata is None and blocker.blocker_class == "admin_approval"
+        assert blocker.metadata["record_status"] == "malformed"
 
 
 def test_stale_record_wrong_phase_fail_closes():
@@ -98,6 +99,22 @@ def test_stale_record_wrong_phase_fail_closes():
         roadmap = write_named_roadmap(repo, (("SHIP", "Ship"),))
         plan = _release_plan(repo, roadmap)
         _write_approval(repo, _approval_payload(repo, roadmap, phase="SOMEOTHERPHASE"))
+        metadata, blocker = _resolve(repo, roadmap, plan)
+        assert metadata is None
+        assert blocker.blocker_class == "admin_approval"
+        assert blocker.metadata["record_status"] == "stale"
+
+
+def test_stale_record_wrong_roadmap_fail_closes():
+    # Same discriminator on the roadmap axis: an approval scoped to a different
+    # roadmap must not authorize this one (CR: grok — wrong-roadmap was untested).
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = write_named_roadmap(repo, (("SHIP", "Ship"),))
+        plan = _release_plan(repo, roadmap)
+        payload = _approval_payload(repo, roadmap)
+        payload["roadmap"] = "specs/some-other-roadmap-v9.md"
+        _write_approval(repo, payload)
         metadata, blocker = _resolve(repo, roadmap, plan)
         assert metadata is None
         assert blocker.blocker_class == "admin_approval"
@@ -144,8 +161,10 @@ def test_run_loop_release_dispatch_without_approval_blocks_before_launch():
         assert snapshot.human_required is True
 
 
-@pytest.mark.dotfiles_integration
-def test_run_loop_release_dispatch_with_fresh_approval_launches_and_records_metadata():
+def test_run_loop_approval_gated_release_dispatch_requires_observe():
+    # #145 (CR): a VALID approval under --no-observe must fail CLOSED (the injection
+    # surface — the child-read launch metadata — only exists for observed runs), never
+    # launch without the approval reaching the child. Blocks before launch, no dotfiles.
     with tempfile.TemporaryDirectory() as td:
         repo = make_repo(Path(td))
         roadmap = write_named_roadmap(repo, (("SHIP", "Ship"),))
@@ -155,6 +174,40 @@ def test_run_loop_release_dispatch_with_fresh_approval_launches_and_records_meta
             "phase_loop_runtime.runner.launch_with_spec",
             return_value=LaunchResult(command=["codex", "exec"], returncode=0),
         ) as fake_launch:
-            snapshot, _results = run_loop(repo, roadmap, phase="SHIP")
+            snapshot, _results = run_loop(repo, roadmap, phase="SHIP", observe=False)
+        fake_launch.assert_not_called()
+        assert snapshot.blocker_class == "admin_approval"
+        assert snapshot.human_required is True
+
+
+@pytest.mark.dotfiles_integration
+def test_run_loop_release_dispatch_with_fresh_approval_launches_and_injects_metadata():
+    # Happy path proven end-to-end (CI/dotfiles): a fresh valid approval launches AND
+    # the approval metadata is actually injected into the child-read launch metadata +
+    # the persisted launch event — not merely "not blocked" (CR: codex/grok — the old
+    # assertion passed even if injection was removed).
+    from phase_loop_runtime.events import read_events
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = write_named_roadmap(repo, (("SHIP", "Ship"),))
+        _release_plan(repo, roadmap)
+        _write_approval(repo, _approval_payload(repo, roadmap, targets=("pkg:consiliency", "deploy:prod")))
+        with patch(
+            "phase_loop_runtime.runner.launch_with_spec",
+            return_value=LaunchResult(command=["codex", "exec"], returncode=0),
+        ) as fake_launch:
+            snapshot, _results = run_loop(repo, roadmap, phase="SHIP", observe=True)
         fake_launch.assert_called_once()
         assert snapshot.blocker_class != "admin_approval"
+        # The approval was injected into the child-read launch metadata file.
+        launch_meta_path = fake_launch.call_args.kwargs.get("log_path")
+        # And it is durable in the launch event metadata.
+        approvals = [
+            (e.get("metadata") or {}).get("operator_approval")
+            for e in read_events(repo)
+            if isinstance(e.get("metadata"), dict) and (e.get("metadata") or {}).get("operator_approval")
+        ]
+        assert approvals, "operator_approval must be recorded in the launch event metadata"
+        assert approvals[-1]["kind"] == "operator_approval"
+        assert approvals[-1]["approved_targets"] == ["pkg:consiliency", "deploy:prod"]

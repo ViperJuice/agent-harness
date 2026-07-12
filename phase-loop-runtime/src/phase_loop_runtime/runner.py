@@ -2860,6 +2860,32 @@ def run_loop(
                     repo, roadmap, plan, alias
                 )
                 resolved_operator_approval = approval_metadata
+                # #145 (CR: codex/grok): the approval is injected into the child-visible
+                # launch metadata (`artifacts["metadata"]`), which only exists when the
+                # run is observed. Under --no-observe a resolved approval would be
+                # silently dropped and the child would still see it absent — the exact
+                # third state we must not ship. Require --observe for an approval-gated
+                # release-dispatch: fail CLOSED with a clear reason rather than launch
+                # without the approval reaching the child.
+                if approval_metadata is not None and not observe:
+                    resolved_operator_approval = None
+                    approval_blocker = ReleaseDispatchBlocker(
+                        blocker_class="admin_approval",
+                        blocker_summary=(
+                            f"Release dispatch for {alias} has a valid operator approval, but "
+                            "injecting it into the executor context requires an observed run."
+                        ),
+                        required_human_inputs=(
+                            "Rerun the release-dispatch phase with --observe so the approval is "
+                            "injected into the child's launch metadata for SL-0 verification.",
+                        ),
+                        metadata={
+                            "guard": "release_dispatch",
+                            "reason": "operator_approval_requires_observe",
+                            "record_status": "requires_observe",
+                            "phase": alias,
+                        },
+                    )
                 release_blocker = release_dispatch_blocker(repo, plan) or approval_blocker
                 if release_blocker:
                     classifications[alias] = "blocked"
@@ -7175,9 +7201,19 @@ def _resolve_release_dispatch_operator_approval(
     resolve + scope + inject + fail-closed-on-absent. So this NEVER does coverage
     here. It fail-closes to a sticky ``admin_approval`` blocker only when a fresh,
     valid record cannot be injected: absent, unreadable/malformed, secret-bearing
-    (rejected by ``operator_approval_from``), or STALE — scoped to this exact
-    roadmap + phase, mirroring ``_closeout_allow_unowned_attested``'s content-bound
-    freshness so an approval written for a different phase cannot authorize this one.
+    (rejected by ``operator_approval_from``), or STALE.
+
+    Freshness is scoped to this exact roadmap PATH + phase ALIAS (normalized). It is
+    NOT content-bound: the frozen ``OperatorApproval`` (UNATTEND) carries no roadmap/
+    phase sha256, so a record survives an in-place content change of the same
+    roadmap/phase. Two hardening follow-ups are therefore out of scope here and
+    deliberately deferred (see the PR): (1) content-bound freshness (add sha256 to the
+    record schema and compare against current provenance), and (2) authenticity — the
+    record is a hand-writable file, weaker than ``_closeout_allow_unowned_attested``'s
+    runner-emitted ledger event; a planted file with repo write access is trusted, the
+    same threat surface as the rest of phase-loop's file-based ledger. The scope here
+    is #145's stated mandate: represent the operator's *metadata-only* approval in
+    runner context so SL-0 need not read unstructured chat history.
 
     The gate is PLAN-DECLARED opt-in: it applies only to a release-dispatch plan
     whose frontmatter sets ``phase_loop_requires_operator_approval: true`` (the plan
@@ -7202,7 +7238,12 @@ def _resolve_release_dispatch_operator_approval(
             ),
             required_human_inputs=(
                 f"Write a metadata-only approval to `{record_path}` naming the approved "
-                "targets, source, watch-window owner, and this roadmap/phase/run, then rerun.",
+                "targets, source, watch-window owner, and this roadmap/phase/run.",
+                # admin_approval is a STICKY blocker (like missing_secret): writing the
+                # record and rerunning does NOT auto-clear it. Clear the sticky gate with
+                # the standard recovery, then rerun:
+                f"phase-loop reconcile --phase {phase} --to-status planned "
+                "--reason 'operator approval recorded' --force",
             ),
             metadata={
                 "guard": "release_dispatch",
@@ -7225,12 +7266,27 @@ def _resolve_release_dispatch_operator_approval(
         return None, _fail_closed(
             "malformed", "the approval record is malformed or carried a secret-bearing key"
         )
-    roadmap_rel = roadmap_repo_relative_path(repo, roadmap)
-    if approval.phase.upper() != phase.upper() or approval.roadmap not in {str(roadmap), roadmap_rel}:
+    if approval.phase.upper() != phase.upper() or not _roadmap_ref_matches(repo, roadmap, approval.roadmap):
         return None, _fail_closed(
             "stale", "the approval record is scoped to a different roadmap/phase"
         )
     return approval.to_metadata(), None
+
+
+def _roadmap_ref_matches(repo: Path, roadmap: Path, ref: str) -> bool:
+    """True when the approval's ``roadmap`` ref names this launch's roadmap, tolerant
+    of absolute vs repo-relative vs ``./``/symlink path forms (CR: agy/grok — a bare
+    string-set compare false-stales a valid approval written in a different path form).
+    Normalizes both sides via ``resolve()`` before comparing; fail-closed on any
+    OS error (a non-resolvable ref is treated as non-matching = stale)."""
+    if not ref:
+        return False
+    if ref == roadmap_repo_relative_path(repo, roadmap) or ref == str(roadmap):
+        return True
+    try:
+        return (repo / ref).resolve() == roadmap.resolve()
+    except OSError:
+        return False
 
 
 def _launch_contract_blocker(

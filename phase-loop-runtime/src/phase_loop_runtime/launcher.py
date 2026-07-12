@@ -2141,164 +2141,166 @@ def launch(
         completed = subprocess.run(command, **run_kwargs)
         return LaunchResult(command=command, returncode=completed.returncode, output=completed.stdout + completed.stderr)
 
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    output_parts: list[str] = []
-    line_queue: Queue[str | None] = Queue()
-    started_at = _utc_now()
-    started_monotonic = time.monotonic()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        output_parts: list[str] = []
+        line_queue: Queue[str | None] = Queue()
+        started_at = _utc_now()
+        started_monotonic = time.monotonic()
 
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            command,
-            text=True,
-            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            cwd=str(cwd) if cwd else None,
-            env=child_env,
-        )
-        process_group_id = _process_group_id(process.pid)
-        assert process.stdout is not None
-        if stdin_text is not None and process.stdin is not None:
-            process.stdin.write(stdin_text)
-            process.stdin.close()
-        reader = threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True)
-        reader.start()
-        last_heartbeat = 0.0
-        timed_out = False
-        interrupted = False
-        stalled = False
-        cleanup_evidence: dict[str, Any] | None = None
-        last_heartbeat_summary: dict[str, Any] | None = None
-        while True:
-            try:
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                command,
+                text=True,
+                stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(cwd) if cwd else None,
+                env=child_env,
+            )
+            process_group_id = _process_group_id(process.pid)
+            assert process.stdout is not None
+            if stdin_text is not None and process.stdin is not None:
+                process.stdin.write(stdin_text)
+                process.stdin.close()
+            reader = threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True)
+            reader.start()
+            last_heartbeat = 0.0
+            timed_out = False
+            interrupted = False
+            stalled = False
+            cleanup_evidence: dict[str, Any] | None = None
+            last_heartbeat_summary: dict[str, Any] | None = None
+            while True:
                 try:
-                    line = line_queue.get(timeout=1)
-                except Empty:
-                    line = None
-                if line:
-                    output_parts.append(line)
-                    log.write(line)
-                    log.flush()
-                    if stream_output:
-                        print(line, end="", flush=True)
-                now = time.monotonic()
-                if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
-                    heartbeat = run_heartbeat_summary(
-                        log_path=log_path,
-                        heartbeat_path=heartbeat_path,
-                        pid=process.pid,
-                        started_monotonic=started_monotonic,
-                        started_at=started_at,
-                        heartbeat_interval_seconds=heartbeat_interval_seconds,
-                        quiet_warning_seconds=quiet_warning_seconds,
-                        quiet_blocker_seconds=quiet_blocker_seconds,
-                        command=command,
-                        returncode=process.poll(),
-                        process_group_id=process_group_id,
-                    )
-                    last_heartbeat_summary = heartbeat
-                    write_run_heartbeat(heartbeat_path, heartbeat)
-                    if stream_output and heartbeat.get("quiet_level") != "active":
-                        print(
-                            "heartbeat:",
-                            f"pid={heartbeat.get('pid')}",
-                            f"elapsed={heartbeat.get('elapsed_seconds')}s",
-                            f"quiet={heartbeat.get('seconds_since_log_update')}s",
-                            f"level={heartbeat.get('quiet_level')}",
-                            flush=True,
+                    try:
+                        line = line_queue.get(timeout=1)
+                    except Empty:
+                        line = None
+                    if line:
+                        output_parts.append(line)
+                        log.write(line)
+                        log.flush()
+                        if stream_output:
+                            print(line, end="", flush=True)
+                    now = time.monotonic()
+                    if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
+                        heartbeat = run_heartbeat_summary(
+                            log_path=log_path,
+                            heartbeat_path=heartbeat_path,
+                            pid=process.pid,
+                            started_monotonic=started_monotonic,
+                            started_at=started_at,
+                            heartbeat_interval_seconds=heartbeat_interval_seconds,
+                            quiet_warning_seconds=quiet_warning_seconds,
+                            quiet_blocker_seconds=quiet_blocker_seconds,
+                            command=command,
+                            returncode=process.poll(),
+                            process_group_id=process_group_id,
                         )
-                    last_heartbeat = now
-                    if heartbeat.get("stalled_suspect") and process.poll() is None:
-                        stalled = True
+                        last_heartbeat_summary = heartbeat
+                        write_run_heartbeat(heartbeat_path, heartbeat)
+                        if stream_output and heartbeat.get("quiet_level") != "active":
+                            print(
+                                "heartbeat:",
+                                f"pid={heartbeat.get('pid')}",
+                                f"elapsed={heartbeat.get('elapsed_seconds')}s",
+                                f"quiet={heartbeat.get('seconds_since_log_update')}s",
+                                f"level={heartbeat.get('quiet_level')}",
+                                flush=True,
+                            )
+                        last_heartbeat = now
+                        if heartbeat.get("stalled_suspect") and process.poll() is None:
+                            stalled = True
+                            salvage = _salvage_snapshot(
+                                command=command,
+                                cwd=cwd,
+                                log_path=log_path,
+                                heartbeat=heartbeat,
+                                process=process,
+                                process_group_id=process_group_id,
+                                reason="stalled",
+                            )
+                            cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
+                            cleanup_evidence["salvage_snapshot"] = salvage
+                    if timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
+                        timed_out = True
                         salvage = _salvage_snapshot(
                             command=command,
                             cwd=cwd,
                             log_path=log_path,
-                            heartbeat=heartbeat,
+                            heartbeat=last_heartbeat_summary,
                             process=process,
                             process_group_id=process_group_id,
-                            reason="stalled",
+                            reason="timeout",
                         )
-                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
+                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
                         cleanup_evidence["salvage_snapshot"] = salvage
-                if timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
-                    timed_out = True
-                    salvage = _salvage_snapshot(
-                        command=command,
-                        cwd=cwd,
-                        log_path=log_path,
-                        heartbeat=last_heartbeat_summary,
-                        process=process,
-                        process_group_id=process_group_id,
-                        reason="timeout",
-                    )
-                    cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
-                    cleanup_evidence["salvage_snapshot"] = salvage
-                if process.poll() is not None:
-                    while True:
-                        try:
-                            line = line_queue.get_nowait()
-                        except Empty:
-                            break
-                        if line:
-                            output_parts.append(line)
-                            log.write(line)
-                            log.flush()
-                            if stream_output:
-                                print(line, end="", flush=True)
+                    if process.poll() is not None:
+                        while True:
+                            try:
+                                line = line_queue.get_nowait()
+                            except Empty:
+                                break
+                            if line:
+                                output_parts.append(line)
+                                log.write(line)
+                                log.flush()
+                                if stream_output:
+                                    print(line, end="", flush=True)
+                        break
+                except KeyboardInterrupt:
+                    interrupted = True
+                    cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
                     break
-            except KeyboardInterrupt:
-                interrupted = True
-                cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
-                break
-        returncode = process.wait()
-        reader.join(timeout=1)
-        try:
-            process.stdout.close()
-        except OSError:
-            pass
-    heartbeat_summary = None
-    if heartbeat_path is not None:
-        heartbeat_summary = run_heartbeat_summary(
-            log_path=log_path,
-            heartbeat_path=heartbeat_path,
-            pid=process.pid,
-            started_monotonic=started_monotonic,
-            started_at=started_at,
-            heartbeat_interval_seconds=heartbeat_interval_seconds,
-            quiet_warning_seconds=quiet_warning_seconds,
-            quiet_blocker_seconds=quiet_blocker_seconds,
+            returncode = process.wait()
+            reader.join(timeout=1)
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+        heartbeat_summary = None
+        if heartbeat_path is not None:
+            heartbeat_summary = run_heartbeat_summary(
+                log_path=log_path,
+                heartbeat_path=heartbeat_path,
+                pid=process.pid,
+                started_monotonic=started_monotonic,
+                started_at=started_at,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                quiet_warning_seconds=quiet_warning_seconds,
+                quiet_blocker_seconds=quiet_blocker_seconds,
+                command=command,
+                returncode=returncode,
+                process_group_id=process_group_id,
+            )
+            write_run_heartbeat(heartbeat_path, heartbeat_summary)
+        # For an ephemeral (unobserved) run the log dir is discarded, so the persisted
+        # paths must NOT be surfaced (they'd dangle). The liveness verdict
+        # (stalled/timed_out/interrupted + cleanup_evidence) and captured output are what
+        # the runner consumes; those survive the temp-dir teardown.
+        result = LaunchResult(
             command=command,
             returncode=returncode,
+            output="".join(output_parts),
+            log_path=None if ephemeral_run_dir is not None else str(log_path),
+            heartbeat_path=None if ephemeral_run_dir is not None else (str(heartbeat_path) if heartbeat_path else None),
+            terminal_path=None if ephemeral_run_dir is not None else str(log_path.parent / "terminal-summary.json"),
+            heartbeat_summary=heartbeat_summary,
+            process_pid=process.pid,
             process_group_id=process_group_id,
+            started_at=started_at,
+            finished_at=_utc_now(),
+            timed_out=timed_out,
+            interrupted=interrupted,
+            stalled=stalled,
+            cleanup_evidence=cleanup_evidence,
         )
-        write_run_heartbeat(heartbeat_path, heartbeat_summary)
-    # For an ephemeral (unobserved) run the log dir is discarded, so the persisted
-    # paths must NOT be surfaced (they'd dangle). The liveness verdict
-    # (stalled/timed_out/interrupted + cleanup_evidence) and captured output are what
-    # the runner consumes; those survive the temp-dir teardown.
-    result = LaunchResult(
-        command=command,
-        returncode=returncode,
-        output="".join(output_parts),
-        log_path=None if ephemeral_run_dir is not None else str(log_path),
-        heartbeat_path=None if ephemeral_run_dir is not None else (str(heartbeat_path) if heartbeat_path else None),
-        terminal_path=None if ephemeral_run_dir is not None else str(log_path.parent / "terminal-summary.json"),
-        heartbeat_summary=heartbeat_summary,
-        process_pid=process.pid,
-        process_group_id=process_group_id,
-        started_at=started_at,
-        finished_at=_utc_now(),
-        timed_out=timed_out,
-        interrupted=interrupted,
-        stalled=stalled,
-        cleanup_evidence=cleanup_evidence,
-    )
-    if ephemeral_run_dir is not None:
-        ephemeral_run_dir.cleanup()
-    return result
+        return result
+    finally:
+        if ephemeral_run_dir is not None:
+            ephemeral_run_dir.cleanup()
 
 
 def _stub_command(request: LaunchRequest, reason: str) -> list[str]:

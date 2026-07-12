@@ -72,3 +72,26 @@
   `release_dispatch_blocker` emit path. Target-coverage stays with the child's SL-0
   `OperatorApproval.covers()` — the runner does not re-implement it. The gate is
   plan-declared opt-in, so existing release-dispatch plans launch unchanged.
+  Approval injection requires an observed run: an approval-gated release-dispatch
+  under `--no-observe` fails closed (`admin_approval`, `record_status=
+  requires_observe`) rather than launching without the approval reaching the child.
+  The `admin_approval` gate is sticky (like `missing_secret`); its
+  `required_human_inputs` name the standard sticky-blocker recovery
+  (`phase-loop reconcile --phase <P> --to-status planned --reason … --force`), not a
+  bare rerun. Freshness is scoped to roadmap PATH + phase ALIAS (normalized, tolerant
+  of absolute/relative/symlink forms); it is NOT content-bound — the frozen
+  `OperatorApproval` carries no sha256. Deferred follow-ups (documented, not in this
+  change): content-bound freshness (add sha256 to the record + compare provenance) and
+  record authenticity (the file is hand-writable, weaker than a runner-emitted ledger
+  attestation; a planted file with repo write access is trusted, the same threat
+  surface as the rest of phase-loop's file-based ledger).
+
+- **RUNCORE2 cross-vendor CR hardening (codex / grok / agy).** The 3-vendor review
+  converged on concrete defects, all fixed here: the lane-(a) amendment marker moved
+  off the misleading `blocker_class` key to a warning-only `diagnostic_class` and is
+  framed as "provenance drift (amendment-shaped)" rather than a confirmed amendment
+  (a hash mismatch could also be a hand-edited ledger); the lane-(c) ephemeral-monitor
+  temp dir is now torn down via `try/finally` on the exception path; and the lane-(e)
+  tests were strengthened to assert the injected approval reaches the child launch
+  metadata + persisted event (not merely "not blocked"), plus wrong-roadmap-stale and
+  secret `record_status` coverage and a `build_prompt_bundle`-level #58 wiring test.

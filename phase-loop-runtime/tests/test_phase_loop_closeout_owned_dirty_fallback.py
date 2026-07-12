@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from phase_loop_runtime.injection import (
     _extract_plan_owned_files,
     _render_baml_closeout_instruction,
@@ -107,6 +109,33 @@ def test_standalone_closeout_prompt_populates_active_plan_owned_files(tmp_path):
 
     # A control-only / unplanned phase (no plan) stays empty — no spurious ownership.
     assert _extract_plan_owned_files(repo, roadmap, None) == ()
+
+
+@pytest.mark.dotfiles_integration
+def test_build_prompt_bundle_wires_plan_owned_files_end_to_end(tmp_path):
+    # #58 (CR: codex/grok): the helper-level test would still pass if build_prompt_bundle
+    # re-hardcoded plan_owned_files=(). Prove the actual call-site wiring: the owned
+    # files reach the rendered bundle body. (dotfiles: build_prompt_bundle resolves the
+    # skills bundle.)
+    from phase_loop_runtime.injection import build_prompt_bundle
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(
+        repo, "FIXTURE", roadmap, owned_files=("src/adapters/boundary.ts", "tests/boundary.test.ts")
+    )
+    commit_fixture_paths(repo, "add FIXTURE plan", plan)
+    bundle = build_prompt_bundle(
+        repo=repo,
+        harness_target="codex",
+        action="execute",
+        roadmap=roadmap,
+        phase="FIXTURE",
+        plan=plan,
+    )
+    assert "Active plan owned files:" in bundle.body
+    assert "src/adapters/boundary.ts" in bundle.body
+    assert "tests/boundary.test.ts" in bundle.body
 
 
 PARTIAL_PLAN = """# PARTIAL
