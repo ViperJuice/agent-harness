@@ -502,7 +502,7 @@ def test_cli_broker_resolve_failure_exits_two_with_requested_identities(monkeypa
     }
 
 
-def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
+def test_system_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
     unit = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
     assert "--host 127.0.0.1" in unit
     assert "--token-sha256 ${TASK_MESSAGE_TOKEN_SHA256}" in unit
@@ -510,20 +510,27 @@ def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> Non
     assert "Bearer" not in unit
     assert "codex app-server" not in unit
     assert "tailscale" not in unit
+    assert "User=viperjuice" in unit
+    assert "Group=viperjuice" in unit
+    assert "EnvironmentFile=/etc/phase-loop/task-message-broker.env" in unit
+    assert "ExecStart=/opt/phase-loop-task-message-broker/bin/phase-loop" in unit
     assert "ProtectHome=tmpfs" in unit
-    assert "BindReadOnlyPaths=%h/.local/share/phase-loop-task-message-broker" in unit
-    assert "\nBindReadOnlyPaths=%h/.local\n" not in unit
-    assert "BindReadOnlyPaths=%h/.codex/app-server-control/app-server-control.sock" in unit
-    assert "\nBindReadOnlyPaths=%h/.codex/app-server-control\n" not in unit
-    assert "PrivateDevices=" not in unit
-    assert "ProtectKernelModules=" not in unit
-    assert "IPAddressDeny=" not in unit
-    assert "IPAddressAllow=" not in unit
+    assert "BindReadOnlyPaths=/home/viperjuice/.codex/app-server-control/app-server-control.sock" in unit
+    assert unit.count("BindReadOnlyPaths=") == 1
+    assert "\nBindReadOnlyPaths=/home/viperjuice/.codex/app-server-control\n" not in unit
+    assert "%h" not in unit
+    assert ".local/share/phase-loop-task-message-broker" not in unit
+    assert "PrivateDevices=yes" in unit
+    assert "ProtectKernelModules=yes" in unit
+    assert "MemoryDenyWriteExecute=" not in unit
+    assert "IPAddressDeny=any" in unit
+    assert "IPAddressAllow=localhost" in unit
     assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit
+    assert "WantedBy=multi-user.target" in unit
 
 
 @pytest.mark.dotfiles_integration
-def test_packaged_user_service_matches_deploy_source() -> None:
+def test_packaged_system_service_matches_deploy_source() -> None:
     packaged = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
     source = (Path(__file__).resolve().parents[2] / "deploy" / "phase-loop-task-message-broker.service").read_text()
     assert packaged == source

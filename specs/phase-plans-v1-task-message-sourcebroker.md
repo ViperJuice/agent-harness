@@ -33,7 +33,7 @@ immutable Agent Harness release SHA.
 ## Top Interface-Freeze Gates
 
 - IF-0-SOURCEBROKER-1 — exact authenticated NDJSON broker contract over the real owner socket.
-- IF-0-SOURCEBROKER-2 — loopback-only user service plus Tailscale Serve deployment artifact.
+- IF-0-SOURCEBROKER-2 — loopback-only system service plus Tailscale Serve deployment artifact.
 - IF-0-SOURCEBROKER-3 — broker reports the immutable merged Agent Harness SHA consumed by downstream pinning.
 
 ## Phases
@@ -48,7 +48,7 @@ Implement and verify the narrow local resolver broker and client contract.
 
 - [ ] Exact heartbeat/result frames, token-digest authentication, release SHA, and inactivity rules are tested.
 - [ ] Probe/resolve client mode preserves the existing terminal resolver JSON contract.
-- [ ] Loopback user-service artifact and Tailscale Serve procedure expose no public listener.
+- [ ] Loopback system-service artifact and Tailscale Serve procedure expose no public listener.
 - [ ] Full standalone suite and package build pass.
 
 **Scope notes**

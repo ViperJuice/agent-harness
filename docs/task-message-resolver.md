@@ -45,7 +45,9 @@ with `source_task_unavailable`.
 The broker is a separate read-only wrapper around the local resolver, not an
 app-server proxy. Install the exact merged Agent Harness commit with an immutable
 VCS revision, then install `deploy/phase-loop-task-message-broker.service` as a
-user unit on the source host. The unit also ships inside the runtime wheel as
+root-managed system unit on the source host. It runs as `User=viperjuice` and
+`Group=viperjuice`; it never runs the broker as root. The unit also ships inside
+the runtime wheel as
 `phase_loop_runtime/deploy/phase-loop-task-message-broker.service`. Its
 environment file contains only the SHA-256 of the capability token and the
 merged 40-hex Agent Harness commit; it never contains the raw token. Source the
@@ -57,12 +59,13 @@ startup and requires both `requested_revision` and `commit_id` to exactly match
 from a moving branch/tag, or any supplied SHA mismatch fails before the broker
 binds a listener.
 
-Install the exact merged revision into the broker's dedicated venv; do not use
-the fleet-wide `~/.local/bin/phase-loop` installation:
+Install the exact merged revision into the broker's root-owned dedicated venv;
+do not use the fleet-wide `~/.local/bin/phase-loop` installation or a venv under
+the hidden user home:
 
 ```sh
-uv venv "$HOME/.local/share/phase-loop-task-message-broker"
-uv pip install --python "$HOME/.local/share/phase-loop-task-message-broker/bin/python" \
+sudo /home/viperjuice/.local/bin/uv venv --python /usr/bin/python3 /opt/phase-loop-task-message-broker
+sudo /home/viperjuice/.local/bin/uv pip install --python /opt/phase-loop-task-message-broker/bin/python \
   "git+https://github.com/ViperJuice/agent-harness@${AGENT_HARNESS_SHA}#subdirectory=phase-loop-runtime"
 ```
 
@@ -75,21 +78,22 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 
 Never use Tailscale Funnel. Probe from the authenticated caller:
 
-The unit hides the user's home, binds back only the dedicated broker venv and
-the exact `app-server-control.sock` inode read-only, uses private temporary
-storage, and retains an address-family allowlist. The user service does not use
-systemd `IPAddressDeny`/`IPAddressAllow`, `PrivateDevices`, or
-`ProtectKernelModules`: on claw's user manager, each device/kernel-module
-directive independently requires a forbidden capability drop and fails before
-`ExecStart`, while the IP-firewall directives likewise require unavailable
-privilege. The broker command itself rejects every non-loopback bind, and Tailscale Serve is the
-only tailnet exposure. The unit does not expose the rest of
-`~/.local` or any adjacent Codex logs/sockets. Do not weaken those restrictions to make deployment succeed. The
+The root system manager gives the unit a private mount namespace, hides the
+user's home, and binds back only the exact `app-server-control.sock` inode
+read-only. The immutable broker venv stays outside the home under `/opt` and the
+system tree is read-only. Private devices, kernel-module protection, an
+address-family allowlist, and systemd's deny-all/allow-localhost IP policy are
+all active. `MemoryDenyWriteExecute` is intentionally absent: claw's Python
+3.13/glibc thread path requests an executable thread stack and fails with
+`EPERM` when that directive is active. The broker command independently rejects
+every non-loopback bind, and Tailscale Serve is the only tailnet exposure. The
+unit does not expose adjacent Codex logs/sockets or unrelated home content. Do
+not weaken those restrictions to make deployment succeed. The
 client rejects redirects rather than forwarding its bearer to another origin.
 
-The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`
+The system-service environment file is `/etc/phase-loop/task-message-broker.env`
 and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus
-`AGENT_HARNESS_SHA=<merged-40-hex>`. Restrict it to the owning user.
+`AGENT_HARNESS_SHA=<merged-40-hex>`. Install it root-owned at mode `0600`.
 
 ```sh
 phase-loop task-message-probe \
@@ -111,7 +115,7 @@ stop the broker unit:
 
 ```sh
 tailscale serve clear svc:phase-loop-task-message-broker
-systemctl --user disable --now phase-loop-task-message-broker.service
+sudo systemctl disable --now phase-loop-task-message-broker.service
 ```
 
 Resolve one exact source after the probe is ready:
