@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"  # PyPI dist name; NOT "agent-harness" (an unrelated third-party PyPI project)
-version = "0.7.1"
+version = "0.7.2"
 description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.10"

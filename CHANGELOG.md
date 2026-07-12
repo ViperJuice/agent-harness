@@ -4,7 +4,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## [Unreleased]
+## [0.7.2] - 2026-07-12
 
 ### Advisor board — headless claude/Fable leg + native-fill affordance (agent-harness#183)
 
