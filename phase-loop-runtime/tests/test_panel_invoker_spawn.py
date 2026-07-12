@@ -38,7 +38,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             repo_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
-                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
+                patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(
@@ -140,7 +140,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
-                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
+                patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
@@ -160,7 +160,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
-                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
+                patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
@@ -228,15 +228,15 @@ class ClaudeLegDeferredUnderClaudeCodeTest(unittest.TestCase):
 
 
 class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
-    """#125 — the deferred claude leg distinguishes "under Claude Code" from a
-    headless / no-tty host (Codex Desktop) and exposes a structured, machine-
-    branchable request the driving host can fulfill via its native sub-agent
-    adapter. The returned ``("UNAVAILABLE", "")`` stays byte-identical (#92 A4);
-    only the AUDIT reason and the additive descriptor are new."""
+    """#125 + #183 reconciliation — ``_claude_leg_deferred_reason`` still distinguishes
+    "under Claude Code" from the headless / no-tty ``native_adapter_required`` code
+    (used by the standalone ``native_agent_leg_request`` affordance builder). But as
+    of #183 (owner-confirmed) the runtime NO LONGER defers a headless NON-Claude host:
+    ``_run_claude_tui_session`` self-allocates its PTY, so the leg RUNS there.
+    ``native_adapter_required`` is now an affordance/fallback, not a runtime defer."""
 
     def test_reason_code_distinguishes_codex_host_from_claude_code(self):
-        # Codex Desktop repro: CLAUDECODE unset, no tty → native_adapter_required
-        # (NOT the Claude-Code-specific reason).
+        # Standalone builder codes (affordance): a non-Claude env → native_adapter_required.
         code, detail = pi._claude_leg_deferred_reason({})
         self.assertEqual(code, "native_adapter_required")
         self.assertIn("native sub-agent adapter", detail)
@@ -246,8 +246,11 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         self.assertEqual(code_cc, "under_claude_code")
         self.assertIn("Task tool", detail_cc)
 
-    def test_headless_defer_logs_native_adapter_reason(self):
-        # The no-tty defer (Codex host) must not collapse to the Claude-Code reason.
+    def test_headless_non_claude_runs_self_pty_tui(self):
+        # #183 (owner-confirmed reconciliation): a headless NON-Claude host
+        # (CLAUDECODE unset, no controlling terminal) RUNS the self-PTY TUI — it no
+        # longer defers as native_adapter_required. The self-allocated PTY in
+        # _run_claude_tui_session makes the missing parent terminal irrelevant.
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
@@ -255,16 +258,18 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
-                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
-                self.assertLogs("phase_loop_runtime.panel_invoker", level="WARNING") as logs,
+                patch(
+                    "phase_loop_runtime.panel_invoker._run_claude_tui_session",
+                    return_value=(0, "Headless review.\nAGREE", "claude_tui_file_output"),
+                ) as run_tui,
             ):
                 status, text = pi._exec_claude_tui_leg(
                     review_dir, out_dir, 600, "bundle",
-                    env={"NO_TTY": "1"},  # CLAUDECODE unset ⇒ native_adapter_required
+                    env={"NO_TTY": "1"},  # CLAUDECODE unset ⇒ non-Claude host → RUNS
                 )
-        self.assertEqual((status, text), ("UNAVAILABLE", ""))  # byte-identical (#92 A4)
-        run_tui.assert_not_called()
-        self.assertTrue(any("native_adapter_required" in line for line in logs.output))
+        self.assertEqual(status, "OK")
+        self.assertIn("AGREE", text)
+        run_tui.assert_called_once()  # ran the self-PTY session, did NOT defer
 
     def test_native_agent_leg_request_review_shape(self):
         req = pi.native_agent_leg_request(mode="review", env={})

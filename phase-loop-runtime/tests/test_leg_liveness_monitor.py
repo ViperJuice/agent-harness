@@ -151,7 +151,7 @@ def test_default_spawn_threads_explicit_backstop_to_claude_tui(tmp_path, monkeyp
         return 0, "Looks good.\nAGREE", ""
 
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
-    monkeypatch.setattr(pi, "_tui_capable", lambda *a, **k: True)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda *a, **k: False)
     monkeypatch.setattr(pi, "_run_claude_tui_session", fake_tui)
 
     pi._default_spawn("claude", "artifact", repo_dir=tmp_path, timeout_s=300)

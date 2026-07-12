@@ -44,22 +44,23 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
-6. The runtime never spawns a Claude TUI it cannot drive, so on a deferred host the `claude` leg returns `UNAVAILABLE` with empty text — the driving host supplies that leg through its OWN native sub-agent, not the runtime. See "Fulfilling the deferred claude leg natively" below.
+6. On a Claude Code host the runtime DEFERS the `claude` leg (`UNAVAILABLE`, empty text) so you supply it as a native `Task` Agent (#92); on a headless NON-Claude host (e.g. Harness Desktop) the runtime now RUNS the leg itself through a self-allocated PTY (#183), so it is NOT deferred there. See "Fulfilling the deferred claude leg natively" below for the Claude-Code defer and the native-adapter fallback.
 
-## Fulfilling The Deferred Claude Leg Natively (#125)
+## Fulfilling The Deferred Claude Leg Natively (#125 / #183)
 
-When there is no controlling terminal to drive a Claude TUI, the runtime defers the `claude` leg (`status="UNAVAILABLE"`, empty text — never counted as an AGREE, recorded as a non-gating `panel_leg_degraded` warn). There are TWO deferral cases, and the runtime now distinguishes them with a machine-branchable reason code:
+The runtime defers the `claude` leg (`status="UNAVAILABLE"`, empty text — never counted as an AGREE, recorded as a non-gating `panel_leg_degraded` warn) ONLY when it cannot drive a Claude TUI here. Two machine-branchable reason codes:
 
-- `under_claude_code` — you are running INSIDE a Claude Code session (`CLAUDECODE=1`). The driving Claude Code session supplies the leg as its own native `Task` Agent.
-- `native_adapter_required` — a headless / no-tty host such as the **Harness Desktop** tool shell (`CLAUDECODE` unset, stdin/stdout not a tty). The Harness host fulfills the leg through its native sub-agent adapter (`multi_agent_v1.spawn_agent`).
+- `under_claude_code` — you are running INSIDE a Claude Code session (`CLAUDECODE=1`). The driving Claude Code session supplies the leg as its own native `Task` Agent. This is the case the RUNTIME actually defers.
+- `native_adapter_required` — an AFFORDANCE / fallback (#183). On a headless / no-tty host such as the **Harness Desktop** tool shell (`CLAUDECODE` unset, stdin/stdout not a tty) the runtime now RUNS the self-PTY TUI itself, so the leg is NOT deferred by default. Use this path only when the runtime cannot run the TUI (no Claude support on the host) or you PREFER to fulfill the leg through your own native sub-agent adapter (`multi_agent_v1.spawn_agent`).
 
-Do NOT accept the 2-leg board silently. From Harness Desktop, ask the runtime for the structured request instead of parsing the log line, then fulfill it natively:
+Do NOT accept a short board silently. When the leg IS deferred (under Claude Code), or when you deliberately opt into the native-adapter fallback, ask the runtime for the structured request instead of parsing the log line, then fulfill it natively:
 
 ```python
 from phase_loop_runtime.panel_invoker import native_agent_leg_request
 
 req = native_agent_leg_request(mode="review")   # env defaults to os.environ
-# req.reason == "native_adapter_required" on a Harness/no-tty host
+# req.reason == "native_adapter_required" on a non-Claude host (affordance),
+# "under_claude_code" inside a Claude Code session.
 # spawn a Harness native sub-agent seeded with the SAME review bundle you passed the
 # board, plus req.instructions (the review brief) and req.verdict_contract, on
 # req.model (Fable by default). req.to_dict() is JSON for the tool boundary.

@@ -1418,12 +1418,18 @@ def _normalize_claude_agent_state(value: object) -> str:
 #   under_claude_code       — we are INSIDE a Claude Code session; the driving
 #                             session supplies the leg as its own NATIVE Agent
 #                             (Task tool). Spawning a second Claude TUI here is
-#                             the wrong route.
-#   native_adapter_required — a headless / no-tty host (e.g. the Codex Desktop
-#                             tool shell: CLAUDECODE unset, stdin/stdout not a
-#                             tty) with no controlling terminal to drive a TUI.
-#                             The host fulfills the leg through its own native
-#                             sub-agent adapter (see native_agent_leg_request()).
+#                             the wrong route. This is the RUNTIME-EMITTED defer
+#                             code (the only case `_exec_claude_tui_leg` defers).
+#   native_adapter_required — an AFFORDANCE/fallback for a host that fulfills the
+#                             leg via its OWN sub-agent adapter instead of the
+#                             runtime's self-PTY TUI (see native_agent_leg_request()).
+#                             #183: the runtime NO LONGER defers a headless / no-tty
+#                             NON-Claude host by default — `_run_claude_tui_session`
+#                             self-allocates its own PTY, so the leg RUNS there. This
+#                             code is produced only by a standalone
+#                             `native_agent_leg_request(env=<non-Claude>)` call, for
+#                             a host that cannot drive the TUI or prefers its own
+#                             agent (e.g. the Codex Desktop tool shell).
 _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE = "under_claude_code"
 _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER = "native_adapter_required"
 
@@ -1434,10 +1440,10 @@ _CLAUDE_LEG_DEFERRED_REASONS: dict[str, str] = {
         "runtime must not spawn a second Claude TUI here."
     ),
     _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER: (
-        "claude leg not run by the runtime in this headless / no-tty host (no "
-        "controlling terminal to drive a Claude TUI); the driving host (e.g. "
-        "Codex Desktop) must fulfill it via its native sub-agent adapter — see "
-        "native_agent_leg_request()."
+        "claude leg available as an AFFORDANCE for this headless / no-tty host: "
+        "#183 the runtime runs the self-PTY TUI here by default, but a host that "
+        "cannot drive a TUI (or prefers its own agent) may fulfill the leg via its "
+        "native sub-agent adapter — see native_agent_leg_request()."
     ),
 }
 
@@ -1598,8 +1604,12 @@ def _tui_capable(
     env: Mapping[str, str] | None = None,
     isatty: Callable[[], bool] | None = None,
 ) -> bool:
-    """The TUI leg needs a real controlling terminal. False under Claude Code OR
-    when stdin/stdout is not a tty (headless/detached)."""
+    """True iff the PARENT has a usable controlling terminal AND we are not under
+    Claude Code. Retained as a capability predicate, but as of #183 it is NO LONGER
+    the gate for running the claude TUI leg: ``_exec_claude_tui_leg`` gates on
+    ``_under_claude_code`` alone, because ``_run_claude_tui_session`` self-allocates
+    its own PTY and never needs the parent's tty. Kept for callers/tests that
+    genuinely want to know whether the parent is terminal-attached."""
     if _under_claude_code(env):
         return False
     check = isatty if isatty is not None else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
@@ -1639,18 +1649,24 @@ def _exec_claude_tui_leg(
     if not supported:
         return "UNAVAILABLE", support_detail
 
-    if not _tui_capable(env):
-        # Under Claude Code / no controlling terminal: do NOT spawn a Claude TUI
-        # we cannot drive (issue #92). Degrade cleanly with the existing
-        # UNAVAILABLE status and EMPTY review text — the empty text is
-        # load-bearing (A4): an UNAVAILABLE leg with empty text becomes a
-        # non-gating `panel_leg_degraded` warn, never a block, and `usable`
-        # (status=="OK") never counts it as an AGREE. The driving session/host
-        # must supply this leg natively (Claude Code: a Task Agent; Codex Desktop
-        # / headless: its native sub-agent adapter — see native_agent_leg_request).
-        # #125: log the machine-branchable reason code so the distinction between
-        # "under Claude Code" and "native-adapter-required" is visible in the audit
-        # line, not just blended into one sentence.
+    if _under_claude_code(env):
+        # #92: INSIDE Claude Code, do NOT spawn a SECOND Claude TUI we cannot
+        # drive. Degrade cleanly with the existing UNAVAILABLE status and EMPTY
+        # review text — the empty text is load-bearing (A4): an UNAVAILABLE leg
+        # with empty text becomes a non-gating `panel_leg_degraded` warn, never a
+        # block, and `usable` (status=="OK") never counts it as an AGREE. The
+        # driving Claude Code session supplies this leg natively (a Task Agent) —
+        # see the `needs_native_agent` request the board attaches at the
+        # invoke_board layer (ABDNATIVE / #183).
+        #
+        # #183 (owner-confirmed reconciliation): a merely non-TTY parent is NOT a
+        # defer reason. `_run_claude_tui_session` SELF-ALLOCATES its own PTY
+        # (pty.openpty), so a headless NON-Claude caller (e.g. Codex Desktop) with
+        # valid Claude Max OAuth runs the leg RIGHT HERE — the old `_tui_capable`
+        # parent-tty gate over-blocked that case. `native_adapter_required` is now
+        # an AFFORDANCE/fallback (via native_agent_leg_request()) for a host that
+        # cannot drive the TUI or prefers its own sub-agent, NOT the default that
+        # silently dropped the seat.
         reason_code, reason_detail = _claude_leg_deferred_reason(env)
         logging.getLogger(__name__).warning(
             "advisor-panel claude leg deferred [%s]: %s", reason_code, reason_detail

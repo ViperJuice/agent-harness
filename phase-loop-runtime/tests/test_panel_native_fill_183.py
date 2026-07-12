@@ -119,6 +119,43 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         self.assertIsNone(leg.needs_native_agent)
 
 
+class HeadlessNonClaudeRunsLeg(unittest.TestCase):
+    """Bug 1 (#183 acceptance): a NON-Claude, non-TTY caller RUNS the one-seat
+    Claude/Fable board leg (self-PTY) and gets OK with canonical file output — it
+    is NOT deferred, so it carries no native-fill request."""
+
+    def test_board_claude_seat_returns_ok_headless(self):
+        # base_env WITHOUT CLAUDECODE == a headless non-Claude caller (e.g. Codex
+        # Desktop). The self-PTY TUI runs; the parent's missing tty is irrelevant.
+        session = unittest.mock.MagicMock(
+            return_value=(0, "A complete advisory.\nAGREE", "claude_tui_file_output")
+        )
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            scratch = Path(td) / "scratch"
+            scratch.mkdir()
+            with (
+                unittest.mock.patch.object(
+                    pi, "_claude_code_support_status", return_value=(True, "supported")
+                ),
+                unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
+            ):
+                result = pi.invoke_board(
+                    _claude_board(),
+                    "",
+                    artifact_ref=str(artifact.resolve()),
+                    repo_dir=str(scratch),
+                    base_env={"PATH": os.environ.get("PATH", "")},  # no CLAUDECODE
+                )
+        (leg,) = result.legs
+        self.assertEqual(leg.status, "OK")
+        self.assertIn("AGREE", leg.text)
+        self.assertIsNone(leg.needs_native_agent)  # ran, not deferred
+        self.assertEqual(result.native_fill_requests, ())
+        session.assert_called_once()  # self-PTY session ran headless
+
+
 _REAL_COMPOSE = comp_mod.compose_review_board
 
 
