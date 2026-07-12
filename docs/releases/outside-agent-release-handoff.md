@@ -48,9 +48,9 @@ enforcement is live.
 - Wheel artifact: `phase_loop_runtime-0.7.1-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.1.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.1.data`, `phase_loop_runtime-0.7.1.dist-info`
-- Wheel file count: 382
+- Wheel file count: 401
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: 792
+- Sdist file count: 849
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
@@ -93,7 +93,7 @@ merge verdict.
 - `install-agent-harness.sh` pins the persistent clone at
   `~/.local/share/agent-harness` (or `$AGENT_HARNESS_HOME`) to `RELEASE_PIN`. If
   `RELEASE_PIN` is not bumped, previously installed clones stay behind (the live
-  gap where clones sat at `0.6.0` under `RELEASE_PIN=v0.7.1`).
+  gap where clones sat at `0.6.0` under `RELEASE_PIN=v0.7.0`).
 - `phase-loop doctor` surfaces a `stale` BOM verdict for
   `pinned agent clone (~/.local/share/agent-harness)` when a local clone is behind
   `RELEASE_PIN`. The remediation is to re-run `install-agent-harness.sh` (which

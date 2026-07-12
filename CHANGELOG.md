@@ -1,8 +1,12 @@
 # Changelog
 
+All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
+`phase-loop-skills` bundle) are documented here. This project adheres to semantic
+versioning; the release tag, the package `version`, and this file are kept in lockstep.
+
 ## [0.7.1] - 2026-07-12
 
-POST070FIX — a parallel 8-phase backlog closeout on top of 0.7.0: phase-loop authoring-skill refinements, push-after-merge visibility, the REVIEWGOV W3/W4 review-ratification architecture (parameterized ratification policy + unattended consensus-substitutes-for-human), per-vendor review-leg sandboxing, manifest robustness, and a runner/reconcile correctness batch.
+POST070FIX — a parallel 8-phase backlog closeout on top of 0.7.0: phase-loop authoring-skill refinements, push-after-merge visibility, the REVIEWGOV W3/W4 review-ratification architecture (parameterized ratification policy + unattended consensus-substitutes-for-human), per-vendor review-leg sandboxing, manifest robustness, and a runner/reconcile correctness batch. This tag also contains the authenticated local task-message source broker (agent-harness#167, agent-harness#168) that landed after 0.7.0 — see the SOURCEBROKER section below.
 
 ### SKILLREF
 
@@ -350,11 +354,7 @@ green.
   metadata + persisted event (not merely "not blocked"), plus wrong-roadmap-stale and
   secret `record_status` coverage and a `build_prompt_bundle`-level #58 wiring test.
 
-All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
-`phase-loop-skills` bundle) are documented here. This project adheres to semantic
-versioning; the release tag, the package `version`, and this file are kept in lockstep.
-
-## Unreleased
+### SOURCEBROKER — authenticated task-message source broker (agent-harness#167, agent-harness#168, agent-harness#176, agent-harness#178)
 
 - **Add the authenticated local task-message source broker.** A loopback-only
   user service wraps the real Codex owner socket, authenticates capability
