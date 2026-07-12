@@ -2,8 +2,10 @@
 
 Summary: PASSED locally — focused broker/resolver suite 67 passed, 1 skipped;
 standalone Gate A 2,389 passed, 35 skipped, 593 deselected. Git diff checks
-passed. GitHub PR #180's seven checks passed before the procfs amendment and
-must pass again at the amended head before merge.
+passed. The 0.7.0 sdist and wheel build passed, roadmap validation reported one
+valid phase, and plan validation reported three lanes with zero warnings.
+GitHub PR #180's seven checks passed before the latest documentation amendment
+and must pass again at the final head before merge.
 
 - Redaction posture: metadata only.
 - Permanent live deployment: deferred until the corrected Agent Harness PR
