@@ -37,6 +37,21 @@ def _approval_bytes(**overrides: object) -> bytes:
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _nested_approval_bytes(contract_version: str, **source_overrides: object) -> bytes:
+    source: dict[str, object] = {
+        "source_thread_id": "thread-1",
+        "source_message_id": "message-1",
+        "source_message_sha256": hashlib.sha256(SOURCE_BYTES).hexdigest(),
+        "approval_message_id": "message-1-approval",
+    }
+    source.update(source_overrides)
+    return json.dumps(
+        {"contract_version": contract_version, "authorized": True, "source": source},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
 class _Response(io.BytesIO):
     def __init__(self, frames: list[dict[str, object]]) -> None:
         super().__init__(b"".join(json.dumps(frame).encode() + b"\n" for frame in frames))
@@ -79,8 +94,8 @@ class _TrickleResponse(_Response):
         return super().readline(limit)
 
 
-def _resolved_payload(**approval_overrides: object) -> dict[str, object]:
-    approval_bytes = _approval_bytes(**approval_overrides)
+def _resolved_payload(*, approval_bytes: bytes | None = None, **approval_overrides: object) -> dict[str, object]:
+    approval_bytes = approval_bytes or _approval_bytes(**approval_overrides)
     return {
         "status": "resolved",
         "authority": AUTHORITY,
@@ -122,6 +137,65 @@ def test_client_accepts_monotonic_heartbeats_and_exact_result() -> None:
         {"type": "result", "agent_harness_sha": SHA, "payload": {"status": "ready", "authority": AUTHORITY}},
     ]).probe()
     assert result == {"status": "ready", "authority": AUTHORITY, "agent_harness_sha": SHA}
+
+
+@pytest.mark.parametrize(
+    "contract_version",
+    (
+        "gpu0_unit_install_approval.v1",
+        "gpu0_prov_fence_approval.v1",
+        "gpu0_fence_fm_ack.v1",
+    ),
+)
+def test_client_accepts_gpu0_nested_source_identity(contract_version: str) -> None:
+    payload = _resolved_payload(approval_bytes=_nested_approval_bytes(contract_version))
+
+    result = _client([
+        {"type": "result", "agent_harness_sha": SHA, "payload": payload},
+    ]).resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+
+    assert result["approval_body_sha256"] == payload["approval_body_sha256"]
+
+
+@pytest.mark.parametrize(
+    "approval_bytes",
+    (
+        _approval_bytes(contract_version="gpu0_unit_install_approval.v1"),
+        _nested_approval_bytes("gpu0_unit_install_approval.v1", source_message_id="wrong"),
+        _nested_approval_bytes("gpu0_unit_install_approval.v1", approval_message_id="wrong"),
+        _nested_approval_bytes("gpu0_unit_install_approval.v1", source_message_sha256="0" * 64),
+    ),
+)
+def test_client_rejects_invalid_gpu0_source_identity(approval_bytes: bytes) -> None:
+    payload = _resolved_payload(approval_bytes=approval_bytes)
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        _client([
+            {"type": "result", "agent_harness_sha": SHA, "payload": payload},
+        ]).resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+
+    assert exc.value.code == "attestation_invalid"
+
+
+def test_client_rejects_mixed_source_identity_placements() -> None:
+    top_level = json.loads(_approval_bytes())
+    top_level["source"] = json.loads(
+        _nested_approval_bytes("gpu0_unit_install_approval.v1")
+    )["source"]
+    nested = json.loads(_nested_approval_bytes("gpu0_unit_install_approval.v1"))
+    nested["approval_message_id"] = "message-1-approval"
+
+    for approval in (top_level, nested):
+        approval_bytes = json.dumps(approval, sort_keys=True, separators=(",", ":")).encode()
+        with pytest.raises(TaskMessageResolverError) as exc:
+            _client([
+                {
+                    "type": "result",
+                    "agent_harness_sha": SHA,
+                    "payload": _resolved_payload(approval_bytes=approval_bytes),
+                },
+            ]).resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+        assert exc.value.code == "attestation_invalid"
 
 
 @pytest.mark.parametrize(

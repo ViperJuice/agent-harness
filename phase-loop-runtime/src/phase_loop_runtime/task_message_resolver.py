@@ -25,10 +25,22 @@ FAILURE_CODES = frozenset(
     }
 )
 APPROVAL_CLIENT_ID_SUFFIX = "-approval"
-APPROVAL_CONTRACT_VERSIONS = frozenset({
+TOP_LEVEL_SOURCE_CONTRACT_VERSIONS = frozenset({
     "embedding_provenance_deploy_approval.v2",
     "embedding_provenance_bootstrap_approval.v3",
 })
+NESTED_SOURCE_CONTRACT_VERSIONS = frozenset({
+    "gpu0_unit_install_approval.v1",
+    "gpu0_prov_fence_approval.v1",
+    "gpu0_fence_fm_ack.v1",
+})
+APPROVAL_CONTRACT_VERSIONS = TOP_LEVEL_SOURCE_CONTRACT_VERSIONS | NESTED_SOURCE_CONTRACT_VERSIONS
+SOURCE_IDENTITY_KEYS = frozenset({
+    "source_thread_id",
+    "source_message_id",
+    "source_message_sha256",
+})
+NESTED_SOURCE_IDENTITY_KEYS = SOURCE_IDENTITY_KEYS | {"approval_message_id"}
 
 
 def _decode_strict_json(value: bytes) -> Any:
@@ -48,6 +60,23 @@ def _decode_strict_json(value: bytes) -> Any:
         object_pairs_hook=object_pairs,
         parse_constant=reject_constant,
     )
+
+
+def approval_source_identity(approval: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Select the exact source-identity location for a governed contract."""
+    contract_version = approval.get("contract_version")
+    if contract_version in TOP_LEVEL_SOURCE_CONTRACT_VERSIONS:
+        if "source" in approval or not SOURCE_IDENTITY_KEYS.issubset(approval):
+            return None
+        return approval
+    if contract_version not in NESTED_SOURCE_CONTRACT_VERSIONS:
+        return None
+    if any(key in approval for key in NESTED_SOURCE_IDENTITY_KEYS):
+        return None
+    source = approval.get("source")
+    if not isinstance(source, dict) or set(source) != NESTED_SOURCE_IDENTITY_KEYS:
+        return None
+    return source
 
 
 class TaskMessageResolverError(LookupError):
@@ -453,23 +482,25 @@ class CodexAppServerTaskMessageResolver:
             rfc8785.dumps(approval)
         except (TypeError, ValueError) as exc:
             raise self._error("approval_body_unavailable", thread_id, message_id) from exc
-        required_claims = {
-            "contract_version",
-            "authorized",
-            "source_thread_id",
-            "source_message_id",
-            "source_message_sha256",
-        }
         if (
-            not required_claims.issubset(approval)
-            or not isinstance(approval.get("contract_version"), str)
+            not isinstance(approval.get("contract_version"), str)
             or approval.get("contract_version") not in APPROVAL_CONTRACT_VERSIONS
             or approval.get("authorized") is not True
         ):
             raise self._error("approval_body_unavailable", thread_id, message_id)
-        if approval.get("source_thread_id") != thread_id or approval.get("source_message_id") != message_id:
+        source_identity = approval_source_identity(approval)
+        if source_identity is None:
+            raise self._error("approval_body_unavailable", thread_id, message_id)
+        if (
+            source_identity.get("source_thread_id") != thread_id
+            or source_identity.get("source_message_id") != message_id
+            or (
+                "approval_message_id" in source_identity
+                and source_identity.get("approval_message_id") != approval_message_id
+            )
+        ):
             raise self._error("source_identity_mismatch", thread_id, message_id)
-        if approval.get("source_message_sha256") != hashlib.sha256(message_bytes).hexdigest():
+        if source_identity.get("source_message_sha256") != hashlib.sha256(message_bytes).hexdigest():
             raise self._error("attestation_invalid", thread_id, message_id)
 
         source_started_at = source_turn.get("startedAt")

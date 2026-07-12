@@ -8,7 +8,7 @@ import json
 import queue
 import re
 import threading
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -16,7 +16,12 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import rfc8785
 
 from .task_message_broker import decode_strict_json
-from .task_message_resolver import APPROVAL_CONTRACT_VERSIONS, FAILURE_CODES, TaskMessageResolverError
+from .task_message_resolver import (
+    APPROVAL_CONTRACT_VERSIONS,
+    FAILURE_CODES,
+    TaskMessageResolverError,
+    approval_source_identity,
+)
 
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
@@ -254,13 +259,19 @@ class TaskMessageBrokerClient:
             canonical = rfc8785.dumps(approval_document)
         except (TypeError, ValueError, json.JSONDecodeError):
             return False
+        source_identity = (
+            approval_source_identity(approval_document)
+            if isinstance(approval_document, dict)
+            else None
+        )
         return (
-            isinstance(approval_document, dict)
+            isinstance(source_identity, Mapping)
             and approval_document.get("contract_version") in APPROVAL_CONTRACT_VERSIONS
             and approval_document.get("authorized") is True
-            and approval_document.get("source_thread_id") == thread_id
-            and approval_document.get("source_message_id") == message_id
-            and approval_document.get("source_message_sha256") == hashlib.sha256(message_bytes).hexdigest()
+            and source_identity.get("source_thread_id") == thread_id
+            and source_identity.get("source_message_id") == message_id
+            and source_identity.get("source_message_sha256") == hashlib.sha256(message_bytes).hexdigest()
+            and source_identity.get("approval_message_id", f"{message_id}-approval") == f"{message_id}-approval"
             and hashlib.sha256(message_bytes).hexdigest() == payload["message_sha256"]
             and hashlib.sha256(approval_body_bytes).hexdigest() == payload["approval_body_sha256"]
             and hashlib.sha256(canonical).hexdigest() == payload["approval_canonical_sha256"]

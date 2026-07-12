@@ -42,6 +42,25 @@ def _approval(source: str, **changes: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
+def _nested_approval(source: str, contract_version: str, **source_changes: object) -> str:
+    source_identity: dict[str, object] = {
+        "source_thread_id": THREAD_ID,
+        "source_message_id": MESSAGE_ID,
+        "source_message_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "approval_message_id": APPROVAL_MESSAGE_ID,
+    }
+    source_identity.update(source_changes)
+    return json.dumps(
+        {
+            "contract_version": contract_version,
+            "authorized": True,
+            "source": source_identity,
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
 def _thread(source: str = "FM approves exact PROVDEPLOY body.", approval: str | None = None, **turn_changes: object) -> dict[str, object]:
     source_turn: dict[str, object] = {
         "id": "turn-001",
@@ -149,6 +168,70 @@ def test_governed_deploy_and_bootstrap_contracts_are_accepted(contract_version: 
     proof = resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
 
     assert proof.approval_body_bytes == approval.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "contract_version",
+    (
+        "gpu0_unit_install_approval.v1",
+        "gpu0_prov_fence_approval.v1",
+        "gpu0_fence_fm_ack.v1",
+    ),
+)
+def test_gpu0_contracts_accept_exact_nested_source_identity(contract_version: str) -> None:
+    source = "FM approves the governed GPU0 action."
+    approval = _nested_approval(source, contract_version)
+    resolver, _ = _resolver(_thread(source, approval))
+
+    proof = resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert proof.approval_body_bytes == approval.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("approval", "expected"),
+    (
+        (_approval("FM approves exact PROVDEPLOY body.", contract_version="gpu0_unit_install_approval.v1"), "approval_body_unavailable"),
+        (_nested_approval("FM approves exact PROVDEPLOY body.", "gpu0_unit_install_approval.v1", source_message_id="wrong"), "source_identity_mismatch"),
+        (_nested_approval("FM approves exact PROVDEPLOY body.", "gpu0_unit_install_approval.v1", approval_message_id="wrong"), "source_identity_mismatch"),
+        (_nested_approval("different source", "gpu0_unit_install_approval.v1"), "attestation_invalid"),
+    ),
+)
+def test_gpu0_nested_source_identity_failures_are_typed(approval: str, expected: str) -> None:
+    resolver, _ = _resolver(_thread(approval=approval))
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == expected
+
+
+def test_mixed_source_identity_placements_are_rejected() -> None:
+    source = "FM approves exact PROVDEPLOY body."
+    top_level = json.loads(_approval(source))
+    top_level["source"] = json.loads(
+        _nested_approval(source, "gpu0_unit_install_approval.v1")
+    )["source"]
+    nested = json.loads(_nested_approval(source, "gpu0_unit_install_approval.v1"))
+    nested["approval_message_id"] = APPROVAL_MESSAGE_ID
+
+    for approval in (top_level, nested):
+        resolver, _ = _resolver(_thread(source, json.dumps(approval, separators=(",", ":"))))
+        with pytest.raises(TaskMessageResolverError) as exc:
+            resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+        assert _code(exc) == "approval_body_unavailable"
+
+
+def test_top_level_contract_missing_source_claim_is_body_unavailable() -> None:
+    source = "FM approves exact PROVDEPLOY body."
+    approval = json.loads(_approval(source))
+    del approval["source_message_sha256"]
+    resolver, _ = _resolver(_thread(source, json.dumps(approval, separators=(",", ":"))))
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "approval_body_unavailable"
 
 
 def test_one_byte_semantic_changes_change_the_proof() -> None:
