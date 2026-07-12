@@ -16,7 +16,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import rfc8785
 
 from .task_message_broker import decode_strict_json
-from .task_message_resolver import APPROVAL_CONTRACT_VERSION, FAILURE_CODES, TaskMessageResolverError
+from .task_message_resolver import APPROVAL_CONTRACT_VERSIONS, FAILURE_CODES, TaskMessageResolverError
 
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
@@ -256,7 +256,7 @@ class TaskMessageBrokerClient:
             return False
         return (
             isinstance(approval_document, dict)
-            and approval_document.get("contract_version") == APPROVAL_CONTRACT_VERSION
+            and approval_document.get("contract_version") in APPROVAL_CONTRACT_VERSIONS
             and approval_document.get("authorized") is True
             and approval_document.get("source_thread_id") == thread_id
             and approval_document.get("source_message_id") == message_id

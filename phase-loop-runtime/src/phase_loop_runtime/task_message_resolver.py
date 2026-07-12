@@ -25,7 +25,10 @@ FAILURE_CODES = frozenset(
     }
 )
 APPROVAL_CLIENT_ID_SUFFIX = "-approval"
-APPROVAL_CONTRACT_VERSION = "embedding_provenance_deploy_approval.v2"
+APPROVAL_CONTRACT_VERSIONS = frozenset({
+    "embedding_provenance_deploy_approval.v2",
+    "embedding_provenance_bootstrap_approval.v3",
+})
 
 
 class TaskMessageResolverError(LookupError):
@@ -439,7 +442,7 @@ class CodexAppServerTaskMessageResolver:
         }
         if (
             not required_claims.issubset(approval)
-            or approval.get("contract_version") != APPROVAL_CONTRACT_VERSION
+            or approval.get("contract_version") not in APPROVAL_CONTRACT_VERSIONS
             or approval.get("authorized") is not True
         ):
             raise self._error("approval_body_unavailable", thread_id, message_id)

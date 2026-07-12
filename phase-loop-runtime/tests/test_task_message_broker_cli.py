@@ -79,8 +79,8 @@ class _TrickleResponse(_Response):
         return super().readline(limit)
 
 
-def _resolved_payload() -> dict[str, object]:
-    approval_bytes = _approval_bytes()
+def _resolved_payload(**approval_overrides: object) -> dict[str, object]:
+    approval_bytes = _approval_bytes(**approval_overrides)
     return {
         "status": "resolved",
         "authority": AUTHORITY,
@@ -122,6 +122,22 @@ def test_client_accepts_monotonic_heartbeats_and_exact_result() -> None:
         {"type": "result", "agent_harness_sha": SHA, "payload": {"status": "ready", "authority": AUTHORITY}},
     ]).probe()
     assert result == {"status": "ready", "authority": AUTHORITY, "agent_harness_sha": SHA}
+
+
+@pytest.mark.parametrize(
+    "contract_version",
+    (
+        "embedding_provenance_deploy_approval.v2",
+        "embedding_provenance_bootstrap_approval.v3",
+    ),
+)
+def test_client_accepts_governed_deploy_and_bootstrap_contracts(contract_version: str) -> None:
+    payload = _resolved_payload(contract_version=contract_version)
+    result = _client([
+        {"type": "result", "agent_harness_sha": SHA, "payload": payload},
+    ]).resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+
+    assert result["agent_harness_sha"] == SHA
 
 
 @pytest.mark.parametrize(
