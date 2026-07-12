@@ -254,6 +254,28 @@ def test_resolution_failures_are_typed_and_metadata_only(
     assert "test-token" not in serialized
 
 
+@pytest.mark.parametrize(
+    "approval",
+    (
+        _approval("FM approves exact PROVDEPLOY body.").replace(
+            '"contract_version":"embedding_provenance_deploy_approval.v2"',
+            '"contract_version":"wrong","contract_version":"embedding_provenance_deploy_approval.v2"',
+        ),
+        _approval(
+            "FM approves exact PROVDEPLOY body.",
+            contract_version=["embedding_provenance_deploy_approval.v2"],
+        ),
+    ),
+)
+def test_duplicate_or_non_string_contract_version_fails_closed(approval: str) -> None:
+    resolver, _ = _resolver(_thread(approval=approval))
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "approval_body_unavailable"
+
+
 def test_unavailable_remote_authority_fails_closed() -> None:
     def unavailable(endpoint: str, token: str, timeout: float) -> FakeConnection:
         raise OSError("host unavailable with secret payload")

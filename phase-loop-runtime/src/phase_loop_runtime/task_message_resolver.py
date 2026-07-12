@@ -31,6 +31,25 @@ APPROVAL_CONTRACT_VERSIONS = frozenset({
 })
 
 
+def _decode_strict_json(value: bytes) -> Any:
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        decoded: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in decoded:
+                raise ValueError("duplicate JSON member")
+            decoded[key] = item
+        return decoded
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("non-finite JSON number")
+
+    return json.loads(
+        value,
+        object_pairs_hook=object_pairs,
+        parse_constant=reject_constant,
+    )
+
+
 class TaskMessageResolverError(LookupError):
     """Fail-closed resolver result carrying only governed metadata."""
 
@@ -424,8 +443,8 @@ class CodexAppServerTaskMessageResolver:
         except UnicodeError as exc:
             raise self._error("source_bytes_unavailable", thread_id, message_id) from exc
         try:
-            approval = json.loads(approval_body_bytes)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            approval = _decode_strict_json(approval_body_bytes)
+        except (UnicodeDecodeError, ValueError) as exc:
             raise self._error("approval_body_unavailable", thread_id, message_id) from exc
         if not isinstance(approval, dict):
             raise self._error("approval_body_unavailable", thread_id, message_id)
@@ -442,6 +461,7 @@ class CodexAppServerTaskMessageResolver:
         }
         if (
             not required_claims.issubset(approval)
+            or not isinstance(approval.get("contract_version"), str)
             or approval.get("contract_version") not in APPROVAL_CONTRACT_VERSIONS
             or approval.get("authorized") is not True
         ):
