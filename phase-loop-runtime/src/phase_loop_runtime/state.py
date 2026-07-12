@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .git_topology import attach_git_topology
 from .models import StateSnapshot, WorkUnitState, utc_now
+from .roadmap_authority import assert_roadmap_authorized
 from .runtime_paths import ensure_phase_loop_excluded, phase_loop_state_file, phase_loop_state_read_file
 
 
@@ -19,6 +20,7 @@ def state_read_path(repo: Path) -> Path:
 
 
 def write_state(repo: Path, snapshot: StateSnapshot) -> None:
+    assert_roadmap_authorized(repo, snapshot.roadmap)
     ensure_phase_loop_excluded(repo)
     snapshot = attach_git_topology(repo, snapshot)
     path = state_path(repo)

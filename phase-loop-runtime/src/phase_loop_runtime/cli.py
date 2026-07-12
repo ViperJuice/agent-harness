@@ -18,6 +18,7 @@ from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
 from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
+from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
@@ -859,6 +860,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except RoadmapAuthorityError as exc:
+        print(f"phase-loop {command}: roadmap authority refusal — {exc}", file=sys.stderr)
+        return 2
 
 
 def _resolve_run_closeout_mode(args: argparse.Namespace, command: str) -> str:
@@ -1046,6 +1050,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
         return _evidence_audit_command(repo=repo, args=args, as_json=as_json)
     if command in {"run", "resume", "dry-run"} and bool(getattr(args, "reset_capability", False)):
+        assert_roadmap_authorized(repo, args.roadmap)
         clear_degradation(repo)
 
     if command == "execute":
@@ -1137,6 +1142,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 )
         return 0
     if command == "migrate-handoffs":
+        assert_roadmap_authorized(repo, args.roadmap)
         records = migrate_handoffs(repo, apply=bool(getattr(args, "apply", False)))
         if as_json:
             print(records_to_json(records))
@@ -1145,8 +1151,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 print(f"{record.status}\t{record.action}\t{record.skill_name}\t{record.source}\t{record.target}")
         return 1 if any(record.action == "blocked" for record in records) else 0
     if command == "migrate-events":
+        assert_roadmap_authorized(repo, args.roadmap)
         return _migrate_events_command(repo=repo, dry_run=bool(args.dry_run), backup_suffix=args.backup_suffix)
     if command == "archive-state":
+        assert_roadmap_authorized(repo, args.roadmap)
         print(render_archive_result(
             archive_state(repo, reason=getattr(args, "reason", None), dry_run=bool(getattr(args, "dry_run", False))),
             as_json=as_json,

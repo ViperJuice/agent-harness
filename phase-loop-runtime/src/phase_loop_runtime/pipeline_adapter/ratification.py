@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..git_topology import collect_git_topology
-from ..runtime_paths import ensure_phase_loop_excluded, phase_loop_event_file
+from ..events import append_payload
 from ..models import utc_now
 from .merge_policy import MergePolicy
 
@@ -21,12 +21,11 @@ def emit_ratification_passed(
     ratification_gate: str,
     merge_policy: MergePolicy,
     audit: dict[str, Any],
+    *,
+    roadmap_path: Path | None = None,
 ) -> None:
     repo = Path(repo_root)
     payload = _payload(repo, roadmap_version, phase_alias, ratification_gate, merge_policy, audit)
-    ensure_phase_loop_excluded(repo)
-    event_path = phase_loop_event_file(repo)
-    event_path.parent.mkdir(parents=True, exist_ok=True)
     event = {
         "timestamp": utc_now(),
         "repo": str(repo),
@@ -40,8 +39,11 @@ def emit_ratification_passed(
         "payload": payload,
         "git_topology": collect_git_topology(repo),
     }
-    with event_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True) + "\n")
+    append_payload(
+        repo,
+        event,
+        roadmap=roadmap_path or repo / "specs" / f"phase-plans-{roadmap_version}.md",
+    )
 
     trigger = repo / TRIGGER_PATH
     trigger.parent.mkdir(parents=True, exist_ok=True)

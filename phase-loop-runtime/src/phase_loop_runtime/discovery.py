@@ -39,6 +39,7 @@ from .models import (
 )
 from .pipeline_adapter.flag import reconcile_git_reality_enabled
 from .provenance import phase_sha256, roadmap_sha256
+from .roadmap_authority import active_authorized_roadmap, assert_roadmap_authorized
 from .runtime_paths import phase_loop_state_read_file
 
 
@@ -413,28 +414,33 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
         path = Path(explicit).expanduser()
         if not path.is_absolute():
             path = repo / path
+        authorized = assert_roadmap_authorized(repo, path)
         if not path.exists():
             raise FileNotFoundError(f"roadmap not found: {path}")
-        return path.resolve()
+        return authorized
+
+    authority_roadmap = active_authorized_roadmap(repo)
+    if authority_roadmap is not None:
+        return authority_roadmap
 
     state_roadmap = active_state_roadmap(repo)
     if state_roadmap is not None:
-        return state_roadmap
+        return assert_roadmap_authorized(repo, state_roadmap)
 
     manifest_roadmap = manifest_backed_roadmap(repo)
     if manifest_roadmap is not None:
-        return manifest_roadmap
+        return assert_roadmap_authorized(repo, manifest_roadmap)
 
     handoff = latest_handoff_roadmap(repo_identity(repo), "codex-phase-roadmap-builder")
     if handoff is not None:
-        return handoff
+        return assert_roadmap_authorized(repo, handoff)
 
     candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
     if not candidates:
         raise FileNotFoundError("no specs/phase-plans-v*.md roadmap found")
     if len(candidates) != 1:
         raise AmbiguousRoadmapError([c.resolve() for c in candidates])
-    return candidates[0].resolve()
+    return assert_roadmap_authorized(repo, candidates[0])
 
 
 def active_state_roadmap(repo: Path) -> Path | None:

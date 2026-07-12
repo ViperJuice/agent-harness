@@ -68,6 +68,7 @@ from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from .consiliency_gates import scan_consiliency_gates
 from .docs_freshness import scan_docs_freshness
+from .roadmap_authority import active_authorized_roadmap
 from .closeout_validation import validate_produced_gates
 from .discovery import (
     PLAN_RE,
@@ -101,7 +102,7 @@ from .discovery import (
     verification_commands_from_plan,
 )
 from .dispatch_lock import DispatchLock, DispatchLockContention
-from .events import append_event, event_path, read_events
+from .events import append_event, append_payload, event_path, read_events
 from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
@@ -482,7 +483,7 @@ def _branchgov_orphan_blocker_before_dispatch(
     from .pipeline_adapter.branch_ops import roadmap_orphaned_by_branchgov
     from .pipeline_adapter.flag import branchgov_override_explicit
 
-    if branchgov_override_explicit():
+    if branchgov_override_explicit() and active_authorized_roadmap(repo) is None:
         return None
 
     roadmap_version = _roadmap_version(roadmap)
@@ -686,6 +687,7 @@ def _emit_ratification_if_reached(
             ratification_gate,
             merge_policy,
             _ratification_audit_payload(child_automation),
+            roadmap_path=roadmap,
         )
     except Exception as exc:
         return {
@@ -1753,8 +1755,8 @@ def run_loop(
                         provenance=branchgov_provenance,
                         preflight="roadmap_orphan",
                         next_action=(
-                            "Push the roadmap to the pipeline-branch base, or pass "
-                            "--allow-branchgov to switch anyway, before dispatch."
+                            "Push the roadmap to the pipeline-branch base before dispatch; "
+                            "authority-pinned roadmaps cannot be orphaned with --allow-branchgov."
                         ),
                     )
                     return (_DispatchOutcome("break", None), None)
@@ -6127,8 +6129,6 @@ def _append_tier3_audit_event(
     reasoning_effort: str,
     source: str,
 ) -> None:
-    path = event_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "timestamp": utc_now(),
         "repo": str(repo),
@@ -6144,8 +6144,7 @@ def _append_tier3_audit_event(
         "schema_version": 2,
         **event_provenance(roadmap, phase),
     }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    append_payload(repo, payload, roadmap=roadmap)
 
 
 def _attach_work_unit_metric(

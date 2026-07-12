@@ -8,6 +8,7 @@ from pathlib import Path
 from .closeout import phase_loop_closeout_diagnostic
 from .git_topology import attach_git_topology, collect_git_topology
 from .models import LoopEvent, WorkUnitEventMetadata
+from .roadmap_authority import assert_roadmap_authorized
 from .runtime_paths import ensure_phase_loop_excluded, phase_loop_event_file, phase_loop_event_read_files
 
 
@@ -20,16 +21,17 @@ def event_read_paths(repo: Path) -> tuple[Path, ...]:
 
 
 def append_event(repo: Path, event: LoopEvent) -> None:
-    ensure_phase_loop_excluded(repo)
     event = _event_with_closeout_metadata(event)
     event = attach_git_topology(repo, event)
-    path = event_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _append_jsonl(path, event.to_json())
+    append_payload(
+        repo,
+        event.to_json(),
+        roadmap=event.roadmap,
+    )
 
 
 def append_work_unit_event(repo: Path, event: WorkUnitEventMetadata, *, roadmap: Path | None = None) -> None:
-    ensure_phase_loop_excluded(repo)
+    authorized_roadmap = assert_roadmap_authorized(repo, roadmap)
     payload = event.to_json()
     closeout = _extract_work_unit_closeout(payload)
     if closeout is not None:
@@ -37,7 +39,7 @@ def append_work_unit_event(repo: Path, event: WorkUnitEventMetadata, *, roadmap:
     payload.update(
         {
             "repo": str(repo),
-            "roadmap": str(roadmap or ""),
+            "roadmap": str(roadmap or authorized_roadmap or ""),
             "phase": event.identity.phase,
             "action": "work_unit",
             "status": event.status,
@@ -46,6 +48,17 @@ def append_work_unit_event(repo: Path, event: WorkUnitEventMetadata, *, roadmap:
             "git_topology": collect_git_topology(repo),
         }
     )
+    append_payload(repo, payload, roadmap=roadmap or authorized_roadmap)
+
+
+def append_payload(
+    repo: Path,
+    payload: dict,
+    *,
+    roadmap: str | Path | None,
+) -> None:
+    assert_roadmap_authorized(repo, roadmap)
+    ensure_phase_loop_excluded(repo)
     path = event_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     _append_jsonl(path, payload)

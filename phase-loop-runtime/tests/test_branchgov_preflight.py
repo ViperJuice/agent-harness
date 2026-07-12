@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -12,6 +13,14 @@ from phase_loop_runtime.pipeline_adapter.branch_ops import (
     roadmap_orphaned_by_branchgov,
 )
 from phase_loop_runtime.runner import run_loop
+from phase_loop_runtime.roadmap_authority import (
+    LATCH_MARKER,
+    REQUIRED_MARKER,
+    roadmap_authority_file,
+    roadmap_authority_latch_file,
+    roadmap_authority_required_file,
+    roadmap_authority_worktree_latch_file,
+)
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
 
@@ -347,10 +356,33 @@ def test_runner_pushed_roadmap_with_stale_origin_switches_no_refusal(tmp_path, m
 # --------------------------------------------------------------------------- #
 
 
-def test_runner_override_on_genuine_orphan_fails_cleanly_not_crash(tmp_path, monkeypatch):
-    from phase_loop_runtime.runner import ROADMAP_ORPHAN_AFTER_SWITCH_PREFIX
-
+def test_runner_authority_refuses_orphan_override_before_switch(tmp_path, monkeypatch):
     repo, roadmap = _make_orphan_repo(tmp_path)
+    authority = roadmap_authority_file(repo)
+    authority.parent.mkdir(parents=True, exist_ok=True)
+    authority.write_text(
+        json.dumps(
+            {
+                "schema": "phase_loop_roadmap_authority.v1",
+                "status": "active",
+                "active_roadmap": str(roadmap.relative_to(repo)),
+                "active_roadmap_sha256": hashlib.sha256(roadmap.read_bytes()).hexdigest(),
+                "retired_roadmaps": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    authority.chmod(0o600)
+    required = roadmap_authority_required_file(repo)
+    required.write_text(REQUIRED_MARKER, encoding="utf-8")
+    required.chmod(0o400)
+    latch = roadmap_authority_latch_file(repo)
+    latch.write_text(LATCH_MARKER, encoding="utf-8")
+    latch.chmod(0o400)
+    worktree_latch = roadmap_authority_worktree_latch_file(repo)
+    worktree_latch.parent.mkdir(parents=True, exist_ok=True)
+    worktree_latch.write_text(LATCH_MARKER, encoding="utf-8")
+    worktree_latch.chmod(0o400)
     monkeypatch.setenv("PHASE_LOOP_BRANCHGOV_ENABLE", "true")  # explicit opt-in (the escape hatch)
     monkeypatch.setenv("PHASE_LOOP_PIPELINE_MODE", "true")
 
@@ -361,22 +393,15 @@ def test_runner_override_on_genuine_orphan_fails_cleanly_not_crash(tmp_path, mon
         # Must NOT raise FileNotFoundError (the original #83 crash).
         run_loop(repo, roadmap, phase="RUNNER")
 
-    # The override switched (so #44's branch_switched event was still emitted)...
     events = read_events(repo)
-    assert [e for e in events if e.get("action") == "coordinator.branch_switched"]
-    # ...the roadmap genuinely vanished on the convention branch, so the guard
-    # RESTORED the working tree to the operator's original branch (no stranding,
-    # roadmap visible again).
+    assert not [e for e in events if e.get("action") == "coordinator.branch_switched"]
     assert _git(repo, "branch", "--show-current").stdout.strip() == "consiliency/ci/v1-restructure"
     assert roadmap.is_file()
-    # ...but the run then failed CLEANLY with a post-switch branch_sync_conflict,
-    # not a crash, and the executor was never launched into a missing roadmap.
     assert not launched.called, "executor must not launch after the roadmap vanished"
     blocked = [
         e
         for e in events
         if (e.get("blocker") or {}).get("blocker_class") == "branch_sync_conflict"
-        and ROADMAP_ORPHAN_AFTER_SWITCH_PREFIX in ((e.get("blocker") or {}).get("blocker_summary") or "")
     ]
-    assert blocked, "expected a clean post-switch branch_sync_conflict blocker"
+    assert blocked, "expected a clean pre-switch branch_sync_conflict blocker"
     assert blocked[-1]["blocker"]["human_required"] is True
