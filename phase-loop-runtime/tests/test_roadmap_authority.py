@@ -17,9 +17,11 @@ from phase_loop_runtime.roadmap_authority import (
     LATCH_MARKER,
     REQUIRED_MARKER,
     RoadmapAuthorityError,
+    assert_roadmap_authorized,
     roadmap_authority_file,
     roadmap_authority_latch_file,
     roadmap_authority_required_file,
+    roadmap_authority_worktree_latch_file,
 )
 from phase_loop_runtime.pipeline_adapter.merge_policy import MergePolicy
 from phase_loop_runtime.pipeline_adapter.ratification import emit_ratification_passed
@@ -32,6 +34,13 @@ from phase_loop_test_utils import make_repo, provenanced_event, provenanced_stat
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_worktree_latch(repo: Path) -> None:
+    latch = roadmap_authority_worktree_latch_file(repo)
+    latch.parent.mkdir(parents=True, exist_ok=True)
+    latch.write_text(LATCH_MARKER, encoding="utf-8")
+    latch.chmod(0o400)
 
 
 def _write_authority(repo: Path, active: Path, retired: Path) -> None:
@@ -63,6 +72,7 @@ def _write_authority(repo: Path, active: Path, retired: Path) -> None:
         encoding="utf-8",
     )
     path.chmod(0o600)
+    _write_worktree_latch(repo)
 
 
 def test_submodule_gitfile_uses_its_own_git_directory() -> None:
@@ -75,6 +85,23 @@ def test_submodule_gitfile_uses_its_own_git_directory() -> None:
         (repo / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
 
         assert roadmap_authority_file(repo) == git_dir / "phase-loop-roadmap-authority.json"
+
+
+def test_non_git_directory_preserves_legacy_ungoverned_behavior() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+
+        assert roadmap_authority_file(repo) == repo / ".git" / "phase-loop-roadmap-authority.json"
+        assert assert_roadmap_authorized(repo, "specs/legacy.md") == repo / "specs" / "legacy.md"
+
+
+def test_malformed_gitfile_still_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        (repo / ".git").write_text("invalid\n", encoding="utf-8")
+
+        with pytest.raises(RoadmapAuthorityError, match="marker path unavailable"):
+            roadmap_authority_file(repo)
 
 
 def test_explicit_retired_roadmap_is_rejected() -> None:
@@ -296,6 +323,7 @@ def test_linked_worktree_shares_retired_roadmap_authority() -> None:
             capture_output=True,
         )
         _write_authority(repo, active, retired)
+        _write_worktree_latch(linked)
         state_path = linked / ".phase-loop" / "state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_bytes(b'{"preserved":true}\n')
@@ -314,6 +342,38 @@ def test_linked_worktree_shares_retired_roadmap_authority() -> None:
         assert not event_path(linked).exists()
         with pytest.raises(RoadmapAuthorityError, match="digest mismatch"):
             select_roadmap(linked)
+
+
+def test_linked_worktree_missing_git_pointer_remains_latched() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        repo = make_repo(root / "primary")
+        retired = repo / "specs" / "phase-plans-v1.md"
+        active = repo / "specs" / "phase-plans-v2.md"
+        active.write_text(retired.read_text(encoding="utf-8").replace("v1", "v2"), encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", str(active.relative_to(repo))], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-m", "add active roadmap"],
+            check=True,
+            capture_output=True,
+        )
+        linked = root / "linked"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-b", "linked-missing-git-test", str(linked), "HEAD^"],
+            check=True,
+            capture_output=True,
+        )
+        _write_authority(repo, active, retired)
+        _write_worktree_latch(linked)
+        git_pointer = linked / ".git"
+        git_pointer.unlink()
+
+        with pytest.raises(RoadmapAuthorityError, match="required roadmap authority is missing"):
+            append_event(
+                linked,
+                provenanced_event(linked, linked / "specs" / "phase-plans-v1.md", "CONTRACT", "planned"),
+            )
+        assert not event_path(linked).exists()
 
 
 def test_cli_reports_controlled_retired_roadmap_refusal(capsys: pytest.CaptureFixture[str]) -> None:
@@ -350,6 +410,7 @@ def test_retired_worktree_migrate_handoffs_apply_preserves_source_bytes() -> Non
             capture_output=True,
         )
         _write_authority(repo, active, retired)
+        _write_worktree_latch(linked)
         source = root / "home" / ".codex" / "skills" / "example" / "handoffs" / "run" / "latest.md"
         source.parent.mkdir(parents=True)
         source.write_text(f"---\nrepo_root: {linked}\n---\nretired handoff\n", encoding="utf-8")

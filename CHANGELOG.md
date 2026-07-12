@@ -4,6 +4,27 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [0.7.3] - 2026-07-12
+
+### Roadmap supersession authority
+
+- **Repository-common roadmap authority.** Phase-loop can pin one active roadmap
+  across linked worktrees, retire superseded roadmap bytes by digest, and fail
+  closed when required authority controls are missing, malformed, blocked, or
+  inconsistent. A worktree-local latch preserves that refusal if linked-worktree
+  Git metadata becomes unavailable.
+- **Mutation fencing.** Roadmap selection, state writes, event appends,
+  ratification, tier-3 audit writes, maintenance commands, and branch-governance
+  overrides all enforce the same authority decision before mutation.
+- **Regression coverage.** New tests cover linked-worktree selection, append and
+  state refusal, retired-blob tampering, authority latching, maintenance command
+  refusal, and branch-governance behavior.
+
+### SOURCEBROKER approval identity (agent-harness#190)
+
+- Preserve nested approval-request identity through broker client and resolver
+  paths, with CLI and resolver regression coverage.
+
 ## [0.7.2] - 2026-07-12
 
 ### Advisor board — headless claude/Fable leg + native-fill affordance (agent-harness#183)

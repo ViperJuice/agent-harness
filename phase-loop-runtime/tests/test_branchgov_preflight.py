@@ -19,6 +19,7 @@ from phase_loop_runtime.roadmap_authority import (
     roadmap_authority_file,
     roadmap_authority_latch_file,
     roadmap_authority_required_file,
+    roadmap_authority_worktree_latch_file,
 )
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
@@ -378,6 +379,10 @@ def test_runner_authority_refuses_orphan_override_before_switch(tmp_path, monkey
     latch = roadmap_authority_latch_file(repo)
     latch.write_text(LATCH_MARKER, encoding="utf-8")
     latch.chmod(0o400)
+    worktree_latch = roadmap_authority_worktree_latch_file(repo)
+    worktree_latch.parent.mkdir(parents=True, exist_ok=True)
+    worktree_latch.write_text(LATCH_MARKER, encoding="utf-8")
+    worktree_latch.chmod(0o400)
     monkeypatch.setenv("PHASE_LOOP_BRANCHGOV_ENABLE", "true")  # explicit opt-in (the escape hatch)
     monkeypatch.setenv("PHASE_LOOP_PIPELINE_MODE", "true")
 

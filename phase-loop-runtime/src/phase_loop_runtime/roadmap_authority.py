@@ -28,6 +28,10 @@ def roadmap_authority_latch_file(repo: Path) -> Path:
     return _git_common_path(repo, "phase-loop-roadmap-authority-latch")
 
 
+def roadmap_authority_worktree_latch_file(repo: Path) -> Path:
+    return repo.resolve() / ".phase-loop" / "roadmap-authority-latch"
+
+
 def _git_common_path(repo: Path, name: str) -> Path:
     git_entry = repo.resolve() / ".git"
     if git_entry.is_dir():
@@ -49,7 +53,7 @@ def _git_common_path(repo: Path, name: str) -> Path:
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise RoadmapAuthorityError("roadmap authority marker path unavailable") from error
     else:
-        raise RoadmapAuthorityError("roadmap authority marker path unavailable")
+        common = git_entry
     return common / name
 
 
@@ -121,8 +125,11 @@ def _read_authority(path: Path) -> dict:
 def _require_authority_not_removed(repo: Path) -> None:
     marker = roadmap_authority_required_file(repo)
     latch = roadmap_authority_latch_file(repo)
-    if not marker.exists() and not latch.exists():
+    worktree_latch = roadmap_authority_worktree_latch_file(repo)
+    if not marker.exists() and not latch.exists() and not worktree_latch.exists():
         return
+    if worktree_latch.exists():
+        _read_control_file(worktree_latch, LATCH_MARKER, 0o400)
     if latch.exists():
         _read_control_file(latch, LATCH_MARKER, 0o400)
     if marker.exists():
@@ -132,6 +139,7 @@ def _require_authority_not_removed(repo: Path) -> None:
 
 def _require_authority_installed(repo: Path, authority: Path) -> None:
     _require_control_mode(authority, 0o600)
+    _read_control_file(roadmap_authority_worktree_latch_file(repo), LATCH_MARKER, 0o400)
     _read_control_file(roadmap_authority_required_file(repo), REQUIRED_MARKER, 0o400)
     _read_control_file(roadmap_authority_latch_file(repo), LATCH_MARKER, 0o400)
 
