@@ -349,7 +349,9 @@ def test_local_control_socket_mode_uses_local_transport_without_bearer() -> None
     assert observed == [("/home/test/.codex/app-server-control/app-server-control.sock", "", 10.0)]
 
 
-def test_control_socket_disables_websocket_compression(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_control_socket_disables_websocket_compression_and_frame_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observed: dict[str, object] = {}
 
     class Socket:
@@ -368,6 +370,7 @@ def test_control_socket_disables_websocket_compression(monkeypatch: pytest.Monke
         "path": "/tmp/app-server.sock",
         "uri": "ws://localhost",
         "compression": None,
+        "max_size": None,
         "open_timeout": 7.0,
         "close_timeout": 7.0,
         "closed": True,

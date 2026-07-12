@@ -199,6 +199,7 @@ class _ControlSocketJsonRpcConnection:
                 path=control_socket,
                 uri="ws://localhost",
                 compression=None,
+                max_size=None,
                 open_timeout=timeout_seconds,
                 close_timeout=timeout_seconds,
             )
