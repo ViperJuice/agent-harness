@@ -4,7 +4,357 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## Unreleased
+## [0.7.1] - 2026-07-12
+
+POST070FIX — a parallel 8-phase backlog closeout on top of 0.7.0: phase-loop authoring-skill refinements, push-after-merge visibility, the REVIEWGOV W3/W4 review-ratification architecture (parameterized ratification policy + unattended consensus-substitutes-for-human), per-vendor review-leg sandboxing, manifest robustness, and a runner/reconcile correctness batch. This tag also contains the authenticated local task-message source broker (agent-harness#167, agent-harness#168) that landed after 0.7.0 — see the SOURCEBROKER section below.
+
+### SKILLREF
+
+Folded recurring, code-verified skill-reflection learnings into the phase-loop
+authoring skills. All four harness sources (`claude`/`codex`/`gemini`/`opencode`)
+were edited together and the neutral bundle regenerated + synced; skill-canon
+parity, bundle drift, claude literal-lint, and the LaunchSpec golden all stay
+green.
+
+- **roadmap-builder "Validator Format Contract".** `phase-roadmap-builder`
+  SKILL now documents the load-bearing formatting rules that
+  `phase_loop_runtime.roadmap_lint` enforces by regex: the `[A-Za-z0-9]+` alias
+  shape with no decoration after `(ALIAS)`, each `**Field**` label on its own
+  line, bulleted lists / `- [ ]` checkboxes, the lane-count/partition hint
+  (`decompose into N lanes` / `Single lane`), and the malformed-heading cascade
+  (a bad heading drops the whole phase — fix the heading first, then re-run).
+
+- **`phase_loop_runtime.skill_paths` resolver is now primary.** In
+  `phase-roadmap-builder`, `plan-phase`, `plan-detailed`, and `execute-phase`,
+  closeout/handoff resolution leads with the installed
+  `phase_loop_runtime.skill_paths` resolver (`resolve_handoff_root`,
+  `resolve_reflection_root`) and demotes the repo-local `handoff_path.py` mirror
+  to a fallback used only when the runtime is not importable.
+
+- **Skip-Explore-when-context-in-session + proportionality.** `plan-phase` and
+  `plan-detailed` now tell the planner not to spawn Explore/reconnaissance
+  subagents to re-gather context already in the session, and to keep
+  reconnaissance proportional to the change size.
+
+- **Multi-roadmap alias/create-mode note.** `phase-roadmap-builder` clarifies
+  that each `specs/phase-plans-v*.md` is its own alias namespace and that a new
+  initiative is a new roadmap (create mode), not an append onto the newest
+  version.
+
+- **Draft-PR-early protocol (re-homed here from PUSHFLOW).** `execute-phase`
+  documents pushing the branch and opening a DRAFT PR on the first commit of a
+  phase (visibility contract, not a merge request), respecting runner-owned
+  publication in governed/autonomous mode. Homing it in SKILLREF keeps the
+  execute-phase skill a single-writer surface for this run.
+
+- **Reflection cache cleared.** These edits digest the recurring
+  `~/.codex/skills/*/reflections/` learnings; that cache is cleared at phase
+  closeout (after this branch merges, and only once no concurrent codex-harness
+  run is mid-write) for a fresh post-0.7.0 start. This committed note is the
+  durable record of that out-of-repo deletion.
+
+### PUSHFLOW
+
+- **Closeout pushes by DEFAULT (CLI arg layer, IF-0-PUSHFLOW-1).** The
+  `phase-loop run` / `resume` / `dry-run` default closeout mode flips from
+  `manual` to `push` at the CLI arg layer (`cli.py` `_resolve_run_closeout_mode`),
+  so phase-owned work lands on origin instead of accumulating 70–100 commits ahead
+  locally. An explicit `--closeout-mode` always wins; the new `--no-push` flag
+  restores the prior `manual` default. The push runs through the existing runner
+  closeout path unchanged and degrades gracefully with no push remote (recorded as
+  `push_refused`, never an error). No `runner.py` edit — the runner closeout push
+  path is left to its single-writer owner.
+
+- **`commits_ahead_of_origin` ahead-of-origin signal.** The worktree index now
+  reports, per worktree, how many commits its branch is ahead of the base ref
+  (`git rev-list --count <base>..<branch>`), mirroring the existing `main_behind`
+  divergence signal. `phase-loop worktree-index` renders `[N ahead]` (and a WARN
+  hint past `AHEAD_WARN_THRESHOLD`); the opt-in `--fail-on-ahead` flag soft-blocks
+  (exit non-zero) when a worktree exceeds the threshold. `phase-loop doctor` gains
+  a metadata-only `worktree_divergence` aggregate (max ahead + verdict). WARN by
+  default; never human_required.
+
+- **`phase-loop doctor` pinned-clone staleness check.** A new BOM entry compares
+  the pinned agent clone (`~/.local/share/agent-harness`, via `AGENT_HARNESS_HOME`)
+  against the checked-in `RELEASE_PIN`; a `stale` verdict flags a clone left behind
+  the pin (the live gap where clones sat at 0.6.0 under `RELEASE_PIN=v0.7.0`). The
+  check is local (works offline) and never gates — WARN only. Fix: re-run
+  `install-agent-harness.sh` to re-pin the clone; the documented release step
+  requires bumping `RELEASE_PIN` in lockstep with the release so clones re-pin
+  (see `docs/releases/outside-agent-release-handoff.md`).
+
+### POLICY
+
+- **Parameterized, strict-typed ratification policy — the frozen IF-0-POLICY-1 shape
+  UNATTEND + GPGATE consume (REVIEWGOV W3).** New module
+  `phase_loop_runtime.ratification_policy` freezes a `RatificationPolicy` dataclass
+  (`required_vendors: int`, `required_lens_coverage: int`, `required_consensus`
+  ∈ `{unanimous, majority}`, `on_shortfall` ∈ `{escalate, proceed_degraded}`) with a
+  per-gate `DEFAULT_RATIFICATION_POLICIES` for `plan-ratify` / `design-ratify` /
+  `pre-merge-CR` / `release-dispatch`, and a PURE `evaluate_ratification(policy, facts)`
+  that returns a `RatificationDecision` (status + shortfalls + durable `to_audit()`
+  record). The vendor quorum binds to vendors that produced a USABLE review
+  (`min(distinct_seated, usable_legs)`), so a seated-but-silent board (legs
+  empty/timed-out under contention) fails CLOSED — it never ratifies an N-vendor
+  gate on a single usable review. Board facts are projected from the availability-aware board via
+  `board_facts_from` (imports `advisor_board.composition.board_independence` for the
+  distinct-vendor count; the distinct-lens count is computed in POLICY's own file, never
+  by touching SANDBOX's `composition.py`). The freeze **is** that import surface — the
+  canonical path is `from phase_loop_runtime.ratification_policy import RatificationPolicy,
+  DEFAULT_RATIFICATION_POLICIES, BoardFacts, board_facts_from, evaluate_ratification`.
+
+- **Autonomy-first, extended not replaced.** `on_shortfall=escalate` produces a NON-human,
+  agent-recoverable `review_gate_block` (never `human_required`); `proceed_degraded`
+  proceeds and writes an audit record — the dial that lets a 1-subscription operator
+  ratify on a degraded board with a paper trail (the W4 `on_shortfall` consumer). The
+  posture bridge `gate_posture.resolve_ratification_policy(gate, manifest=…)` lets a
+  per-repo `.consiliency/manifest.json` (`ratification_policy_overrides`) partially patch
+  a gate's policy; a malformed/out-of-enum override fails safe to the frozen default.
+  `closeout_validators.ratification_findings(decision)` is the closeout wiring
+  (escalate → one `block` finding; proceed_degraded → one `warn` finding; ratified → none).
+
+- **`review_gate_block` now persists the ACTUAL panel finding body
+  (`ViperJuice/agent-harness#80`).** A governed pre-merge block previously persisted only
+  the generic `panel_block` reason ("panel leg gemini raised a blocking concern"), and the
+  panel scratch dir was torn down after the leg completed — so the concrete review a
+  non-human repair needs was unrecoverable. `ReviewFinding` gains an optional `body` field;
+  `governed_review._findings_from_panel` now stamps the leg's actual review text onto the
+  block (and non-conforming) findings, and `ReviewFinding.to_json` persists it to the
+  durable state/handoff/ledger artifacts. Byte-neutral for every existing caller (the field
+  defaults to `None`). Closes #80.
+
+- **SHA-bound agent-review-gate (`ViperJuice/agent-harness#88`).** Findings and board facts
+  carry the reviewed head SHA (`ReviewFinding.reviewed_sha`, `BoardFacts.reviewed_sha`);
+  `governed_planning_gate(reviewed_sha=…)` threads it through, and
+  `closeout_validators.verdict_binds_to(finding, head_sha)` binds a verdict to the EXACT
+  reviewed commit (fail-closed: an unbound finding or an unknown head never binds). This is
+  the process-separation binding scoped by the roadmap — the verdict is tied to the commit
+  it reviewed, not re-trusted for a later head. Closes #88.
+
+### SANDBOX
+
+- **agy review legs run on a STAGED COPY, never the live tree (D3, IF-0-SANDBOX-1).**
+  The product-loop `review` action pointed the gemini/`agy` leg at `--add-dir
+  <repo>` — the live worktree — and `agy` honors no read-only lever (`--sandbox`
+  still permits writes, no per-tool restriction), so a review leg could mutate the
+  reviewed tree. `build_gemini_command` now emits the repo path behind a review-stage
+  placeholder for the `review` action; `launch_with_spec` materializes a
+  gitignore-aware working-tree copy at launch (tracked + untracked-non-ignored
+  files, minus ignored build artifacts and `.git`, so uncommitted changes are still
+  reviewed) and points `--add-dir` at the copy, cleaning it in the `finally`. A
+  write by the leg can only ever hit the throwaway copy. Dry-run resolves to the
+  live path with no copy materialized. No change to the non-`review` (execute /
+  repair / roadmap / plan) paths.
+
+- **IF-0-SANDBOX-1 frozen — the per-vendor read-only mechanism, per vendor.** The
+  lever differs because the CLIs differ: **codex** honors `--sandbox read-only`
+  (as-is); **claude** runs plan/Read-only (as-is); **grok** — whose headless `-p`
+  auto-approves writes — is constrained by the `GROK_REVIEW_READONLY_TOOLS`
+  read/search `--tools` allow-list (landed #149); **gemini/agy** — no honored lever
+  — is constrained by the staged copy above. A regression test
+  (`tests/test_review_leg_sandbox.py`) proves a review leg cannot write the reviewed
+  tree on both surfaces: the launcher product-loop `review` leg (staged copy) and
+  the panel/advisor-board cross-vendor CR (legs confined to a bundle-only review
+  dir that never contains the repo).
+
+- **Known deferred gap (out of scope, intentionally left as-is) — filed as
+  ViperJuice/agent-harness#177:** the codex product-loop `review` leg is launched
+  with `--sandbox danger-full-access` (write-capable). Codex *honors* `--sandbox
+  read-only`, so this is trivially closable later by threading the `review` action
+  into `build_codex_command`; it is left untouched here per phase scope (the phase
+  targets the two vendors — agy + grok — where `--sandbox` is insufficient) and to
+  avoid churning the codex launchspec golden.
+
+- **Advisor-board `claude` leg exposes a machine-branchable deferral + structured
+  native-agent request (#125).** The runtime never spawns a Claude TUI it cannot
+  drive, so on a host with no controlling terminal the `claude` leg degrades to
+  `UNAVAILABLE` (empty text — never an AGREE, recorded as a non-gating
+  `panel_leg_degraded` warn). #92 blended two host cases into one reason string;
+  `panel_invoker._claude_leg_deferred_reason(env)` now returns a distinct code —
+  `under_claude_code` (inside a Claude Code session → the driving session runs its
+  own `Task` Agent) vs `native_adapter_required` (a headless / no-tty host such as
+  the Codex Desktop tool shell → the host fulfills the leg through its native
+  sub-agent adapter). New additive `panel_invoker.native_agent_leg_request(...)`
+  returns a `NativeAgentLegRequest` descriptor (leg, model, mode, reason, review
+  brief `instructions`, and the terminal-verdict contract; `.to_dict()` for a tool
+  boundary) so a Codex-hosted driver can spawn the third leg natively instead of a
+  human noticing `UNAVAILABLE` and improvising. The descriptor is a pure function of
+  its inputs and is NEVER threaded through the governed `(status, text)` spawn
+  boundary, so `invoke_panel`'s byte-pinned governed path and the advisor-board
+  golden stay byte-identical. The codex advisor-board skill documents the Codex
+  Desktop native-adapter flow. Closes #125.
+
+### MANIFEST
+
+- **A single stale/renamed/missing manifest entry no longer invalidates the whole
+  manifest (agent-harness#164).** Manifest-backed roadmap/plan discovery now
+  validates the plan manifest **per-entry**: one bad entry (e.g. a plan file that
+  was renamed or removed on disk) is skipped — treated orphaned — while the valid
+  entries still resolve. Previously `discovery._phase_manifest_entries` gated on
+  the all-or-nothing `validate_manifest(...).valid`, so a single bad entry hid the
+  entire manifest and silently degraded discovery back to regex/glob (the manifest
+  became invisible with no operator signal on the discovery path). A structural
+  failure (unparseable JSON, wrong `schema_version`, or a non-array `plans`) still
+  hides the whole manifest, since nothing in it is trustworthy. The skipped
+  entry's operator signal (`manifest_plan_file_missing`) continues to fire
+  independently from `reconcile._reconcile_plan_manifest`. The consumer
+  materializes only the valid rows via `plan_manifest.valid_phase_entries`
+  (index-aligned to `validate_manifest`), so even a *parse-hostile* sibling row
+  (a non-object entry / `roadmap_ref` / lifecycle event that the all-or-nothing
+  `read_manifest` load raises on) no longer re-hides the valid entries — closing
+  the residual whole-manifest-degrade class flagged by the cross-vendor review.
+
+- **IF-0-MANIFEST-1 — per-entry manifest validation result shape (frozen).**
+  `plan_manifest.validate_manifest` now returns a `ValidationResult` with
+  `structural_valid: bool` + `structural_errors` (the whole-manifest verdict) and
+  `entries: tuple[EntryValidationResult, ...]` (a per-entry verdict aligned to the
+  `plans` array by `index`), plus a `valid_indices()` helper. The legacy
+  `valid`/`errors` attributes are preserved as backward-compatible aggregate
+  properties (structural + all per-entry errors), so existing callers and the
+  malformed-entry validation tests are unchanged. RUNCORE2 rebases on this shape.
+
+### UNATTEND
+
+- **W4 — unattended consensus substitutes for the human merge/tag grant, with a
+  durable audit record (IF-0-UNATTEND-1).** New `phase_loop_runtime.release_guard`
+  surface `evaluate_unattended_release(blocker, *, policy, facts, run_mode)` consumes
+  the frozen `RatificationPolicy` / `BoardFacts` from IF-0-POLICY-1: in an `unattended`
+  run an N-vendor consensus quorum stands in for the EXISTING
+  `ReleaseDispatchBlocker.to_blocker()` `human_required` grant. A clean board ratifies
+  and proceeds; the `policy.on_shortfall` dial handles a 1-subscription operator —
+  `proceed_degraded` proceeds with a paper trail, `escalate` emits a NON-human
+  `review_gate_block` (never a new `human_required` gate; W4 extends the autonomy-first
+  posture, it never replaces the human option). `attended` mode (the default) returns
+  `None`, leaving the existing human grant path byte-identical. The frozen record is the
+  `UnattendedReleaseGrant` dataclass — `granted` / `outcome`
+  (`consensus_granted | proceed_degraded | escalated`) / `reviewed_sha` (#88 SHA-binding)
+  and the embedded `RatificationDecision.to_audit()` verbatim — with `to_audit()` (the
+  durable trail) and `to_blocker()` (the non-human hold, or `None` when granted).
+
+- **Release-dispatch concurrency no longer self-blocks a wrapped executor
+  (`ViperJuice/agent-harness#146`).** `DispatchLock` previously refused a nested
+  release-dispatch run with `concurrent_dispatch` because the outer run necessarily
+  already held the per-roadmap lock. The lock now recognises its OWN run on contention
+  via a caller-identity exclusion in `dispatch_lock.py`: injection-free by default (the
+  lock holder being an **ancestor** of the caller marks legitimate re-entrancy), with an
+  optional injected `caller_run_id` for the `setsid` case. It fails closed for a genuine
+  second dispatch (a same-shell sibling is never an ancestor and still blocks) and a
+  re-entrant acquire takes no second flock, so releasing it never drops the outer lock.
+  The exclusion self-determines at the existing dispatch call site (no runner change) —
+  a nested executor's outer run is on its parent chain (survives `subprocess`/`setsid`),
+  which fully resolves the reported symptom; the *stronger explicit run-id/lease* path
+  (runner-side injection) is a later refinement deferred to RUNCORE2. Closes #146.
+
+- **Typed, metadata-only operator approval for release-dispatch launches
+  (`ViperJuice/agent-harness#145`).** New `release_guard.OperatorApproval` +
+  `operator_approval_from(payload)` parser: a typed record of the approved target labels
+  plus provenance (timestamp, source, watch-window owner, roadmap/phase/run identity),
+  with a fail-closed `covers(targets)` predicate (every mutated target must be explicitly
+  approved; an empty request is not vacuously approved) and `to_metadata()` for the
+  ledger/executor projection. The parser rejects any secret-bearing key or non-scalar
+  value and any non-string target element (fail-closed — the record is metadata-only).
+  Refs #145 — RUNCORE2 does the runner-side injection and closes it (remaining: the typed
+  record visible in launch/state/event metadata + executor context, and the
+  fail-closed-with-`admin_approval` emission on a missing/mismatched target).
+
+### RUNCORE2
+
+- **Roadmap amendments no longer make a completed phase look "genuinely unplanned"
+  (agent-harness#85).** When a roadmap is amended in-flight and the edit churns a
+  COMPLETED phase's own section, that phase's `phase_sha256` drifts and its stored
+  completion is (correctly, by the completion-invalidation invariant) no longer
+  trusted, so it reclassifies to `unplanned`. Reconcile now stamps the resulting
+  provenance-mismatch warning with a repairable `gold_record_amendment` marker —
+  carrying the drifted vs current `phase_sha256` and a repair hint — so `status`
+  can distinguish "an amendment changed this completed phase's hashes" (repair by
+  restoring the section wording or re-attesting) from a phase that was genuinely
+  never planned (which gets no marker). The invalidation itself is unchanged; only
+  its observability is fixed. Follow-ups (not in this change): #85's runner
+  active-run closeout phase-alias preservation on in-flight amendment, and
+  worktree/repo path-portability replay.
+
+- **Standalone closeout prompt no longer drops the active plan's owned files
+  (agent-harness#58).** The non-governed closeout prompt built by
+  `injection.build_prompt_bundle` hardcoded an empty `plan_owned_files`, so the
+  executor saw a blank "Active plan owned files" section, reported empty
+  `phase_owned_dirty_paths`, and the runner refused closeout with
+  `missing_phase_owned_dirty_paths` even for a plan with explicit lane ownership.
+  The prompt now sources the plan's declared owned patterns via
+  `parse_plan_ownership`, mirroring the governed `build_lane_prompt_bundle` path.
+
+- **Unobserved (`--no-observe`) executor children no longer hang silently
+  (agent-harness#61, agent-harness#86).** An unobserved planner/execute child fell
+  to `launcher.launch`'s bare `subprocess.run` branch (`log_path=None`), which has
+  no heartbeat, no quiet-child / CPU-idle stall detection, and no timeout — so an
+  idle child wedged the parent inside `subprocess.run` with a stale monitor and no
+  fresh artifact (the avatar-client ARTIFACTS/SCENARIO wedge). `launch` now takes an
+  opt-in `ephemeral_monitor` flag (set by `launch_with_spec` whenever the child is
+  unobserved) that routes the child through the SAME streaming + quiet-child
+  detector used for observed runs, against a throwaway log dir that is discarded
+  afterward (nothing persisted, honoring `--no-observe`). `result.stalled` /
+  `result.timed_out` now fire, so the runner's existing `_launch_contract_blocker`
+  emits a structured `stalled_child_observation` blocker instead of hanging. The
+  wall-clock timeout stays opt-in (the "no short timeout on CLI legs" rule); the
+  quiet/CPU-idle detector is what catches the wedge. Cross-repo train node children
+  inherit this coverage automatically (they run through `run_loop` →
+  `launch_with_spec`). Not closed here: agent-harness#90 (rehydrating a completed
+  roadmap from committed closeout artifacts without a runner-owned
+  `verification.json` — a reconcile rehydration-contract change that must not weaken
+  the `verification.json` tamper-evidence gate) and the roadmap-format-handling half
+  of agent-harness#60 — both left open.
+
+- **Compact operator stop summary in closeout/handoff (agent-harness#119).** New
+  harness-agnostic `operator_stop_summary.v1` surface (`handoff.operator_stop_summary`)
+  derived from closeout/handoff state: 1-10 short plain-English bullets shaped as
+  What happened / Verified / Current state / Next, suitable for direct display in a
+  Codex/Claude/Gemini final response instead of relying on each model to remember to
+  summarize. Token-efficient by construction — no raw logs, secret values, or
+  dirty-path dumps (dirty paths are summarized as a count). Rendered as a
+  top-of-file "Operator Stop Summary" section in `.phase-loop/tui-handoff.md`. The
+  bridge-skill wiring that injects it into each harness's final response is homed in
+  the skill sources (SKILLREF), not the runtime.
+
+- **Runner-side operator-approval injection for release-dispatch (agent-harness#145).**
+  Completes #145 (UNATTEND landed the typed `OperatorApproval` record + `dispatch_lock`
+  fix; this wires it into the runner executor context). A release-dispatch plan that
+  opts in with `phase_loop_requires_operator_approval: true` now has the runner
+  resolve a metadata-only `.phase-loop/operator-approval.json`, freshness-scope it to
+  this exact roadmap + phase (mirroring `_closeout_allow_unowned_attested`), and
+  inject `OperatorApproval.to_metadata()` into the launch-metadata file the child
+  reads plus the launch event/state — so SL-0 verifies the approval from runner
+  context instead of `record_status=absent_from_runner_context` (even under
+  `--bypass-approvals`). When a fresh valid record cannot be injected — absent,
+  malformed, secret-bearing (rejected by `operator_approval_from`), or STALE (scoped
+  to a different roadmap/phase) — the runner fail-closes to a sticky, human-required
+  `admin_approval` blocker BEFORE launch, flowing through the existing
+  `release_dispatch_blocker` emit path. Target-coverage stays with the child's SL-0
+  `OperatorApproval.covers()` — the runner does not re-implement it. The gate is
+  plan-declared opt-in, so existing release-dispatch plans launch unchanged.
+  Approval injection requires an observed run: an approval-gated release-dispatch
+  under `--no-observe` fails closed (`admin_approval`, `record_status=
+  requires_observe`) rather than launching without the approval reaching the child.
+  The `admin_approval` gate is sticky (like `missing_secret`); its
+  `required_human_inputs` name the standard sticky-blocker recovery
+  (`phase-loop reconcile --phase <P> --to-status planned --reason … --force`), not a
+  bare rerun. Freshness is scoped to roadmap PATH + phase ALIAS (normalized, tolerant
+  of absolute/relative/symlink forms); it is NOT content-bound — the frozen
+  `OperatorApproval` carries no sha256. Deferred follow-ups (documented, not in this
+  change): content-bound freshness (add sha256 to the record + compare provenance) and
+  record authenticity (the file is hand-writable, weaker than a runner-emitted ledger
+  attestation; a planted file with repo write access is trusted, the same threat
+  surface as the rest of phase-loop's file-based ledger).
+
+- **RUNCORE2 cross-vendor CR hardening (codex / grok / agy).** The 3-vendor review
+  converged on concrete defects, all fixed here: the lane-(a) amendment marker moved
+  off the misleading `blocker_class` key to a warning-only `diagnostic_class` and is
+  framed as "provenance drift (amendment-shaped)" rather than a confirmed amendment
+  (a hash mismatch could also be a hand-edited ledger); the lane-(c) ephemeral-monitor
+  temp dir is now torn down via `try/finally` on the exception path; and the lane-(e)
+  tests were strengthened to assert the injected approval reaches the child launch
+  metadata + persisted event (not merely "not blocked"), plus wrong-roadmap-stale and
+  secret `record_status` coverage and a `build_prompt_bundle`-level #58 wiring test.
+
+### SOURCEBROKER — authenticated task-message source broker (agent-harness#167, agent-harness#168, agent-harness#176, agent-harness#178)
 
 - **Add the authenticated local task-message source broker.** A loopback-only
   user service wraps the real Codex owner socket, authenticates capability
