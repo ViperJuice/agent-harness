@@ -448,3 +448,16 @@ class TestPrebuiltDirtyPreflight:
         assert result["status"] == "preflight_failed"
         assert any("uncommitted" in e.lower() for e in result["errors"])
         assert publish_calls == []
+
+
+def test_prebuilt_owned_paths_fails_closed_on_diff_error(tmp_path):
+    """CR fix: a git-diff error must RAISE (fail-closed), not return [] — an empty
+    owned-paths scope would let the broker admission approve nothing while the push
+    publishes the real branch (approved-nothing / published-something mismatch)."""
+    import subprocess as sp
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"]}
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", "x"], check=True, env=env)
+    # No 'origin/main' ref → `git diff origin/main...HEAD` fails → must raise, never [].
+    with pytest.raises(RuntimeError):
+        _prebuilt_owned_paths(tmp_path)

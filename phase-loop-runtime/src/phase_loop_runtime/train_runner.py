@@ -250,8 +250,19 @@ def _prebuilt_owned_paths(
         timeout=30,
     )
     if completed.returncode != 0:
-        return []
-    return [p.strip() for p in completed.stdout.splitlines() if p.strip()]
+        # Fail CLOSED: a diff error must not yield an empty owned-paths scope that the
+        # broker admission would approve while the push still publishes the real branch
+        # (approved-nothing / published-something scope mismatch).  Raising blocks the node.
+        raise RuntimeError(
+            f"could not compute prebuilt owned paths vs 'origin/{base}': "
+            f"{completed.stderr.strip() or 'git diff failed'}"
+        )
+    owned = [p.strip() for p in completed.stdout.splitlines() if p.strip()]
+    if not owned:
+        # A prebuilt node that is ahead-of-base yet has no net file changes has nothing
+        # to publish — fail closed rather than admit an empty scope.
+        raise RuntimeError(f"prebuilt branch has no committed changes vs 'origin/{base}' to publish")
+    return owned
 
 
 def _default_preflight(
