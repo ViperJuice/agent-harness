@@ -811,3 +811,82 @@ class TestUnsupportedChannelKindInTrain:
         errors = validate_train(r)
         t_e_errors = [e for e in errors if "(T-E)" in e]
         assert not t_e_errors, f"Expected no T-E errors for supported channels; got: {t_e_errors}"
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#60 — roadmap-format-handling half: opaque parse/validate
+# failures on authoring-guide-shaped input must become actionable diagnostics
+# that name the offending node (and, for duplicates, avoid a false T-D cycle).
+
+
+class TestIssue60FormatHandling:
+    """Regression tests for the roadmap-format-handling half of #60.
+
+    Each previously either (a) raised a ValueError that did NOT name which node
+    was malformed, (b) was silently accepted, or (c) mis-surfaced as a spurious
+    (T-D) cycle with an empty unresolved-node list.
+    """
+
+    _GOOD = VALID_TRAIN_3NODE_MD
+
+    # --- Gap A: malformed **Channel:** descriptor must name the node ---------
+
+    def test_pin_missing_file_names_node(self) -> None:
+        bad = self._GOOD.replace(
+            "pin file=manifest.json key=deps.alpha-lib", "pin key=deps.alpha-lib"
+        )
+        with pytest.raises(ValueError) as exc:
+            parse_train_roadmap(bad)
+        msg = str(exc.value)
+        assert "beta/specs/beta.md" in msg, f"error must name the node; got: {msg}"
+        assert "Channel" in msg and "pin" in msg
+
+    def test_unknown_channel_kind_names_node(self) -> None:
+        bad = self._GOOD.replace("submodule path=vendor/beta", "submdoule path=vendor/beta")
+        with pytest.raises(ValueError) as exc:
+            parse_train_roadmap(bad)
+        msg = str(exc.value)
+        assert "gamma/specs/gamma.md" in msg, f"error must name the node; got: {msg}"
+        assert "submdoule" in msg
+
+    def test_submodule_missing_path_names_node(self) -> None:
+        bad = self._GOOD.replace("submodule path=vendor/beta", "submodule")
+        with pytest.raises(ValueError) as exc:
+            parse_train_roadmap(bad)
+        assert "gamma/specs/gamma.md" in str(exc.value)
+
+    # --- Gap B: duplicate node id → coded (T-F), NOT a spurious cycle --------
+
+    def test_duplicate_node_id_reports_t_f_not_cycle(self) -> None:
+        dup = self._GOOD + (
+            "\n### Node: alpha / specs/alpha.md\n\n"
+            "**Depends on:** (none)\n**Channel:** (none)\n"
+        )
+        r = parse_train_roadmap(dup)  # parse tolerates; validate is the gate
+        errors = validate_train(r)
+        t_f = [e for e in errors if "(T-F)" in e]
+        assert t_f, f"expected a (T-F) duplicate-node error; got: {errors}"
+        assert "alpha/specs/alpha.md" in t_f[0]
+        # The old buggy behavior mis-reported this as a (T-D) cycle with an
+        # empty unresolved-node list — assert that no longer happens.
+        assert not [e for e in errors if "(T-D)" in e], (
+            f"duplicate must NOT surface as a (T-D) cycle; got: {errors}"
+        )
+
+    def test_genuine_cycle_still_reports_t_d(self) -> None:
+        """Guard: the T-F check must not mask a real cycle of distinct nodes."""
+        r = parse_train_roadmap(CYCLIC_TRAIN_MD)
+        errors = validate_train(r)
+        assert [e for e in errors if "(T-D)" in e], f"got: {errors}"
+
+    # --- Gap C: empty repo / plan-path component rejected at parse -----------
+
+    def test_empty_plan_path_rejected(self) -> None:
+        bad = "# Release Train: t\n\n## Nodes\n\n### Node: spec /\n\n**Depends on:** (none)\n**Channel:** (none)\n"
+        with pytest.raises(ValueError, match="plan-path"):
+            parse_train_roadmap(bad)
+
+    def test_empty_repo_rejected(self) -> None:
+        bad = "# Release Train: t\n\n## Nodes\n\n### Node:  / specs/x.md\n\n**Depends on:** (none)\n**Channel:** (none)\n"
+        with pytest.raises(ValueError, match="repo"):
+            parse_train_roadmap(bad)
