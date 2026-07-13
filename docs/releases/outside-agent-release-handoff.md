@@ -8,15 +8,15 @@ enforcement is live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.3`
-- Runtime `phase_loop_runtime.__version__`: `0.7.3`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.3`
+- Version: `0.7.4`
+- Runtime `phase_loop_runtime.__version__`: `0.7.4`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.4`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.3`
+- Validator version: `0.7.4`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -45,9 +45,9 @@ enforcement is live.
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.7.3-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.3.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.3.data`, `phase_loop_runtime-0.7.3.dist-info`
+- Wheel artifact: `phase_loop_runtime-0.7.4-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.4.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.4.data`, `phase_loop_runtime-0.7.4.dist-info`
 - Wheel file count: 402
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
 - Sdist file count: 852
@@ -58,7 +58,7 @@ enforcement is live.
 
 Governed-pipeline should consume this runtime as an authoritative validator only
 after a maintainer publishes or pins it. Pin the released package
-`phase-loop-runtime==0.7.3`, then call:
+`phase-loop-runtime==0.7.4`, then call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \

@@ -4,7 +4,21 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## [Unreleased]
+## [0.7.4] - 2026-07-13
+
+### run-train — actionable roadmap-format diagnostics (agent-harness#60)
+
+- **Named, coded parse diagnostics for train roadmaps.** `parse_train_roadmap`
+  now surfaces the offending node/heading on malformed input instead of failing
+  opaquely: a malformed `**Channel:**` descriptor is prefixed with its `node_id`;
+  a duplicate `### Node:` block is caught by a new coded `(T-F)` check *before*
+  the topo pass (previously mis-reported as a spurious `(T-D)` cycle with an empty
+  node list); and an empty `<repo>`/`<plan-path>` component is rejected at parse,
+  naming the heading. Both parse-time raises are caught at the CLI boundary with a
+  clean message and zero PRs opened; the duplicate fix is bound to INV-3. The
+  child-launch/dispatch half was already correct (dispatch locks are keyed per
+  `(repo, roadmap)`) and is unchanged; all train invariants (INV-1..6, merge-SHA
+  false-green killer) remain intact.
 
 ### Advisor board — heartbeat-aware liveness for the claude/Fable PTY leg (agent-harness#188)
 
