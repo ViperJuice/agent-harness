@@ -97,6 +97,67 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-06-30T22:00:00Z",
+      "file": "plans/phase-plan-v4-PNLCLAUDE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2200-PNLCLAUDE.md",
+      "if_gates_produced": [
+        "IF-0-PNLCLAUDE-1",
+        "IF-0-PNLCLAUDE-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-06-30T22:00:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "roadmap": "specs/phase-plans-v4.md"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-06-30T22:18:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "PNLCLAUDE",
+            "plan_file": "plans/phase-plan-v4-PNLCLAUDE.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-06-30T22:18:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "if_gates_produced": [
+              "IF-0-PNLCLAUDE-1",
+              "IF-0-PNLCLAUDE-2"
+            ],
+            "verification_commands": [
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker_spawn.py -q",
+              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py tests/test_governed_review.py -q",
+              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
+              "python -m json.tool plans/manifest.json",
+              "git diff --check"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PNLCLAUDE",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "v4-PNLCLAUDE",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-06-30T22:18:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T21:35:00Z",
       "file": "plans/phase-plan-v4-PNLFEED.md",
       "handoff_ref": ".dev-skills/handoffs/codex-execute-phase/20260630-2135-PNLFEED.md",
@@ -216,12 +277,11 @@
     },
     {
       "acceptance_criteria_count": null,
-      "created_at": "2026-06-30T22:00:00Z",
-      "file": "plans/phase-plan-v4-PNLCLAUDE.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2200-PNLCLAUDE.md",
+      "created_at": "2026-06-30T22:40:00Z",
+      "file": "plans/phase-plan-v4-PNLREDACT.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2240-PNLREDACT.md",
       "if_gates_produced": [
-        "IF-0-PNLCLAUDE-1",
-        "IF-0-PNLCLAUDE-2"
+        "IF-0-PNLREDACT-5"
       ],
       "lanes": [
         "SL-0",
@@ -229,35 +289,50 @@
       ],
       "lifecycle": [
         {
-          "at": "2026-06-30T22:00:00Z",
+          "at": "2026-06-30T22:40:00Z",
           "by": "codex-plan-phase",
           "metadata": {
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630",
             "roadmap": "specs/phase-plans-v4.md"
           },
           "transition": "committed"
         },
         {
-          "at": "2026-06-30T22:18:00Z",
+          "at": "2026-06-30T23:02:00Z",
           "by": "codex-execute-phase",
           "metadata": {
-            "phase_alias": "PNLCLAUDE",
-            "plan_file": "plans/phase-plan-v4-PNLCLAUDE.md"
+            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630",
+            "phase_alias": "PNLREDACT",
+            "plan_file": "plans/phase-plan-v4-PNLREDACT.md"
           },
           "transition": "executing"
         },
         {
-          "at": "2026-06-30T22:18:00Z",
+          "at": "2026-06-30T23:02:00Z",
           "by": "codex-execute-phase",
           "metadata": {
+            "dotfiles_dirty_paths": [
+              "README.md",
+              "bootstrap.sh",
+              "docs/phase-loop/advisor-panel-cutover.md",
+              "docs/phase-loop/harness-skill-matrix.md",
+              "docs/phase-loop/harness-substrate-manifest.md",
+              "shared/skills/advisor-panel/SKILL.md",
+              "shared/skills/advisor-panel/references/capability-matrix.md",
+              "shared/skills/advisor-panel/scripts/run_claude_leg.sh",
+              "shared/skills/advisor-panel/scripts/run_cli_panels.sh"
+            ],
             "if_gates_produced": [
-              "IF-0-PNLCLAUDE-1",
-              "IF-0-PNLCLAUDE-2"
+              "IF-0-PNLREDACT-5"
             ],
             "verification_commands": [
-              "PYTHONPATH=src python -m pytest tests/test_panel_invoker_spawn.py -q",
-              "PYTHONPATH=src python -m pytest tests/test_panel_invoker.py tests/test_panel_invoker_spawn.py tests/test_governed_gate_crfixes.py tests/test_governed_review.py -q",
+              "bash -n bootstrap.sh",
+              "test ! -e shared/skills/advisor-panel/scripts/run_cli_panels.sh && test ! -e shared/skills/advisor-panel/scripts/run_claude_leg.sh && test ! -e shared/skills/advisor-panel/references/capability-matrix.md",
+              "if rg -n \"run_cli_panels|run_claude_leg\" shared/skills/advisor-panel; then exit 1; else echo advisor-panel-shim-has-no-standalone-script-refs; fi",
+              "PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests/test_panel_invoker_spawn.py -q",
               "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
-              "python -m json.tool plans/manifest.json",
               "git diff --check"
             ],
             "verification_status": "passed"
@@ -266,14 +341,14 @@
         }
       ],
       "owner_skill": "codex-plan-phase",
-      "phase_alias": "PNLCLAUDE",
+      "phase_alias": "PNLREDACT",
       "reflection_ref": null,
       "roadmap_ref": null,
-      "slug": "v4-PNLCLAUDE",
+      "slug": "v4-PNLREDACT",
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-06-30T22:18:00Z"
+      "updated_at": "2026-06-30T23:02:00Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -336,81 +411,6 @@
     },
     {
       "acceptance_criteria_count": null,
-      "created_at": "2026-06-30T22:40:00Z",
-      "file": "plans/phase-plan-v4-PNLREDACT.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2240-PNLREDACT.md",
-      "if_gates_produced": [
-        "IF-0-PNLREDACT-5"
-      ],
-      "lanes": [
-        "SL-0",
-        "SL-1"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-06-30T22:40:00Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "roadmap": "specs/phase-plans-v4.md",
-            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
-            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-06-30T23:02:00Z",
-          "by": "codex-execute-phase",
-          "metadata": {
-            "phase_alias": "PNLREDACT",
-            "plan_file": "plans/phase-plan-v4-PNLREDACT.md",
-            "dotfiles_branch": "codex/advisor-panel-redact-20260630",
-            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-06-30T23:02:00Z",
-          "by": "codex-execute-phase",
-          "metadata": {
-            "dotfiles_dirty_paths": [
-              "README.md",
-              "bootstrap.sh",
-              "docs/phase-loop/advisor-panel-cutover.md",
-              "docs/phase-loop/harness-skill-matrix.md",
-              "docs/phase-loop/harness-substrate-manifest.md",
-              "shared/skills/advisor-panel/SKILL.md",
-              "shared/skills/advisor-panel/references/capability-matrix.md",
-              "shared/skills/advisor-panel/scripts/run_claude_leg.sh",
-              "shared/skills/advisor-panel/scripts/run_cli_panels.sh"
-            ],
-            "if_gates_produced": [
-              "IF-0-PNLREDACT-5"
-            ],
-            "verification_commands": [
-              "bash -n bootstrap.sh",
-              "test ! -e shared/skills/advisor-panel/scripts/run_cli_panels.sh && test ! -e shared/skills/advisor-panel/scripts/run_claude_leg.sh && test ! -e shared/skills/advisor-panel/references/capability-matrix.md",
-              "if rg -n \"run_cli_panels|run_claude_leg\" shared/skills/advisor-panel; then exit 1; else echo advisor-panel-shim-has-no-standalone-script-refs; fi",
-              "PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests/test_panel_invoker_spawn.py -q",
-              "PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v4.md",
-              "git diff --check"
-            ],
-            "verification_status": "passed"
-          },
-          "transition": "completed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "PNLREDACT",
-      "reflection_ref": null,
-      "roadmap_ref": null,
-      "slug": "v4-PNLREDACT",
-      "status": "completed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-06-30T23:02:00Z"
-    },
-    {
-      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T23:05:00Z",
       "file": "plans/phase-plan-v4-PNLVERIFY.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2305-PNLVERIFY.md",
@@ -425,9 +425,9 @@
           "at": "2026-06-30T23:05:00Z",
           "by": "codex-plan-phase",
           "metadata": {
-            "roadmap": "specs/phase-plans-v4.md",
             "dotfiles_branch": "codex/advisor-panel-redact-20260630",
-            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630",
+            "roadmap": "specs/phase-plans-v4.md"
           },
           "transition": "committed"
         },
@@ -435,10 +435,10 @@
           "at": "2026-06-30T23:28:00Z",
           "by": "codex-execute-phase",
           "metadata": {
-            "phase_alias": "PNLVERIFY",
-            "plan_file": "plans/phase-plan-v4-PNLVERIFY.md",
             "dotfiles_branch": "codex/advisor-panel-redact-20260630",
-            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630"
+            "dotfiles_worktree": "/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630",
+            "phase_alias": "PNLVERIFY",
+            "plan_file": "plans/phase-plan-v4-PNLVERIFY.md"
           },
           "transition": "executing"
         },
@@ -472,6 +472,77 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T23:28:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-13T04:03:16Z",
+      "file": "plans/phase-plan-vergence-v1-FREEZE.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-FREEZE-1",
+        "IF-0-FREEZE-2",
+        "IF-0-FREEZE-3",
+        "IF-0-FREEZE-4",
+        "IF-0-FREEZE-5",
+        "IF-0-FREEZE-6",
+        "IF-0-FREEZE-7"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-13T04:08:41Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "FREEZE",
+            "plan_file": "plans/phase-plan-vergence-v1-FREEZE.md"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-13T04:12:58Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "doc_delta_decision": "docs_updated",
+            "if_gates_produced": [
+              "IF-0-FREEZE-1",
+              "IF-0-FREEZE-2",
+              "IF-0-FREEZE-3",
+              "IF-0-FREEZE-4",
+              "IF-0-FREEZE-5",
+              "IF-0-FREEZE-6",
+              "IF-0-FREEZE-7"
+            ],
+            "spec_delta_closeout": "canonical_spec_update",
+            "verification_commands": [
+              "validate-roadmap",
+              "validate_plan_doc",
+              "FREEZE focused pytest suite"
+            ],
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FREEZE",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-convergence-v1.md",
+        "slug": "phase-plans-convergence-v1",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "vergence-v1-FREEZE",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-13T04:12:58Z"
     }
   ],
   "schema_version": 1

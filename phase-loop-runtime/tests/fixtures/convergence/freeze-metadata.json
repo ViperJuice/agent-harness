@@ -1,0 +1,32 @@
+{
+  "provenance": {
+    "capture_timestamp": "2026-07-13T04:09:00Z",
+    "repository_head": "0a958406e2a3eb6b7d8ec2d75a62262a86b5b744",
+    "roadmap_path": "specs/phase-plans-convergence-v1.md",
+    "roadmap_digest": "f98b53d9a8be483cc4278e35ce26e6cf52b3556c223b1418eb14e2a08d522112",
+    "redaction_posture": "metadata_only",
+    "unavailable_review_sources": [
+      ".phase-loop/reviews/convergence-*.md",
+      ".phase-loop/reviews/prebuilt-publish-slice-design.md"
+    ]
+  },
+  "baseline": {
+    "time_to_converge": {"status": "unavailable", "reason": "ratified source measurements are absent from this worktree"},
+    "transcript_dependence": {"status": "unavailable", "reason": "ratified source measurements are absent from this worktree"}
+  },
+  "fixtures": [
+    {"case": "forged_completion_evidence", "expected": "fail_closed"},
+    {"case": "malformed_result_envelope", "expected": "fail_closed"},
+    {"case": "capability_overclaim", "expected": "fail_closed"},
+    {"case": "stale_delayed_seat_write", "expected": "fail_closed"},
+    {"case": "mixed_version_envelope", "expected": "fail_closed"},
+    {"case": "action_outside_bounds", "expected": "fail_closed"},
+    {"case": "crash", "expected": "fail_closed"},
+    {"case": "partition", "expected": "fail_closed"},
+    {"case": "stale_worker", "expected": "fail_closed"},
+    {"case": "delayed_commit", "expected": "fail_closed"},
+    {"case": "exact_head", "expected": "fail_closed"},
+    {"case": "degraded_seat", "expected": "fail_closed"},
+    {"case": "ambiguous_outcome", "expected": "fail_closed"}
+  ]
+}
