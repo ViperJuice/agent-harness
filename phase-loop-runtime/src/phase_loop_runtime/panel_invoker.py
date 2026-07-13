@@ -1235,6 +1235,91 @@ def _run_leg_with_liveness(
                 pass
 
 
+# #188 — de-animation of the Claude TUI's cosmetic status line. While the model
+# call is in flight the TUI repaints an animated "✻ Herding… (Ns · esc to
+# interrupt)" line ~1x/sec (rotating whimsical verb + a per-second elapsed
+# counter). Those repaints are PTY output but NOT reviewer progress: a leg wedged
+# in ``ep_poll`` waiting on a stream that never completes keeps animating that
+# line forever. Treating any PTY byte as a heartbeat (the pre-#188 behavior) let
+# a wedged Fable leg hang ~17 min with ~2s CPU and no output. So for the TUI path
+# the kill clock is reset ONLY by GENUINE reviewer progress — output-file growth,
+# transcript growth, or SUBSTANTIVE novel de-animated terminal text — never by raw
+# PTY churn and never by incidental CPU (a Node CLI trickles libuv/GC CPU while
+# blocked, which would defeat a CPU heartbeat here just as the animation defeats a
+# byte heartbeat). This is exactly #188's "separate process-alive from
+# reviewer-heartbeat freshness"; the codex/grok/gemini ``_run_leg_with_liveness``
+# path keeps its stdout/stderr + CPU heartbeat (load-bearing there) untouched.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_TUI_DIGIT_RUN_RE = re.compile(r"\d+")
+_TUI_NON_TOKEN_RE = re.compile(r"[^0-9a-zA-Z#]+")
+# A normalized visible line must be at least this long to count as substantive
+# novelty — filters out short glyph/one-word blips while any real review sentence
+# (or streamed token run) clears it easily.
+_TUI_PROGRESS_MIN_CHARS = 8
+
+
+def _normalize_tui_line(line: str) -> str:
+    """Collapse a rendered terminal line to a spinner/timer-invariant token string.
+
+    Digit runs → ``#`` (kills the per-second elapsed counter) and every non-alnum
+    glyph/punctuation is dropped (kills the rotating spinner glyph + box drawing),
+    so the animated status line maps to a FINITE set of normalized strings while
+    genuinely-streamed review text keeps introducing novel ones.
+    """
+    line = _TUI_DIGIT_RUN_RE.sub("#", line)
+    line = _TUI_NON_TOKEN_RE.sub(" ", line)
+    return " ".join(line.split()).strip().lower()
+
+
+def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
+    """True iff a PTY chunk carries SUBSTANTIVE new (non-cosmetic) terminal text.
+
+    Strips ANSI escapes, splits on newline AND carriage-return (spinner overwrite),
+    normalizes each visible line, and reports whether any sufficiently-long line
+    has not been seen before. ``seen`` accumulates for the session (bounded by real
+    novelty — a wedge's animation vocabulary is finite, so it saturates and stops
+    resetting the kill clock).
+    """
+    text = chunk.decode("utf-8", errors="replace")
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    novel = False
+    for raw in re.split(r"[\r\n]+", text):
+        norm = _normalize_tui_line(raw)
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
+            seen.add(norm)
+            novel = True
+    return novel
+
+
+# A single ``os.read(8192)`` can split a novel review line across two chunks; each
+# fragment normalizes differently (or collides with a seen/too-short form), so the
+# whole-line progress signal is lost. Carry the trailing PARTIAL line (bytes after
+# the last newline/CR) forward and prepend it to the next chunk, so novelty is only
+# ever evaluated on COMPLETE lines. Bounded so an unterminated over-long run (a rare
+# no-newline stream) is flushed rather than growing the buffer without limit.
+_TUI_CARRY_MAX_BYTES = 1 << 16  # 64 KiB
+
+
+def _tui_take_complete_lines(carry: bytearray, chunk: bytes) -> bytes:
+    """Append ``chunk`` to ``carry`` and return the bytes up to the last line
+    terminator (complete lines, safe to scan for novelty), retaining the trailing
+    partial line in ``carry`` for the next read. Carried at the RAW byte level so a
+    straddling ANSI escape (never containing \\n/\\r) also reassembles intact."""
+    carry.extend(chunk)
+    last = max(carry.rfind(b"\n"), carry.rfind(b"\r"))
+    if last < 0:
+        if len(carry) >= _TUI_CARRY_MAX_BYTES:
+            complete = bytes(carry)
+            carry.clear()
+            return complete
+        return b""
+    complete = bytes(carry[: last + 1])
+    del carry[: last + 1]
+    return complete
+
+
 def _run_claude_tui_session(
     *,
     command: Sequence[str],
@@ -1266,8 +1351,14 @@ def _run_claude_tui_session(
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
     last_heartbeat = start_monotonic
-    last_cpu_sample = start_monotonic
-    last_ticks = 0
+    # #188: GENUINE-progress heartbeat state. The kill clock (``last_heartbeat``)
+    # is reset ONLY by reviewer progress — never by cosmetic PTY animation or
+    # incidental CPU. ``seen_tui_lines`` accumulates de-animated visible lines so a
+    # wedged TUI's finite animation vocabulary saturates and stops resetting it.
+    seen_tui_lines: set[str] = set()
+    tui_carry = bytearray()  # #188 CR: trailing partial line held across os.read boundaries
+    last_review_len = 0
+    last_transcript_len = 0
     try:
         master_fd, slave_fd = pty.openpty()
         try:
@@ -1293,7 +1384,6 @@ def _run_claude_tui_session(
             os.close(master_fd)
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}"
 
-    last_ticks = group_cpu_ticks(proc.pid)
     try:
         while time.monotonic() < deadline:
             if master_fd is not None:
@@ -1305,7 +1395,17 @@ def _run_claude_tui_session(
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
-                        last_heartbeat = time.monotonic()  # PTY output = liveness
+                        # #188: a raw PTY chunk is a heartbeat ONLY if it carries
+                        # SUBSTANTIVE novel text. The TUI's animated "thinking"
+                        # status line (rotating verb + per-second timer) repaints
+                        # forever while wedged in ep_poll; de-animation maps it to
+                        # already-seen lines so it never resets the kill clock.
+                        # #188 CR: carry the trailing partial line across read
+                        # boundaries so a novel line split by ``os.read`` is scanned
+                        # WHOLE (only complete lines are evaluated).
+                        complete = _tui_take_complete_lines(tui_carry, chunk)
+                        if complete and _tui_chunk_has_novel_content(complete, seen_tui_lines):
+                            last_heartbeat = time.monotonic()
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed
                         # the slave side, so no further output can arrive. Without this
@@ -1341,11 +1441,20 @@ def _run_claude_tui_session(
                 except OSError:
                     return 1, "", "claude_tui_submit_failed"
             review_text = _read_review_output(output_file)
+            # #188: canonical review OUTPUT growing is unambiguous reviewer progress.
+            if len(review_text) > last_review_len:
+                last_review_len = len(review_text)
+                last_heartbeat = now
             if _completion_ok(review_text, mode):
                 return 0, review_text, "claude_tui_file_output"
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
                 transcript_text = _latest_claude_transcript_text(str(cwd), since=start_wall)
+                # #188: the session transcript growing (tool calls, streamed
+                # messages) is genuine progress even before a file verdict lands.
+                if len(transcript_text) > last_transcript_len:
+                    last_transcript_len = len(transcript_text)
+                    last_heartbeat = now
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
             if proc.poll() is not None:
@@ -1355,14 +1464,13 @@ def _run_claude_tui_session(
                     return 0, review_text, "claude_tui_file_output"
                 detail = "claude_tui_missing_canonical_output"
                 return proc.returncode or 1, review_text or transcript_text, detail
-            # secondary CPU heartbeat (never a kill; only extends life) + stall reclaim.
-            if now - last_cpu_sample >= _LEG_LIVENESS_CPU_SAMPLE_S:
-                last_cpu_sample = now
-                ticks = group_cpu_ticks(proc.pid)
-                if ticks > last_ticks:
-                    last_heartbeat = now
-                last_ticks = ticks
-            # stall: PTY silent AND CPU-flat past the threshold while still running. The
+            # #188: NO CPU heartbeat on the TUI path. Unlike the print-mode legs, a
+            # Node CLI blocked in ep_poll still trickles libuv/GC CPU, so a CPU-advance
+            # reset would keep a genuinely-wedged TUI alive forever (the ~2s-CPU/17-min
+            # hang). Liveness here is reviewer progress ONLY (novel PTY text / output /
+            # transcript growth above) — "process-alive" is deliberately NOT "leg-alive".
+            #
+            # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
             if now - last_heartbeat >= _LEG_STALL_THRESHOLD_S:
@@ -1729,7 +1837,15 @@ def _exec_claude_tui_leg(
         mode=mode,
         backstop_s=backstop_s,
     )
-    return _classify_leg(rc, review_text, log_text, mode), review_text or log_text
+    # #188: a heartbeat-reclaimed (genuinely wedged) TUI leg is a TYPED stalled leg,
+    # not a bare ERROR — surface it as DEGRADED so the panel summary names the
+    # liveness reclaim ("process alive but no reviewer heartbeat") while the three
+    # completed seats are preserved. A leg that produced a conforming verdict before
+    # the reclaim still classifies OK (unchanged).
+    status = _classify_leg(rc, review_text, log_text, mode)
+    if log_text == "claude_tui_stalled" and status != "OK":
+        return "DEGRADED", review_text or "claude_tui_stalled: no reviewer heartbeat (liveness reclaim)"
+    return status, review_text or log_text
 
 
 def _exec_claude_agent_view_attempt(

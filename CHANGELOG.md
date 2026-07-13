@@ -4,6 +4,26 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Advisor board — heartbeat-aware liveness for the claude/Fable PTY leg (agent-harness#188)
+
+- **Reviewer-progress heartbeat, not cosmetic animation.** The self-PTY Claude TUI
+  leg (`_run_claude_tui_session`) now resets its stall clock only on GENUINE reviewer
+  progress — novel de-animated terminal text, review-file growth, or transcript
+  growth. The TUI's animated "thinking" status line (rotating verb + per-second
+  elapsed counter) and a Node CLI's incidental libuv/GC CPU no longer count as
+  liveness. This closes a regression where a genuinely-wedged Fable leg (blocked in
+  `ep_poll`, ~2s CPU, no output) animated forever and hung ~17 min with no reclaim.
+- **Typed stalled leg.** A reclaimed wedge is surfaced as `DEGRADED`
+  (`claude_tui_stalled`), so the board names the liveness reclaim while the completed
+  seats are preserved. No fixed model-response timeout is injected when the caller did
+  not request one — the hard deadline stays the generous `_MAX` backstop and the real
+  kill is heartbeat extinction.
+- **Regression coverage.** New PTY-subprocess tests prove a silent-but-animating,
+  CPU-trickling leg is reclaimed within the stall window; a slow-but-progressing leg
+  is not killed; and no fixed short timeout is injected on the default path.
+
 ## [0.7.3] - 2026-07-12
 
 ### Roadmap supersession authority
