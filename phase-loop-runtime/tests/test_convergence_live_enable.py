@@ -58,6 +58,8 @@ def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub[0] == "ls-remote":
                 return CompletedProcess(cmd, 0, stdout=f"{remote_sha}\trefs/heads/{_BRANCH}\n", stderr="")
+            if sub[:2] == ["remote", "get-url"]:
+                return CompletedProcess(cmd, 0, stdout="https://github.com/owner/repo.git\n", stderr="")
         if cmd[0] == "gh":
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")

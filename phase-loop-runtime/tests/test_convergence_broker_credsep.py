@@ -41,6 +41,7 @@ def _base_responses():
     return [
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
         (("create",), "", 0),
     ]
@@ -86,3 +87,40 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
+
+
+# --- CR hardening: bind every gh call to the origin repo (no GH_REPO redirect) ---
+def test_gh_calls_are_bound_to_origin_repo_slug(tmp_path):
+    """gh pr create + pr list must carry --repo <origin slug> so a stray GH_REPO
+    cannot open/read the PR on a different repo while the push+ls-remote match."""
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    gh = [c for c in run.calls if c and c[0] == "gh"]
+    assert gh, "expected gh calls"
+    for c in gh:
+        assert "--repo" in c and "owner/repo" in c, f"gh call not bound to origin repo: {c!r}"
+
+
+def test_unresolvable_origin_fails_closed(tmp_path):
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("get-url",), "not-a-git-url", 0),
+    ])
+    try:
+        GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    except ValueError as e:
+        assert "origin" in str(e)
+    else:
+        raise AssertionError("expected fail-closed on unresolvable origin")
+
+
+def test_broker_env_strips_repo_redirect_but_keeps_credential():
+    env = {"GH_TOKEN": "t", "GH_REPO": "evil/repo", "GH_HOST": "evil.example", "NORMAL": "y"}
+    broker = BrokerEnvironmentBoundary().environment_for("broker", env)
+    assert broker.get("GH_TOKEN") == "t"          # broker needs its credential
+    assert "GH_REPO" not in broker and "GH_HOST" not in broker  # but never the redirect vars
+    assert broker.get("NORMAL") == "y"

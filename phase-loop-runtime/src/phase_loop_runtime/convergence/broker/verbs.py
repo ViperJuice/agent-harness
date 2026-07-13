@@ -32,9 +32,13 @@ class BrokerService:
         # publish_committed_branch de-dups on the canonical (repo, branch, head_sha)
         # triple so a repeat under a fresh admission key is a no-op that returns the
         # SAME prior result.  Other verbs remain keyed by the admission key.
+        # Every key is namespaced by verb so a cross-verb key collision can never
+        # replay one verb's terminal record for a different verb (defense-in-depth).
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
-            return publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
-        return request.admission.idempotency_key
+            base = publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
+        else:
+            base = request.admission.idempotency_key
+        return f"{request.verb.value}\0{base}"
 
     def _replay(self, request: BrokerRequest, key: str, current: EvidenceRecord) -> BrokerExecutionResult:
         observed = current.state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED
