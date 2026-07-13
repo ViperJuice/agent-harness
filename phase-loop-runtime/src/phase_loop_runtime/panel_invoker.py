@@ -250,6 +250,43 @@ class PanelResult:
         )
 
 
+@dataclass(frozen=True)
+class SeatOutcomeRecord:
+    """Metadata-only durable terminal outcome for one requested advisor seat."""
+
+    seat_key: str
+    vendor_leg: str
+    required: bool
+    status: str
+    attempt_id: str
+    epoch: int
+    artifact_digest: str
+    completed_at: str
+    evidence_digest: str
+    reason: str | None = None
+
+
+def serialize_seat_outcome(record: SeatOutcomeRecord) -> str:
+    """Return stable metadata-only JSON; raw review text is intentionally absent."""
+    return json.dumps({
+        "artifact_digest": record.artifact_digest,
+        "attempt_id": record.attempt_id,
+        "completed_at": record.completed_at,
+        "epoch": record.epoch,
+        "evidence_digest": record.evidence_digest,
+        "reason": record.reason,
+        "required": record.required,
+        "seat_key": record.seat_key,
+        "status": record.status,
+        "vendor_leg": record.vendor_leg,
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def persist_seat_outcome(record: SeatOutcomeRecord, append_sink: Callable[[str], None]) -> None:
+    """Persist exactly the serialized outcome through an injected coordinator sink."""
+    append_sink(serialize_seat_outcome(record))
+
+
 def available_panel_legs(probe: Callable[[str], bool] | None = None) -> tuple[str, ...]:
     """Metadata-only liveness preflight: which panel legs have their CLI present.
 

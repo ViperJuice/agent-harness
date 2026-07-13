@@ -729,6 +729,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the cross-repo release-train roadmap (same file as run-train).",
     )
     train_status_sub.add_argument(
+        "--event-log",
+        metavar="PATH",
+        help="Read a coordinator-owned convergence event log instead of a legacy train ledger.",
+    )
+    train_status_sub.add_argument(
         "--ledger-dir",
         default=None,
         metavar="DIR",
@@ -3058,6 +3063,21 @@ def _run_train_status_command(*, parser: argparse.ArgumentParser, args: argparse
     between draft-PR creation, review, and merge/reverify.
     """
     import json as _json
+
+    event_log = getattr(args, "event_log", None)
+    if event_log:
+        if getattr(args, "train_file", None) or getattr(args, "ledger_dir", None):
+            parser.error("train-status --event-log is mutually exclusive with --train and --ledger-dir")
+            return 2
+        from .convergence import build_train_status, read_convergence_events, recover_train_state, render_train_status
+        path = Path(event_log)
+        try:
+            snapshot = build_train_status(recover_train_state(read_convergence_events(path)), path)
+        except Exception as exc:
+            print(f"train-status: failed to read event log at {path}: {exc}", file=sys.stderr)
+            return 1
+        print(render_train_status(snapshot, as_json=bool(getattr(args, "json", False))))
+        return 0
 
     from .train_ledger import default_ledger_path, read_ledger
 

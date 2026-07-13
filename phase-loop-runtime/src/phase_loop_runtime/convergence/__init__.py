@@ -1,0 +1,110 @@
+"""Frozen convergence contracts only; runtime and broker behavior are intentionally absent."""
+
+from phase_loop_runtime.convergence.contracts import (
+    AdmissionRequest,
+    AuthoritySource,
+    BrokerRequest,
+    BrokerTerminalEvidence,
+    BrokerVerb,
+    InvalidationTrigger,
+    PublishCommittedBranchResult,
+    ReconciliationBinding,
+    ResourceIsolationDecision,
+    evaluate_resource_isolation,
+)
+from phase_loop_runtime.convergence.provider_contracts import (
+    PROVIDER_COMPLETION_CLASSIFICATIONS,
+    ProviderAutomationDisposition,
+    ProviderCompletionClassification,
+    ProviderCompletionContract,
+    TerminalOutcomeState,
+    validate_terminal_transition,
+)
+from phase_loop_runtime.train_ledger import (
+    CoordinatorEvent,
+    CoordinatorEventKind,
+    ConvergenceResultEnvelope,
+    ConvergenceResultStatus,
+    normalize_legacy_ledger_record,
+)
+from phase_loop_runtime.convergence.event_log import (
+    RecoveredTrainState,
+    default_convergence_event_log_path,
+    read_convergence_events,
+    record_intent,
+    record_outcome,
+    recover_train_state,
+)
+from phase_loop_runtime.convergence.reconcile import ActionReconciliation, ExactStateProbes, ReconciliationVerdict, SupportedConvergenceVersions, invalidate_action_evidence, reconcile_before_action, reconcile_train_state
+from phase_loop_runtime.convergence.dispatch import DispatchDecision, RepositoryDispatchRequest, RepositoryLockKey, dispatch_ready_nodes
+from phase_loop_runtime.convergence.fencing import ApprovalBinding, AttemptLease, FencedAdmissionFactory, compute_approval_digest, validate_attempt_lease
+from phase_loop_runtime.convergence.refresh import DownstreamRefreshRequest, DownstreamRefreshResult, DownstreamRefreshStatus, refresh_downstream_after_merge
+from phase_loop_runtime.convergence.status import TrainStatusSnapshot, build_train_status, render_train_status
+from phase_loop_runtime.convergence.adapters import AdapterExecutionRequest, run_claude_adapter, run_codex_adapter, run_outside_agent_adapter
+from phase_loop_runtime.convergence.broker import (
+    AdmissionRecord, BrokerAdmissionPolicy, BrokerClient, BrokerEnvironmentBoundary,
+    BrokerEvidenceStore, BrokerExecutionResult, BrokerProviderAdapter, BrokerService,
+    EvidenceRecord, GitHubBrokerAdapter, LinearizableAdmissionStore,
+    publish_committed_branch_idempotency_key,
+)
+
+__all__ = [
+    "AdmissionRequest",
+    "AuthoritySource",
+    "BrokerRequest",
+    "BrokerTerminalEvidence",
+    "BrokerVerb",
+    "CoordinatorEvent",
+    "CoordinatorEventKind",
+    "ConvergenceResultEnvelope",
+    "ConvergenceResultStatus",
+    "InvalidationTrigger",
+    "PROVIDER_COMPLETION_CLASSIFICATIONS",
+    "ProviderAutomationDisposition",
+    "ProviderCompletionClassification",
+    "ProviderCompletionContract",
+    "PublishCommittedBranchResult",
+    "ReconciliationBinding",
+    "ResourceIsolationDecision",
+    "TerminalOutcomeState",
+    "evaluate_resource_isolation",
+    "normalize_legacy_ledger_record",
+    "validate_terminal_transition",
+    "AdapterExecutionRequest",
+    "ExactStateProbes",
+    "ActionReconciliation",
+    "ApprovalBinding",
+    "AttemptLease",
+    "DispatchDecision",
+    "DownstreamRefreshRequest",
+    "DownstreamRefreshResult",
+    "DownstreamRefreshStatus",
+    "FencedAdmissionFactory",
+    "RecoveredTrainState",
+    "ReconciliationVerdict",
+    "RepositoryDispatchRequest",
+    "RepositoryLockKey",
+    "SupportedConvergenceVersions",
+    "TrainStatusSnapshot",
+    "build_train_status",
+    "default_convergence_event_log_path",
+    "compute_approval_digest",
+    "dispatch_ready_nodes",
+    "invalidate_action_evidence",
+    "read_convergence_events",
+    "reconcile_train_state",
+    "reconcile_before_action",
+    "record_intent",
+    "record_outcome",
+    "recover_train_state",
+    "render_train_status",
+    "run_claude_adapter",
+    "run_codex_adapter",
+    "run_outside_agent_adapter",
+    "refresh_downstream_after_merge",
+    "validate_attempt_lease",
+    "AdmissionRecord", "BrokerAdmissionPolicy", "BrokerClient", "BrokerEnvironmentBoundary",
+    "BrokerEvidenceStore", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService",
+    "EvidenceRecord", "GitHubBrokerAdapter", "LinearizableAdmissionStore",
+    "publish_committed_branch_idempotency_key",
+]

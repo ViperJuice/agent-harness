@@ -147,5 +147,23 @@ Cycles are rejected at parse time.
 - **Train state off `.phase-loop/`** — the ledger is never written inside any repo's `.phase-loop/` directory.
 - **Autonomous boundary** — without `--governed`, the coordinator stops at `drafts_open`; cross-repo merges are never auto-merged.
 
+## Converged coordinator behavior
+
+The phase-loop command recovers the coordinator event log before every
+dispatch, resume, publish, review, merge, release, or package action and
+compares it with exact Git, GitHub, provider, and registry authority. A
+missing probe, unsupported/mixed version, stale attempt or fence, invalid
+verification artifact digest, stale approval, or ambiguous provider result is
+a fail-closed typed blocker.
+
+Each admitted mutation is bound to an immutable attempt, epoch, fence token,
+approval digest, expected-version predicate, authority scope, and idempotency
+key. Provider credentials stay within the broker boundary. Parallel execution
+requires different repositories, complete disjoint owned paths, frozen shared
+interfaces, and a recorded isolation decision; merges and release publication
+remain serial. Following a merge, refresh each affected downstream to the
+exact merge SHA, rerun its bound verification, then request a fresh broker
+admission for republish/review.
+
 For the full protocol spec see
 `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`.

@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 from phase_loop_runtime.cli import main as cli_main
-from phase_loop_runtime.train_ledger import LedgerRecord, append_record, default_ledger_path
+from phase_loop_runtime.train_ledger import CoordinatorEvent, CoordinatorEventKind, LedgerRecord, append_record, default_ledger_path
+from phase_loop_runtime.convergence.event_log import record_intent
 
 TRAIN_MD = """# Release Train: t
 
@@ -85,3 +86,15 @@ def test_train_status_missing_train_file(tmp_path, capsys):
     rc = cli_main(["train-status", "--train", str(tmp_path / "nope.md")])
     assert rc == 1
     assert "not found" in capsys.readouterr().err
+
+
+def test_train_status_event_log_without_train(tmp_path, capsys):
+    log = tmp_path / "events.jsonl"
+    record_intent(log, CoordinatorEvent(
+        kind=CoordinatorEventKind.INTENT, train_id="t", node_id="n", roadmap_path="r",
+        roadmap_digest="d", workspace_id=None, branch=None, base_ref=None, base_sha=None,
+        head_sha=None, phase=None, action="execute", attempt_id="a", epoch=1,
+    ))
+    rc = cli_main(["train-status", "--event-log", str(log), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["train_id"] == "t"

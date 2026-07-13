@@ -4,6 +4,28 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Convergence: crash-safe cross-repo coordinator + credential broker (verb-gated skeleton)
+
+- **Panel-ratified convergence coordinator** (`phase_loop_runtime/convergence/**`): frozen contracts
+  (event schema, result envelope, provider completion-contract matrix + terminal-outcome state machine,
+  broker verb/admission, reconciliation authority-split, resource-isolation predicate, shared
+  admission/fencing binding), an append-only event log + exact-state reconciliation, bounded
+  codex/claude/outside-agent adapters, advisor-seat lifecycle, and transcript-free status.
+- **Single credential-capable broker epoch** (`convergence/broker/**`): linearizable admission,
+  terminal effect/no-effect evidence with **permanent fail-closed on `outcome_ambiguous_blocked`**
+  (no timeout/override escape), canonical `(repo,branch,head_sha)` idempotency, and
+  `publish_committed_branch` with **real exact-published-head verification** (`git ls-remote` +
+  `gh pr list --json headRefOid`; any read-failure/mismatch fails closed, never fabricates success).
+- **Adversarial fault suite** (crash/partition/stale-worker/delayed-commit/mixed-version/exact-head/
+  outside-agent-adversarial) proving crash-safety + fail-closed behaviour before any enablement.
+- **Live automation stays DISABLED**: every provider verb is classified `HUMAN_EXECUTED`, so the broker
+  refuses all mutations. This ships the live-capable, verb-gated enforcement skeleton; flipping verbs
+  to `SUPPORTED` (live GitHub mutation) is a separate, explicitly-authorized step.
+- Fixes: untrack + gitignore `.dev-skills/handoffs` (tracking broke governed closeouts with
+  `dirty_worktree_conflict`).
+
 ## [0.7.4] - 2026-07-13
 
 ### run-train — actionable roadmap-format diagnostics (agent-harness#60)

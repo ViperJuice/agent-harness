@@ -8,3 +8,5 @@ __pycache__/
 
 # CS-0.10c local-file LeaseStore: per-machine coordination state, never repo truth.
 .consiliency/leases/
+.dev-skills/handoffs/
+.pytest_cache/

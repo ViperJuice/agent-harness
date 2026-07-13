@@ -59,6 +59,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .cross_repo_channel import ChannelDescriptor, set_upstream_ref
@@ -70,6 +71,56 @@ from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
 
 ResolveWorkspace = Callable[[TrainNode], Path]
 ResolveOwnedPaths = Callable[[TrainNode], Sequence[str]]
+
+
+@dataclass(frozen=True)
+class CoordinatorRuntime:
+    """Credential-free authority boundary required by converged train actions."""
+
+    train_id: str
+    coordinator_root: Path
+    roadmap_path: str
+    roadmap_digest: str
+    workspace_id: str
+    supported_event_version: str = "1"
+    supported_transition_version: str = "1"
+    supported_invalidation_version: str = "1"
+    exact_state_probes: object | None = None
+    broker_client: object | None = None
+
+
+def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Path, owned_paths):
+    """Build a per-node AdmissionRequest from the coordinator runtime's authority.
+
+    Mirrors the fencing construction used by ``refresh.refresh_downstream_after_merge``.
+    The publish_committed_branch verb remains HUMAN_EXECUTED, so the broker rejects
+    this admission before start — the wiring is live-CAPABLE but live-DISABLED.  This
+    is the default seam; tests inject ``_admission_fn`` to avoid a live git read.
+    """
+    import hashlib
+
+    from .convergence.fencing import FencedAdmissionFactory
+
+    factory = FencedAdmissionFactory()
+    base = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True)
+    base_sha = base.stdout.strip() or ("0" * 40)
+    owned_digest = hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+    approval = factory.approval(
+        roadmap_digest=runtime.roadmap_digest,
+        effective_code=owned_digest,
+        base_sha=base_sha,
+        dependency_shas=(),
+        verification_plan_digest=runtime.roadmap_digest,
+        verification_artifact_digest=owned_digest,
+    )
+    lease = factory.lease(train_id=runtime.train_id, node_id=node.node_id, action="publish", lease_epoch=1)
+    return factory.create(
+        lease=lease,
+        approval=approval,
+        expected_version_predicate="head == committed",
+        authority_domain_scope=runtime.workspace_id or runtime.train_id,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Preflight check functions
@@ -604,6 +655,7 @@ def run_train(
     run_mode: str = "autonomous",
     resolve_workspace: ResolveWorkspace,
     resolve_owned_paths: Optional[ResolveOwnedPaths] = None,
+    coordinator_runtime: CoordinatorRuntime | None = None,
     # Injectable seams — default to the live implementations; tests override.
     _run_loop: Optional[Callable] = None,
     _publish: Optional[Callable] = None,
@@ -611,6 +663,9 @@ def run_train(
     _pr_is_open: Optional[Callable] = None,
     _live_pr_head_sha_fn: Optional[Callable] = None,
     _preflight_fn: Optional[Callable] = None,
+    # Broker admission builder (runtime, node, workspace, owned_paths) → AdmissionRequest.
+    # Only invoked when a broker-authoritative coordinator_runtime is supplied.
+    _admission_fn: Optional[Callable] = None,
     # P4 gate: False (default) preserves P3 behavior for all existing callers.
     # The CLI sets this True; run_mode then determines autonomous vs governed.
     _merge_phase_enabled: bool = False,
@@ -675,6 +730,12 @@ def run_train(
           ``{"status": "merge_halted", "node_id": …, "reason": …}`` —
           downstream re-verify failed; upstream stays merged (forward-only).
     """
+    # A supplied converged runtime must remain credential-free and carries the
+    # event-log authority/broker seams.  Legacy callers remain supported while
+    # the CLI migration is rolled out through the explicit runtime boundary.
+    if coordinator_runtime is not None and (not coordinator_runtime.train_id or coordinator_runtime.broker_client is None):
+        return {"status": "blocked", "detail": {"reason": "coordinator runtime lacks broker authority"}}
+
     # Resolve seams
     from .publishing import publish_from_worktree as _default_publish
     from .runner import run_loop as _default_run_loop
@@ -689,6 +750,7 @@ def run_train(
         _live_pr_head_sha_fn if _live_pr_head_sha_fn is not None else _live_pr_head_sha
     )
     preflight_fn = _preflight_fn if _preflight_fn is not None else _default_preflight
+    admission_fn = _admission_fn if _admission_fn is not None else _default_build_admission
 
     # Track whether caller supplied an explicit owned-paths resolver so we know
     # whether to fall back to the run_loop-produced snapshot paths (Finding #1).
@@ -979,11 +1041,23 @@ def run_train(
             # (iv) Publish as draft PR via the P1 runtime primitive.
             #      draft=True is structural — P3 never merges.
             pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
+            publish_kwargs: Dict[str, object] = {
+                "draft": True,  # P3 invariant: draft-only, never merge
+                "pr_body": pr_body,
+            }
+            # Route the publish through the broker's admission+verb path when a
+            # broker-authoritative runtime is supplied.  Past the line-699 guard,
+            # coordinator_runtime is not None ⟹ broker_client is not None.  Legacy
+            # callers (no runtime) publish exactly as before — no broker kwargs.
+            if coordinator_runtime is not None:
+                publish_kwargs["broker_client"] = coordinator_runtime.broker_client
+                publish_kwargs["admission"] = admission_fn(
+                    coordinator_runtime, node, workspace, owned_paths
+                )
             publish_result = publish_fn(
                 workspace,
                 owned_paths,
-                draft=True,  # P3 invariant: draft-only, never merge
-                pr_body=pr_body,
+                **publish_kwargs,
             )
 
         except Exception as exc:

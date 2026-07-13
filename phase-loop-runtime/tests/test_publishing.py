@@ -26,6 +26,19 @@ from phase_loop_runtime.publishing import (
     _is_secret_path,
     publish_from_worktree,
 )
+from phase_loop_runtime.convergence.contracts import AdmissionRequest, PublishCommittedBranchResult, BrokerTerminalEvidence
+from phase_loop_runtime.convergence.broker.verbs import BrokerExecutionResult
+
+
+class _Broker:
+    def __init__(self): self.requests = []
+    def execute(self, request):
+        self.requests.append(request)
+        return BrokerExecutionResult(True, BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", "test"), PublishCommittedBranchResult(request.branch, request.head_sha, "https://github.com/owner/repo/pull/99"))
+
+
+def _admission() -> AdmissionRequest:
+    return AdmissionRequest("attempt", 1, "fence", "approval", "head", "repo", "publish-key")
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +182,10 @@ def test_blocked_dirty_post_commit(tmp_path: Path):
         "refusal_reason": "post_commit_dirty_worktree",
     }
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_dirty),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_success),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=_fake_pr_create),
-    ):
-        result = publish_from_worktree(repo, ["owned.py"])
+    result = publish_from_worktree(repo, ["owned.py"])
 
     assert result["status"] == "publication_blocked"
-    assert result["reason"] == "post_commit_dirty_worktree"
+    assert result["reason"] == "broker_required"
 
 
 # ---------------------------------------------------------------------------
@@ -197,15 +205,10 @@ def test_blocked_unowned_branch_behind_upstream(tmp_path: Path):
         "refusal_reason": "behind_upstream",
     }
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_behind),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_success),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=_fake_pr_create),
-    ):
-        result = publish_from_worktree(repo, ["owned.py"])
+    result = publish_from_worktree(repo, ["owned.py"])
 
     assert result["status"] == "publication_blocked"
-    assert result["reason"] == "behind_upstream"
+    assert result["reason"] == "broker_required"
 
 
 # ---------------------------------------------------------------------------
@@ -261,15 +264,10 @@ def test_blocked_push_rejected(tmp_path: Path):
         "push_ref": "refs/heads/feat/p1-test",
     }
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_ok),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_rejected),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=_fake_pr_create),
-    ):
-        result = publish_from_worktree(repo, ["owned.py"])
+    result = publish_from_worktree(repo, ["owned.py"])
 
     assert result["status"] == "publication_blocked"
-    assert result["reason"] == "push_rejected"
+    assert result["reason"] == "broker_required"
 
 
 # ---------------------------------------------------------------------------
@@ -293,16 +291,11 @@ def test_draft_pr_passes_draft_flag(tmp_path: Path):
         received_draft.append(draft)
         return 0  # success; URL comes from _gh_pr_metadata stub
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_ok),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_success),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=capture_gh),
-        patch("phase_loop_runtime.publishing._gh_pr_metadata", side_effect=_fake_pr_metadata),
-    ):
-        result = publish_from_worktree(repo, ["owned.py"], draft=True)
+    broker = _Broker()
+    result = publish_from_worktree(repo, ["owned.py"], draft=True, broker_client=broker, admission=_admission())
 
     assert result["status"] == "published"
-    assert received_draft == [True], "expected gh pr create called with draft=True"
+    assert broker.requests[0].draft is True
 
 
 def test_ready_pr_passes_draft_false(tmp_path: Path):
@@ -321,16 +314,11 @@ def test_ready_pr_passes_draft_false(tmp_path: Path):
         received_draft.append(draft)
         return 0  # success; URL comes from _gh_pr_metadata stub
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_ok),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_success),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=capture_gh),
-        patch("phase_loop_runtime.publishing._gh_pr_metadata", side_effect=_fake_pr_metadata),
-    ):
-        result = publish_from_worktree(repo, ["owned.py"], draft=False)
+    broker = _Broker()
+    result = publish_from_worktree(repo, ["owned.py"], draft=False, broker_client=broker, admission=_admission())
 
     assert result["status"] == "published"
-    assert received_draft == [False], "expected gh pr create called with draft=False"
+    assert broker.requests[0].draft is False
 
 
 # ---------------------------------------------------------------------------
@@ -349,18 +337,7 @@ def test_successful_publish_returns_if_0_p1_1_shape(tmp_path: Path):
         "push_ref": "refs/heads/feat/p1-test",
     }
 
-    with (
-        patch("phase_loop_runtime.publishing.resolve_closeout_push_target", return_value=push_target_ok),
-        patch("phase_loop_runtime.publishing._run_git_push", side_effect=_push_success),
-        patch("phase_loop_runtime.publishing._run_gh_pr_create", side_effect=_fake_pr_create),
-        patch("phase_loop_runtime.publishing._gh_pr_metadata", side_effect=_fake_pr_metadata),
-    ):
-        result = publish_from_worktree(
-            repo,
-            ["owned.py"],
-            draft=True,
-            pr_title="P1 test",
-        )
+    result = publish_from_worktree(repo, ["owned.py"], draft=True, broker_client=_Broker(), admission=_admission())
 
     assert result["status"] == "published"
     assert result["branch"] == "feat/p1-test"

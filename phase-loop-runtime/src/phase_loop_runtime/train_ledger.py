@@ -45,8 +45,9 @@ import datetime
 import json
 import os
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,89 @@ from typing import Dict, List, Optional
 VALID_STATUSES = frozenset(
     {"pending", "running", "pr_open", "approved", "merged", "blocked"}
 )
+
+
+EVENT_SCHEMA_VERSION = "1"
+TRANSITION_MODEL_VERSION = "1"
+INVALIDATION_MODEL_VERSION = "1"
+
+
+class CoordinatorEventKind(str, Enum):
+    """The append-only boundary represented by a coordinator event."""
+
+    INTENT = "intent"
+    OUTCOME = "outcome"
+
+
+@dataclass(frozen=True)
+class CoordinatorEvent:
+    """Versioned, append-only coordinator event; intent and outcome never share a record."""
+
+    kind: CoordinatorEventKind
+    train_id: str
+    node_id: str
+    roadmap_path: str
+    roadmap_digest: Optional[str]
+    workspace_id: Optional[str]
+    branch: Optional[str]
+    base_ref: Optional[str]
+    base_sha: Optional[str]
+    head_sha: Optional[str]
+    phase: Optional[str]
+    action: str
+    owned_paths: Tuple[str, ...] = ()
+    executor: Optional[str] = None
+    model: Optional[str] = None
+    upstream_dep_shas: Tuple[str, ...] = ()
+    verification_artifact: Optional[str] = None
+    verification_digest: Optional[str] = None
+    seat_outcomes: Tuple[str, ...] = ()
+    pr_identity: Optional[str] = None
+    merge_sha: Optional[str] = None
+    release_identity: Optional[str] = None
+    attempt_id: Optional[str] = None
+    epoch: Optional[int] = None
+    fence_token: Optional[str] = None
+    approval_digest: Optional[str] = None
+    expected_version_predicate: Optional[str] = None
+    authority_domain_scope: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    isolation_reason: Optional[str] = None
+    timestamp: Optional[str] = None
+    blocker_reason: Optional[str] = None
+    event_schema_version: str = EVENT_SCHEMA_VERSION
+    transition_model_version: str = TRANSITION_MODEL_VERSION
+    invalidation_model_version: str = INVALIDATION_MODEL_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.train_id or not self.node_id or not self.roadmap_path or not self.action:
+            raise ValueError("coordinator events require train, node, roadmap, and action")
+        if not all((self.event_schema_version, self.transition_model_version, self.invalidation_model_version)):
+            raise ValueError("coordinator event version fields must be explicit")
+
+
+class ConvergenceResultStatus(str, Enum):
+    """Adapter-neutral convergence result statuses."""
+
+    COMPLETED = "completed"
+    VERIFIED = "verified"
+    BLOCKED = "blocked"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ConvergenceResultEnvelope:
+    """A result returned uniformly by coordinator adapters without runtime wiring."""
+
+    status: ConvergenceResultStatus
+    attempt_id: str
+    detail: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id:
+            raise ValueError("result envelopes require an attempt_id")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +280,29 @@ def _dict_to_record(obj: dict) -> LedgerRecord:
         upstream_merge_sha=obj.get("upstream_merge_sha"),
         merge_order=obj.get("merge_order"),
         ts=obj.get("ts", ""),
+    )
+
+
+def normalize_legacy_ledger_record(record: LedgerRecord | Mapping[str, object]) -> CoordinatorEvent:
+    """Map a pre-roadmap ledger record to an explicit outcome event without invented evidence."""
+    legacy = record if isinstance(record, LedgerRecord) else _dict_to_record(dict(record))
+    return CoordinatorEvent(
+        kind=CoordinatorEventKind.OUTCOME,
+        train_id="legacy-train",
+        node_id=legacy.node_id,
+        roadmap_path="unknown",
+        roadmap_digest=None,
+        workspace_id=None,
+        branch=legacy.branch,
+        base_ref=None,
+        base_sha=None,
+        head_sha=legacy.head_sha,
+        phase=None,
+        action="legacy_ledger_status",
+        pr_identity=legacy.pr_url,
+        merge_sha=legacy.upstream_merge_sha,
+        timestamp=legacy.ts or None,
+        blocker_reason="legacy_status:" + legacy.status if legacy.status == "blocked" else None,
     )
 
 
