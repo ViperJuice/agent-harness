@@ -39,9 +39,18 @@ class GitHubBrokerAdapter:
         # Fail-closed if the origin cannot be resolved.
         url = self._output("remote", "get-url", "origin")
         if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
+            scheme = url.split("://", 1)[0].lower()
             rest = url.split("://", 1)[1].split("@", 1)[-1]
-            host, _, path = rest.partition("/")
-            host = host.split(":", 1)[0]
+            authority, _, path = rest.partition("/")
+            # Fail-closed on authorities --repo cannot faithfully pin: an IPv6 literal
+            # (mis-split below) or a non-default http(s) API port (silently dropped →
+            # gh would hit the default-port host, a twin-host risk).  ssh transport
+            # ports are irrelevant to the gh API host, so they are allowed.
+            if authority.startswith("[") or authority.count(":") > 1:
+                raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
+            host, _, port = authority.partition(":")
+            if scheme in ("http", "https") and port and port not in ("80", "443"):
+                raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
         else:  # scp-like: [user@]host:owner/repo(.git)
             hostpart, sep, path = url.partition(":")
             host = hostpart.split("@", 1)[-1]

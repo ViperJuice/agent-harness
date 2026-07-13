@@ -141,7 +141,12 @@ def test_origin_repo_is_host_qualified(tmp_path, url, slug):
     run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), url, 0)])
     assert GitHubBrokerAdapter(tmp_path, run=run)._origin_repo() == slug
 
-@pytest.mark.parametrize("bad", ["not-a-git-url", "https://github.com/onlyowner", "git@host:", ""])
+@pytest.mark.parametrize("bad", [
+    "not-a-git-url", "https://github.com/onlyowner", "git@host:", "",
+    "https://ghe.corp:8443/team/svc.git",   # non-default https port -> can't pin -> fail-closed
+    "http://ghe.corp:8080/team/svc",         # non-default http port -> fail-closed
+    "https://[::1]/team/svc.git",             # IPv6 literal -> fail-closed
+])
 def test_origin_repo_fails_closed_on_garbage(tmp_path, bad):
     run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), bad, 0)])
     with pytest.raises(ValueError):
