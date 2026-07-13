@@ -166,3 +166,19 @@ def test_origin_repo_fails_closed_on_garbage_or_unpinnable(tmp_path, bad):
     run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), bad, 0)])
     with pytest.raises(ValueError):
         GitHubBrokerAdapter(tmp_path, run=run)._origin_repo()
+
+
+# --- Round-5 fix: push + ls-remote use the EXPLICIT validated origin URL, never the
+# `origin` alias (so remote.origin.pushurl / url.*.pushInsteadOf can't redirect the
+# mutation to an unvalidated same-host repo). ---
+def test_push_and_lsremote_bind_to_explicit_origin_url_not_alias(tmp_path):
+    origin = "https://github.com/owner/repo.git"
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    push = next(c for c in run.calls if "push" in c)
+    lsrem = next(c for c in run.calls if "ls-remote" in c)
+    assert origin in push and "origin" not in push[push.index("push") + 1:], f"push not bound to explicit url: {push!r}"
+    assert origin in lsrem and "origin" not in lsrem[lsrem.index("ls-remote") + 1:], f"ls-remote not bound to explicit url: {lsrem!r}"

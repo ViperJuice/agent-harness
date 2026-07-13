@@ -38,13 +38,20 @@ class GitHubBrokerAdapter:
         self.repo_path, self.run, self.allowed_hosts = repo_path, run, allowed_hosts
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
+    def _origin_url(self) -> str:
+        # The single canonical origin URL the broker validates AND operates through
+        # explicitly (push + ls-remote), so the mutation can never be redirected by the
+        # `origin` alias (remote.origin.pushurl / url.*.pushInsteadOf) to an unvalidated
+        # target.  This is git's FETCH url; the broker deliberately publishes to the
+        # canonical repo it validated, not a local triangular pushurl.
+        return self._output("remote", "get-url", "origin")
     def _origin_repo(self) -> str:
-        # Resolve the origin as a HOST-QUALIFIED `host/owner/repo` slug so every `gh`
-        # call is bound with `--repo host/owner/repo` (highest precedence — beats a
-        # stray GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND
-        # repo the push targets (correct for github.com AND GitHub Enterprise).
-        # Fail-closed if the origin cannot be resolved.
-        url = self._output("remote", "get-url", "origin")
+        return self._slug_for(self._origin_url())
+    def _slug_for(self, url: str) -> str:
+        # Resolve a git URL to a HOST-QUALIFIED `host/owner/repo` slug so `gh` is bound
+        # with `--repo host/owner/repo` (highest precedence — beats a stray
+        # GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND repo the
+        # push targets.  Fail-closed if the URL cannot be resolved or is not allow-listed.
         if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
             scheme = url.split("://", 1)[0].lower()
             rest = url.split("://", 1)[1].split("@", 1)[-1]
@@ -84,9 +91,12 @@ class GitHubBrokerAdapter:
 
     def execute(self, request: BrokerRequest):
         if self._output("branch", "--show-current") != request.branch or self._output("rev-parse", "HEAD") != request.head_sha: raise ValueError("branch/head mismatch")
-        origin_repo = self._origin_repo()  # fail-closed if unresolvable; binds every gh call below
+        origin_url = self._origin_url()          # ONE canonical url, used explicitly everywhere
+        origin_repo = self._slug_for(origin_url) # validate allow-list + derive the gh slug from the SAME url
         ref = build_non_force_branch_ref(request.branch)
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", "origin", ref], capture_output=True, text=True)
+        # Push + ls-remote target the EXPLICIT validated url, never the `origin` alias,
+        # so remote.origin.pushurl / url.*.pushInsteadOf cannot redirect the mutation.
+        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, ref], capture_output=True, text=True)
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         args = ["gh", "pr", "create", "--repo", origin_repo, "--draft"] if request.draft else ["gh", "pr", "create", "--repo", origin_repo, "--fill"]
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
@@ -94,7 +104,7 @@ class GitHubBrokerAdapter:
         # Exact-published-head verification: READ the remote and confirm the branch
         # head on origin equals the pushed sha, then resolve the REAL PR url and
         # confirm its headRefOid matches.  Only then is the effect terminally observed.
-        remote = self.run(["git", "-C", str(self.repo_path), "ls-remote", "origin", ref], capture_output=True, text=True)
+        remote = self.run(["git", "-C", str(self.repo_path), "ls-remote", origin_url, ref], capture_output=True, text=True)
         if remote.returncode: return self._ambiguous(request, "remote-read-failed")
         remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
         if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
