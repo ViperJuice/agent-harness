@@ -16,11 +16,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
-from .git_topology import (
-    _gh_pr_metadata,
-    collect_git_topology,
-    resolve_closeout_push_target,
-)
+from .git_topology import collect_git_topology
+from .convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb
+from .convergence.broker.verbs import BrokerClient
 
 # Branches that are never valid publication targets.
 PROTECTED_BRANCHES: frozenset[str] = frozenset({"main", "master", "develop", "release"})
@@ -49,61 +47,6 @@ def _blocked(reason: str, detail: str = "") -> dict[str, Any]:
     if detail:
         result["detail"] = detail
     return result
-
-
-# ---------------------------------------------------------------------------
-# Seam functions — wrapping subprocess calls for git push and gh pr create so
-# tests can patch them without live network access.
-# ---------------------------------------------------------------------------
-
-
-def _run_git_push(repo: Path, remote: str, push_ref: str) -> int:
-    """Push to remote without force.  Returns the process returncode."""
-    # push_ref from resolve_closeout_push_target is ``refs/heads/<branch>``.
-    completed = subprocess.run(
-        ["git", "-C", str(repo), "push", remote, push_ref],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return completed.returncode
-
-
-def _run_gh_pr_create(
-    repo: Path,
-    *,
-    draft: bool,
-    title: str | None,
-    body: str | None,
-) -> int:
-    """Create a PR via the ``gh`` CLI.  Returns the process returncode.
-
-    Uses ``--draft`` when ``draft=True``, ``--fill`` (populate from commits)
-    when ``draft=False``.  ``title`` and ``body`` override the ``--fill``
-    defaults when supplied.
-
-    The PR URL is NOT parsed from stdout — ``gh`` may emit warnings or notices
-    before the URL, making stdout parsing brittle.  Call ``_gh_pr_metadata``
-    after a successful create to retrieve the URL via ``gh pr list --json``.
-    """
-    args: list[str] = ["pr", "create"]
-    if draft:
-        args.append("--draft")
-    else:
-        args.append("--fill")
-    if title:
-        args.extend(["--title", title])
-    if body:
-        args.extend(["--body", body])
-
-    completed = subprocess.run(
-        ["gh", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return completed.returncode
 
 
 def _git_run(repo: Path, *args: str) -> int:
@@ -145,6 +88,9 @@ def publish_from_worktree(
     commit_message: str | None = None,
     topology: dict[str, Any] | None = None,
     protected_branches: frozenset[str] = PROTECTED_BRANCHES,
+    prebuilt: bool = False,
+    broker_client: BrokerClient | None = None,
+    admission: AdmissionRequest | None = None,
 ) -> dict[str, Any]:
     """Perform the #28 publish flow for one repo/worktree (IF-0-P1-1).
 
@@ -206,11 +152,15 @@ def publish_from_worktree(
             "establish a worktree/branch first (Workflow step 6)",
         )
 
-    if not owned_paths:
+    if prebuilt:
+        head_sha = _git_output(repo, "rev-parse", "HEAD")
+        if not head_sha:
+            return _blocked("head_sha_missing", "Could not resolve prebuilt HEAD")
+    elif not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
 
     # Stage owned paths by explicit name — never git add -A.
-    stage_rc = _git_run(repo, "add", "--", *owned_paths)
+    stage_rc = 0 if prebuilt else _git_run(repo, "add", "--", *owned_paths)
     if stage_rc != 0:
         return _blocked(
             "stage_failed",
@@ -219,13 +169,13 @@ def publish_from_worktree(
         )
 
     # Staged-diff audit ---------------------------------------------------
-    audit_result = _audit_staged_diff(repo, owned_paths)
+    audit_result = None if prebuilt else _audit_staged_diff(repo, owned_paths)
     if audit_result is not None:
         return audit_result
 
     # Commit --------------------------------------------------------------
     msg = commit_message or "chore: publish plan changes"
-    commit_rc = _git_run(repo, "commit", "-m", msg)
+    commit_rc = 0 if prebuilt else _git_run(repo, "commit", "-m", msg)
     if commit_rc != 0:
         return _blocked(
             "commit_failed",
@@ -238,50 +188,14 @@ def publish_from_worktree(
     if not head_sha:
         return _blocked("head_sha_missing", "Could not resolve HEAD after commit")
 
-    # Post-commit push target check (dirty / unowned / behind upstream) ----
-    push_check = resolve_closeout_push_target(repo)
-    if not push_check.get("allowed"):
-        refusal = push_check.get("refusal_reason", "unknown")
-        return _blocked(refusal, f"Push target refused: {refusal}")
-
-    remote = push_check["remote"]
-    push_ref = push_check["push_ref"]
-
-    # Push — no force -----------------------------------------------------
-    push_rc = _run_git_push(repo, remote, push_ref)
-    if push_rc != 0:
-        return _blocked(
-            "push_rejected",
-            f"Push to {remote} {push_ref} was rejected "
-            "(divergent / non-fast-forward / branch protection); "
-            "never force-push — stop and report publication blocked",
-        )
-
-    # Open PR (draft or ready) --------------------------------------------
-    create_rc = _run_gh_pr_create(repo, draft=draft, title=pr_title, body=pr_body)
-    if create_rc != 0:
-        return _blocked(
-            "gh_pr_create_failed",
-            "gh pr create failed; check gh auth status and that the branch was pushed",
-        )
-
-    # Fetch URL via _gh_pr_metadata (reused from git_topology per IF-0-P1-1):
-    # avoids brittle stdout parsing when gh prints notices before the URL.
-    pr_meta = _gh_pr_metadata(repo, branch)
-    pr_url = pr_meta.get("pr_url")
-    if not pr_url:
-        return _blocked(
-            "gh_pr_url_missing",
-            "gh pr create succeeded but could not retrieve PR URL via gh pr list --json; "
-            "check gh auth status",
-        )
-
-    return {
-        "status": "published",
-        "branch": branch,
-        "head_sha": head_sha,
-        "pr_url": pr_url,
-    }
+    if pr_title is not None:
+        return _blocked("custom_title_unsupported", "BrokerRequest has no pr_title field")
+    if broker_client is None or admission is None:
+        return _blocked("broker_required", "publish mutation requires an admitted broker client")
+    execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, str(repo), branch, head_sha, tuple(owned_paths), draft=draft, pr_body=pr_body or ""))
+    if not execution.accepted or execution.publish_result is None:
+        return _blocked(execution.reason or execution.evidence.terminal_state, execution.evidence.evidence_reference)
+    return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}
 
 
 # ---------------------------------------------------------------------------

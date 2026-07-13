@@ -1,7 +1,7 @@
 # Convergence contract freeze
 
-FREEZE publishes typed contracts only. It does not add coordinator wiring, broker calls,
-admission storage, reconciliation I/O, or mutation credentials.
+FREEZE published typed contracts. BROKER adds the sole credential-capable mutation epoch;
+coordinator wiring remains INTEG-owned.
 
 ## Authority and invalidation
 
@@ -35,3 +35,17 @@ Future work may run concurrently only with known evidence, disjoint owned paths,
 frozen shared interfaces. Same-repository mutation, topological merges, release
 publication, overlap, and unknown evidence serialize. RUNTIME and BROKER share the single
 seven-field `AdmissionRequest` fence rather than duplicate admission shapes.
+
+## Broker epoch
+
+`phase_loop_runtime.convergence.broker` is the only mutation boundary. Admission evaluates
+policy and fencing under an inter-process lock, persists intent before provider dispatch,
+then persists only observed terminal evidence. A supported provider pair may reach an
+adapter; the current GitHub matrix remains `human-executed`, so production requests fail
+closed before mutation. Ambiguous outcomes permanently block the epoch across restart.
+
+Broker environment roles retain mutation credential keys only for the broker. Coordinator
+and workers receive a stripped environment. The GitHub adapter rechecks repository branch
+and HEAD, pushes `refs/heads/<branch>` without force, and opens the requested draft posture
+without a recommit. `publishing.py` may stage and commit locally, but delegates push/PR work
+through `BrokerClient`. INTEG owns all coordinator and CLI connection work.

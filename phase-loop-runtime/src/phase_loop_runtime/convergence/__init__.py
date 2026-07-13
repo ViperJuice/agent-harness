@@ -38,6 +38,12 @@ from phase_loop_runtime.convergence.event_log import (
 from phase_loop_runtime.convergence.reconcile import ExactStateProbes, ReconciliationVerdict, reconcile_train_state
 from phase_loop_runtime.convergence.status import TrainStatusSnapshot, build_train_status, render_train_status
 from phase_loop_runtime.convergence.adapters import AdapterExecutionRequest, run_claude_adapter, run_codex_adapter, run_outside_agent_adapter
+from phase_loop_runtime.convergence.broker import (
+    AdmissionRecord, BrokerAdmissionPolicy, BrokerClient, BrokerEnvironmentBoundary,
+    BrokerEvidenceStore, BrokerExecutionResult, BrokerProviderAdapter, BrokerService,
+    EvidenceRecord, GitHubBrokerAdapter, LinearizableAdmissionStore,
+    publish_committed_branch_idempotency_key,
+)
 
 __all__ = [
     "AdmissionRequest",
@@ -77,4 +83,8 @@ __all__ = [
     "run_claude_adapter",
     "run_codex_adapter",
     "run_outside_agent_adapter",
+    "AdmissionRecord", "BrokerAdmissionPolicy", "BrokerClient", "BrokerEnvironmentBoundary",
+    "BrokerEvidenceStore", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService",
+    "EvidenceRecord", "GitHubBrokerAdapter", "LinearizableAdmissionStore",
+    "publish_committed_branch_idempotency_key",
 ]
