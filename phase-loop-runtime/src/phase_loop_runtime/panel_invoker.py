@@ -1293,6 +1293,33 @@ def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
     return novel
 
 
+# A single ``os.read(8192)`` can split a novel review line across two chunks; each
+# fragment normalizes differently (or collides with a seen/too-short form), so the
+# whole-line progress signal is lost. Carry the trailing PARTIAL line (bytes after
+# the last newline/CR) forward and prepend it to the next chunk, so novelty is only
+# ever evaluated on COMPLETE lines. Bounded so an unterminated over-long run (a rare
+# no-newline stream) is flushed rather than growing the buffer without limit.
+_TUI_CARRY_MAX_BYTES = 1 << 16  # 64 KiB
+
+
+def _tui_take_complete_lines(carry: bytearray, chunk: bytes) -> bytes:
+    """Append ``chunk`` to ``carry`` and return the bytes up to the last line
+    terminator (complete lines, safe to scan for novelty), retaining the trailing
+    partial line in ``carry`` for the next read. Carried at the RAW byte level so a
+    straddling ANSI escape (never containing \\n/\\r) also reassembles intact."""
+    carry.extend(chunk)
+    last = max(carry.rfind(b"\n"), carry.rfind(b"\r"))
+    if last < 0:
+        if len(carry) >= _TUI_CARRY_MAX_BYTES:
+            complete = bytes(carry)
+            carry.clear()
+            return complete
+        return b""
+    complete = bytes(carry[: last + 1])
+    del carry[: last + 1]
+    return complete
+
+
 def _run_claude_tui_session(
     *,
     command: Sequence[str],
@@ -1329,6 +1356,7 @@ def _run_claude_tui_session(
     # incidental CPU. ``seen_tui_lines`` accumulates de-animated visible lines so a
     # wedged TUI's finite animation vocabulary saturates and stops resetting it.
     seen_tui_lines: set[str] = set()
+    tui_carry = bytearray()  # #188 CR: trailing partial line held across os.read boundaries
     last_review_len = 0
     last_transcript_len = 0
     try:
@@ -1372,7 +1400,11 @@ def _run_claude_tui_session(
                         # status line (rotating verb + per-second timer) repaints
                         # forever while wedged in ep_poll; de-animation maps it to
                         # already-seen lines so it never resets the kill clock.
-                        if _tui_chunk_has_novel_content(chunk, seen_tui_lines):
+                        # #188 CR: carry the trailing partial line across read
+                        # boundaries so a novel line split by ``os.read`` is scanned
+                        # WHOLE (only complete lines are evaluated).
+                        complete = _tui_take_complete_lines(tui_carry, chunk)
+                        if complete and _tui_chunk_has_novel_content(complete, seen_tui_lines):
                             last_heartbeat = time.monotonic()
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed

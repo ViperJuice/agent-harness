@@ -148,6 +148,33 @@ def test_slow_but_progressing_pty_leg_is_not_killed(tmp_path, monkeypatch):
     assert status in {"claude_tui_pty_eof_no_output", "claude_tui_missing_canonical_output"}, status
 
 
+def test_novel_line_split_across_read_boundaries_is_detected_whole():
+    """(b cont., #188 CR) A novel review line delivered in TWO halves across two
+    ``os.read`` boundaries must register as ONE progress event once the line completes
+    — the carry-buffer holds the trailing partial line so novelty is evaluated on the
+    WHOLE line, not on fragments (which could each collide with a seen/too-short form
+    and silently drop the heartbeat)."""
+    seen: set[str] = set()
+    carry = bytearray()
+
+    # First read delivers the line WITHOUT a terminator: no complete line yet, so
+    # nothing is evaluated and no fragment pollutes `seen`.
+    complete1 = pi._tui_take_complete_lines(carry, b"reviewing the acceptance crit")
+    assert complete1 == b"", "an unterminated partial line must not be emitted"
+    assert not pi._tui_chunk_has_novel_content(complete1, seen)
+    assert seen == set(), "no fragment should be recorded before the line completes"
+
+    # Second read completes the line (adds the tail + newline): now the WHOLE line is
+    # evaluated and counts as novel progress.
+    complete2 = pi._tui_take_complete_lines(carry, b"eria section now\n")
+    assert pi._tui_chunk_has_novel_content(complete2, seen), (
+        "the reassembled whole line must be detected as novel progress"
+    )
+    # The recorded token is the whole normalized line, not either half.
+    assert "reviewing the acceptance criteria section now" in seen
+    assert carry == bytearray(), "no residue after a terminated line"
+
+
 def test_no_fixed_short_timeout_is_injected_when_caller_did_not_request_one(tmp_path):
     """(c) With no caller-supplied per-leg timeout, the runtime does NOT inject a fixed
     model timeout: the hard deadline is raised to the _MAX backstop and the real kill is
