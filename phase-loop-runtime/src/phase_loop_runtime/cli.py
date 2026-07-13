@@ -2936,15 +2936,19 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
 
     # Build a broker-authoritative coordinator runtime so publish actually opens PRs.
     # Without a broker_client, publish_from_worktree fail-closes `broker_required` and
-    # the train opens ZERO PRs.  The broker routes per BrokerRequest.repo (the node's
-    # resolved workspace), so ONE client serves every repo in a multi-repo train; its
-    # durable admission + evidence logs live under the coordinator root (the ledger dir,
-    # already outside every repo's .phase-loop/ and every node worktree).
+    # the train opens ZERO PRs.  The routing broker binds per BrokerRequest.repo (the
+    # node's resolved workspace) AND keeps a PER-REPO admission/evidence store, so one
+    # node's ambiguous outcome fail-closes only that repo.  The broker root is namespaced
+    # per train (`<ledger-dir>/broker/<train-stem>`, mirroring the per-stem ledger) so an
+    # ambiguous outcome in one train can never fail-close a different train sharing the
+    # ledger dir.  It lives under the ledger dir, which the roadmap author keeps outside
+    # any repo's .phase-loop/ (INV-4); it is NOT machine-enforced to be outside every
+    # node worktree, so keep train roadmaps + their ledger dir out of the checkouts.
     import hashlib
 
     from .convergence.broker import build_routing_broker_client
 
-    coordinator_root = ledger_dir / "broker"
+    coordinator_root = ledger_dir / "broker" / train_path.stem
     coordinator_root.mkdir(parents=True, exist_ok=True)
     roadmap_digest = hashlib.sha256(train_path.read_bytes()).hexdigest()
     coordinator_runtime = train_runner.CoordinatorRuntime(

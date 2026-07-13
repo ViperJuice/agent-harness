@@ -1106,7 +1106,6 @@ class TestCLIRegistration:
         (one client serving every repo) whose durable state lives OUTSIDE any repo.
         """
         from phase_loop_runtime.cli import main
-        from phase_loop_runtime.convergence.broker.verbs import BrokerService
 
         tmp_train = tmp_path / "smoke-train.md"
         tmp_train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
@@ -1121,13 +1120,13 @@ class TestCLIRegistration:
         assert runtime.broker_client is not None, (
             "coordinator_runtime must carry a broker_client, else publish is broker_required"
         )
-        assert isinstance(runtime.broker_client, BrokerService)
-        assert type(runtime.broker_client.adapter).__name__ == "_RoutingGitHubAdapter", (
-            "must be the per-request routing adapter so ONE client serves a multi-repo train"
+        assert type(runtime.broker_client).__name__ == "_RoutingBrokerService", (
+            "must be the per-request routing broker so ONE client serves a multi-repo train"
         )
         assert runtime.train_id and runtime.roadmap_digest
-        # Durable broker state must live outside any repo worktree (under the ledger dir).
-        assert Path(runtime.coordinator_root) == tmp_path / ".train-ledger" / "broker"
+        # Durable broker state lives under the ledger dir, namespaced PER TRAIN so an
+        # ambiguous outcome in one train can't fail-close a different train.
+        assert Path(runtime.coordinator_root) == tmp_path / ".train-ledger" / "broker" / "smoke-train"
 
 
 # ---------------------------------------------------------------------------

@@ -226,10 +226,10 @@ def test_routing_broker_binds_each_request_to_its_own_repo(tmp_path):
     assert "/ws/alpha" in seen_paths and "/ws/beta" in seen_paths
 
 
-def test_routing_broker_shared_stores_dedup_per_repo_triple(tmp_path):
-    # Shared admission+evidence across repos is safe: the de-dup key is
-    # sha256(repo\0branch\0head), so a replay of ONE repo under a fresh admission key
-    # returns that repo's prior result and never collides with the other repo.
+def test_routing_broker_dedups_within_a_repo_not_across(tmp_path):
+    # Each repo has its OWN store, and within a repo the de-dup key
+    # sha256(repo\0branch\0head) makes a replay under a fresh admission key return the
+    # prior result; a different repo is a distinct store + triple (a real second effect).
     repos = {
         "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://gh/pr/alpha"},
         "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://gh/pr/beta"},
@@ -249,3 +249,56 @@ def test_routing_broker_shared_stores_dedup_per_repo_triple(tmp_path):
     assert creates["n"] == 2, "alpha's replay must de-dup (1 real effect); beta is a distinct triple"
     assert replay.publish_result == first.publish_result
     assert other.publish_result.pr_url == repos["/ws/beta"]["url"]
+
+
+def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path):
+    """A benign transient making repo alpha's publish ambiguous must NOT fail-close beta.
+
+    ``epoch_blocked`` is a global scan over a store, an ambiguous terminal is durable +
+    permanent, and it fires on benign transients (here: alpha's ls-remote read fails).
+    With a SHARED store this would set the global epoch and beta would raise
+    ``PermissionError('epoch permanently blocked')``.  Per-repo stores scope the
+    fail-closed epoch to ONLY alpha (agent-harness#208 CR).
+    """
+    repos = {
+        "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://gh/pr/alpha"},
+        "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://gh/pr/beta"},
+    }
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            path = cmd[2]
+            meta = repos[path]
+            sub = cmd[3:]
+            if sub[:2] == ["branch", "--show-current"]:
+                return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
+            if sub[0] == "rev-parse":
+                return CompletedProcess(cmd, 0, stdout=meta["head"] + "\n", stderr="")
+            if sub[0] == "log":
+                return CompletedProcess(cmd, 0, stdout="subject\n", stderr="")
+            if sub[0] == "push":
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub[0] == "ls-remote":
+                if path == "/ws/alpha":  # benign transient: remote read fails -> ambiguous
+                    return CompletedProcess(cmd, 1, stdout="", stderr="network hiccup")
+                return CompletedProcess(cmd, 0, stdout=f'{meta["head"]}\trefs/heads/{meta["branch"]}\n', stderr="")
+            if sub[:2] == ["remote", "get-url"]:
+                return CompletedProcess(cmd, 0, stdout="https://github.com/owner/repo.git\n", stderr="")
+        if cmd[0] == "gh":
+            meta = repos[str(kwargs.get("cwd"))]
+            if cmd[1:3] == ["pr", "create"]:
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd[1:3] == ["pr", "list"]:
+                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"]}]), stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    broker = build_routing_broker_client(broker_root=tmp_path / "coord", run=fake_run)
+
+    alpha = broker.execute(_routing_request("/ws/alpha", repos["/ws/alpha"], key="ka"))
+    assert not alpha.accepted
+    assert alpha.evidence.terminal_state == "outcome_ambiguous_blocked"
+
+    # beta must still publish — alpha's ambiguous epoch is scoped to alpha's store.
+    beta = broker.execute(_routing_request("/ws/beta", repos["/ws/beta"], key="kb"))
+    assert beta.accepted, "beta was fail-closed by alpha's ambiguous outcome (shared-epoch poison)"
+    assert beta.publish_result.pr_url == repos["/ws/beta"]["url"]

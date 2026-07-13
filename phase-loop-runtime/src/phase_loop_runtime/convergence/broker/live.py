@@ -14,6 +14,7 @@ verification.  Only the ``publish_committed_branch``/``github`` verb is SUPPORTE
 """
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -82,31 +83,69 @@ def build_github_broker_client(
     )
 
 
-class _RoutingGitHubAdapter:
-    """Bind a fresh :class:`GitHubBrokerAdapter` to each request's repo path.
+def _repo_store_slug(repo: str) -> str:
+    """Stable, filesystem-safe subdir name for a repo's per-repo broker store.
 
-    ``build_github_broker_client`` fixes ONE ``repo_path`` at construction, so a
-    single broker client can only faithfully serve one repo — a multi-repo
-    ``run_train`` that threads one ``coordinator_runtime.broker_client`` across every
-    node would run ``git -C <wrong-repo>`` and trip the branch/head guard on node 2+.
-    ``publish_from_worktree`` sets ``BrokerRequest.repo`` to the node's resolved
-    workspace path, so routing on ``request.repo`` binds the adapter to the correct
-    worktree per call.  The per-repo adapter's origin-host allow-list still guards
-    ``request.repo``, so per-request binding is safe.
+    ``BrokerRequest.repo`` is an arbitrary absolute workspace path, so hash it rather
+    than embed the path.  A short hex prefix is collision-free in practice and keeps
+    the on-disk layout readable.
+    """
+    return hashlib.sha256(repo.encode("utf-8")).hexdigest()[:16]
+
+
+class _RoutingBrokerService:
+    """A :class:`BrokerClient` that routes each request to a PER-REPO broker service.
+
+    ``build_github_broker_client`` fixes ONE ``repo_path`` at construction, so a single
+    client can only faithfully serve one repo — a multi-repo ``run_train`` threading one
+    ``coordinator_runtime.broker_client`` across every node would run
+    ``git -C <wrong-repo>`` and trip the branch/head guard on node 2+.
+
+    Critically, each repo gets its OWN admission + evidence store under
+    ``broker_root/<repo-slug>`` — the stores are NOT shared.  ``epoch_blocked`` is a
+    GLOBAL scan over a store (``any(state is OUTCOME_AMBIGUOUS_BLOCKED)``) and an
+    ambiguous terminal is durable + permanent, and it fires on BENIGN transients
+    (push-unconfirmed / remote-read-failed / pr-unconfirmed / remote-head-mismatch /
+    pr-head-unconfirmed).  A shared store would therefore let one repo's transient
+    hiccup permanently fail-close every OTHER repo in the train (and, with an
+    un-namespaced ``broker_root``, other trains too).  Per-repo stores scope the
+    fail-closed epoch to exactly the repo whose mutation became ambiguous — the correct
+    blast radius: repo A's unknown state says nothing about repo B's independent remote.
+    The caller namespaces ``broker_root`` per train (see the ``run-train`` CLI), closing
+    the cross-train dimension.
     """
 
     def __init__(
         self,
-        run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-        allowed_hosts=ALLOWED_ORIGIN_HOSTS,
+        broker_root: Path,
+        *,
+        admission_policy: BrokerAdmissionPolicy,
+        run: Callable[..., subprocess.CompletedProcess],
+        allowed_hosts,
+        contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
     ) -> None:
-        self.run = run
-        self.allowed_hosts = allowed_hosts
+        self._broker_root = Path(broker_root)
+        self._admission_policy = admission_policy
+        self._run = run
+        self._allowed_hosts = allowed_hosts
+        self._contracts = contracts
+        self._services: dict[str, BrokerService] = {}
+
+    def _service_for(self, repo: str) -> BrokerService:
+        service = self._services.get(repo)
+        if service is None:
+            root = self._broker_root / _repo_store_slug(repo)
+            service = BrokerService(
+                LinearizableAdmissionStore(root, self._admission_policy),
+                BrokerEvidenceStore(root),
+                GitHubBrokerAdapter(Path(repo), run=self._run, allowed_hosts=self._allowed_hosts),
+                contracts=self._contracts,
+            )
+            self._services[repo] = service
+        return service
 
     def execute(self, request):
-        return GitHubBrokerAdapter(
-            Path(request.repo), run=self.run, allowed_hosts=self.allowed_hosts
-        ).execute(request)
+        return self._service_for(request.repo).execute(request)
 
 
 def build_routing_broker_client(
@@ -118,21 +157,20 @@ def build_routing_broker_client(
 ) -> BrokerClient:
     """Wire a live GitHub broker client that serves a MULTI-repo train.
 
-    Identical to :func:`build_github_broker_client` except the git/gh adapter is bound
-    per request to ``BrokerRequest.repo`` (via :class:`_RoutingGitHubAdapter`) instead
-    of to one fixed ``repo_path``.  This is what a cross-repo ``run_train`` needs: one
-    coordinator, one durable ``broker_root`` (admission + evidence), and correct
-    ``git -C <that node's workspace>`` binding for every node.
-
-    Sharing the admission + evidence stores across repos is safe: the
-    ``publish_committed_branch`` de-dup key is ``sha256(repo\\0branch\\0head)`` (the repo
-    is in the key), so cross-repo requests never collide.
+    Like :func:`build_github_broker_client` but routes per ``BrokerRequest.repo``: the
+    git/gh adapter is bound to the request's repo, AND each repo gets its own admission
+    + evidence store under ``broker_root/<repo-slug>``.  Per-repo stores are load-bearing
+    for safety, not just routing — a shared store's GLOBAL ``epoch_blocked`` would let one
+    repo's ambiguous outcome (reachable via a benign transient) permanently fail-close
+    every other repo.  See :class:`_RoutingBrokerService`.
 
     Parameters
     ----------
     broker_root:
-        Durable directory for the admission + terminal-evidence logs.  MUST live
-        OUTSIDE every node's worktree (e.g. ``CoordinatorRuntime.coordinator_root``).
+        Durable parent directory for the per-repo admission + evidence stores.  MUST
+        live OUTSIDE every node's worktree, and the caller SHOULD namespace it per train
+        (e.g. ``<ledger-dir>/broker/<train-stem>``) so unrelated trains never share an
+        epoch.
     admission_policy:
         Optional admission gate; defaults to admitting any well-formed request.
     run:
@@ -141,15 +179,9 @@ def build_routing_broker_client(
         Origin-host allow-list applied to every per-request adapter (github.com-only
         by default); a self-hosted/GHE fleet passes its own set.
     """
-    admission_store = LinearizableAdmissionStore(
+    return _RoutingBrokerService(
         Path(broker_root),
-        admission_policy or _default_admission_policy,
-    )
-    evidence_store = BrokerEvidenceStore(Path(broker_root))
-    adapter = _RoutingGitHubAdapter(run=run, allowed_hosts=allowed_hosts)
-    return BrokerService(
-        admission_store,
-        evidence_store,
-        adapter,
-        contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
+        admission_policy=admission_policy or _default_admission_policy,
+        run=run,
+        allowed_hosts=allowed_hosts,
     )

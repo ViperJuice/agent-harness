@@ -22,14 +22,22 @@ shipped CLI. Together these make `phase-loop run-train` actually open draft PRs.
   (new).** `build_github_broker_client` binds one `repo_path` at construction, so a
   single client could only serve one repo; a cross-repo `run_train` mis-bound
   `git -C <wrong-repo>` on node 2+. The routing client binds a fresh
-  `GitHubBrokerAdapter` per `BrokerRequest.repo` (the node's resolved workspace).
-  Sharing the admission + evidence stores is safe — the de-dup key is
-  `sha256(repo\0branch\0head)`. (agent-harness#206)
+  `GitHubBrokerAdapter` per `BrokerRequest.repo` (the node's resolved workspace) AND
+  keeps a **per-repo** admission + evidence store under `broker_root/<repo-slug>`.
+  Per-repo stores are load-bearing for safety, not just routing: `epoch_blocked` is a
+  global scan over a store and an ambiguous terminal is durable + permanent and can be
+  tripped by a benign transient (e.g. a one-off `ls-remote`/`gh` network hiccup →
+  `remote-read-failed`/`pr-unconfirmed`), so a shared store would let one repo's
+  transient permanently fail-close every other repo. Per-repo stores scope the
+  fail-closed epoch to exactly the repo whose mutation became ambiguous.
+  (agent-harness#206)
 - **`run-train` CLI now wires a broker-authoritative coordinator (fix).**
-  `_run_train_command` builds a `CoordinatorRuntime` carrying the routing broker
-  (durable admission/evidence under the ledger dir, outside every repo worktree) and
+  `_run_train_command` builds a `CoordinatorRuntime` carrying the routing broker and
   passes it to `run_train`. Previously the CLI passed no runtime, so every publish
-  fail-closed `broker_required` and the train opened ZERO PRs. (agent-harness#205)
+  fail-closed `broker_required` and the train opened ZERO PRs. The broker root is
+  namespaced **per train** (`<ledger-dir>/broker/<train-stem>`, mirroring the per-stem
+  ledger) so an ambiguous outcome in one train can never fail-close a different train
+  sharing the ledger dir. (agent-harness#205)
 
 ## [0.7.7] - 2026-07-13
 
