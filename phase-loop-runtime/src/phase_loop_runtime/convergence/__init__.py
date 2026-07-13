@@ -27,6 +27,12 @@ from phase_loop_runtime.train_ledger import (
     ConvergenceResultStatus,
     normalize_legacy_ledger_record,
 )
+from phase_loop_runtime.convergence.broker import (
+    AdmissionRecord, BrokerAdmissionPolicy, BrokerClient, BrokerEnvironmentBoundary,
+    BrokerEvidenceStore, BrokerExecutionResult, BrokerProviderAdapter, BrokerService,
+    EvidenceRecord, GitHubBrokerAdapter, LinearizableAdmissionStore,
+    publish_committed_branch_idempotency_key,
+)
 
 __all__ = [
     "AdmissionRequest",
@@ -50,4 +56,8 @@ __all__ = [
     "evaluate_resource_isolation",
     "normalize_legacy_ledger_record",
     "validate_terminal_transition",
+    "AdmissionRecord", "BrokerAdmissionPolicy", "BrokerClient", "BrokerEnvironmentBoundary",
+    "BrokerEvidenceStore", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService",
+    "EvidenceRecord", "GitHubBrokerAdapter", "LinearizableAdmissionStore",
+    "publish_committed_branch_idempotency_key",
 ]
