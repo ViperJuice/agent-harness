@@ -54,6 +54,8 @@ def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
                 return CompletedProcess(cmd, 0, stdout=_BRANCH + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=_HEAD + "\n", stderr="")
+            if sub[0] == "log":
+                return CompletedProcess(cmd, 0, stdout="commit subject line\n", stderr="")
             if sub[0] == "push":
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub[0] == "ls-remote":

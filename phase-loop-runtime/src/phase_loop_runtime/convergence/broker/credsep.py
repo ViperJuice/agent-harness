@@ -98,7 +98,14 @@ class GitHubBrokerAdapter:
         # so remote.origin.pushurl / url.*.pushInsteadOf cannot redirect the mutation.
         pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, ref], capture_output=True, text=True)
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
-        args = ["gh", "pr", "create", "--repo", origin_repo, "--draft"] if request.draft else ["gh", "pr", "create", "--repo", origin_repo, "--fill"]
+        # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
+        # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
+        # Derive a deterministic title from the branch HEAD's commit subject and pass
+        # the request's pr_body verbatim (empty body is valid once --title is present).
+        # --head pins the branch explicitly so gh never infers a wrong head.
+        title = self._output("log", "-1", "--format=%s") or request.branch
+        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--title", title, "--body", request.pr_body or title]
+        if request.draft: args.append("--draft")
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
         if created.returncode: return self._ambiguous(request, "pr-unconfirmed")
         # Exact-published-head verification: READ the remote and confirm the branch

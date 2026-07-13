@@ -41,6 +41,7 @@ def _base_responses():
     return [
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
+        (("log",), "commit subject line", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
         (("create",), "", 0),
@@ -103,6 +104,26 @@ def test_gh_calls_are_bound_to_origin_repo_slug(tmp_path):
     for c in gh:
         # host-qualified: --repo host/owner/repo pins both host AND repo
         assert "--repo" in c and "github.com/owner/repo" in c, f"gh call not host-bound: {c!r}"
+
+
+# --- Live-PILOT regression: `gh pr create` MUST be a complete non-interactive argv.
+# The bare `--draft`/`--fill` form aborts headless ("must provide --title and --body"),
+# so a mocked-run unit test passes while the real broker cannot open ANY PR.  Assert the
+# create argv carries --title + --body (+ --draft for a draft request) and pins --head. ---
+def test_pr_create_is_noninteractive_with_title_body_head(tmp_path):
+    body = "## Cross-repo release train\n\nbody text"
+    admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
+    request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, _HEAD, ("a.py",), draft=True, pr_body=body)
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    GitHubBrokerAdapter(tmp_path, run=run).execute(request)
+    create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
+    assert "--title" in create and create[create.index("--title") + 1], f"create lacks non-empty --title: {create!r}"
+    assert "--body" in create and create[create.index("--body") + 1] == body, f"create lacks pr_body --body: {create!r}"
+    assert "--head" in create and _BRANCH in create, f"create lacks explicit --head: {create!r}"
+    assert "--draft" in create, f"draft request must carry --draft: {create!r}"
 
 
 def test_unresolvable_origin_fails_closed(tmp_path):
