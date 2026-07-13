@@ -1124,9 +1124,39 @@ class TestCLIRegistration:
             "must be the per-request routing broker so ONE client serves a multi-repo train"
         )
         assert runtime.train_id and runtime.roadmap_digest
-        # Durable broker state lives under the ledger dir, namespaced PER TRAIN so an
-        # ambiguous outcome in one train can't fail-close a different train.
-        assert Path(runtime.coordinator_root) == tmp_path / ".train-ledger" / "broker" / "smoke-train"
+        # Durable broker state lives under the ledger dir, namespaced PER TRAIN by the
+        # roadmap's resolved-path hash (NOT the bare stem) so two same-stemmed roadmaps
+        # sharing a ledger dir can't fail-close each other.
+        coord = Path(runtime.coordinator_root)
+        assert coord.parent == tmp_path / ".train-ledger" / "broker"
+        assert len(coord.name) == 16 and all(c in "0123456789abcdef" for c in coord.name)
+        import hashlib
+        expected = hashlib.sha256(str(tmp_train.resolve()).encode("utf-8")).hexdigest()[:16]
+        assert coord.name == expected
+
+    def test_cli_same_stem_trains_get_distinct_broker_roots(self, tmp_path: Path):
+        """Two same-stemmed roadmaps sharing an explicit --ledger-dir must get DISTINCT
+        broker roots. Otherwise one train's PERMANENT ambiguous epoch (durable in
+        evidence.jsonl) fail-closes the other — the exact cross-train poison the
+        per-repo/per-train isolation set out to prevent (agent-harness#208 re-CR).
+        """
+        from phase_loop_runtime.cli import main
+
+        shared_ledger = tmp_path / "shared-ledger"
+        roots = []
+        for sub in ("a", "b"):
+            directory = tmp_path / sub
+            directory.mkdir()
+            train = directory / "release.md"  # SAME stem, different path
+            train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
+            with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
+                mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
+                assert main(["run-train", "--train", str(train), "--ledger-dir", str(shared_ledger)]) == 0
+            roots.append(Path(mock_run_train.call_args.kwargs["coordinator_runtime"].coordinator_root))
+
+        assert roots[0] != roots[1], (
+            "same-stem trains sharing a ledger dir must NOT share a broker root (epoch poison)"
+        )
 
 
 # ---------------------------------------------------------------------------

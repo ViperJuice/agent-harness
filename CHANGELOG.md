@@ -35,9 +35,12 @@ shipped CLI. Together these make `phase-loop run-train` actually open draft PRs.
   `_run_train_command` builds a `CoordinatorRuntime` carrying the routing broker and
   passes it to `run_train`. Previously the CLI passed no runtime, so every publish
   fail-closed `broker_required` and the train opened ZERO PRs. The broker root is
-  namespaced **per train** (`<ledger-dir>/broker/<train-stem>`, mirroring the per-stem
-  ledger) so an ambiguous outcome in one train can never fail-close a different train
-  sharing the ledger dir. (agent-harness#205)
+  namespaced **per train by the roadmap's resolved-path hash**
+  (`<ledger-dir>/broker/<path-hash>`) — so two distinct roadmap files, even
+  same-stemmed and even under one explicit `--ledger-dir`, get distinct broker roots
+  and an ambiguous outcome in one train never fail-closes a different train. (Keying on
+  the stable path rather than the content digest keeps a resumed train on its own epoch
+  across roadmap edits.) (agent-harness#205)
 
 ## [0.7.7] - 2026-07-13
 
