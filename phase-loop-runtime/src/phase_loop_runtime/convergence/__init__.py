@@ -35,7 +35,10 @@ from phase_loop_runtime.convergence.event_log import (
     record_outcome,
     recover_train_state,
 )
-from phase_loop_runtime.convergence.reconcile import ExactStateProbes, ReconciliationVerdict, reconcile_train_state
+from phase_loop_runtime.convergence.reconcile import ActionReconciliation, ExactStateProbes, ReconciliationVerdict, SupportedConvergenceVersions, invalidate_action_evidence, reconcile_before_action, reconcile_train_state
+from phase_loop_runtime.convergence.dispatch import DispatchDecision, RepositoryDispatchRequest, RepositoryLockKey, dispatch_ready_nodes
+from phase_loop_runtime.convergence.fencing import ApprovalBinding, AttemptLease, FencedAdmissionFactory, compute_approval_digest, validate_attempt_lease
+from phase_loop_runtime.convergence.refresh import DownstreamRefreshRequest, DownstreamRefreshResult, DownstreamRefreshStatus, refresh_downstream_after_merge
 from phase_loop_runtime.convergence.status import TrainStatusSnapshot, build_train_status, render_train_status
 from phase_loop_runtime.convergence.adapters import AdapterExecutionRequest, run_claude_adapter, run_codex_adapter, run_outside_agent_adapter
 from phase_loop_runtime.convergence.broker import (
@@ -69,13 +72,28 @@ __all__ = [
     "validate_terminal_transition",
     "AdapterExecutionRequest",
     "ExactStateProbes",
+    "ActionReconciliation",
+    "ApprovalBinding",
+    "AttemptLease",
+    "DispatchDecision",
+    "DownstreamRefreshRequest",
+    "DownstreamRefreshResult",
+    "DownstreamRefreshStatus",
+    "FencedAdmissionFactory",
     "RecoveredTrainState",
     "ReconciliationVerdict",
+    "RepositoryDispatchRequest",
+    "RepositoryLockKey",
+    "SupportedConvergenceVersions",
     "TrainStatusSnapshot",
     "build_train_status",
     "default_convergence_event_log_path",
+    "compute_approval_digest",
+    "dispatch_ready_nodes",
+    "invalidate_action_evidence",
     "read_convergence_events",
     "reconcile_train_state",
+    "reconcile_before_action",
     "record_intent",
     "record_outcome",
     "recover_train_state",
@@ -83,6 +101,8 @@ __all__ = [
     "run_claude_adapter",
     "run_codex_adapter",
     "run_outside_agent_adapter",
+    "refresh_downstream_after_merge",
+    "validate_attempt_lease",
     "AdmissionRecord", "BrokerAdmissionPolicy", "BrokerClient", "BrokerEnvironmentBoundary",
     "BrokerEvidenceStore", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService",
     "EvidenceRecord", "GitHubBrokerAdapter", "LinearizableAdmissionStore",

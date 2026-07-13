@@ -59,6 +59,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .cross_repo_channel import ChannelDescriptor, set_upstream_ref
@@ -70,6 +71,22 @@ from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
 
 ResolveWorkspace = Callable[[TrainNode], Path]
 ResolveOwnedPaths = Callable[[TrainNode], Sequence[str]]
+
+
+@dataclass(frozen=True)
+class CoordinatorRuntime:
+    """Credential-free authority boundary required by converged train actions."""
+
+    train_id: str
+    coordinator_root: Path
+    roadmap_path: str
+    roadmap_digest: str
+    workspace_id: str
+    supported_event_version: str = "1"
+    supported_transition_version: str = "1"
+    supported_invalidation_version: str = "1"
+    exact_state_probes: object | None = None
+    broker_client: object | None = None
 
 # ---------------------------------------------------------------------------
 # Preflight check functions
@@ -604,6 +621,7 @@ def run_train(
     run_mode: str = "autonomous",
     resolve_workspace: ResolveWorkspace,
     resolve_owned_paths: Optional[ResolveOwnedPaths] = None,
+    coordinator_runtime: CoordinatorRuntime | None = None,
     # Injectable seams — default to the live implementations; tests override.
     _run_loop: Optional[Callable] = None,
     _publish: Optional[Callable] = None,
@@ -675,6 +693,12 @@ def run_train(
           ``{"status": "merge_halted", "node_id": …, "reason": …}`` —
           downstream re-verify failed; upstream stays merged (forward-only).
     """
+    # A supplied converged runtime must remain credential-free and carries the
+    # event-log authority/broker seams.  Legacy callers remain supported while
+    # the CLI migration is rolled out through the explicit runtime boundary.
+    if coordinator_runtime is not None and (not coordinator_runtime.train_id or coordinator_runtime.broker_client is None):
+        return {"status": "blocked", "detail": {"reason": "coordinator runtime lacks broker authority"}}
+
     # Resolve seams
     from .publishing import publish_from_worktree as _default_publish
     from .runner import run_loop as _default_run_loop

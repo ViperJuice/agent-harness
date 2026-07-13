@@ -20,6 +20,8 @@ def test_event_schema_is_versioned_and_intent_is_distinct_from_outcome():
         "branch", "base_ref", "base_sha", "head_sha", "phase", "action", "owned_paths",
         "executor", "model", "upstream_dep_shas", "verification_artifact", "verification_digest",
         "seat_outcomes", "pr_identity", "merge_sha", "release_identity", "attempt_id", "epoch",
+        "fence_token", "approval_digest", "expected_version_predicate", "authority_domain_scope",
+        "idempotency_key", "isolation_reason",
         "timestamp", "blocker_reason", "event_schema_version", "transition_model_version",
         "invalidation_model_version",
     }

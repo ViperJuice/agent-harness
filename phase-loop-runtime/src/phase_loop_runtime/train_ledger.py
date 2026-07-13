@@ -98,6 +98,12 @@ class CoordinatorEvent:
     release_identity: Optional[str] = None
     attempt_id: Optional[str] = None
     epoch: Optional[int] = None
+    fence_token: Optional[str] = None
+    approval_digest: Optional[str] = None
+    expected_version_predicate: Optional[str] = None
+    authority_domain_scope: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    isolation_reason: Optional[str] = None
     timestamp: Optional[str] = None
     blocker_reason: Optional[str] = None
     event_schema_version: str = EVENT_SCHEMA_VERSION
