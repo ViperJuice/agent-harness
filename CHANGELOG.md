@@ -4,12 +4,15 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## [Unreleased]
+## [0.7.8] - 2026-07-13
 
 ### Convergence — the run-train live path now works from the shipped CLI
 
 Completes the broker live-path the SPECPKGMIN pilot surfaced as unusable from the
-shipped CLI. Together these make `phase-loop run-train` actually open draft PRs.
+shipped CLI. Together these make `phase-loop run-train` actually open draft PRs. The
+routing broker keeps a **per-repo, per-train** admission/evidence store so one node's
+ambiguous outcome fail-closes only that repo, never siblings or unrelated trains
+(broker root keyed by the roadmap's resolved-path hash).
 
 - **`gh pr create` is now a complete non-interactive argv (fix).** The broker's
   `GitHubBrokerAdapter` issued `gh pr create --draft` with no `--title`/`--body`,
@@ -41,6 +44,13 @@ shipped CLI. Together these make `phase-loop run-train` actually open draft PRs.
   and an ambiguous outcome in one train never fail-closes a different train. (Keying on
   the stable path rather than the content digest keeps a resumed train on its own epoch
   across roadmap edits.) (agent-harness#205)
+
+### SPECPKGMIN
+
+- **Harness dogfood of the `consiliency-spec-ingest` wheel + GP interchange seam.**
+  An env-gated (`SPEC_ROOT`/`GP_ROOT`/`HARNESS_ROOT`) cross-repo integration test that
+  builds + installs the wheel, runs `evaluate(...)`, and checks the GP interchange
+  seam; bounds every child process with a timeout. (agent-harness#204)
 
 ## [0.7.7] - 2026-07-13
 
