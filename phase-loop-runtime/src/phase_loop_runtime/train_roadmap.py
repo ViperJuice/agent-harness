@@ -128,14 +128,25 @@ _NONE_VALUES = frozenset({"(none)", "none", ""})
 
 def _parse_node_id(raw: str) -> TrainNode:
     """Parse ``<repo> / <roadmap>`` or ``<repo>/<roadmap>`` into a TrainNode."""
-    raw = raw.strip()
-    if " / " in raw:
-        repo, roadmap = raw.split(" / ", 1)
-    elif "/" in raw:
-        repo, roadmap = raw.split("/", 1)
+    original = raw.strip()
+    if " / " in original:
+        repo, roadmap = original.split(" / ", 1)
+    elif "/" in original:
+        repo, roadmap = original.split("/", 1)
     else:
-        raise ValueError(f"invalid node identifier (expected '<repo> / <roadmap>'): {raw!r}")
-    return TrainNode(repo=repo.strip(), roadmap=roadmap.strip())
+        raise ValueError(f"invalid node identifier (expected '<repo> / <roadmap>'): {original!r}")
+    repo, roadmap = repo.strip(), roadmap.strip()
+    # Both components are load-bearing: `repo` selects the workspace and
+    # `roadmap` is joined onto it as the plan path. An empty half parses into a
+    # degenerate node that only fails later at child-launch (workspace / '' =
+    # the workspace dir itself). Reject it at parse time, naming the heading.
+    if not repo or not roadmap:
+        raise ValueError(
+            f"invalid node heading '### Node: {original}': both a repo and a "
+            f"plan-path are required in '<repo> / <plan-path>' form "
+            f"(got repo={repo!r}, plan-path={roadmap!r})"
+        )
+    return TrainNode(repo=repo, roadmap=roadmap)
 
 
 def _extract_node_bodies(text: str) -> List[Tuple[str, str]]:
@@ -206,7 +217,18 @@ def parse_train_roadmap(text: str) -> TrainRoadmap:
             raise ValueError(
                 f"node '{downstream.node_id}' depends on unknown node '{dep_id}'"
             )
-        channel = parse_channel_line(channel_raw)
+        # Name the offending node when the channel descriptor is malformed.
+        # parse_channel_line raises a bare "pin channel requires a 'file' param"
+        # style error; without this wrapper a train author with N nodes cannot
+        # tell WHICH node's **Channel:** line is broken (the opaque
+        # roadmap-format-handling symptom of agent-harness#60).
+        try:
+            channel = parse_channel_line(channel_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"node '{downstream.node_id}' has a malformed **Channel:** "
+                f"descriptor ({channel_raw!r}): {exc}"
+            ) from exc
         edges.append(TrainEdge(upstream=upstream, downstream=downstream, channel=channel))
 
     return TrainRoadmap(title=title, nodes=nodes, edges=edges)
@@ -233,6 +255,9 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
           implemented for real consumption and are rejected here so that a
           train with a workspace edge fails the preflight gate — opening zero
           PRs — rather than running until injection fails mid-train.
+    (T-F) Node identifiers are unique within the train.  A duplicated
+          ``### Node:`` block would otherwise collapse in the topo-sort
+          indegree map and mis-surface as a spurious (T-D) cycle.
     """
     errors: List[str] = []
 
@@ -286,6 +311,27 @@ def validate_train(roadmap: TrainRoadmap) -> List[str]:
                 f"'submodule', and 'order-only' are supported. "
                 f"'workspace' channels are rejected at preflight to prevent hollow injection."
             )
+
+    # (T-F) Node identifiers must be unique within the train (authoring guide:
+    # "Node identifiers must be unique within the train"). A duplicated
+    # `### Node:` block otherwise collapses in the topo-sort indegree map and
+    # surfaces as a misleading "(T-D) cycle detected ... unresolved nodes: "
+    # with an EMPTY node list. Report it as its own coded, node-named error;
+    # the `if not errors` guard on the T-D block below then suppresses the
+    # spurious cycle. A duplicate is also a dispatch/ledger-integrity hazard:
+    # two nodes with the same id collide on the coordinator ledger key.
+    seen_ids: set = set()
+    reported_dups: set = set()
+    for node in roadmap.nodes:
+        nid = node.node_id
+        if nid in seen_ids and nid not in reported_dups:
+            errors.append(
+                f"(T-F) node id '{nid}' is declared more than once; each "
+                f"'### Node: <repo> / <plan-path>' block must be unique within "
+                f"the train (authoring guide: node identifiers must be unique)"
+            )
+            reported_dups.add(nid)
+        seen_ids.add(nid)
 
     # (T-D) Acyclic + serially orderable
     if not errors:

@@ -1296,3 +1296,49 @@ class TestInvariant7RunLoopFailureContract:
             "_pipeline_branch_blocker_from_error each contribute one).  "
             "A removed default would let a failure path silently emit None."
         )
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#60 (roadmap-format-handling half): a format defect that survives
+# parse (a duplicated node block) must be caught by run_train's Step-0 schema
+# gate as preflight_failed with ZERO publish calls and an actionable, node-named
+# diagnostic — binding the format fix to INV-3's zero-PR contract.
+
+TRAIN_DUP_NODE_MD = TRAIN_2NODE_MD + (
+    "\n### Node: repo-a / specs/plan-a.md\n\n"
+    "**Depends on:** (none)\n**Channel:** (none)\n"
+)
+
+
+class TestIssue60FormatDefectZeroPRs:
+    def test_duplicate_node_train_preflight_failed_zero_publish(self, tmp_path: Path):
+        roadmap = parse_train_roadmap(TRAIN_DUP_NODE_MD)  # parse tolerates dup
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        publish_log: List[str] = []
+
+        def _publish_spy(workspace: Path, owned_paths, *, draft: bool, **kw):
+            publish_log.append(workspace.name)
+            return {"status": "published", "branch": "b", "head_sha": "s", "pr_url": "u"}
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_publish_spy,
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,  # repo-preflight would pass; schema gate must fire first
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+        )
+
+        assert result["status"] == "preflight_failed", result
+        assert publish_log == [], f"format defect must open zero PRs; got {publish_log!r}"
+        joined = " ".join(result["errors"])
+        assert "(T-F)" in joined and "repo-a/specs/plan-a.md" in joined, (
+            f"diagnostic must be coded and name the duplicated node; got: {result['errors']}"
+        )
+        assert not ledger.exists() or read_ledger(ledger) == {}, "no ledger records on schema failure"
