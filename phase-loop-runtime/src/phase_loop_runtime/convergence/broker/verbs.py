@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Protocol
 
-from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, PublishCommittedBranchResult
+from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, BrokerVerb, PublishCommittedBranchResult
 from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETION_CLASSIFICATIONS, ProviderCompletionClassification, TerminalOutcomeState
 from .evidence import BrokerEvidenceStore, EvidenceRecord
 
@@ -28,21 +28,44 @@ def publish_committed_branch_idempotency_key(repo: str, branch: str, head_sha: s
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
         self.admission_store, self.evidence_store, self.adapter, self.contracts = admission_store, evidence_store, adapter, contracts
+    def _dedup_key(self, request: BrokerRequest) -> str:
+        # publish_committed_branch de-dups on the canonical (repo, branch, head_sha)
+        # triple so a repeat under a fresh admission key is a no-op that returns the
+        # SAME prior result.  Other verbs remain keyed by the admission key.
+        if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            return publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
+        return request.admission.idempotency_key
+
+    def _replay(self, request: BrokerRequest, key: str, current: EvidenceRecord) -> BrokerExecutionResult:
+        observed = current.state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED
+        # Idempotent recovery: a replay of a COMPLETED publish_committed_branch must
+        # return the prior PublishCommittedBranchResult (pr_url persisted in the
+        # evidence reference), NOT None — otherwise the caller reports it blocked.
+        result = (
+            PublishCommittedBranchResult(request.branch, request.head_sha, current.evidence_reference)
+            if observed and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
+            else None
+        )
+        return BrokerExecutionResult(observed, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference), result)
+
     def execute(self, request: BrokerRequest) -> BrokerExecutionResult:
-        key = request.admission.idempotency_key
+        key = self._dedup_key(request)
         current = self.evidence_store.replay().get(key)
         if current and current.state is not TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-            return BrokerExecutionResult(current.state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference))
+            return self._replay(request, key, current)
         contract = next((c for c in self.contracts if c.verb == request.verb.value and c.provider == "github"), None)
         if contract is None or contract.classification is not ProviderCompletionClassification.SUPPORTED:
             evidence = self.evidence_store.rejected_before_start(key, "provider-classification")
             return BrokerExecutionResult(False, BrokerTerminalEvidence(key, evidence.state.value, evidence.evidence_reference), reason="provider_not_supported")
         if self.evidence_store.epoch_blocked: raise PermissionError("epoch permanently blocked")
-        self.admission_store.admit(request); self.evidence_store.record_intent(key)
+        self.admission_store.admit(request.admission); self.evidence_store.record_intent(key)
         try:
             result, evidence = self.adapter.execute(request)
             state = TerminalOutcomeState(evidence.terminal_state)
-            recorded = self.evidence_store.record_terminal(EvidenceRecord(key, state, evidence.evidence_reference))
+            # Persist the real pr_url as the evidence reference so a later replay can
+            # reconstruct the identical PublishCommittedBranchResult.
+            reference = result.pr_url if result is not None else evidence.evidence_reference
+            recorded = self.evidence_store.record_terminal(EvidenceRecord(key, state, reference))
             return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, recorded.state.value, recorded.evidence_reference), result)
         except Exception:
             recorded = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))

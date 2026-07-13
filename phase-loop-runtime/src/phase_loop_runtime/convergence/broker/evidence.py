@@ -41,6 +41,13 @@ class BrokerEvidenceStore:
     def rejected_before_start(self, key: str, evidence_reference: str) -> EvidenceRecord:
         return self._append(EvidenceRecord(key, TerminalOutcomeState.REJECTED_BEFORE_START, evidence_reference))
     def _append(self, record: EvidenceRecord) -> EvidenceRecord:
+        # Storage-layer permanence: no write may transition OUT of a terminal
+        # outcome_ambiguous_blocked record.  This is self-enforcing regardless of
+        # caller path (record_terminal, rejected_before_start, record_intent), so a
+        # buggy caller cannot escape the block by writing a fresh terminal record.
+        current = self.replay().get(record.idempotency_key)
+        if current is not None and current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED and record != current:
+            raise ValueError("outcome_ambiguous_blocked is permanent; no transition out")
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(asdict(record), sort_keys=True) + "\n"); stream.flush(); os.fsync(stream.fileno())
         return record
