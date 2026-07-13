@@ -101,7 +101,8 @@ def test_gh_calls_are_bound_to_origin_repo_slug(tmp_path):
     gh = [c for c in run.calls if c and c[0] == "gh"]
     assert gh, "expected gh calls"
     for c in gh:
-        assert "--repo" in c and "owner/repo" in c, f"gh call not bound to origin repo: {c!r}"
+        # host-qualified: --repo host/owner/repo pins both host AND repo
+        assert "--repo" in c and "github.com/owner/repo" in c, f"gh call not host-bound: {c!r}"
 
 
 def test_unresolvable_origin_fails_closed(tmp_path):
@@ -118,9 +119,30 @@ def test_unresolvable_origin_fails_closed(tmp_path):
         raise AssertionError("expected fail-closed on unresolvable origin")
 
 
-def test_broker_env_strips_repo_redirect_but_keeps_credential():
-    env = {"GH_TOKEN": "t", "GH_REPO": "evil/repo", "GH_HOST": "evil.example", "NORMAL": "y"}
+def test_broker_env_strips_repo_redirect_but_keeps_credential_and_host():
+    env = {"GH_TOKEN": "t", "GH_REPO": "evil/repo", "GH_HOST": "ghe.corp", "NORMAL": "y"}
     broker = BrokerEnvironmentBoundary().environment_for("broker", env)
     assert broker.get("GH_TOKEN") == "t"          # broker needs its credential
-    assert "GH_REPO" not in broker and "GH_HOST" not in broker  # but never the redirect vars
+    assert "GH_REPO" not in broker               # the repo-redirect var is stripped
+    assert broker.get("GH_HOST") == "ghe.corp"   # GH_HOST kept (host pinned by --repo; preserves GHE config)
     assert broker.get("NORMAL") == "y"
+
+
+import pytest
+@pytest.mark.parametrize("url,slug", [
+    ("https://github.com/owner/repo.git", "github.com/owner/repo"),
+    ("https://github.com/owner/repo", "github.com/owner/repo"),
+    ("git@github.com:owner/repo.git", "github.com/owner/repo"),
+    ("git@ghe.corp:team/svc.git", "ghe.corp/team/svc"),           # GHE scp-like → host-qualified
+    ("ssh://git@ghe.corp:2222/team/svc.git", "ghe.corp/team/svc"),# GHE ssh+port
+    ("https://ghe.corp/team/svc", "ghe.corp/team/svc"),
+])
+def test_origin_repo_is_host_qualified(tmp_path, url, slug):
+    run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), url, 0)])
+    assert GitHubBrokerAdapter(tmp_path, run=run)._origin_repo() == slug
+
+@pytest.mark.parametrize("bad", ["not-a-git-url", "https://github.com/onlyowner", "git@host:", ""])
+def test_origin_repo_fails_closed_on_garbage(tmp_path, bad):
+    run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), bad, 0)])
+    with pytest.raises(ValueError):
+        GitHubBrokerAdapter(tmp_path, run=run)._origin_repo()

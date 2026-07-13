@@ -11,11 +11,12 @@ from typing import Mapping
 from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, PublishCommittedBranchResult
 
 MUTATION_CREDENTIAL_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
-# Repo-redirect env vars: gh resolves its target repo/host from these over cwd's
-# origin, so a stray GH_REPO could send a `gh pr create` to a DIFFERENT repo while
-# the push+ls-remote (bound to origin) still match — an undetected wrong-repo PR.
-# They carry no credential the broker needs, so strip them from the broker env too.
-REPO_REDIRECT_KEYS = frozenset({"GH_REPO", "GH_HOST"})
+# Repo-redirect env var: gh resolves its target repo from GH_REPO over cwd's origin,
+# so a stray GH_REPO could send a `gh pr create` to a DIFFERENT repo while the
+# push+ls-remote (bound to origin) still match — an undetected wrong-repo PR. The
+# host is instead pinned by the host-qualified `--repo host/owner/repo` (which beats
+# GH_HOST/gh-config), so GH_HOST is left intact to preserve GHE config routing.
+REPO_REDIRECT_KEYS = frozenset({"GH_REPO"})
 def strip_mutation_credentials(environment: Mapping[str, str]) -> dict[str, str]: return {k: v for k, v in environment.items() if k not in MUTATION_CREDENTIAL_KEYS}
 class BrokerEnvironmentBoundary:
     def environment_for(self, role: str, environment: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -31,15 +32,28 @@ class GitHubBrokerAdapter:
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
     def _origin_repo(self) -> str:
-        # Resolve the origin owner/repo slug so every `gh` call is bound with
-        # `--repo <slug>` (highest precedence — beats a stray GH_REPO/cwd), so the
-        # PR is created + read on the SAME repo the push targets.  Fail-closed if
-        # the origin cannot be resolved to owner/repo.
+        # Resolve the origin as a HOST-QUALIFIED `host/owner/repo` slug so every `gh`
+        # call is bound with `--repo host/owner/repo` (highest precedence — beats a
+        # stray GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND
+        # repo the push targets (correct for github.com AND GitHub Enterprise).
+        # Fail-closed if the origin cannot be resolved.
         url = self._output("remote", "get-url", "origin")
-        m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url)
-        if not m:
-            raise ValueError(f"cannot resolve origin owner/repo from {url!r}")
-        return m.group(1)
+        if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
+            rest = url.split("://", 1)[1].split("@", 1)[-1]
+            host, _, path = rest.partition("/")
+            host = host.split(":", 1)[0]
+        else:  # scp-like: [user@]host:owner/repo(.git)
+            hostpart, sep, path = url.partition(":")
+            host = hostpart.split("@", 1)[-1]
+            if not sep:
+                raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+        if path.endswith(".git"):
+            path = path[:-4]
+        path = path.strip("/")
+        parts = path.split("/")
+        if not host or len(parts) != 2 or not all(parts):
+            raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+        return f"{host}/{path}"
     def _ambiguous(self, request: BrokerRequest, reference: str):
         # v5 rule: a failed/empty remote read is NEVER inferred as no_effect and
         # NEVER fabricated as success — it is a permanent ambiguous block.
