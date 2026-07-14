@@ -49,15 +49,13 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   suite (not the host `sys.executable`), so deps are visible to the suite. When no
   satisfying interpreter exists the suite fails closed with a named blocker
   (recorded as a non-zero suite exit). The interpreter resolution (pin +
-  requires-python auto-resolve) is now honored on **all three** verification paths
-  — execute, train-reverification, and hotfix. If the suite argv **explicitly**
-  names a versioned/absolute interpreter below the floor (a bare `pythonX.Y` as the
-  executable, or inside a `bash -lc "… pythonX.Y …"` wrapper), it now fails closed
-  rather than bypassing the resolved interpreter and producing green evidence under
-  an unsupported Python. *Known limitation:* an interpreter reached indirectly
-  (`env pythonX.Y`, a shell `$VAR`, `uv run`, or an absolute path whose basename is
-  not `pythonX.Y`) is not detected. This removes the py3.10-vs-
+  requires-python auto-resolve) is honored on **all three** verification paths —
+  execute, train-reverification, and hotfix. This removes the py3.10-vs-
   `requires-python>=3.11` false failure that previously needed a manual shim.
+  *Known limitation:* the shim only redirects a bare `python`/`python3`; a suite or
+  verification command that **explicitly** names a versioned/absolute interpreter
+  (e.g. `python3.10`, `/usr/bin/python3.10`) below the floor is not caught and can
+  still run under an unsupported Python — tracked separately in agent-harness#221.
   (agent-harness#219)
 - **Safe gitignore handling at closeout (fix).** The gitignored exclusion no
   longer drops OWNED paths from `phase_owned_dirty_paths`: it applies to the

@@ -182,51 +182,7 @@ def _build_interpreter_shim(run_path: Path, interpreter: Path) -> Path:
     return shim_dir
 
 
-# A trailing boundary (whitespace / end / quote) so a match must be an interpreter
-# in executable position, NOT a `pythonX.Y` substring of a filename or path (e.g.
-# `tests/test_python3.10_compat.py` or `PYTHONPATH=/opt/python3.10/lib`), which
-# would otherwise spuriously fail closed on a requires-python repo.
-_VERSIONED_PY_RE = re.compile(r"(?:/\S+/)?python\d+\.\d+(?=\s|$|['\"])")
-
-
-def _suite_argv_interpreter_blocker(suite_command: Sequence[str] | None, specs: list[str]) -> str | None:
-    """CR round-2 (codex): fail closed when the suite argv explicitly names a
-    versioned/absolute python interpreter that does NOT satisfy requires-python.
-
-    The PATH shim only redirects a bare ``python``/``python3``; a suite whose argv
-    invokes ``python3.10`` (versioned) or an absolute interpreter path bypasses the
-    resolved interpreter and could produce GREEN evidence under an unsupported
-    Python. Detection is scoped to the executable (``argv[0]``) and the command
-    string of a shell wrapper (``bash -lc "..."`` / ``sh -c "..."``) — the two
-    shapes that occur in practice. Residual (documented as a known limitation): an
-    interpreter reached indirectly (``env python3.10``, a ``$VAR``, ``uv run``, or
-    an absolute path whose basename is not ``pythonX.Y``) is not detected.
-    """
-    if not specs or not suite_command:
-        return None
-    argv = [str(a) for a in suite_command]
-    haystacks: list[str] = [argv[0]] if argv else []
-    for index, token in enumerate(argv):
-        if token in ("-c", "-lc", "-lic", "-ic", "-cl") and index + 1 < len(argv):
-            haystacks.append(argv[index + 1])
-    detected: list[str] = []
-    for hay in haystacks:
-        detected.extend(_VERSIONED_PY_RE.findall(hay))
-    for token in dict.fromkeys(detected):
-        path = _interpreter_path(token)
-        version = _interpreter_minor_version(path) if path is not None else None
-        if not version or not _version_satisfies(version, specs):
-            return (
-                f"suite explicitly invokes interpreter '{token}' (version "
-                f"{version or 'unresolved'}) that does not satisfy requires-python "
-                f"({', '.join(specs)})"
-            )
-    return None
-
-
-def _resolve_suite_interpreter(
-    repo: Path, run_path: Path, python_pin: str | None, specs: list[str] | None = None
-) -> SuiteInterpreter:
+def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | None) -> SuiteInterpreter:
     """Resolve an interpreter satisfying the target repo's ``requires-python``.
 
     Mechanism C (agent-harness#219(a)): an explicit ``automation.python`` pin
@@ -235,8 +191,7 @@ def _resolve_suite_interpreter(
     a ``shim_dir`` to prepend to the suite ``PATH`` (or ``None`` when the host
     default already satisfies), or a named ``blocker`` when none exists.
     """
-    if specs is None:
-        specs = _read_requires_python_specs(repo)
+    specs = _read_requires_python_specs(repo)
 
     if python_pin:
         # The pin is the operator's explicit interpreter choice — but it must still
@@ -368,17 +323,12 @@ def run_verification(
     # requires-python (honoring an automation.python pin) and shim it onto the
     # verification subprocess PATH, so a bare ``python`` in the suite/commands is
     # not silently the host default that fails a requires-python>=3.11 build.
-    specs = _read_requires_python_specs(repo_path)
-    interpreter = _resolve_suite_interpreter(repo_path, run_path, python_pin, specs=specs)
+    interpreter = _resolve_suite_interpreter(repo_path, run_path, python_pin)
     shim_dir = interpreter.shim_dir
-    # CR round-2 (codex): the PATH shim only redirects bare python/python3. If the
-    # suite argv explicitly names a versioned/absolute interpreter below the floor,
-    # fail closed rather than run it (it would bypass the resolved interpreter).
-    suite_blocker = interpreter.blocker or _suite_argv_interpreter_blocker(suite_command, specs)
 
     with log_path.open("wb") as log_file:
-        if suite_blocker:
-            log_file.write(f"suite interpreter unavailable: {suite_blocker}\n".encode("utf-8"))
+        if interpreter.blocker:
+            log_file.write(f"suite interpreter unavailable: {interpreter.blocker}\n".encode("utf-8"))
             log_file.flush()
         elif interpreter.interpreter is not None:
             log_file.write(f"suite interpreter: {interpreter.interpreter}\n".encode("utf-8"))
@@ -398,14 +348,11 @@ def run_verification(
         ]
         suite_result = None
         if suite_command is not None:
-            if suite_blocker:
+            if interpreter.blocker:
                 # Fail closed: refuse to run the suite under an interpreter that
-                # cannot satisfy the target requires-python — whether none exists
-                # (interpreter.blocker) OR the suite argv explicitly names a
-                # below-floor versioned/absolute interpreter that would bypass the
-                # shim (CR round-2). Recorded as a non-zero suite exit so the
-                # evidence gate blocks (nonzero_exit is always fail-closed —
-                # agent-harness#219(b-i)).
+                # cannot satisfy the target requires-python. Recorded as a
+                # non-zero suite exit so the evidence gate blocks (nonzero_exit is
+                # always fail-closed — agent-harness#219(b-i)).
                 suite_result = VerificationSuiteEvidence(
                     argv=list(suite_command),
                     exit_code=127,

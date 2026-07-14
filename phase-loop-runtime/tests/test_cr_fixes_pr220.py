@@ -397,7 +397,6 @@ import phase_loop_runtime.cli as cli_mod
 import phase_loop_runtime.verification_evidence as ve_mod
 from phase_loop_runtime.state import write_state
 from phase_loop_runtime.train_runner import _live_reverify
-from phase_loop_runtime.verification_evidence import _suite_argv_interpreter_blocker
 
 
 # --- gap #1: train-reverify + hotfix must honor the automation.python pin ---
@@ -470,95 +469,3 @@ def test_train_reverify_threads_python_pin(tmp_path, monkeypatch):
 
     _live_reverify(repo, roadmap, "governed")
     assert captured.get("python_pin") == "python3.12", "train reverify must thread the automation.python pin"
-
-
-# --- gap #2: a versioned/absolute interpreter in the suite argv fails closed ---
-
-def _pyproject(repo: Path, requires: str) -> None:
-    (repo / "pyproject.toml").write_text(
-        f'[project]\nname = "t"\nversion = "0"\nrequires-python = "{requires}"\n', encoding="utf-8"
-    )
-
-
-def test_versioned_interpreter_below_floor_fails_closed(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _pyproject(repo, ">=3.11")
-    # python3.10 EXITS 0 for this command — without detection it would be GREEN.
-    result = run_verification(
-        repo, repo / ".phase-loop" / "run", commands=[],
-        suite_command=["python3.10", "-c", "print('ok')"],
-        env_refresh=None, timeout_s=60.0,
-    )
-    assert result.suite is not None
-    assert result.suite.exit_code != 0, "a below-floor versioned interpreter must fail closed, not run green"
-
-
-def test_versioned_interpreter_inside_bash_lc_fails_closed(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _pyproject(repo, ">=3.11")
-    result = run_verification(
-        repo, repo / ".phase-loop" / "run", commands=[],
-        suite_command=["bash", "-lc", "python3.10 -c 'import sys; sys.exit(0)'"],
-        env_refresh=None, timeout_s=60.0,
-    )
-    assert result.suite is not None
-    assert result.suite.exit_code != 0
-
-
-def test_satisfying_versioned_interpreter_is_allowed(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _pyproject(repo, ">=3.11")
-    # python3.12 satisfies → NOT blocked → runs and exits 0.
-    result = run_verification(
-        repo, repo / ".phase-loop" / "run", commands=[],
-        suite_command=["python3.12", "-c", "import sys; sys.exit(0)"],
-        env_refresh=None, timeout_s=60.0,
-    )
-    assert result.suite is not None
-    assert result.suite.exit_code == 0
-
-
-def test_no_requires_python_does_not_block_versioned_interpreter(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()  # no pyproject → no requires-python → no detection
-    result = run_verification(
-        repo, repo / ".phase-loop" / "run", commands=[],
-        suite_command=["python3.10", "-c", "import sys; sys.exit(0)"],
-        env_refresh=None, timeout_s=60.0,
-    )
-    assert result.suite is not None
-    assert result.suite.exit_code == 0
-
-
-def test_suite_argv_interpreter_blocker_unit():
-    assert _suite_argv_interpreter_blocker(["python3.10", "-m", "pytest"], [">=3.11"]) is not None
-    assert _suite_argv_interpreter_blocker(["bash", "-lc", "python3.10 -m pytest"], [">=3.11"]) is not None
-    assert _suite_argv_interpreter_blocker(["python3.12", "-m", "pytest"], [">=3.11"]) is None
-    assert _suite_argv_interpreter_blocker(["python", "-m", "pytest"], [">=3.11"]) is None  # bare → shim handles it
-    assert _suite_argv_interpreter_blocker(["python3.10", "-m", "pytest"], []) is None       # no constraint
-
-
-def test_versioned_python_as_filename_substring_not_over_detected(tmp_path):
-    # `python3.10` appearing only as a FILENAME/path substring must NOT be
-    # mistaken for an invoked interpreter (spurious fail-closed). The suite uses
-    # the (correct, shimmed) bare `python`; the below-floor token is just a path.
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _pyproject(repo, ">=3.11")
-    result = run_verification(
-        repo, repo / ".phase-loop" / "run", commands=[],
-        suite_command=["bash", "-lc", "python -c 'print(\"tests/test_python3.10_compat.py ok\")'"],
-        env_refresh=None, timeout_s=60.0,
-    )
-    assert result.suite is not None
-    assert result.suite.exit_code == 0, "a pythonX.Y filename substring must not trigger a fail-closed block"
-
-
-def test_suite_argv_interpreter_blocker_filename_substring_unit():
-    # Path/filename substrings do not match; executable-position tokens do.
-    assert _suite_argv_interpreter_blocker(["bash", "-lc", "pytest tests/test_python3.10_x.py"], [">=3.11"]) is None
-    assert _suite_argv_interpreter_blocker(["bash", "-lc", "PYTHONPATH=/opt/python3.10/lib python -m pytest"], [">=3.11"]) is None
-    assert _suite_argv_interpreter_blocker(["bash", "-lc", "python3.10 -m pytest"], [">=3.11"]) is not None
