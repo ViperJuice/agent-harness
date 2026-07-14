@@ -7670,10 +7670,22 @@ def _classify_dirty_paths(
         path for path in post_launch_dirty_paths if path in previous_evidence and (not pre_launch or path in pre_launch)
     ]
     previous_phase_owned_set = set(previous_phase_owned)
+    # Gitignored paths are the client repo's declared-disposable outputs (build/codegen
+    # artifacts the verification step regenerates — `__pycache__/`, `.pytest_cache/`, …).
+    # Compute this FIRST: a broad owned glob (e.g. `pkg/**`) matches them, but they must
+    # NEVER be claimed as phase-owned. `git add` will not stage an ignored file, so an
+    # "owned" gitignored path can never actually commit — it stays dirty and trips
+    # dirty_worktree_conflict at closeout (any governed phase that runs pytest hits this;
+    # agent-harness#186). Excluding them here routes them to `gitignored_dirty_paths` (the
+    # disposable bucket) instead, regardless of how broad the owned glob is. (`--no-index`
+    # so even *tracked*-then-ignored regenerated files match.)
+    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
     phase_owned = [
         path
         for path in post_launch_dirty_paths
-        if path not in previous_phase_owned_set and ownership.matches_dirty_output(path)
+        if path not in previous_phase_owned_set
+        and path not in gitignored
+        and ownership.matches_dirty_output(path)
     ]
     phase_owned_set = set(phase_owned)
 
@@ -7682,7 +7694,7 @@ def _classify_dirty_paths(
     for src, dst in rename_map.items():
         if src in phase_owned_set:
             continue
-        if src not in post_launch_dirty_paths:
+        if src not in post_launch_dirty_paths or src in gitignored:
             continue
         if dst in phase_owned_set or ownership.matches_dirty_output(dst):
             phase_owned.append(src)
@@ -7698,14 +7710,10 @@ def _classify_dirty_paths(
         and path not in previous_phase_owned_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
-    # Issue #5: a path matching a gitignore pattern is the client repo's declared-disposable
-    # output (a codegen/build artifact the verification step regenerates). It must not count as
-    # un-owned spillover -> dirty_worktree_conflict, which the next repair turn would re-trigger
-    # by re-running the build (an infinite loop). It is NOT dropped from the dirty set: a
-    # gitignored path the plan OWNS still classifies as phase-owned and commits normally below,
-    # so no legitimately-owned work is lost. (`--no-index` so even *tracked*-then-ignored
-    # regenerated files are matched.)
-    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
+    # Issue #5: gitignored paths (computed above) must not count as un-owned spillover ->
+    # dirty_worktree_conflict, which the next repair turn would re-trigger by re-running the
+    # build (an infinite loop). They are also excluded from phase_owned above (#186), so they
+    # surface ONLY in `gitignored_dirty_paths` — never committed, never a conflict.
     unowned = [
         path
         for path in post_launch_dirty_paths

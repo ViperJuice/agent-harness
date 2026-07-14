@@ -56,7 +56,7 @@ def test_closeout_nothing_staged(tmp_path):
     assert _closeout_nothing_staged(repo) is False
 
 
-# --- #5: classification, not a blanket drop (no data loss) -----------------
+# --- #5 / #186: gitignored paths are disposable, never phase-owned ----------
 
 def test_classify_gitignored_unowned_excluded_owned_kept_real_spillover_blocks(tmp_path):
     repo = make_repo(tmp_path)
@@ -72,11 +72,46 @@ def test_classify_gitignored_unowned_excluded_owned_kept_real_spillover_blocks(t
     # gitignored UNOWNED generated output: not un-owned spillover (no block), recorded:
     assert "src/generated/client.py" not in result["unowned_dirty_paths"]
     assert "src/generated/client.py" in result["gitignored_dirty_paths"]
-    # gitignored but OWNED file: still phase-owned -> committed (NO DATA LOSS, the panel's #5 concern):
-    assert "tracked_ignored.py" in result["phase_owned_dirty_paths"]
+    # gitignored file matched by the owned glob: DISPOSABLE, not phase-owned (#186). The old
+    # #5 behavior classified it phase-owned "to commit it (no data loss)", but `git add`
+    # silently skips ignored files, so it never actually committed — it stayed dirty and
+    # tripped dirty_worktree_conflict at closeout (every pytest phase's __pycache__/.pytest_cache).
+    # It now routes to the disposable gitignored bucket. A file a phase genuinely needs tracked
+    # must be un-ignored in .gitignore, not force-committed at closeout.
+    assert "tracked_ignored.py" not in result["phase_owned_dirty_paths"]
+    assert "tracked_ignored.py" in result["gitignored_dirty_paths"]
+    # a real (non-ignored) owned file is still phase-owned and commits:
     assert "src/owned.py" in result["phase_owned_dirty_paths"]
     # a genuinely-unowned, NON-ignored path STILL blocks (no over-suppression):
     assert "stray.py" in result["unowned_dirty_paths"]
+
+
+def test_pytest_cache_under_broad_owned_glob_does_not_block_closeout(tmp_path):
+    """agent-harness#186: a governed phase running pytest emits __pycache__/.pytest_cache
+    under its broad owned glob (pkg/**). Those gitignored artifacts must NOT be claimed as
+    phase-owned (git can't commit them) and must NOT drive dirty_worktree_conflict — the
+    closeout stays clean-safe and commits only the real owned source."""
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PKG", roadmap, owned_files=("pkg/**",))
+    (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n*.pyc\n", encoding="utf-8")
+    commit_fixture_paths(repo, "plan + ignores", plan, repo / ".gitignore")
+
+    post = [
+        "pkg/mod.py",                         # real owned source
+        "pkg/__pycache__/mod.cpython-312.pyc",  # gitignored cache under the ** glob
+        ".pytest_cache/v/cache/lastfailed",     # gitignored cache
+    ]
+    result = _classify_dirty_paths(repo, roadmap, plan, [], post, current_phase="PKG")
+
+    assert "pkg/mod.py" in result["phase_owned_dirty_paths"]
+    for cache in ("pkg/__pycache__/mod.cpython-312.pyc", ".pytest_cache/v/cache/lastfailed"):
+        assert cache not in result["phase_owned_dirty_paths"], cache
+        assert cache not in result["unowned_dirty_paths"], cache
+        assert cache in result["gitignored_dirty_paths"], cache
+    # The closeout gate is clean-safe: no unowned/pre-existing spillover -> no conflict.
+    assert result["phase_owned_dirty"] is True
+    assert result["unowned_dirty_paths"] == []
 
 
 # --- #6: no-op finalize, gated strictly on complete ------------------------

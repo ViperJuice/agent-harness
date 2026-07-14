@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Closeout — gitignored artifacts are disposable, never phase-owned
+
+- **A governed phase's gitignored outputs (e.g. `__pycache__/`, `.pytest_cache/` from
+  running pytest) no longer trip `dirty_worktree_conflict` at closeout.** A broad owned
+  glob (`pkg/**`) matches them, and `_classify_dirty_paths` previously classified an
+  owned gitignored path as *phase-owned* "to commit it" — but `git add` silently skips
+  ignored files, so it never committed, stayed dirty, and blocked closeout (every pytest
+  phase hit this). Gitignored paths now route to the disposable `gitignored_dirty_paths`
+  bucket regardless of how broad the owned glob is (reversing the earlier Issue-#5
+  behavior, whose "no data loss" guarantee `git add` never actually delivered for ignored
+  files). A file a phase genuinely needs tracked must be un-ignored in `.gitignore`, not
+  force-committed at closeout. (agent-harness#186)
+
 ### Planning — validator enforces the producer-dependency contract (fail-fast)
 
 - **`validate_plan_doc.py` now errors when a lane consumes an interface provided by
