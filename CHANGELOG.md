@@ -4,6 +4,20 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Planning — validator enforces the producer-dependency contract (fail-fast)
+
+- **`validate_plan_doc.py` now errors when a lane consumes an interface provided by
+  another in-plan lane it does not depend on directly** (a new `(O)` check mirroring
+  the runtime `plan_ir._producer_dependency_diagnostics`). Previously the plan
+  validator passed such a plan (check F only traced that the interface was *provided*
+  somewhere) and the phase-loop lane IR then failed closed at execute time with
+  `missing_producer_dependency` — so a reviewed, signed plan could pass its canonical
+  validator and design panel, then become non-executable at the approval/baseline gate.
+  Planning-time and execution-time now enforce the same dependency contract.
+  (agent-harness#182)
+
 ## [0.7.8] - 2026-07-13
 
 ### Convergence — the run-train live path now works from the shipped CLI
