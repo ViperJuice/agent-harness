@@ -366,6 +366,13 @@ def _apply_verification_evidence_gate(
     validation = validate_verification_artifact(artifact_path)
     validation_payload = validation.to_json()
     mode = verification_enforcement_mode(os.environ)
+    # agent-harness#219(b-i): the per-command exit codes are authoritative over
+    # the executor's self-asserted "passed". A non-zero suite/command exit ALWAYS
+    # fails closed, irrespective of PHASE_LOOP_VERIFY_ENFORCE — which only softens
+    # evidence-integrity findings (log-sha drift, malformed/missing artifact) to a
+    # warning. A red suite is never a warning.
+    if validation.code == "nonzero_exit":
+        mode = "hard"
     validation_payload["enforcement"] = mode
     return _verification_evidence_block_or_warn(
         validation_payload=validation_payload,
@@ -551,7 +558,22 @@ def _verification_evidence_required(phase_alias: str, plan_path: Path) -> bool:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
         return False
-    return "IF-0-RG-1" in text or "--verification-log" in text
+    if "IF-0-RG-1" in text or "--verification-log" in text:
+        return True
+    # agent-harness#219(b-i): any governed phase whose active plan declares an
+    # ``automation.suite_command`` must produce a VerificationResult artifact —
+    # a self-asserted "passed" with no evidence can no longer pass ungated.
+    return _plan_declares_suite_command(plan_path)
+
+
+def _plan_declares_suite_command(plan_path: Path) -> bool:
+    # Lazy import to avoid a load-order dependency on the discovery module.
+    from .discovery import _automation_suite_command
+
+    try:
+        return _automation_suite_command(plan_path) is not None
+    except Exception:
+        return False
 
 
 def _verification_artifact_path(terminal: Mapping[str, Any]) -> Path | None:

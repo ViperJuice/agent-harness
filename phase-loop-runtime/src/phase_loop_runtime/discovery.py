@@ -653,6 +653,27 @@ def _automation_suite_command(path: Path | None) -> object:
     return automation.get("suite_command")
 
 
+def _automation_python_pin(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        data = parse_frontmatter_document(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    automation = data.get("automation")
+    if not isinstance(automation, dict):
+        return None
+    value = automation.get("python")
+    return str(value).strip() if isinstance(value, str) and value.strip() else None
+
+
+def resolve_python_pin(roadmap: Path, plan: Path | None = None) -> str | None:
+    """agent-harness#219(a): the optional per-phase ``automation.python``
+    interpreter pin. A plan-level pin overrides a roadmap-level one."""
+    plan_pin = _automation_python_pin(plan) if plan is not None else None
+    return plan_pin if plan_pin is not None else _automation_python_pin(roadmap)
+
+
 def _normalize_suite_command(value: object, *, source: str) -> tuple[list[str] | None, SuiteCommandFinding | None]:
     if isinstance(value, str):
         try:
@@ -2185,6 +2206,12 @@ def _owned_pattern_matches(repo_path: str, pattern: str) -> bool:
         return repo_path.startswith(pattern)
     if "*" not in pattern and "?" not in pattern:
         return False
+    # agent-harness#218 defense-in-depth: a collapsed bare-directory dirty path
+    # (ends "/") is owned when an owned glob targets files strictly inside it.
+    # The runner/closeout expand collapsed dirs to member files (the primary
+    # fix); this keeps the matcher correct if a caller forgets to expand.
+    if repo_path.endswith("/") and pattern.startswith(repo_path):
+        return True
     return fnmatchcase(repo_path, pattern)
 
 

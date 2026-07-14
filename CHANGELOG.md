@@ -4,6 +4,43 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Governed closeout & gate-integrity hardening (#218, #219)
+
+Three bounded fixes so a phase cannot be marked `complete`/`verification: passed`
+when its evidence does not support it. The wire contract (blocker-class enums,
+closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
+
+- **Dir-aware ownership classification (fix).** When a phase's owned deliverable
+  is a brand-new directory and the executor self-reports the *collapsed* bare
+  directory (`pkg/newmod/`) instead of its member files, a file-level owned glob
+  (`pkg/newmod/*.py`) never matched the bare-directory string, so the path routed
+  to the unowned remainder and tripped a spurious `closeout_scope_violation`. A
+  new `git_ops.expand_dir_dirty_paths` normalizes a directory entry to its member
+  files (via `git status --porcelain --untracked-files=all -- <dir>`) before
+  ownership matching, applied in the closeout fallback classifier; the ownership
+  matcher also gained a directory-prefix guard as defense-in-depth. A new
+  all-owned directory now closes `complete` with the directory committed.
+  (agent-harness#218)
+- **Non-zero suite/command exit now fails closed (fix).** A VerificationResult
+  with any non-zero command/suite exit forces `verification_status` to
+  failed/blocked at closeout, overriding an executor's self-asserted `passed`, and
+  blocks the runner-owned verification reduction — always, irrespective of
+  `PHASE_LOOP_VERIFY_ENFORCE` (which continues to soften only evidence-integrity
+  findings like log-sha drift). A red suite is never a warning. Additionally, any
+  governed phase whose plan declares an `automation.suite_command` now requires a
+  VerificationResult artifact, so a self-asserted `passed` with no evidence can no
+  longer close ungated. (agent-harness#219)
+- **requires-python-aware suite interpreter (fix).** The verification suite now
+  runs under an interpreter satisfying the target repo's `requires-python`: an
+  optional `automation.python` plan pin wins, otherwise the lowest satisfying host
+  `pythonX.Y` is resolved from `requires-python` and shimmed onto the suite
+  subprocess `PATH`. When no satisfying interpreter exists the suite fails closed
+  with a named blocker (recorded as a non-zero suite exit). This removes the
+  py3.10-vs-`requires-python>=3.11` false failure that previously needed a manual
+  shim. (agent-harness#219)
+
 ## [0.7.9] - 2026-07-14
 
 ### Planning — validator enforces the producer-dependency contract (fail-fast)

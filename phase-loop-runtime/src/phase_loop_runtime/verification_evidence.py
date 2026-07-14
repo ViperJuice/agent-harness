@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,202 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = 1
 ARTIFACT_NAME = "verification.json"
 LOG_NAME = "verification.log"
+
+# agent-harness#219(a): directories that never carry a target package's own
+# requires-python (vendored / build / cache trees). Pruned when scanning for
+# pyproject.toml so a big repo scan stays cheap and does not pick up a
+# dependency's requires-python by mistake.
+_PYPROJECT_PRUNE_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        "node_modules",
+        "vendor",
+        ".venv",
+        "venv",
+        "site-packages",
+        "__pycache__",
+        "build",
+        "dist",
+        ".tox",
+        ".nox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+# Candidate interpreter minor versions, ascending — the lowest satisfying the
+# target's requires-python is preferred (matches CI's "run on the floor" posture).
+_CANDIDATE_MINORS = tuple(range(8, 15))  # python3.8 .. python3.14
+
+
+@dataclass(frozen=True)
+class SuiteInterpreter:
+    """Outcome of resolving a suite interpreter for the target's requires-python.
+
+    ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH`` whose
+    ``python``/``python3`` resolve to the satisfying interpreter, or ``None`` when
+    the host default already satisfies (or there is no constraint).
+    ``blocker`` — a clear, named reason when no satisfying interpreter exists;
+    the caller fails closed. ``interpreter`` — the resolved path, for the log.
+    """
+
+    shim_dir: "Path | None"
+    blocker: str | None
+    interpreter: str | None
+
+
+def _iter_pyproject_files(repo: Path, *, limit: int = 50) -> list[Path]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(repo):
+        # Prune vendored/build/cache dirs in place so os.walk skips them.
+        dirnames[:] = [d for d in dirnames if d not in _PYPROJECT_PRUNE_DIRS and not d.startswith(".venv")]
+        if "pyproject.toml" in filenames:
+            found.append(Path(dirpath) / "pyproject.toml")
+            if len(found) >= limit:
+                break
+    return found
+
+
+def _read_requires_python_specs(repo: Path) -> list[str]:
+    """Collect ``requires-python`` specifiers from the target repo's non-vendored
+    ``pyproject.toml`` files (regex read — avoids a tomllib/tomli dependency)."""
+    specs: list[str] = []
+    for pyproject in _iter_pyproject_files(repo):
+        try:
+            text = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = re.search(r'^\s*requires-python\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match:
+            spec = match.group(1).strip()
+            if spec and spec not in specs:
+                specs.append(spec)
+    return specs
+
+
+def _version_satisfies(version: str, specs: list[str]) -> bool:
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        parsed = Version(version)
+        return all(parsed in SpecifierSet(spec, prereleases=True) for spec in specs)
+    except Exception:
+        return _version_satisfies_simple(version, specs)
+
+
+def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
+    """Fallback when ``packaging`` is unavailable: compare (major, minor) tuples
+    against comma-separated ``>=``/``>``/``<=``/``<``/``==``/``!=`` constraints."""
+    try:
+        target = tuple(int(part) for part in version.split(".")[:2])
+    except ValueError:
+        return False
+    for spec in specs:
+        for clause in spec.split(","):
+            clause = clause.strip()
+            match = re.match(r"(>=|<=|==|!=|>|<)?\s*(\d+)(?:\.(\d+))?", clause)
+            if not match:
+                continue
+            op = match.group(1) or ">="
+            bound = (int(match.group(2)), int(match.group(3) or 0))
+            if op == ">=" and not target >= bound:
+                return False
+            if op == ">" and not target > bound:
+                return False
+            if op == "<=" and not target <= bound:
+                return False
+            if op == "<" and not target < bound:
+                return False
+            if op == "==" and not target == bound:
+                return False
+            if op == "!=" and target == bound:
+                return False
+    return True
+
+
+def _interpreter_path(name: str) -> Path | None:
+    candidate = Path(name)
+    if candidate.is_absolute() or os.sep in name or (os.altsep and os.altsep in name):
+        return candidate if candidate.exists() and os.access(candidate, os.X_OK) else None
+    resolved = shutil.which(name)
+    return Path(resolved) if resolved else None
+
+
+def _interpreter_minor_version(interpreter: Path) -> str | None:
+    try:
+        out = subprocess.check_output(
+            [str(interpreter), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    version = out.strip()
+    return version or None
+
+
+def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
+    for minor in _CANDIDATE_MINORS:
+        interpreter = _interpreter_path(f"python3.{minor}")
+        if interpreter is None:
+            continue
+        version = _interpreter_minor_version(interpreter)
+        if version and _version_satisfies(version, specs):
+            return interpreter
+    return None
+
+
+def _build_interpreter_shim(run_path: Path, interpreter: Path) -> Path:
+    shim_dir = run_path / "_interp_shim"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    target = interpreter.resolve()
+    for name in ("python", "python3"):
+        link = shim_dir / name
+        try:
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            os.symlink(target, link)
+        except OSError:
+            # Fall back to a tiny exec wrapper if symlinks are unavailable.
+            link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
+            link.chmod(0o755)
+    return shim_dir
+
+
+def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | None) -> SuiteInterpreter:
+    """Resolve an interpreter satisfying the target repo's ``requires-python``.
+
+    Mechanism C (agent-harness#219(a)): an explicit ``automation.python`` pin
+    wins when present; otherwise auto-resolve from ``requires-python`` and shim
+    ``python``/``python3`` onto the lowest satisfying host ``pythonX.Y``. Returns
+    a ``shim_dir`` to prepend to the suite ``PATH`` (or ``None`` when the host
+    default already satisfies), or a named ``blocker`` when none exists.
+    """
+    if python_pin:
+        # Pin is the operator's explicit choice — honored as-is, not re-checked
+        # against requires-python.
+        resolved = _interpreter_path(python_pin)
+        if resolved is None:
+            return SuiteInterpreter(None, f"automation.python pin '{python_pin}' not found on host", None)
+        return SuiteInterpreter(_build_interpreter_shim(run_path, resolved), None, str(resolved.resolve()))
+
+    specs = _read_requires_python_specs(repo)
+    if not specs:
+        return SuiteInterpreter(None, None, None)  # no constraint → host default
+
+    default = _interpreter_path("python3") or _interpreter_path("python")
+    if default is not None:
+        version = _interpreter_minor_version(default)
+        if version and _version_satisfies(version, specs):
+            return SuiteInterpreter(None, None, str(default.resolve()))
+
+    candidate = _lowest_satisfying_interpreter(specs)
+    if candidate is None:
+        joined = ", ".join(specs)
+        return SuiteInterpreter(None, f"no host interpreter satisfies requires-python ({joined})", None)
+    return SuiteInterpreter(_build_interpreter_shim(run_path, candidate), None, str(candidate.resolve()))
 
 
 @dataclass(frozen=True)
@@ -94,6 +291,7 @@ def run_verification(
     env_refresh: object,
     timeout_s: float | None,
     operational_exemptions: list[Mapping[str, Any]] | None = None,
+    python_pin: str | None = None,
 ) -> VerificationResult:
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
@@ -102,17 +300,43 @@ def run_verification(
     artifact_path = run_path / ARTIFACT_NAME
     started_at = _utc_now()
 
+    # agent-harness#219(a): resolve an interpreter satisfying the target repo's
+    # requires-python (honoring an automation.python pin) and shim it onto the
+    # verification subprocess PATH, so a bare ``python`` in the suite/commands is
+    # not silently the host default that fails a requires-python>=3.11 build.
+    interpreter = _resolve_suite_interpreter(repo_path, run_path, python_pin)
+    shim_dir = interpreter.shim_dir
+
     with log_path.open("wb") as log_file:
-        env_result = _record_env_refresh(repo_path, log_file, env_refresh, timeout_s)
-        command_results = [_run_process(repo_path, log_file, argv, timeout_s) for argv in commands]
+        if interpreter.blocker:
+            log_file.write(f"suite interpreter unavailable: {interpreter.blocker}\n".encode("utf-8"))
+            log_file.flush()
+        elif interpreter.interpreter is not None:
+            log_file.write(f"suite interpreter: {interpreter.interpreter}\n".encode("utf-8"))
+            log_file.flush()
+        env_result = _record_env_refresh(repo_path, log_file, env_refresh, timeout_s, path_prepend=shim_dir)
+        command_results = [
+            _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
+        ]
         suite_result = None
         if suite_command is not None:
-            suite_evidence = _run_process(repo_path, log_file, suite_command, timeout_s)
-            suite_result = VerificationSuiteEvidence(
-                argv=suite_evidence.argv,
-                exit_code=suite_evidence.exit_code,
-                duration_s=suite_evidence.duration_s,
-            )
+            if interpreter.blocker:
+                # Fail closed: refuse to run the suite under an interpreter that
+                # cannot satisfy the target requires-python. Recorded as a
+                # non-zero suite exit so the evidence gate blocks (nonzero_exit is
+                # always fail-closed — agent-harness#219(b-i)).
+                suite_result = VerificationSuiteEvidence(
+                    argv=list(suite_command),
+                    exit_code=127,
+                    duration_s=0.0,
+                )
+            else:
+                suite_evidence = _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir)
+                suite_result = VerificationSuiteEvidence(
+                    argv=suite_evidence.argv,
+                    exit_code=suite_evidence.exit_code,
+                    duration_s=suite_evidence.duration_s,
+                )
 
     finished_at = _utc_now()
     log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
@@ -343,9 +567,21 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
-def _run_process(repo: Path, log_file: Any, argv: Sequence[str], timeout_s: float | None) -> VerificationCommandEvidence:
+def _run_process(
+    repo: Path,
+    log_file: Any,
+    argv: Sequence[str],
+    timeout_s: float | None,
+    path_prepend: Path | None = None,
+) -> VerificationCommandEvidence:
     command_argv = [str(part) for part in argv]
     process_env, process_argv = _process_env_and_argv(command_argv)
+    if path_prepend is not None:
+        # agent-harness#219(a): prepend the resolved-interpreter shim so a bare
+        # ``python``/``python3`` in the command resolves to the satisfying
+        # interpreter rather than the host default.
+        process_env = dict(process_env if process_env is not None else os.environ)
+        process_env["PATH"] = f"{path_prepend}{os.pathsep}{process_env.get('PATH', '')}"
     offset = log_file.tell()
     started = time.monotonic()
     if not process_argv:
@@ -386,6 +622,7 @@ def _record_env_refresh(
     log_file: Any,
     env_refresh: object,
     timeout_s: float | None,
+    path_prepend: Path | None = None,
 ) -> VerificationEnvRefreshEvidence | None:
     if env_refresh is None:
         return None
@@ -401,7 +638,7 @@ def _record_env_refresh(
         triggered = True
         manifests = []
         install_argv = [str(item) for item in env_refresh] if isinstance(env_refresh, Sequence) and not isinstance(env_refresh, (str, bytes)) else []
-    process = _run_process(repo, log_file, install_argv, timeout_s)
+    process = _run_process(repo, log_file, install_argv, timeout_s, path_prepend=path_prepend)
     return VerificationEnvRefreshEvidence(triggered, manifests, install_argv, process.exit_code)
 
 

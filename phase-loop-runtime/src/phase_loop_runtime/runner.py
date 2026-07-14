@@ -96,6 +96,7 @@ from .discovery import (
     phase_source_bundle_diagnostic,
     plan_artifact_diagnostic,
     previous_phase_owned_dirty_paths,
+    resolve_python_pin,
     resolve_suite_command_doc,
     roadmap_closeout_evidence_audit_enabled,
     validate_plan_verification_commands_for_intake,
@@ -107,7 +108,7 @@ from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
-from .git_ops import pipeline_write_boundary_diagnostic
+from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
 from .launcher import (
@@ -3512,11 +3513,7 @@ def run_loop(
                     )
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
-                    if (
-                        runner_verification
-                        and not runner_verification.get("ok", False)
-                        and _verification_enforcement_mode() == "hard"
-                    ):
+                    if _runner_verification_fails_closed(runner_verification):
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -5912,6 +5909,23 @@ def _verification_enforcement_mode() -> str:
     return "hard" if value == "hard" else "warn"
 
 
+def _runner_verification_fails_closed(runner_verification: dict[str, object] | None) -> bool:
+    """Decide whether a runner-owned verification result must block closeout.
+
+    agent-harness#219(b-i): a NON-ZERO suite/command exit is authoritative and
+    fails closed even under the default ``warn`` mode — a red suite is never a
+    warning. Softer evidence-integrity findings (log-sha drift, malformed/missing
+    artifact) continue to respect ``PHASE_LOOP_VERIFY_ENFORCE``.
+    """
+    if not runner_verification or runner_verification.get("ok", False):
+        return False
+    validation = runner_verification.get("validation")
+    code = validation.get("code") if isinstance(validation, dict) else runner_verification.get("code")
+    if code == "nonzero_exit":
+        return True
+    return _verification_enforcement_mode() == "hard"
+
+
 def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
     if _verification_enforcement_mode() != "hard":
         return None
@@ -5985,6 +5999,7 @@ def _run_execute_verification(
         env_refresh,
         float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
         operational_exemptions=operational_exemptions,
+        python_pin=resolve_python_pin(roadmap, plan),
     )
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
     validation = validate_verification_artifact(artifact_path)
@@ -7996,6 +8011,14 @@ def _perform_phase_closeout(
     if break_glass_reason and not fallback_dirty_paths:
         attested_remainder = _recorded_closeout_unowned_remainder(repo, phase)
         fallback_dirty_paths = tuple(p for p in _dirty_paths(repo) if p in attested_remainder)
+    # agent-harness#218: an executor may self-report a COLLAPSED bare directory
+    # (e.g. ``pkg/newmod/``) instead of its member files. A file-level owned glob
+    # (``pkg/newmod/*.py``) never matches a bare-directory string, so the entry
+    # would route to the unowned remainder and trip a spurious scope violation.
+    # Expand any directory entry to file granularity before ownership matching.
+    # File entries pass through unchanged, so this is a no-op for the git-derived
+    # (already file-level) break-glass remainder above.
+    fallback_dirty_paths = tuple(expand_dir_dirty_paths(repo, fallback_dirty_paths))
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and fallback_dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
