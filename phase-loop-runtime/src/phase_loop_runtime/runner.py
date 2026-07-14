@@ -7624,6 +7624,30 @@ def _dirty_paths(repo: Path) -> list[str]:
     return sorted(dict.fromkeys(paths))
 
 
+def _worktree_clean_probe(repo: Path) -> bool | None:
+    """Probe the worktree cleanliness, distinguishing failure from clean.
+
+    Returns ``True`` when the tree is clean, ``False`` when it is dirty, and
+    ``None`` when the git probe itself FAILED (non-zero exit or exception).
+    Distinct from :func:`_dirty_paths`, which maps ANY git error to ``[]``
+    (indistinguishable from "clean") — a fail-closed caller must tell "couldn't
+    read the tree" apart from "genuinely clean" and never finalize on an
+    unreadable probe (CR codex#2).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return not proc.stdout.strip()
+
+
 def _detect_dirty_renames(repo: Path) -> dict[str, str]:
     """Detect rename pairs in the dirty tree.
 
@@ -8027,8 +8051,16 @@ def _perform_phase_closeout(
             **event_provenance(roadmap, phase),
         )
 
+    # CR gemini#5/#1: expand collapsed owned directories on the TRUSTED path too
+    # (not only the fallback), so a collapsed owned dir's TRACKED members are
+    # force-added (`-f`) rather than plain-added and spuriously failing on a
+    # tracked-then-ignored member (#215 false block on the trusted path). File
+    # entries pass through unchanged. `-f` stays scoped to proven-tracked members.
     closeout_dirty_paths = tuple(
-        dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
+        expand_dir_dirty_paths(
+            repo,
+            tuple(dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))),
+        )
     )
     # Fallback (regenesis v37 fix): when codex's classification left
     # phase_owned_dirty_paths empty but every dirty path matches the
@@ -8160,11 +8192,15 @@ def _perform_phase_closeout(
         # thing filtered (`fallback_disposable`), the phase is `complete`, there is
         # no unowned remainder, and the live tree is genuinely clean — so every
         # other refuse path (real missing dirt, unowned spillover) is byte-identical.
+        # CR codex#2: REQUIRE a genuinely-clean probe (True). A probe FAILURE
+        # (None — git couldn't read the tree) must NOT read as clean and finalize;
+        # it falls through to the block below. `_dirty_paths` is unsafe here (it
+        # maps any git error to "[]" = clean).
         if (
             terminal_status == "complete"
             and fallback_disposable
             and not unowned_remainder
-            and not _dirty_paths(repo)
+            and _worktree_clean_probe(repo) is True
         ):
             status = "complete"
             metadata["closeout"]["verification_status"] = "passed"

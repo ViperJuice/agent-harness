@@ -191,23 +191,42 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     a ``shim_dir`` to prepend to the suite ``PATH`` (or ``None`` when the host
     default already satisfies), or a named ``blocker`` when none exists.
     """
+    specs = _read_requires_python_specs(repo)
+
     if python_pin:
-        # Pin is the operator's explicit choice — honored as-is, not re-checked
-        # against requires-python.
+        # The pin is the operator's explicit interpreter choice — but it must still
+        # satisfy the target's requires-python (CR codex#3): a pin below the floor
+        # is an authoring error and fails closed rather than running a suite that
+        # can't build the package.
         resolved = _interpreter_path(python_pin)
         if resolved is None:
             return SuiteInterpreter(None, f"automation.python pin '{python_pin}' not found on host", None)
+        if specs:
+            version = _interpreter_minor_version(resolved)
+            if not version or not _version_satisfies(version, specs):
+                return SuiteInterpreter(
+                    None,
+                    f"automation.python pin '{python_pin}' (version {version or 'unknown'}) "
+                    f"does not satisfy requires-python ({', '.join(specs)})",
+                    None,
+                )
         return SuiteInterpreter(_build_interpreter_shim(run_path, resolved), None, str(resolved.resolve()))
 
-    specs = _read_requires_python_specs(repo)
     if not specs:
         return SuiteInterpreter(None, None, None)  # no constraint → host default
 
-    default = _interpreter_path("python3") or _interpreter_path("python")
-    if default is not None:
-        version = _interpreter_minor_version(default)
-        if version and _version_satisfies(version, specs):
-            return SuiteInterpreter(None, None, str(default.resolve()))
+    # The suite may invoke bare ``python`` OR ``python3``. Skip the shim only when
+    # EVERY such interpreter present on PATH already satisfies requires-python; if
+    # ANY present one is below the floor — e.g. a bare ``python`` older than a
+    # satisfying ``python3`` (CR codex#3) — shim BOTH names onto a satisfying
+    # interpreter so a bare ``python`` in the suite can't silently be the old one.
+    present = [p for p in (_interpreter_path("python3"), _interpreter_path("python")) if p is not None]
+    all_present_ok = bool(present) and all(
+        (version := _interpreter_minor_version(candidate)) and _version_satisfies(version, specs)
+        for candidate in present
+    )
+    if all_present_ok:
+        return SuiteInterpreter(None, None, str(present[0].resolve()))
 
     candidate = _lowest_satisfying_interpreter(specs)
     if candidate is None:
@@ -314,7 +333,16 @@ def run_verification(
         elif interpreter.interpreter is not None:
             log_file.write(f"suite interpreter: {interpreter.interpreter}\n".encode("utf-8"))
             log_file.flush()
-        env_result = _record_env_refresh(repo_path, log_file, env_refresh, timeout_s, path_prepend=shim_dir)
+        env_result = _record_env_refresh(
+            repo_path,
+            log_file,
+            env_refresh,
+            timeout_s,
+            path_prepend=shim_dir,
+            # CR codex#4: install deps under the SAME interpreter the suite runs
+            # under (the resolved/shimmed one), not the host `sys.executable`.
+            suite_interpreter=interpreter.interpreter,
+        )
         command_results = [
             _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
         ]
@@ -617,12 +645,29 @@ def _run_process(
     return VerificationCommandEvidence(command_argv, ".", exit_code, _duration(started), offset)
 
 
+def _is_pip_invocation(argv: Sequence[str]) -> bool:
+    return len(argv) >= 3 and str(argv[1]) == "-m" and str(argv[2]) == "pip"
+
+
+def _align_install_interpreter(install_argv: list[str], suite_interpreter: str | None) -> list[str]:
+    """CR codex#4 / gemini#4: run a pip env-refresh under the SAME interpreter the
+    suite runs under. ``resolve_install_command`` bakes in ``sys.executable``, but
+    the suite runs under the resolved/shimmed interpreter — so deps would install
+    for the wrong Python (→ ModuleNotFoundError → spurious fail-closed block).
+    Substitute the pip interpreter only; leave npm/uv/pnpm untouched.
+    """
+    if suite_interpreter and _is_pip_invocation(install_argv):
+        return [suite_interpreter, *install_argv[1:]]
+    return install_argv
+
+
 def _record_env_refresh(
     repo: Path,
     log_file: Any,
     env_refresh: object,
     timeout_s: float | None,
     path_prepend: Path | None = None,
+    suite_interpreter: str | None = None,
 ) -> VerificationEnvRefreshEvidence | None:
     if env_refresh is None:
         return None
@@ -630,6 +675,7 @@ def _record_env_refresh(
         triggered = bool(env_refresh.get("triggered", True))
         manifests = [str(item) for item in env_refresh.get("manifests", [])]
         install_argv = [str(item) for item in env_refresh.get("install_argv", env_refresh.get("argv", []))]
+        install_argv = _align_install_interpreter(install_argv, suite_interpreter)
         if "exit_code" in env_refresh:
             return VerificationEnvRefreshEvidence(triggered, manifests, install_argv, int(env_refresh["exit_code"]))
         if not triggered or not install_argv:
@@ -638,6 +684,7 @@ def _record_env_refresh(
         triggered = True
         manifests = []
         install_argv = [str(item) for item in env_refresh] if isinstance(env_refresh, Sequence) and not isinstance(env_refresh, (str, bytes)) else []
+        install_argv = _align_install_interpreter(install_argv, suite_interpreter)
     process = _run_process(repo, log_file, install_argv, timeout_s, path_prepend=path_prepend)
     return VerificationEnvRefreshEvidence(triggered, manifests, install_argv, process.exit_code)
 

@@ -24,22 +24,33 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   all-owned directory now closes `complete` with the directory committed.
   (agent-harness#218)
 - **Non-zero suite/command exit now fails closed (fix).** A VerificationResult
-  with any non-zero command/suite exit forces `verification_status` to
+  with any non-zero command/suite/env-refresh exit forces `verification_status` to
   failed/blocked at closeout, overriding an executor's self-asserted `passed`, and
   blocks the runner-owned verification reduction — always, irrespective of
   `PHASE_LOOP_VERIFY_ENFORCE` (which continues to soften only evidence-integrity
-  findings like log-sha drift). A red suite is never a warning. Additionally, any
-  governed phase whose plan declares an `automation.suite_command` now requires a
-  VerificationResult artifact, so a self-asserted `passed` with no evidence can no
-  longer close ungated. (agent-harness#219)
+  findings like log-sha drift). The exit codes are read **directly from the
+  artifact's `exit_summary`**, not just the first-failing validation code, so a red
+  suite accompanied by a tampered/missing log (which reports `log_sha256_mismatch`/
+  `missing_log`) can no longer shadow the red suite into a warning. A red suite is
+  never a warning. Additionally, any governed phase whose plan declares an
+  `automation.suite_command` now requires a VerificationResult artifact, so a
+  self-asserted `passed` with no evidence can no longer close ungated.
+  (agent-harness#219) (An unparseable/`malformed_artifact` supplied with a
+  self-asserted `passed` still only warns under `warn` — a separate evidence-
+  integrity gap, tracked for a follow-up.)
 - **requires-python-aware suite interpreter (fix).** The verification suite now
   runs under an interpreter satisfying the target repo's `requires-python`: an
-  optional `automation.python` plan pin wins, otherwise the lowest satisfying host
-  `pythonX.Y` is resolved from `requires-python` and shimmed onto the suite
-  subprocess `PATH`. When no satisfying interpreter exists the suite fails closed
-  with a named blocker (recorded as a non-zero suite exit). This removes the
-  py3.10-vs-`requires-python>=3.11` false failure that previously needed a manual
-  shim. (agent-harness#219)
+  optional `automation.python` plan pin wins **but is validated against
+  `requires-python`** (a pin below the floor fails closed), otherwise the lowest
+  satisfying host `pythonX.Y` is resolved and shimmed onto the suite subprocess
+  `PATH`. The shim covers bare `python` as well as `python3` — if either present on
+  `PATH` is below the floor, both names are shimmed onto a satisfying interpreter.
+  An `env_refresh` pip install runs under the **same** resolved interpreter as the
+  suite (not the host `sys.executable`), so deps are visible to the suite. When no
+  satisfying interpreter exists the suite fails closed with a named blocker
+  (recorded as a non-zero suite exit). This removes the py3.10-vs-
+  `requires-python>=3.11` false failure that previously needed a manual shim.
+  (agent-harness#219)
 - **Safe gitignore handling at closeout (fix).** The gitignored exclusion no
   longer drops OWNED paths from `phase_owned_dirty_paths`: it applies to the
   *unowned* classification only, so a tracked-then-ignored owned file (real work
@@ -47,11 +58,16 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   dropped (the #215 data-loss trap). Separately, the closeout fallback classifier
   now filters disposable byproducts the executor over-reports — paths that are
   BOTH untracked AND gitignored (`build/`, `*.egg-info/`, `.phase-loop/`,
-  `.dev-skills/`) — so a disposable-only over-report with a clean tree and passing
-  verification finalizes as a no-op instead of a false `dirty_worktree_conflict`
-  (the EXTRACT failure). A tracked file (even if ignored) is never treated as
-  disposable. The closeout `git add` now force-adds the vetted, ownership-approved
-  path set so a tracked-then-ignored file stages without a spurious non-zero exit.
+  `.dev-skills/`) — so a disposable-only over-report with a genuinely-clean tree and
+  passing verification finalizes as a no-op instead of a false
+  `dirty_worktree_conflict` (the EXTRACT failure). The clean-tree check fails
+  closed on an unreadable git probe (a probe error never reads as "clean"). A
+  tracked file (even if ignored) is never treated as disposable. Collapsed owned
+  directories are expanded to member files on the trusted path as well as the
+  fallback, and the closeout `git add` force-adds only the **proven-tracked**
+  members of the vetted path set — so a tracked-then-ignored file stages without a
+  spurious non-zero exit, while an untracked+ignored path an executor wrongly
+  reports as owned still fails closed rather than being force-committed.
   (agent-harness#186)
 
 ## [0.7.9] - 2026-07-14

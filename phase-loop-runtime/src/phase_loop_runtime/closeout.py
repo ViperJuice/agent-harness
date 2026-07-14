@@ -366,12 +366,17 @@ def _apply_verification_evidence_gate(
     validation = validate_verification_artifact(artifact_path)
     validation_payload = validation.to_json()
     mode = verification_enforcement_mode(os.environ)
-    # agent-harness#219(b-i): the per-command exit codes are authoritative over
-    # the executor's self-asserted "passed". A non-zero suite/command exit ALWAYS
-    # fails closed, irrespective of PHASE_LOOP_VERIFY_ENFORCE — which only softens
-    # evidence-integrity findings (log-sha drift, malformed/missing artifact) to a
-    # warning. A red suite is never a warning.
-    if validation.code == "nonzero_exit":
+    # agent-harness#219(b-i) + CR codex#1: the per-command exit codes are
+    # authoritative over the executor's self-asserted "passed". A non-zero
+    # command/suite/env-refresh exit ALWAYS fails closed, irrespective of
+    # PHASE_LOOP_VERIFY_ENFORCE (which only softens evidence-integrity findings —
+    # log-sha drift, missing artifact — to a warning). Check the exit codes in the
+    # artifact DIRECTLY, not just ``validation.code == "nonzero_exit"``:
+    # ``validate_verification_artifact`` returns the FIRST failing code, so a red
+    # suite PLUS a tampered/missing log would report ``log_sha256_mismatch`` /
+    # ``missing_log`` and, pre-fix, downgrade to a warning under warn — a red suite
+    # shadowed green. A red suite is never a warning.
+    if _payload_has_nonzero_exit(validation_payload):
         mode = "hard"
     validation_payload["enforcement"] = mode
     return _verification_evidence_block_or_warn(
@@ -380,6 +385,28 @@ def _apply_verification_evidence_gate(
         automation=automation,
         blocker=blocker,
     )
+
+
+def _payload_has_nonzero_exit(validation_payload: Mapping[str, Any]) -> bool:
+    """True if the artifact's exit_summary carries ANY non-zero exit.
+
+    Mirrors ``verification_evidence._nonzero_exit_findings`` semantics (commands
+    AND env_refresh AND suite) but over the validation payload's ``exit_summary``,
+    which is populated on every code that parsed the artifact (``nonzero_exit``,
+    ``log_sha256_mismatch``, ``missing_log``, ``ok``) — only ``malformed_artifact``
+    omits it, and an unparseable artifact carries no exit info to act on.
+    """
+    exit_summary = validation_payload.get("exit_summary")
+    if not isinstance(exit_summary, Mapping):
+        return False
+    commands = exit_summary.get("commands")
+    if isinstance(commands, (list, tuple)) and any(_is_nonzero(code) for code in commands):
+        return True
+    return _is_nonzero(exit_summary.get("env_refresh")) or _is_nonzero(exit_summary.get("suite"))
+
+
+def _is_nonzero(code: Any) -> bool:
+    return isinstance(code, int) and code != 0
 
 
 def _verification_evidence_block_or_warn(
