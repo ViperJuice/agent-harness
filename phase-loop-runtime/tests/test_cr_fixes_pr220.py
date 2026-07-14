@@ -285,8 +285,11 @@ def test_red_suite_shadowed_by_log_mismatch_fails_closed_under_warn(tmp_path, mo
 
 # --- codex#4: env_refresh runs pip under the resolved interpreter, not sys.executable ---
 
-def test_env_refresh_pip_uses_resolved_interpreter(tmp_path):
+def test_env_refresh_pip_uses_resolved_interpreter(tmp_path, monkeypatch):
     import sys
+
+    import phase_loop_runtime.verification_evidence as _ve
+    from phase_loop_runtime.verification_evidence import SuiteInterpreter
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -294,31 +297,48 @@ def test_env_refresh_pip_uses_resolved_interpreter(tmp_path):
         '[project]\nname = "t"\nversion = "0"\nrequires-python = ">=3.11"\n', encoding="utf-8"
     )
     run_dir = repo / ".phase-loop" / "run"
-    interp = _resolve_suite_interpreter(repo, repo / ".phase-loop" / "probe", python_pin=None)
-    assert interp.shim_dir is not None and interp.interpreter is not None  # host default 3.10 < 3.11
+
+    # Host-agnostic: pin the resolver's decision so the test does not depend on the
+    # CI host's own Python (a py3.11/3.12 host already satisfies >=3.11, so the real
+    # resolver would return shim_dir=None). The resolved suite interpreter is a
+    # sentinel path distinct from sys.executable; env_refresh's pip must align to it.
+    resolved = "/opt/phase-loop/resolved-python3.11"
+    assert resolved != sys.executable
+    monkeypatch.setattr(
+        _ve,
+        "_resolve_suite_interpreter",
+        lambda repo_path, run_path, python_pin: SuiteInterpreter(None, None, resolved),
+    )
 
     result = run_verification(
         repo, run_dir, commands=[],
         suite_command=None,
-        # Pip install argv baked with sys.executable (host 3.10), as resolve_install_command does.
+        # Pip install argv baked with sys.executable, as resolve_install_command does.
         env_refresh={"triggered": True, "manifests": ["pyproject.toml"], "install_argv": [sys.executable, "-m", "pip", "--version"]},
         timeout_s=60.0,
     )
     assert result.env_refresh is not None
-    assert result.env_refresh.install_argv[0] == interp.interpreter, result.env_refresh.install_argv
+    # Intent: pip is aligned to the RESOLVED suite interpreter, not sys.executable.
+    assert result.env_refresh.install_argv[0] == resolved, result.env_refresh.install_argv
     assert result.env_refresh.install_argv[0] != sys.executable
 
 
 # --- codex#3: pin must satisfy requires-python; bare `python` gap ---
 
 def test_pin_below_requires_python_fails_closed(tmp_path):
+    import sys
+
     repo = tmp_path / "repo"
     repo.mkdir()
+    # Host-agnostic: an IMPOSSIBLE requires-python floor means ANY real host
+    # interpreter is provably below it. Pin the running interpreter (guaranteed to
+    # exist on every host, unlike a specific `python3.10`) so the pin is FOUND but
+    # below the floor -> the "does not satisfy requires-python" fail-closed path,
+    # not a "not found on host" blocker that a CI host without python3.10 would hit.
     (repo / "pyproject.toml").write_text(
-        '[project]\nname = "t"\nversion = "0"\nrequires-python = ">=3.11"\n', encoding="utf-8"
+        '[project]\nname = "t"\nversion = "0"\nrequires-python = ">=3.99"\n', encoding="utf-8"
     )
-    # Pin an interpreter that does NOT satisfy >=3.11 (host python3.10).
-    interp = _resolve_suite_interpreter(repo, repo / ".phase-loop" / "run", python_pin="python3.10")
+    interp = _resolve_suite_interpreter(repo, repo / ".phase-loop" / "run", python_pin=sys.executable)
     assert interp.shim_dir is None
     assert interp.blocker is not None and "does not satisfy requires-python" in interp.blocker
 
