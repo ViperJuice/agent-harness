@@ -264,6 +264,31 @@ def test_operational_degraded_leg_is_governed_warn_not_block(tmp_path, monkeypat
     assert "panel_leg_degraded" in codes and "warn" in severities
 
 
+def test_stalled_leg_with_partial_review_still_blocks(tmp_path, monkeypatch):
+    """Fail-closed seam: only a PURE operational failure (empty text) degrades to WARN. A
+    leg that DID emit partial review content but no conforming verdict must still fail
+    CLOSED (governed ``panel_nonconforming`` BLOCK), never a silent WARN."""
+    from phase_loop_runtime.governed_review import _findings_from_panel
+    from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
+
+    partial = "I have concerns about the diff but never finished"
+    monkeypatch.setattr(pi, "_run_claude_tui_session",
+                        lambda **kw: (1, partial, "claude_tui_stalled", "tail"))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True)
+    status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+    assert status == "DEGRADED"
+    assert text == partial, "a partial review must be preserved (fail closed), not emptied"
+    leg = PanelLegResult(leg="claude", status=status, text=text, seat_key="claude")
+    findings = _findings_from_panel(PanelResult(legs=(leg,)))
+    assert any(f.code == "panel_nonconforming" and f.severity == "block" for f in findings), \
+        "a partial review with no verdict must fail closed as a block"
+
+
 def test_sanitized_pty_tail_redacts_strips_and_keeps_end(tmp_path):
     """The evidence tail strips ANSI + control bytes, is bounded, and keeps the END of
     the buffer (where the modal / reject context lives)."""

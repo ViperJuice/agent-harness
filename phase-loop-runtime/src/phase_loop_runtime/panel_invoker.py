@@ -2055,11 +2055,10 @@ def _exec_claude_tui_leg(
         backstop_s=backstop_s,
     )
     # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
-    # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surface
-    # each as DEGRADED (not a bare ERROR) so the panel summary names the cause, and fold
-    # the bounded, redacted PTY tail into the surfaced text so the failure is
-    # diagnosable (``text`` propagates end-to-end to ``PanelLegResult``). A leg that
-    # produced a conforming verdict before the reclaim still classifies OK (unchanged).
+    # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surfaced
+    # DEGRADED (not a bare ERROR). The diagnostic handling for these follows below (empty
+    # review text ⇒ governed WARN, tail via log). A leg that produced a conforming verdict
+    # before the reclaim still classifies OK (unchanged).
     status = _classify_leg(rc, review_text, log_text, mode)
     # ah#196/#223 typed OPERATIONAL/liveness failures — the leg failed to run a review
     # (wedge reclaim, uncleared workspace-trust gate, never-ready editor). These are
