@@ -90,6 +90,37 @@ class CloseoutModeDefaultTest(unittest.TestCase):
         # Implicit run with a before-subcommand explicit mode.
         self.assertEqual(self._mode(["--repo", ".", "--closeout-mode", "manual"]), "manual")
 
+    def test_common_args_survive_before_subcommand(self):
+        # ah#84: like --closeout-mode above, EVERY common option placed BEFORE the
+        # subcommand must survive the subcommand parser's copy-back. `--phase ROOM run`
+        # used to yield phase=None, so the runner repaired a blocked phase instead of ROOM.
+        p = build_parser()
+        self.assertEqual(p.parse_args(["--phase", "ROOM", "run"]).phase, "ROOM")
+        # after the subcommand still works, and both orders agree
+        self.assertEqual(p.parse_args(["run", "--phase", "ROOM"]).phase, "ROOM")
+        # the sibling silent-drops in the reported command are fixed too
+        self.assertEqual(p.parse_args(["--max-phases", "1", "run"]).max_phases, 1)
+        self.assertIs(p.parse_args(["--json", "run"]).json, True)
+        self.assertIs(p.parse_args(["--dry-run", "run"]).dry_run, True)
+        # omitted -> top-level default, with NO AttributeError (SUPPRESS is subparser-only)
+        omitted = p.parse_args(["run"])
+        self.assertIsNone(omitted.phase)
+        self.assertIs(omitted.json, False)
+        self.assertEqual(omitted.allow_executor, [])
+        # the pattern holds on another common subcommand
+        self.assertEqual(p.parse_args(["--phase", "ROOM", "resume"]).phase, "ROOM")
+
+    def test_before_subcommand_json_survives_on_own_json_subcommands(self):
+        # ah#84 (CR): doctor / run-train / train-status / advisor-board register their OWN
+        # --json (outside the common-args helper); they must SUPPRESS too, or `--json <cmd>`
+        # before the subcommand is silently reset to False.
+        p = build_parser()
+        cases = [("doctor", []), ("run-train", ["--train", "x"]),
+                 ("train-status", []), ("advisor-board", ["x"])]
+        for cmd, extra in cases:
+            self.assertIs(p.parse_args(["--json", cmd, *extra]).json, True, cmd)
+            self.assertIs(p.parse_args([cmd, *extra]).json, False, cmd)  # omitted default
+
     def test_execute_leg_stays_manual(self):
         # The inner execute leg keeps the manual default; the flip is scoped to the
         # outer run loop and must NOT turn execute legs into pushers.
