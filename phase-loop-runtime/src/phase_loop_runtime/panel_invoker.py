@@ -65,6 +65,13 @@ from .advisor_board.validation import validate_seat
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
+# ah#171: the ordered vendor set the availability preflight CONSIDERS — the 3 frozen
+# ``PANEL_LEGS`` plus the 4th vendor ``grok``. Kept SEPARATE from ``PANEL_LEGS`` (which is
+# byte-frozen and pinned by the advisor-board goldens): grok is exposed by
+# ``available_panel_legs`` only when its CLI is actually present, so a caller whose
+# gemini/agy leg is down reaches a 4th independent vendor without a hand-rolled grok CLI,
+# while a host without the grok CLI still returns the exact frozen 3-tuple.
+_AVAILABLE_PANEL_LEGS: tuple[str, ...] = PANEL_LEGS + ("grok",)
 LEG_STATUSES: tuple[str, ...] = ("OK", "EMPTY", "TIMEOUT", "ERROR", "DEGRADED", "UNAVAILABLE")
 _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES} | {
     status.lower(): status for status in LEG_STATUSES
@@ -317,11 +324,16 @@ def persist_seat_outcome(record: SeatOutcomeRecord, append_sink: Callable[[str],
 def available_panel_legs(probe: Callable[[str], bool] | None = None) -> tuple[str, ...]:
     """Metadata-only liveness preflight: which panel legs have their CLI present.
 
+    Considers all four vendors (codex, gemini, claude, grok) and returns those whose CLI
+    is installed — so a down vendor transparently backfills onto grok (ah#171) without a
+    hand-rolled CLI leg. Availability-aware: grok appears only when the grok CLI is
+    present, so a host without it still returns the frozen `PANEL_LEGS` 3-tuple.
+
     `probe(cli) -> bool` is injectable for tests; the default checks PATH only
     (does not authenticate or spend tokens).
     """
     check = probe if probe is not None else (lambda cli: shutil.which(cli) is not None)
-    return tuple(leg for leg in PANEL_LEGS if check(_LEG_CLI[leg]))
+    return tuple(leg for leg in _AVAILABLE_PANEL_LEGS if check(_LEG_CLI[leg]))
 
 
 # spawn(leg, artifact) -> (status, text); the only real-exec boundary.

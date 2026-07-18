@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Advisor-board `available_panel_legs()` exposes grok (#171)
+
+The documented panel preflight `available_panel_legs()` now considers all four vendors
+(codex, gemini, claude, **grok**) and returns those whose CLI is installed — so a caller
+whose `gemini`/`agy` leg is down transparently reaches a 4th independent vendor (grok)
+through `invoke_panel(..., available_panel_legs(), ...)` instead of hand-rolling the grok
+CLI (which naively inlines the bundle into argv and chokes). Availability-aware: grok
+appears only when the grok CLI is present, so a host without it still returns the exact
+frozen 3-tuple. The byte-frozen `PANEL_LEGS` keystone and the advisor-board goldens are
+unchanged — grok is added only to the separate availability list the preflight iterates.
+
 ### Panel Fable/Claude TUI leg clears the workspace-trust gate (#196, #223)
 
 The advisor-board Fable/Claude reviewer leg drives Claude Code headless under a

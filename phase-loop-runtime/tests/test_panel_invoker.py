@@ -26,6 +26,21 @@ class PanelInvokerTest(unittest.TestCase):
         legs = available_panel_legs(probe=lambda cli: cli in present)
         self.assertEqual(set(legs), {"codex", "claude"})
 
+    def test_available_panel_legs_includes_grok_when_present(self):
+        # ah#171: grok is exposed (ordered last) when its CLI is installed, so a caller
+        # whose gemini/agy leg is down reaches a 4th independent vendor without a
+        # hand-rolled grok CLI.
+        legs = available_panel_legs(probe=lambda cli: True)
+        self.assertEqual(legs, ("codex", "gemini", "claude", "grok"))
+
+    def test_available_panel_legs_grok_is_availability_aware(self):
+        # grok absent -> not returned (a host without the grok CLI still gets the frozen
+        # 3-tuple), and the byte-frozen PANEL_LEGS keystone is never mutated.
+        legs = available_panel_legs(probe=lambda cli: cli != "grok")
+        self.assertNotIn("grok", legs)
+        self.assertEqual(legs, ("codex", "gemini", "claude"))
+        self.assertEqual(PANEL_LEGS, ("codex", "gemini", "claude"))
+
     def test_invoke_flags_per_leg_status(self):
         def spawn(leg, artifact):
             if leg == "codex":
