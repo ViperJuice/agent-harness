@@ -2195,13 +2195,13 @@ def _exec_leg(
         # the four read/search built-ins remain; whatever `search_tool` covers, it is
         # read-only, so the `--disable-web-search` flag is not the read-only lever
         # here (the allow-list is) and is intentionally left off.
-        # effort-absent defaults to grok's max reasoning; a seat renders its canonical
-        # effort through the map (``--reasoning-effort <token>``, grok's own ``max``).
-        grok_effort_args = (
-            ("--reasoning-effort", "max")
-            if effort is None
-            else render_seat_invocation("grok", model or DEFAULT_LEG_MODELS["grok"], effort).effort_args
-        )
+        # effort-absent defaults to grok's MAX reasoning, rendered through the SAME map as an
+        # explicit seat effort (ah#222) — so the default path emits a token the grok CLI actually
+        # accepts (canonical ``max`` CLAMPS to grok's ``high`` ceiling; grok has no ``max``). A prior
+        # literal ``--reasoning-effort max`` was rejected by the CLI and ERRORed the grok leg every run.
+        grok_effort_args = render_seat_invocation(
+            "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "max"
+        ).effort_args
         cmd = [
             "grok", "-p", prompt, "--output-format", "plain",
             "--cwd", str(review_dir), "-m", model or DEFAULT_LEG_MODELS["grok"],
