@@ -2,7 +2,7 @@
 
 ## Context
 
-This roadmap is the ViperJuice/agent-harness half of the outside-agent production program. Agent-harness owns shared conformance machinery that can be consumed by governed-pipeline as an authoritative merge fence and by outside-agent producers as an advisory preflight. It does not own the canonical contract, the merge verdict, or Portal projection truth.
+This roadmap is the Consiliency/agent-harness half of the outside-agent production program. Agent-harness owns shared conformance machinery that can be consumed by governed-pipeline as an authoritative merge fence and by outside-agent producers as an advisory preflight. It does not own the canonical contract, the merge verdict, or Portal projection truth.
 
 Companion roadmaps:
 

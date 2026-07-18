@@ -2,7 +2,7 @@
 
 ## Task
 
-`ViperJuice/agent-harness` (public, Apache-2.0) currently has **no `.github/workflows/`**. It is the shared phase-loop runtime + skills package pinned by 4 consumers (dotfiles fleet, governed-pipeline, consiliency-portal, regenesis-monorepo). Stand up CI that (1) runs the runtime's standalone test suite, (2) gates release tag↔version consistency, (3) keeps the repo scrub-clean (gitleaks), and (4) fixes the committed-build-artifacts hygiene gap. Single bounded change — only new `.github/` + `.gitignore` + one optional script; **no source code is modified**.
+`Consiliency/agent-harness` (public, Apache-2.0) currently has **no `.github/workflows/`**. It is the shared phase-loop runtime + skills package pinned by 4 consumers (dotfiles fleet, governed-pipeline, consiliency-portal, regenesis-monorepo). Stand up CI that (1) runs the runtime's standalone test suite, (2) gates release tag↔version consistency, (3) keeps the repo scrub-clean (gitleaks), and (4) fixes the committed-build-artifacts hygiene gap. Single bounded change — only new `.github/` + `.gitignore` + one optional script; **no source code is modified**.
 
 ## Research summary
 

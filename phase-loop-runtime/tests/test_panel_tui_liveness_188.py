@@ -1,7 +1,7 @@
 """#188 — the Claude TUI (PTY) advisor leg must be reclaimed on reviewer-heartbeat
 extinction, NOT hang on cosmetic animation and NOT rely on a fixed short timeout.
 
-Regression: after ViperJuice/agent-harness#185 the Fable panel leg runs headless
+Regression: after Consiliency/agent-harness#185 the Fable panel leg runs headless
 through a self-allocated PTY (``_run_claude_tui_session`` → ``pty.openpty``). The
 pre-#188 monitor reset its stall clock on ANY PTY byte and on ANY CPU advance. But
 the Claude TUI repaints an animated "✻ Herding… (Ns · esc to interrupt)" status

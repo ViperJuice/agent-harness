@@ -2,7 +2,7 @@
 
 ## Task
 
-Resolve `ViperJuice/agent-harness#155` by adding a read-only resolver that queries an authenticated Codex app-server for one exact thread/message item, returns the exact UTF-8 message and approval-body bytes, and fails closed with the governed error vocabulary required by ai-stack PROVDEPLOY.
+Resolve `Consiliency/agent-harness#155` by adding a read-only resolver that queries an authenticated Codex app-server for one exact thread/message item, returns the exact UTF-8 message and approval-body bytes, and fails closed with the governed error vocabulary required by ai-stack PROVDEPLOY.
 
 ## Research summary
 

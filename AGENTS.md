@@ -11,7 +11,7 @@ tight and self-contained.
 ambiguous — it could mean an issue or PR in any repo. Always qualify the number
 with its repository:
 
-- Write `agent-harness#130`, or the fully-qualified `ViperJuice/agent-harness#130`.
+- Write `agent-harness#130`, or the fully-qualified `Consiliency/agent-harness#130`.
 - Never write a lone `#130`.
 
 This applies **everywhere a number appears**: chat and status updates, commit

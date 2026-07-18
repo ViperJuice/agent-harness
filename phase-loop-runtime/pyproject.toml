@@ -61,9 +61,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ViperJuice/agent-harness"
-Repository = "https://github.com/ViperJuice/agent-harness"
-Issues = "https://github.com/ViperJuice/agent-harness/issues"
+Homepage = "https://github.com/Consiliency/agent-harness"
+Repository = "https://github.com/Consiliency/agent-harness"
+Issues = "https://github.com/Consiliency/agent-harness/issues"
 
 [project.scripts]
 phase-loop = "phase_loop_runtime.cli:main"

@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ViperJuice/agent-harness"
-Repository = "https://github.com/ViperJuice/agent-harness"
-Issues = "https://github.com/ViperJuice/agent-harness/issues"
+Homepage = "https://github.com/Consiliency/agent-harness"
+Repository = "https://github.com/Consiliency/agent-harness"
+Issues = "https://github.com/Consiliency/agent-harness/issues"
 
 # INTENTIONALLY NO [project.scripts]. The shim adds NO console script of its own so
 # it cannot shadow the runtime's existing `phase-loop` / `codex-phase-loop` entry

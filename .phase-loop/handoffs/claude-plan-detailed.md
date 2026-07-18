@@ -15,7 +15,7 @@ artifact: /home/viperjuice/code/agent-harness/plans/detailed-add-ci-workflows-20
 # Handoff for the implementer
 
 ## Summary
-Bounded "add CI" plan for the public `ViperJuice/agent-harness` repo (no `.github/workflows/` today). Plan doc: `plans/detailed-add-ci-workflows-20260626-1654.md` (committed). Scope: new `.github/` workflows + `.gitignore` + an optional script — **no source code changes**.
+Bounded "add CI" plan for the public `Consiliency/agent-harness` repo (no `.github/workflows/` today). Plan doc: `plans/detailed-add-ci-workflows-20260626-1654.md` (committed). Scope: new `.github/` workflows + `.gitignore` + an optional script — **no source code changes**.
 
 ## Key decisions made this run
 1. Test CI installs the package + `pytest` explicitly — there is **no** `[project.optional-dependencies]` test extra. Run from `phase-loop-runtime/` (conftest lives there); command `pytest -m "not dotfiles_integration"`.

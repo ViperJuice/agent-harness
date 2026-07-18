@@ -2,7 +2,7 @@
 
 ## Context
 
-GitHub issue [#114](https://github.com/ViperJuice/agent-harness/issues/114) exposed a real advisor-panel ingestion gap: callers need to give the panel local files by reference without reading private or very large file contents into the rendered artifact/prompt. The existing `artifact_ref` name is overloaded and historically means "read this path and stage the bytes"; it keeps caller context lean, but it still inlines document contents into the panel bundle. The EZBidPro PWA/PBS/NavBlue workflow needs a stricter boundary: the panel should receive a path/metadata manifest and inspect files through local tools only when a leg has that capability.
+GitHub issue [#114](https://github.com/Consiliency/agent-harness/issues/114) exposed a real advisor-panel ingestion gap: callers need to give the panel local files by reference without reading private or very large file contents into the rendered artifact/prompt. The existing `artifact_ref` name is overloaded and historically means "read this path and stage the bytes"; it keeps caller context lean, but it still inlines document contents into the panel bundle. The EZBidPro PWA/PBS/NavBlue workflow needs a stricter boundary: the panel should receive a path/metadata manifest and inspect files through local tools only when a leg has that capability.
 
 The current branch, `fix/panel-context-refs-gemini-retry-timeouts-114`, already contains candidate work for `context_refs`, Gemini retry-once behavior, and per-leg timeout overrides. This roadmap treats that work as a candidate implementation to audit, harden, document, and release. It does not assume the branch is correct until the interface gates and verification phases pass.
 
