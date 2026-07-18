@@ -25,9 +25,9 @@ session's CRs. #222 (grok default effort) already landed. Remaining, by priority
     timeout instead of seeing an immediate error. This is why the Fable correctness
     seat has been running as native-Opus rather than actual Fable. Fixing it restores a
     genuine 4th vendor lens to every panel/CR.
-- **P2 — #171:** `available_panel_legs()` omits grok, forcing fragile manual backfill
-  when the gemini/agy leg is down. Now that #222 restored grok's invocation, wiring it
-  into `available_panel_legs()` removes the manual-backfill footgun.
+- **P2 — #171: ✅ DONE — merged as #229.** `available_panel_legs()` now exposes grok when
+  its CLI is installed (availability-aware; frozen `PANEL_LEGS` untouched), so a down vendor
+  reaches a 4th independent leg without a hand-roll. 3-vendor CR converged, CI green.
 - **P3 — #224:** grokexec/launcher grok `effort_map` is identity → explicit
   `max`/`xhigh`/`minimal` rejected by the grok CLI. Low urgency (explicit-only; default
   path is `medium` = valid). Sibling of #222; same clamp pattern.
