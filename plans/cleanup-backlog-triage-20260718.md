@@ -40,10 +40,19 @@ session's CRs. #222 (grok default effort) already landed. Remaining, by priority
 Next-most load-bearing after review infra: these govern whether a phase can be marked
 `complete`/`passed` correctly and whether lanes dispatch cleanly.
 
-- **#85 + #90 (shared root — closeout artifact/status).**
-  - #85: closeout/status drift when a roadmap amendment changes phase hashes.
-  - #90: cannot rehydrate a completed roadmap from tracked closeout artifacts without
-    re-verification.
+- **#85 + #90 (shared root — closeout artifact/status).** Decomposed after a repro pass
+  confirmed each sub-bug still reproduces on current main:
+  - #85(B) phase-alias provenance drift: **✅ DONE — merged as #235.** verification.json now
+    records the LIVE run alias threaded from `runner.py:3508` (env override > threaded >
+    `state.json:current_phase` > "unknown"), so a mid-run roadmap amendment no longer
+    mis-attributes the artifact's phase. Callsite pinned by a static AST test (runtime
+    run_loop is bundle-gated / `dotfiles_integration`-marked / CI-excluded).
+  - #85(C) repo-path portability: ⏳ NEXT — repo-relative normalization in
+    events/state_ops/reconcile/classifier/runner so closeout survives a moved/renamed repo root.
+  - #85(D)/#90 rehydration: ⏳ reconcile must ingest a tracked `closeout.md` to rehydrate a
+    completed roadmap without re-verification.
+  - #85(A) hash-scope: ⏳ DEFERRED product decision — prose-edits-invalidate-completion is
+    WAI-with-warning + test-locked; surface to the user rather than silently change.
 - **#84: ✅ DONE — merged as #232.** Root cause was an argparse subparser clobber (not the
   dispatcher): common opts before the subcommand were reset to defaults; added SUPPRESS.
   Residual non-common-arg clobber class → #233 (fail-closed, low severity).
