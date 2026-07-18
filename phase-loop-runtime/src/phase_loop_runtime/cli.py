@@ -693,6 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit the result as JSON.",
+        default=argparse.SUPPRESS,  # ah#84: survive the before-subcommand position
     )
     # repo-validate: the harness-neutral local-first validation contract resolver
     # (docs/repo-validation-contract.md). Registered outside the common-args loop
@@ -727,7 +728,7 @@ def build_parser() -> argparse.ArgumentParser:
             "BOM (npm+PyPI) with stale|current|unknown verdicts."
         ),
     )
-    doctor_sub.add_argument("--json", action="store_true", help="Emit the phase-loop-doctor.v1 payload as JSON.")
+    doctor_sub.add_argument("--json", action="store_true", help="Emit the phase-loop-doctor.v1 payload as JSON.", default=argparse.SUPPRESS)  # ah#84
     doctor_sub.add_argument(
         "--fail-on-stale",
         action="store_true",
@@ -772,6 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit the ledger state as JSON.",
+        default=argparse.SUPPRESS,  # ah#84: survive the before-subcommand position
     )
     outside_agent_sub = subparsers.add_parser(
         "outside-agent-preflight",
@@ -811,7 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
         "artifact", metavar="artifact",
         help="Path to the review material staged into the board bundle.",
     )
-    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.")
+    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)  # ah#84
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,

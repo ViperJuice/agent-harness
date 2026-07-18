@@ -110,6 +110,17 @@ class CloseoutModeDefaultTest(unittest.TestCase):
         # the pattern holds on another common subcommand
         self.assertEqual(p.parse_args(["--phase", "ROOM", "resume"]).phase, "ROOM")
 
+    def test_before_subcommand_json_survives_on_own_json_subcommands(self):
+        # ah#84 (CR): doctor / run-train / train-status / advisor-board register their OWN
+        # --json (outside the common-args helper); they must SUPPRESS too, or `--json <cmd>`
+        # before the subcommand is silently reset to False.
+        p = build_parser()
+        cases = [("doctor", []), ("run-train", ["--train", "x"]),
+                 ("train-status", []), ("advisor-board", ["x"])]
+        for cmd, extra in cases:
+            self.assertIs(p.parse_args(["--json", cmd, *extra]).json, True, cmd)
+            self.assertIs(p.parse_args([cmd, *extra]).json, False, cmd)  # omitted default
+
     def test_execute_leg_stays_manual(self):
         # The inner execute leg keeps the manual default; the flip is scoped to the
         # outer run loop and must NOT turn execute legs into pushers.
