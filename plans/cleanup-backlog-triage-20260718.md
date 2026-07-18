@@ -52,6 +52,7 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
   lane ownership via `parse_plan_ownership`; verified non-empty on the real fixture). A
   preflight-reject also breaks the DOCUMENTED `--lane-scheduler serialized` compat mode.
   Re-verify against current main → likely close as resolved-by-#58.
+  **✅ DONE: re-verified (owned-files now populated on the monolithic path) → CLOSED as resolved-by-#58; PR #234 withdrawn.**
 
 ## Batch 3 — Verification / governance hardening
 
