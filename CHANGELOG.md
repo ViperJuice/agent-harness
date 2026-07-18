@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Common options before the subcommand no longer silently reset (#84)
+
+`phase-loop --phase ROOM run` (and any common option placed BEFORE the subcommand —
+`--max-phases`, `--model`, `--effort`, `--json`, `--dry-run`, …) was silently reset to its
+default by the subcommand parser's copy-back, because the per-subcommand copies of those
+args lacked `default=argparse.SUPPRESS`. `--phase ROOM` became `phase=None`, so the runner
+fell through to repairing a blocked phase instead of dispatching the requested one. Every
+common subparser arg now carries `SUPPRESS` (matching `--closeout-mode`/`--pipeline-mode`/
+`--lane-scheduler`), so a value placed before the subcommand survives — an explicit
+`--phase` reaches the dispatcher and the requested phase runs. The dispatcher was correct;
+this is a CLI-only fix.
+
 ### grokexec leg clamps `--reasoning-effort` to grok's CLI subset (#224)
 
 The grokexec/launcher grok leg passed the requested effort **raw** to

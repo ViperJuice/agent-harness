@@ -104,6 +104,26 @@ class PhaseLoopCliTest(unittest.TestCase):
         self.assertEqual(args.lane_scheduler_mode, "off")
         self.assertIsNone(default_args.lane_scheduler_mode)
 
+    def test_common_args_survive_before_subcommand(self):
+        # ah#84: common options placed BEFORE the subcommand must not be silently reset
+        # to their defaults by the subcommand parser's copy-back. `--phase ROOM run` used
+        # to yield phase=None, so the runner repaired a blocked phase instead of ROOM.
+        p = build_parser()
+        self.assertEqual(p.parse_args(["--phase", "ROOM", "run"]).phase, "ROOM")
+        # after the subcommand still works, and both orders agree
+        self.assertEqual(p.parse_args(["run", "--phase", "ROOM"]).phase, "ROOM")
+        # the sibling silent-drops in the reported command are fixed too
+        self.assertEqual(p.parse_args(["--max-phases", "1", "run"]).max_phases, 1)
+        self.assertIs(p.parse_args(["--json", "run"]).json, True)
+        self.assertIs(p.parse_args(["--dry-run", "run"]).dry_run, True)
+        # omitted -> top-level default, with NO AttributeError (SUPPRESS is subparser-only)
+        omitted = p.parse_args(["run"])
+        self.assertIsNone(omitted.phase)
+        self.assertIs(omitted.json, False)
+        self.assertEqual(omitted.allow_executor, [])
+        # the pattern holds on another common subcommand
+        self.assertEqual(p.parse_args(["--phase", "ROOM", "resume"]).phase, "ROOM")
+
     def test_reset_capability_is_limited_to_dispatch_commands(self):
         parser = build_parser()
         for command in ("run", "resume", "dry-run"):

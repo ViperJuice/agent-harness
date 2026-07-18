@@ -54,20 +54,32 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     Factored out of build_parser() so the dotfiles-profile plugin (DECOUPLE SL-1)
     can attach the identical common args to the commands it registers.
     """
+    # ah#84: EVERY common arg here is ALSO declared on the top-level parser
+    # (build_parser), which owns the before-subcommand position. Without
+    # `default=argparse.SUPPRESS` the subparser's copy re-defaults the attribute and
+    # `_SubParsersAction` copies it back OVER a value the operator placed before the
+    # subcommand (e.g. `phase-loop --phase ROOM run` was silently reset to phase=None,
+    # so the runner fell through to repairing a blocked phase). SUPPRESS makes the
+    # subparser omit the attribute unless supplied AFTER the subcommand, so the
+    # top-level value survives in BOTH positions — the same fix already applied to
+    # `--closeout-mode` / `--pipeline-mode` / `--lane-scheduler`. Safe (no AttributeError)
+    # because the top-level parser always provides the default.
+    _S = argparse.SUPPRESS
     if name in {"closeout-drift-audit", "fleet-map"}:
-        sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
+        sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.", default=_S)
     else:
-        sub.add_argument("--repo")
-    sub.add_argument("--roadmap")
-    sub.add_argument("--phase")
+        sub.add_argument("--repo", default=_S)
+    sub.add_argument("--roadmap", default=_S)
+    sub.add_argument("--phase", default=_S)
     sub.add_argument(
         "--max-phases",
         type=int,
         help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
+        default=_S,
     )
-    sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
-    sub.add_argument("--model")
-    sub.add_argument("--effort")
+    sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES), default=_S)
+    sub.add_argument("--model", default=_S)
+    sub.add_argument("--effort", default=_S)
     sub.add_argument(
         "--executor",
         choices=EXECUTORS,
@@ -76,32 +88,33 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
             "resolved by AUTOSEL: run-from harness -> single-available -> codex. "
             "Set EXECDISPATCH_DISABLE_AUTOSEL=1 to force the legacy codex default."
         ),
+        default=_S,
     )
-    sub.add_argument("--command-name")
-    sub.add_argument("--command-template")
-    sub.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES)
-    sub.add_argument("--allow-executor", action="append", default=[])
-    sub.add_argument("--fallback-executor", action="append", default=[])
-    sub.add_argument("--disable-executor", action="append", default=[])
-    sub.add_argument("--require-capability", action="append", default=[])
-    sub.add_argument("--json", action="store_true")
-    sub.add_argument("--dry-run", action="store_true")
-    sub.add_argument("--observe", action="store_true", help="Accepted for compatibility; launch artifacts are written by default.")
-    sub.add_argument("--no-observe", action="store_true", help="Disable launch log and heartbeat artifacts.")
-    sub.add_argument("--stream-output", action="store_true")
-    sub.add_argument("--bypass-approvals", action="store_true")
-    sub.add_argument("--heartbeat-interval-seconds", type=int)
-    sub.add_argument("--quiet-warning-seconds", type=int)
-    sub.add_argument("--quiet-blocker-seconds", type=int)
-    sub.add_argument("--no-heartbeat", action="store_true")
-    sub.add_argument("--work-unit-mode", action="store_true")
-    sub.add_argument("--source-bundle")
-    sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=argparse.SUPPRESS)
+    sub.add_argument("--command-name", default=_S)
+    sub.add_argument("--command-template", default=_S)
+    sub.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES, default=_S)
+    sub.add_argument("--allow-executor", action="append", default=_S)
+    sub.add_argument("--fallback-executor", action="append", default=_S)
+    sub.add_argument("--disable-executor", action="append", default=_S)
+    sub.add_argument("--require-capability", action="append", default=_S)
+    sub.add_argument("--json", action="store_true", default=_S)
+    sub.add_argument("--dry-run", action="store_true", default=_S)
+    sub.add_argument("--observe", action="store_true", help="Accepted for compatibility; launch artifacts are written by default.", default=_S)
+    sub.add_argument("--no-observe", action="store_true", help="Disable launch log and heartbeat artifacts.", default=_S)
+    sub.add_argument("--stream-output", action="store_true", default=_S)
+    sub.add_argument("--bypass-approvals", action="store_true", default=_S)
+    sub.add_argument("--heartbeat-interval-seconds", type=int, default=_S)
+    sub.add_argument("--quiet-warning-seconds", type=int, default=_S)
+    sub.add_argument("--quiet-blocker-seconds", type=int, default=_S)
+    sub.add_argument("--no-heartbeat", action="store_true", default=_S)
+    sub.add_argument("--work-unit-mode", action="store_true", default=_S)
+    sub.add_argument("--source-bundle", default=_S)
+    sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=_S)
     sub.add_argument(
         "--lane-scheduler",
         choices=LANE_SCHEDULER_MODES,
         dest="lane_scheduler_mode",
-        default=argparse.SUPPRESS,
+        default=_S,
     )
 
 
