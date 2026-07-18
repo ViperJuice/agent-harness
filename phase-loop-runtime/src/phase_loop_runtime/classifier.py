@@ -16,6 +16,7 @@ from .discovery import (
 )
 from .models import PHASE_STATUSES
 from .provenance import phase_provenance_map, roadmap_sha256, status_provenance_matches
+from .runtime_paths import roadmap_paths_match
 from .state import load_state
 
 
@@ -29,7 +30,7 @@ def classify_phase(repo: Path, roadmap: Path, phase: str) -> str:
         return "unknown"
 
     state = load_state(repo)
-    if state and Path(state.roadmap).expanduser().resolve() == roadmap.resolve() and state.phases.get(phase) in PHASE_STATUSES:
+    if state and roadmap_paths_match(state.repo, state.roadmap, repo, roadmap)[0] and state.phases.get(phase) in PHASE_STATUSES:
         status = state.phases[phase]
         current_phase_sha = phase_provenance_map(roadmap).get(phase)
         entry_phase_sha = state.phase_sha256.get(phase)

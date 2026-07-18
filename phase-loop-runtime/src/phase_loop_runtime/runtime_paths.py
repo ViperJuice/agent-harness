@@ -11,6 +11,58 @@ LEGACY_PHASE_LOOP_DIRNAME = "phase-loop"
 EXCLUDE_ENTRIES = (".phase-loop/", ".codex/phase-loop/")
 
 
+def roadmap_paths_match(
+    stored_repo: object,
+    stored_roadmap: object,
+    repo: Path,
+    roadmap: Path,
+) -> tuple[bool, bool]:
+    """Decide whether a persisted roadmap path refers to the same roadmap as the
+    live ``roadmap``, tolerating a relocated repo root (ah#85 sub-fix C).
+
+    Persisted state/events store ABSOLUTE ``repo``/``roadmap`` paths. When
+    ``.phase-loop/`` is replayed from a moved/renamed/copied repo root, an
+    absolute-equality gate discards every persisted status (all-unplanned). Both
+    ``repo`` and ``roadmap`` are persisted alongside each other, so the roadmap's
+    repo-relative subpath is portable across roots.
+
+    Returns ``(matches, relocated)``:
+    - ``(True, False)``  — identical absolute paths (unchanged legacy behavior).
+    - ``(True, True)``   — matched only via repo-relative subpath (roots differ).
+    - ``(False, False)`` — different relative roadmap, or the stored path cannot be
+      expressed relative to its stored repo root (conscious no-regression fallback
+      to non-match; content-SHA provenance remains the integrity backstop).
+    """
+    stored_roadmap_str = str(stored_roadmap) if stored_roadmap is not None else ""
+    if not stored_roadmap_str:
+        return (False, False)
+    try:
+        current = roadmap.resolve()
+    except OSError:
+        current = roadmap
+    # Fast path: identical absolute roadmap (existing same-root state matches here).
+    try:
+        if Path(stored_roadmap_str).expanduser().resolve() == current:
+            return (True, False)
+    except OSError:
+        pass
+    # Portable path: compare repo-relative subpaths. ``relative_to`` is lexical, so a
+    # stale stored root that no longer exists on this host still relativizes.
+    stored_repo_str = str(stored_repo) if stored_repo is not None else ""
+    if not stored_repo_str:
+        return (False, False)
+    try:
+        stored_rel = Path(stored_roadmap_str).expanduser().resolve().relative_to(
+            Path(stored_repo_str).expanduser().resolve()
+        )
+        current_rel = current.relative_to(repo.resolve())
+    except (ValueError, OSError, TypeError):
+        return (False, False)
+    if stored_rel == current_rel:
+        return (True, True)
+    return (False, False)
+
+
 def phase_loop_dir(repo: Path) -> Path:
     return repo / PHASE_LOOP_DIRNAME
 
