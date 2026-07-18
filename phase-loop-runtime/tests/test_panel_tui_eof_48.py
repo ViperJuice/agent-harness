@@ -26,7 +26,7 @@ def test_claude_tui_leg_returns_promptly_on_pty_eof(tmp_path):
     output_file = tmp_path / "panel-claude.txt"  # intentionally: no verdict written
 
     start = time.monotonic()
-    rc, text, status = _run_claude_tui_session(
+    rc, text, status, _pty_tail = _run_claude_tui_session(
         command=["sh", "-c", "exec 0<&- 1>&- 2>&-; sleep 60"],
         cwd=tmp_path,
         prompt="review this",
@@ -57,7 +57,7 @@ def test_claude_tui_eof_does_not_promote_transcript_verdict_to_ok(tmp_path, monk
     monkeypatch.setattr(pi, "_latest_claude_transcript_text", lambda *a, **k: "DISAGREE — salvage only")
     output_file = tmp_path / "panel-claude.txt"  # never written → no file verdict
 
-    rc, text, status = _run_claude_tui_session(
+    rc, text, status, _pty_tail = _run_claude_tui_session(
         command=["sh", "-c", "exec 0<&- 1>&- 2>&-; exit 0"],
         cwd=tmp_path,
         prompt="review this",

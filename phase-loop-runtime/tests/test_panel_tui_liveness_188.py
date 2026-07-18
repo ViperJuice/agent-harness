@@ -67,7 +67,7 @@ def test_wedged_pty_leg_is_reclaimed_on_heartbeat_extinction(tmp_path, monkeypat
     output_file = tmp_path / "panel-claude.txt"  # never written
 
     start = time.monotonic()
-    rc, text, status = _run_claude_tui_session(
+    rc, text, status, _pty_tail = _run_claude_tui_session(
         command=["sh", "-c", _WEDGE_SCRIPT],
         cwd=tmp_path,
         prompt="review this",
@@ -103,7 +103,7 @@ def test_wedged_stall_marker_classifies_degraded(tmp_path, monkeypatch):
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
     monkeypatch.setattr(pi, "_subscription_env", lambda: {"PATH": "/usr/bin:/bin"})
     # The session reclaims a genuinely-wedged leg: non-zero rc, no verdict, stall marker.
-    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: (1, "", "claude_tui_stalled"))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: (1, "", "claude_tui_stalled", ""))
 
     status, _text = pi._exec_claude_tui_leg(review_dir, out_dir, 120, "bundle")
 
@@ -124,7 +124,7 @@ def test_slow_but_progressing_pty_leg_is_not_killed(tmp_path, monkeypatch):
     output_file = tmp_path / "panel-claude.txt"  # intentionally never written by the script
 
     start = time.monotonic()
-    rc, text, status = _run_claude_tui_session(
+    rc, text, status, _pty_tail = _run_claude_tui_session(
         command=["sh", "-c", _PROGRESS_SCRIPT],
         cwd=tmp_path,
         prompt="review this",

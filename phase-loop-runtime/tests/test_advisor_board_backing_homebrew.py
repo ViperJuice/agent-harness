@@ -233,7 +233,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
 
         def fake_session(**kwargs):
             captured["env"] = kwargs.get("env")
-            return 0, "AGREE", ""
+            return 0, "AGREE", "", ""
 
         with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
                 patch.object(pi, "_under_claude_code", return_value=False), \
@@ -250,7 +250,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
 
         def fake_session(**kwargs):
             captured["env"] = kwargs.get("env")
-            return 0, "AGREE", ""
+            return 0, "AGREE", "", ""
 
         with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
                 patch.object(pi, "_under_claude_code", return_value=False), \

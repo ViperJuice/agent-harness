@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Panel Fable/Claude TUI leg clears the workspace-trust gate (#196, #223)
+
+The advisor-board Fable/Claude reviewer leg drives Claude Code headless under a
+self-allocated PTY. Claude Code shows an interactive **workspace-trust modal** for
+the fresh scratch `cwd` before it accepts a prompt; the leg used to bracket-paste
+the review prompt after a fixed 8s delay, landing it in the `Enter y/n:` field —
+so no reviewer session ever started and the #188 liveness monitor reclaimed it
+after 180s and mislabeled it `claude_tui_stalled`. Net effect: the Fable
+correctness seat was effectively dead on panels/CRs. Root cause and the exact
+modal/editor rendering were confirmed by a real PTY capture on Claude Code 2.1.208.
+
+- **Startup state machine (fix).** `_run_claude_tui_session` now detects the
+  workspace-trust modal against the accumulated de-ANSI'd screen (the modal spans
+  multiple lines), answers `y` exactly once — **strictly pre-submit, path-scoped to
+  the harness-created scratch cwd, and disarmed the instant the review prompt is
+  pasted** — then submits only when the editor is quiescent after real post-gate
+  output (never on a blind timer into a possibly-modal screen). The PTY is opened at
+  a wide window so a long `/tmp` cwd path renders un-wrapped. Because auto-answering
+  is disabled once the prompt is submitted, review output or a reviewed diff that
+  contains the trust strings can never inject a keystroke or mis-classify a healthy
+  review.
+- **Typed, fail-closed diagnostics (fix).** An uncleared trust gate now yields a
+  typed `claude_tui_workspace_trust_blocked`, and a never-ready editor yields
+  `claude_tui_editor_not_ready` — both evaluated **before** the 180s generic stall
+  and surfaced as `DEGRADED` (not the misleading `claude_tui_stalled`). Every
+  non-OK leg return now carries a bounded, credential-redacted, control-stripped
+  PTY tail (the buffer *end*, where the failure context lives) folded into the
+  surfaced text for diagnosis.
+
 ### Governed closeout & gate-integrity hardening (#218, #219)
 
 Three bounded fixes so a phase cannot be marked `complete`/`verification: passed`

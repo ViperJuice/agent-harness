@@ -148,7 +148,7 @@ def test_default_spawn_threads_explicit_backstop_to_claude_tui(tmp_path, monkeyp
 
     def fake_tui(**kwargs):
         captured["backstop_s"] = kwargs.get("backstop_s")
-        return 0, "Looks good.\nAGREE", ""
+        return 0, "Looks good.\nAGREE", "", ""
 
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a, **k: False)

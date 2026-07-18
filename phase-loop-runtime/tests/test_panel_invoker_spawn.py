@@ -27,7 +27,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             captured["output_file"] = output_file
             captured["timeout_s"] = timeout_s
             captured["env"] = env
-            return 0, "Repo-grounded review.\nAGREE", "claude_tui_file_output"
+            return 0, "Repo-grounded review.\nAGREE", "claude_tui_file_output", ""
 
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
             review_dir = Path(td) / "review"
@@ -133,7 +133,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
 
     def test_claude_tui_timeout_omits_artifact_payload(self):
         def fake_tui(**kwargs):
-            return 124, "", "timeout after 777s"
+            return 124, "", "timeout after 777s", ""
 
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
@@ -153,7 +153,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
 
     def test_claude_tui_missing_canonical_file_is_not_success(self):
         def fake_tui(**kwargs):
-            return 1, "Salvaged transcript review.\nAGREE", "claude_tui_missing_canonical_output"
+            return 1, "Salvaged transcript review.\nAGREE", "claude_tui_missing_canonical_output", ""
 
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
@@ -262,7 +262,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
                 patch(
                     "phase_loop_runtime.panel_invoker._run_claude_tui_session",
-                    return_value=(0, "Headless review.\nAGREE", "claude_tui_file_output"),
+                    return_value=(0, "Headless review.\nAGREE", "claude_tui_file_output", ""),
                 ) as run_tui,
             ):
                 status, text = pi._exec_claude_tui_leg(

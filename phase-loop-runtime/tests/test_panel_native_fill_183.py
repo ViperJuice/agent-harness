@@ -146,7 +146,7 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
         # base_env WITHOUT CLAUDECODE == a headless non-Claude caller (e.g. Codex
         # Desktop). The self-PTY TUI runs; the parent's missing tty is irrelevant.
         session = unittest.mock.MagicMock(
-            return_value=(0, "A complete advisory.\nAGREE", "claude_tui_file_output")
+            return_value=(0, "A complete advisory.\nAGREE", "claude_tui_file_output", "")
         )
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"

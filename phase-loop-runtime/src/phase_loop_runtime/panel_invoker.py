@@ -11,6 +11,7 @@ status so a verbose auth error is never mistaken for a real review.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import mimetypes
 import os
@@ -19,9 +20,11 @@ import re
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import json
 import threading
@@ -132,6 +135,30 @@ _CLAUDE_STOP_TIMEOUT_S = 15
 _CLAUDE_TUI_SUBMIT_DELAY_S = 8.0
 _CLAUDE_TUI_READ_INTERVAL_S = 0.25
 _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
+# ah#196/#223: Claude Code shows an interactive workspace-trust modal for a fresh
+# scratch cwd BEFORE it accepts a prompt (verified via a real PTY capture on 2.1.208).
+# The leg must clear that gate, then submit ONLY when the editor is prompt-ready —
+# never bracket-paste the review into the ``Enter y/n:`` field (the reproduced bug).
+# Detection runs on the ACCUMULATED de-ANSI'd screen (the modal spans multiple lines,
+# so a per-line match never fires) and is PATH-SCOPED to the harness-created scratch
+# ``cwd`` token. Answered ``y`` exactly once, strictly PRE-SUBMIT (the detector is
+# DISARMED the instant we paste), so review output / reviewed diffs that happen to
+# contain these strings can never inject a keystroke or mis-classify a healthy review.
+_CLAUDE_TUI_TRUST_HEADER = "permission required: accessing workspace"
+_CLAUDE_TUI_TRUST_CHOICE = "trust this folder"
+_CLAUDE_TUI_TRUST_PROMPT = "enter y/n"
+_CLAUDE_TUI_TRUST_REJECT = "please answer y or n"  # Claude rejected a non-y/n answer
+_CLAUDE_TUI_TRUST_ANSWER = b"y\r"
+# Editor readiness = QUIESCENCE, armed ONLY after real post-gate output (never treat
+# pre-output silence as ready — that would race a late-rendering modal into a paste).
+_CLAUDE_TUI_READY_QUIESCENCE_S = 2.0
+# Trust/readiness not achieved within this bound -> a TYPED reason, evaluated BEFORE
+# the 180s generic stall so a startup gate never masquerades as ``claude_tui_stalled``.
+_CLAUDE_TUI_READY_DEADLINE_S = 45.0
+# A wide PTY so a long ``/tmp`` scratch-cwd path renders on one un-wrapped line — the
+# default ~80 cols would wrap it and split the path token out of any single line.
+_CLAUDE_TUI_PTY_COLS = 200
+_CLAUDE_TUI_PTY_ROWS = 50
 _LEG_TIMEOUT_BOUNDS: dict[str, tuple[int, int]] = {
     "codex": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
     "gemini": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
@@ -1357,6 +1384,54 @@ def _tui_take_complete_lines(carry: bytearray, chunk: bytes) -> bytes:
     return complete
 
 
+def _tui_screen_text(terminal_bytes: bytes) -> str:
+    """De-ANSI'd, lowercased view of the ACCUMULATED PTY buffer.
+
+    ah#196/#223: the workspace-trust modal spans multiple lines (header / cwd path /
+    ``Enter y/n:``), so its conjunction can only be matched against the whole screen,
+    never a single complete line. Cheap enough pre-submit (the startup screen is small
+    and detection is disarmed the moment we paste)."""
+    text = terminal_bytes.decode("utf-8", errors="replace")
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    return text.lower()
+
+
+def _tui_trust_modal_present(screen: str, cwd_token: str) -> bool:
+    """True iff the accumulated (lowercased) screen shows the workspace-trust modal for
+    the harness-created scratch cwd. Conjunction = trust header AND a y/n choice string
+    AND the run-unique cwd token — the token keeps the auto-answer scoped to the exact
+    directory the harness allocated (which is never derived from PR/branch content)."""
+    if _CLAUDE_TUI_TRUST_HEADER not in screen:
+        return False
+    if _CLAUDE_TUI_TRUST_PROMPT not in screen and _CLAUDE_TUI_TRUST_CHOICE not in screen:
+        return False
+    return (cwd_token in screen) if cwd_token else True
+
+
+# Residual C0 control chars (excluding \n) to strip from an evidence tail AFTER ANSI/OSC
+# removal — so a bounded, redacted PTY tail is plain diagnosable text, not raw terminal
+# control bytes (a serialized/displayed ``detail`` must not carry them).
+_TUI_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
+
+
+def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 200) -> str:
+    """A bounded, credential-redacted, control-stripped tail of the PTY buffer for
+    failed-leg evidence. Order matters (ah#196/#223 CR): strip ANSI/OSC + control seqs,
+    REDACT THE WHOLE TEXT, then keep the FINAL ``max_chars`` — redacting after slicing
+    could expose a secret whose key sits just before the cut, and the informative bytes
+    (the modal / reject / stall context) live at the END of the buffer."""
+    from .runner import _redacted_stderr_excerpt  # lazy: avoid a panel_invoker<->runner cycle
+
+    text = terminal_bytes.decode("utf-8", errors="replace")
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _TUI_CTRL_RE.sub("", text)
+    # max_chars > len ⇒ redact the COMPLETE text with no head-truncation, then tail-slice.
+    redacted = _redacted_stderr_excerpt(text, max_chars=len(text) + 8)
+    return redacted[-max_chars:].strip()
+
+
 def _run_claude_tui_session(
     *,
     command: Sequence[str],
@@ -1367,7 +1442,7 @@ def _run_claude_tui_session(
     env: Mapping[str, str],
     mode: str = "review",
     backstop_s: int | None = None,
-) -> tuple[int, str, str]:
+) -> tuple[int, str, str, str]:
     start_monotonic = time.monotonic()
     start_wall = time.time()
     # Leg-liveness: like the print-mode legs, the claude TUI leg is bounded by heartbeat
@@ -1396,8 +1471,36 @@ def _run_claude_tui_session(
     tui_carry = bytearray()  # #188 CR: trailing partial line held across os.read boundaries
     last_review_len = 0
     last_transcript_len = 0
+    # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
+    # WAITING_FOR_EDITOR (quiescent) -> SUBMITTED. Answer the trust modal at most
+    # once, strictly PRE-SUBMIT; gate the paste on editor quiescence AFTER real
+    # post-gate output (never on pre-output silence, which would race a late modal).
+    detector_armed = True  # trust auto-answer live ONLY until we paste
+    trust_seen = False
+    trust_answered = False
+    ready_since_output = False  # >=1 novel content event AFTER the gate resolved
+    last_novel = start_monotonic
+    cwd_token = (os.path.basename(str(cwd).rstrip("/")) or str(cwd)).lower()
+
+    def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
+        # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
+        # return so a startup/liveness failure is diagnosable (ah#196/#223); an OK
+        # file verdict carries no tail.
+        tail = "" if log == "claude_tui_file_output" else _sanitized_pty_tail(terminal_bytes)
+        return rc, text, log, tail
+
     try:
         master_fd, slave_fd = pty.openpty()
+        # ah#196/#223 R1: pin a wide window so a long scratch-cwd path renders
+        # un-wrapped (default ~80 cols would split the path token across lines).
+        try:
+            fcntl.ioctl(
+                slave_fd,
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", _CLAUDE_TUI_PTY_ROWS, _CLAUDE_TUI_PTY_COLS, 0, 0),
+            )
+        except OSError:
+            pass
         try:
             proc = subprocess.Popen(
                 list(command),
@@ -1415,11 +1518,11 @@ def _run_claude_tui_session(
     except FileNotFoundError:
         if master_fd is not None:
             os.close(master_fd)
-        return 127, "", "missing_claude_cli"
+        return 127, "", "missing_claude_cli", ""
     except Exception as exc:
         if master_fd is not None:
             os.close(master_fd)
-        return 1, "", f"claude_tui_launch_error:{type(exc).__name__}"
+        return 1, "", f"claude_tui_launch_error:{type(exc).__name__}", ""
 
     try:
         while time.monotonic() < deadline:
@@ -1442,7 +1545,16 @@ def _run_claude_tui_session(
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
                         if complete and _tui_chunk_has_novel_content(complete, seen_tui_lines):
-                            last_heartbeat = time.monotonic()
+                            now_novel = time.monotonic()
+                            last_heartbeat = now_novel
+                            last_novel = now_novel
+                            # ah#196/#223: novel content ARMS editor-readiness only
+                            # once the gate is resolved (modal answered, or no modal
+                            # seen). The modal's OWN render is excluded — answering it
+                            # (below) resets ``ready_since_output`` so the post-answer
+                            # welcome burst is what actually arms quiescence.
+                            if not prompt_sent and (trust_answered or not trust_seen):
+                                ready_since_output = True
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed
                         # the slave side, so no further output can arrive. Without this
@@ -1459,31 +1571,65 @@ def _run_claude_tui_session(
                         # verdict to OK here would be a race-dependent false-green.
                         review_text = _read_review_output(output_file)
                         if _completion_ok(review_text, mode):
-                            return 0, review_text, "claude_tui_file_output"
+                            return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = transcript_salvage or _latest_claude_transcript_text(
                             str(cwd), since=start_wall
                         )
-                        return (
+                        return _finish(
                             proc.poll() or 1,
                             review_text or transcript_text,
                             "claude_tui_pty_eof_no_output",
                         )
             now = time.monotonic()
-            if not prompt_sent and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S:
-                try:
-                    os.write(master_fd, b"\x1b[200~" + prompt.encode("utf-8", errors="replace") + b"\x1b[201~")
-                    time.sleep(0.5)
-                    os.write(master_fd, b"\x1bOM")
-                    prompt_sent = True
-                except OSError:
-                    return 1, "", "claude_tui_submit_failed"
+            # ah#196/#223 startup gate (PRE-SUBMIT only). Answer the workspace-trust
+            # modal once, then submit on editor quiescence — never paste on a blind
+            # timer into a possibly-modal/unready screen.
+            if not prompt_sent:
+                screen = _tui_screen_text(terminal_bytes)
+                if detector_armed and not trust_answered and _tui_trust_modal_present(screen, cwd_token):
+                    trust_seen = True
+                    try:
+                        os.write(master_fd, _CLAUDE_TUI_TRUST_ANSWER)
+                    except OSError:
+                        return _finish(1, "", "claude_tui_submit_failed")
+                    trust_answered = True
+                    last_heartbeat = now
+                    ready_since_output = False  # require NEW output after the answer
+                # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.
+                if trust_answered and _CLAUDE_TUI_TRUST_REJECT in screen:
+                    return _finish(proc.poll() or 1, "", "claude_tui_workspace_trust_blocked")
+                # Readiness deadline, evaluated BEFORE the generic stall so a startup
+                # gate is never mislabeled ``claude_tui_stalled``. A modal we saw but
+                # couldn't clear -> trust_blocked; no modal but never-ready -> not_ready.
+                if now - start_monotonic >= _CLAUDE_TUI_READY_DEADLINE_S:
+                    reason = (
+                        "claude_tui_workspace_trust_blocked" if trust_seen else "claude_tui_editor_not_ready"
+                    )
+                    return _finish(proc.poll() or 1, "", reason)
+                # Submit only when the editor is quiescent AFTER post-gate output, past
+                # the floor. Disarm the trust detector BEFORE the paste (the review
+                # prompt itself contains the trigger strings — its echo must not answer).
+                if (
+                    ready_since_output
+                    and not (trust_seen and not trust_answered)
+                    and now - last_novel >= _CLAUDE_TUI_READY_QUIESCENCE_S
+                    and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S
+                ):
+                    detector_armed = False
+                    try:
+                        os.write(master_fd, b"\x1b[200~" + prompt.encode("utf-8", errors="replace") + b"\x1b[201~")
+                        time.sleep(0.5)
+                        os.write(master_fd, b"\x1bOM")
+                        prompt_sent = True
+                    except OSError:
+                        return _finish(1, "", "claude_tui_submit_failed")
             review_text = _read_review_output(output_file)
             # #188: canonical review OUTPUT growing is unambiguous reviewer progress.
             if len(review_text) > last_review_len:
                 last_review_len = len(review_text)
                 last_heartbeat = now
             if _completion_ok(review_text, mode):
-                return 0, review_text, "claude_tui_file_output"
+                return _finish(0, review_text, "claude_tui_file_output")
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
                 transcript_text = _latest_claude_transcript_text(str(cwd), since=start_wall)
@@ -1498,9 +1644,9 @@ def _run_claude_tui_session(
                 review_text = _read_review_output(output_file)
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(str(cwd), since=start_wall)
                 if _completion_ok(review_text, mode):
-                    return 0, review_text, "claude_tui_file_output"
+                    return _finish(0, review_text, "claude_tui_file_output")
                 detail = "claude_tui_missing_canonical_output"
-                return proc.returncode or 1, review_text or transcript_text, detail
+                return _finish(proc.returncode or 1, review_text or transcript_text, detail)
             # #188: NO CPU heartbeat on the TUI path. Unlike the print-mode legs, a
             # Node CLI blocked in ep_poll still trickles libuv/GC CPU, so a CPU-advance
             # reset would keep a genuinely-wedged TUI alive forever (the ~2s-CPU/17-min
@@ -1513,14 +1659,14 @@ def _run_claude_tui_session(
             if now - last_heartbeat >= _LEG_STALL_THRESHOLD_S:
                 review_text = _read_review_output(output_file)
                 if _completion_ok(review_text, mode):
-                    return 0, review_text, "claude_tui_file_output"
+                    return _finish(0, review_text, "claude_tui_file_output")
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
-                return proc.poll() or 1, review_text or transcript_text, "claude_tui_stalled"
+                return _finish(proc.poll() or 1, review_text or transcript_text, "claude_tui_stalled")
         review_text = _read_review_output(output_file)
         transcript_text = transcript_salvage or _latest_claude_transcript_text(str(cwd), since=start_wall)
-        return 124, review_text or transcript_text, f"timeout after {backstop_s}s"
+        return _finish(124, review_text or transcript_text, f"timeout after {backstop_s}s")
     finally:
         if proc is not None:
             _terminate_process_group(proc)
@@ -1864,7 +2010,7 @@ def _exec_claude_tui_leg(
     env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
-    rc, review_text, log_text = _run_claude_tui_session(
+    rc, review_text, log_text, pty_tail = _run_claude_tui_session(
         command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model, effort),
         cwd=out_dir,
         prompt=prompt,
@@ -1874,14 +2020,23 @@ def _exec_claude_tui_leg(
         mode=mode,
         backstop_s=backstop_s,
     )
-    # #188: a heartbeat-reclaimed (genuinely wedged) TUI leg is a TYPED stalled leg,
-    # not a bare ERROR — surface it as DEGRADED so the panel summary names the
-    # liveness reclaim ("process alive but no reviewer heartbeat") while the three
-    # completed seats are preserved. A leg that produced a conforming verdict before
-    # the reclaim still classifies OK (unchanged).
+    # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
+    # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surface
+    # each as DEGRADED (not a bare ERROR) so the panel summary names the cause, and fold
+    # the bounded, redacted PTY tail into the surfaced text so the failure is
+    # diagnosable (``text`` propagates end-to-end to ``PanelLegResult``). A leg that
+    # produced a conforming verdict before the reclaim still classifies OK (unchanged).
     status = _classify_leg(rc, review_text, log_text, mode)
-    if log_text == "claude_tui_stalled" and status != "OK":
-        return "DEGRADED", review_text or "claude_tui_stalled: no reviewer heartbeat (liveness reclaim)"
+    _typed_degraded = {
+        "claude_tui_stalled": "no reviewer heartbeat (liveness reclaim)",
+        "claude_tui_workspace_trust_blocked": "workspace-trust gate not cleared",
+        "claude_tui_editor_not_ready": "editor never reached prompt-ready state",
+    }
+    if log_text in _typed_degraded and status != "OK":
+        text = review_text or f"{log_text}: {_typed_degraded[log_text]}"
+        if pty_tail:
+            text = f"{text}\n[pty-tail] {pty_tail}"
+        return "DEGRADED", text
     return status, review_text or log_text
 
 
