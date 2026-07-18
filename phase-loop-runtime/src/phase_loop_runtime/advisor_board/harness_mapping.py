@@ -64,15 +64,17 @@ _CODEX_EFFORT: dict[str, str] = {
     "max": "xhigh",
 }
 
-# canonical effort -> grok ``--reasoning-effort`` token. The grok CLI accepts
-# ``none, minimal, low, medium, high, xhigh, max`` (verified via ``grok --help`` /
-# an out-of-range probe), so canonical ``max`` maps straight to grok's own ``max``
-# ceiling — the panel's grok seat runs at grok-4.5's maximum reasoning.
+# canonical effort -> grok ``--reasoning-effort`` token. The grok CLI accepts ONLY
+# ``high | medium | low`` (verified via an out-of-range probe: ``--reasoning-effort max``
+# -> ``unknown effort level 'max'; use one of: high, medium, low``). So canonical ``max``
+# CLAMPS to grok's own ``high`` ceiling — the panel's grok seat runs at grok-4.5's maximum
+# reasoning. (ah#222: a prior literal ``max`` made the grok leg ERROR on every default panel
+# run.) The grokexec/launcher grok effort path is separate (capability_registry) — not fixed here.
 _GROK_EFFORT: dict[str, str] = {
     "low": "low",
     "medium": "medium",
     "high": "high",
-    "max": "max",
+    "max": "high",  # grok has no 'max'/'xhigh'; its ceiling is 'high'
 }
 
 # canonical effort -> the ``(Word)`` token agy/gemini bakes into the model name
