@@ -84,8 +84,37 @@ def test_grok_capability_record_present_and_bound():
 def test_grok_provider_policy_capability_present():
     capability = provider_policy_capabilities()["grok"]
     assert capability.executor == "grok"
-    # grok's CLI accepts the full normalized effort set — no clamp/aliases.
+    # grok has no model aliases; effort is clamped to grok's CLI subset (ah#224).
     assert not capability.model_aliases
+
+
+def test_grok_cli_effort_clamps_invalid_levels():
+    # ah#224: grok's --reasoning-effort accepts ONLY high/medium/low; the internal
+    # minimal/xhigh/max tiers are clamped at the CLI boundary (never emitted verbatim).
+    assert launcher._grok_cli_effort("max") == "high"
+    assert launcher._grok_cli_effort("xhigh") == "high"
+    assert launcher._grok_cli_effort("minimal") == "low"
+    # valid grok tokens pass through unchanged
+    assert launcher._grok_cli_effort("low") == "low"
+    assert launcher._grok_cli_effort("medium") == "medium"
+    assert launcher._grok_cli_effort("high") == "high"
+
+
+def test_build_grok_command_clamps_explicit_effort():
+    # An EXPLICIT high-effort grok run must emit a VALID grok token, never max/xhigh/minimal
+    # (which crash the grok CLI). Exercises the load-bearing clamp at command build.
+    import dataclasses
+
+    base = resolve_profile_for_executor(action="review", executor="grok")
+    for requested, expected in (("max", "high"), ("xhigh", "high"), ("minimal", "low"), ("high", "high")):
+        selection = dataclasses.replace(base, effort=requested)
+        cmd = launcher.build_grok_command(
+            _REPO, selection, action="review", context_file="ctx"
+        )
+        assert cmd[cmd.index("--reasoning-effort") + 1] == expected, (
+            f"grok effort {requested!r} must emit {expected!r}, got "
+            f"{cmd[cmd.index('--reasoning-effort') + 1]!r}"
+        )
 
 
 def test_grok_default_model_resolves_from_profiles():
@@ -105,8 +134,10 @@ def test_build_grok_launch_spec_write_action_argv():
     assert cmd[cmd.index("--output-format") + 1] == "plain"
     assert cmd[cmd.index("--cwd") + 1] == str(_REPO)
     assert cmd[cmd.index("-m") + 1] == GROK_DEFAULT_MODEL
-    # effort passes straight through to grok's --reasoning-effort (no clamp).
-    assert cmd[cmd.index("--reasoning-effort") + 1] == spec.selected_effort
+    # effort reaches grok's --reasoning-effort clamped to a valid CLI token (ah#224);
+    # the default execute effort ('medium') is already valid, so it is unchanged here.
+    assert cmd[cmd.index("--reasoning-effort") + 1] == launcher._grok_cli_effort(spec.selected_effort)
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "medium"
     # write action auto-approves.
     assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
     # context-file delivery: the prompt points at the staged bundle placeholder.

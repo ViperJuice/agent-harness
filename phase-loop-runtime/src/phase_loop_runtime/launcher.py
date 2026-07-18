@@ -378,6 +378,25 @@ def _codex_cli_effort(effort: str) -> str:
     return _CODEX_CLI_EFFORT_OVERRIDES.get(effort, effort)
 
 
+# ah#224: the grok CLI `--reasoning-effort` accepts ONLY 'high | medium | low' (verified
+# in ah#222: 'max' -> "unknown effort level 'max'; use one of: high, medium, low"). The
+# internal `minimal`/`xhigh`/`max` tiers (in NORMALIZED_EFFORT_LEVELS) crash grok if emitted
+# verbatim, so translate them to grok's floor/ceiling HERE at the CLI boundary — same pattern
+# as `_codex_cli_effort` (max->xhigh) and the panel path's `_GROK_EFFORT` (max->high). This
+# keeps grok effort-eligible in the policy/tier layer: a 'max' request is honored at grok's
+# real ceiling ('high') rather than rejected.
+_GROK_CLI_EFFORT_OVERRIDES = {"minimal": "low", "xhigh": "high", "max": "high"}
+
+
+def _grok_cli_effort(effort: str) -> str:
+    """Map an internal effort tier to a grok-CLI-supported value (ah#224).
+
+    The grok CLI accepts only high/medium/low; 'minimal' clamps to 'low', and both
+    'xhigh' and 'max' clamp to 'high' (grok's ceiling). Every valid tier passes through.
+    """
+    return _GROK_CLI_EFFORT_OVERRIDES.get(effort, effort)
+
+
 def build_codex_command(
     repo: Path,
     selection: ModelSelection,
@@ -716,11 +735,11 @@ def build_grok_command(
     # (_prompt_bundle_with_closeout_schema, which now targets "grok") and parsed from
     # grok's `--output-format plain` output.
     #
-    # Effort passes straight through to grok's `--reasoning-effort` flag. grok's CLI
-    # accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so
-    # every normalized level (minimal/low/medium/high/xhigh/max) is valid and no
-    # mapping/clamp is needed (unlike codex's `max -> xhigh`). The model is passed
-    # verbatim via `-m`.
+    # Effort is CLAMPED to a grok-CLI-supported value via `_grok_cli_effort` (ah#224).
+    # grok's `--reasoning-effort` accepts ONLY high/medium/low — it is a SUBSET of
+    # NORMALIZED_EFFORT_LEVELS, not a superset — so `minimal`/`xhigh`/`max` are translated
+    # at this CLI boundary (minimal->low, xhigh/max->high), exactly like codex's
+    # `max -> xhigh`. The model is passed verbatim via `-m`.
     #
     # Permission posture (CR: verified empirically against grok 0.2.x). Headless
     # `grok -p` AUTO-APPROVES writes regardless of `--permission-mode`/`--sandbox`
@@ -746,7 +765,7 @@ def build_grok_command(
         "-m",
         selection.model,
         "--reasoning-effort",
-        selection.effort,
+        _grok_cli_effort(selection.effort),
     ]
     if action == "review":
         command.extend(["--tools", GROK_REVIEW_READONLY_TOOLS])

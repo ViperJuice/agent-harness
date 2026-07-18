@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### grokexec leg clamps `--reasoning-effort` to grok's CLI subset (#224)
+
+The grokexec/launcher grok leg passed the requested effort **raw** to
+`grok --reasoning-effort`, but grok's CLI accepts only `high | medium | low`, so an
+**explicit** `max` / `xhigh` / `minimal` grokexec run (all in `NORMALIZED_EFFORT_LEVELS`)
+crashed grok (`unknown effort level 'max'; use one of: high, medium, low`). A new
+CLI-boundary clamp `launcher._grok_cli_effort` translates `minimal→low` and
+`xhigh`/`max`→`high` (grok's ceiling), mirroring codex's `max→xhigh` and the panel-path fix
+in #222/#225 — so an explicit high-effort grokexec run is honored at grok's ceiling instead
+of crashing. The default path (`medium`) was already valid. The grok provider policy's
+misleading "accepts a superset / no clamp needed" note and its dead identity `effort_map`
+are corrected. Sibling of #222.
+
 ### Advisor-board `available_panel_legs()` exposes grok (#171)
 
 The documented panel preflight `available_panel_legs()` now considers all four vendors

@@ -494,9 +494,15 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         supported_efforts=_ALL_EFFORTS,
         unsupported_policy_behavior=_FAIL_CLOSED,
         default_effort="medium",
-        effort_map={effort: effort for effort in _ALL_EFFORTS},
+        # ah#224: grok's `--reasoning-effort` accepts ONLY high/medium/low (a SUBSET of
+        # NORMALIZED_EFFORT_LEVELS). The live clamp is at the CLI boundary
+        # (`launcher._grok_cli_effort`, mirroring codex's `max->xhigh`), which keeps grok
+        # effort-eligible in this layer (all normalized levels remain valid REQUESTS,
+        # translated at emit time). This map is defense-in-depth for the policy-layer
+        # fallback path; it is kept accurate (not identity) rather than lying.
+        effort_map={"minimal": "low", "xhigh": "high", "max": "high"},
         notes=(
-            "grok's `--reasoning-effort` CLI flag accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so every normalized effort passes through directly with no clamp.",
+            "grok's `--reasoning-effort` CLI flag accepts ONLY high/medium/low (a subset of NORMALIZED_EFFORT_LEVELS); minimal/xhigh/max are clamped to a valid token at the CLI boundary by launcher._grok_cli_effort (like codex's max->xhigh).",
         ),
     ),
     "gemini-api": ProviderPolicyCapability(
