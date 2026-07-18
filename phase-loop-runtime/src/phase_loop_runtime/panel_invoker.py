@@ -1397,16 +1397,34 @@ def _tui_screen_text(terminal_bytes: bytes) -> str:
     return text.lower()
 
 
-def _tui_trust_modal_present(screen: str, cwd_token: str) -> bool:
+def _cwd_trust_tokens(cwd: Path) -> tuple[str, ...]:
+    """Run-unique token(s) that MUST appear in the trust modal before we answer it —
+    the FULL absolute cwd path (lowercased), plus its realpath so a symlinked temp root
+    (e.g. macOS ``/tmp`` -> ``/private/tmp``) still matches. NOT the bare basename: the
+    harness allocates ``mkdtemp(prefix='pl-panel-')/out``, whose basename is the constant
+    ``out`` (near-vacuous); the run-unique entropy lives in the full path. The wide PTY
+    window keeps this path un-wrapped so it renders on a single detectable region."""
+    raw = str(cwd).rstrip("/")
+    tokens = [raw.lower()]
+    try:
+        real = os.path.realpath(raw)
+    except OSError:
+        real = raw
+    if real.lower() not in tokens:
+        tokens.append(real.lower())
+    return tuple(t for t in tokens if t)
+
+
+def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     """True iff the accumulated (lowercased) screen shows the workspace-trust modal for
     the harness-created scratch cwd. Conjunction = trust header AND a y/n choice string
-    AND the run-unique cwd token — the token keeps the auto-answer scoped to the exact
-    directory the harness allocated (which is never derived from PR/branch content)."""
+    AND the run-unique cwd path token — path-scoping keeps the auto-answer bound to the
+    exact directory the harness allocated (never derived from PR/branch content)."""
     if _CLAUDE_TUI_TRUST_HEADER not in screen:
         return False
     if _CLAUDE_TUI_TRUST_PROMPT not in screen and _CLAUDE_TUI_TRUST_CHOICE not in screen:
         return False
-    return (cwd_token in screen) if cwd_token else True
+    return any(tok in screen for tok in cwd_tokens) if cwd_tokens else True
 
 
 # Residual C0 control chars (excluding \n) to strip from an evidence tail AFTER ANSI/OSC
@@ -1476,11 +1494,12 @@ def _run_claude_tui_session(
     # once, strictly PRE-SUBMIT; gate the paste on editor quiescence AFTER real
     # post-gate output (never on pre-output silence, which would race a late modal).
     detector_armed = True  # trust auto-answer live ONLY until we paste
-    trust_seen = False
+    trust_seen = False  # our path-scoped conjunction matched + we answered
     trust_answered = False
+    gate_signature_seen = False  # a trust-gate signature appeared (recognized OR not)
     ready_since_output = False  # >=1 novel content event AFTER the gate resolved
     last_novel = start_monotonic
-    cwd_token = (os.path.basename(str(cwd).rstrip("/")) or str(cwd)).lower()
+    cwd_tokens = _cwd_trust_tokens(cwd)  # run-unique FULL-path tokens (not the bare basename)
 
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
@@ -1526,6 +1545,7 @@ def _run_claude_tui_session(
 
     try:
         while time.monotonic() < deadline:
+            novel_this_iter = False  # substantive new content arrived this iteration
             if master_fd is not None:
                 readable, _, _ = select.select([master_fd], [], [], _CLAUDE_TUI_READ_INTERVAL_S)
                 if readable:
@@ -1548,13 +1568,7 @@ def _run_claude_tui_session(
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
                             last_novel = now_novel
-                            # ah#196/#223: novel content ARMS editor-readiness only
-                            # once the gate is resolved (modal answered, or no modal
-                            # seen). The modal's OWN render is excluded — answering it
-                            # (below) resets ``ready_since_output`` so the post-answer
-                            # welcome burst is what actually arms quiescence.
-                            if not prompt_sent and (trust_answered or not trust_seen):
-                                ready_since_output = True
+                            novel_this_iter = True
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed
                         # the slave side, so no further output can arrive. Without this
@@ -1586,32 +1600,52 @@ def _run_claude_tui_session(
             # timer into a possibly-modal/unready screen.
             if not prompt_sent:
                 screen = _tui_screen_text(terminal_bytes)
-                if detector_armed and not trust_answered and _tui_trust_modal_present(screen, cwd_token):
+                # A trust-gate SIGNATURE is on screen (header or the y/n prompt) —
+                # whether or not our path-scoped conjunction recognized it. Latch it:
+                # while a gate signature is present and UNCLEARED we must NOT arm
+                # readiness (an unrecognized/version-drifted modal must fail CLOSED —
+                # never paste the review into its y/n field, the reproduced bug).
+                if _CLAUDE_TUI_TRUST_HEADER in screen or _CLAUDE_TUI_TRUST_PROMPT in screen:
+                    gate_signature_seen = True
+                answered_this_iter = False
+                if detector_armed and not trust_answered and _tui_trust_modal_present(screen, cwd_tokens):
                     trust_seen = True
                     try:
                         os.write(master_fd, _CLAUDE_TUI_TRUST_ANSWER)
                     except OSError:
                         return _finish(1, "", "claude_tui_submit_failed")
                     trust_answered = True
+                    answered_this_iter = True
                     last_heartbeat = now
                     ready_since_output = False  # require NEW output after the answer
+                # Editor-readiness ARMS on post-gate novel content: only once no gate
+                # signature is blocking (or we cleared it), and never on the modal's own
+                # render (the answer this iteration is excluded).
+                if novel_this_iter and not answered_this_iter and (trust_answered or not gate_signature_seen):
+                    ready_since_output = True
                 # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.
                 if trust_answered and _CLAUDE_TUI_TRUST_REJECT in screen:
                     return _finish(proc.poll() or 1, "", "claude_tui_workspace_trust_blocked")
                 # Readiness deadline, evaluated BEFORE the generic stall so a startup
-                # gate is never mislabeled ``claude_tui_stalled``. A modal we saw but
-                # couldn't clear -> trust_blocked; no modal but never-ready -> not_ready.
+                # gate is never mislabeled ``claude_tui_stalled``. A gate signature we
+                # never cleared (unanswered/unrecognized) -> trust_blocked; otherwise
+                # (no gate, OR a gate we answered but the editor never became ready) ->
+                # editor_not_ready (R6: an answered gate is an editor-readiness failure;
+                # a ``y``-rejected gate is caught by the reject branch above).
                 if now - start_monotonic >= _CLAUDE_TUI_READY_DEADLINE_S:
                     reason = (
-                        "claude_tui_workspace_trust_blocked" if trust_seen else "claude_tui_editor_not_ready"
+                        "claude_tui_workspace_trust_blocked"
+                        if (gate_signature_seen and not trust_answered)
+                        else "claude_tui_editor_not_ready"
                     )
                     return _finish(proc.poll() or 1, "", reason)
                 # Submit only when the editor is quiescent AFTER post-gate output, past
-                # the floor. Disarm the trust detector BEFORE the paste (the review
-                # prompt itself contains the trigger strings — its echo must not answer).
+                # the floor, and no gate signature is still blocking. Disarm the trust
+                # detector BEFORE the paste (the review prompt itself contains the
+                # trigger strings — its echo must not answer).
                 if (
                     ready_since_output
-                    and not (trust_seen and not trust_answered)
+                    and (trust_answered or not gate_signature_seen)
                     and now - last_novel >= _CLAUDE_TUI_READY_QUIESCENCE_S
                     and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S
                 ):
@@ -2033,11 +2067,16 @@ def _exec_claude_tui_leg(
         "claude_tui_editor_not_ready": "editor never reached prompt-ready state",
     }
     if log_text in _typed_degraded and status != "OK":
+        status = "DEGRADED"
         text = review_text or f"{log_text}: {_typed_degraded[log_text]}"
-        if pty_tail:
-            text = f"{text}\n[pty-tail] {pty_tail}"
-        return "DEGRADED", text
-    return status, review_text or log_text
+    else:
+        text = review_text or log_text
+    # R3: the bounded, redacted PTY tail must reach the leg result for EVERY non-OK
+    # failure (submit_failed / pty_eof / missing_canonical / timeout too), not just the
+    # typed-degraded trio — ``text`` propagates end-to-end to ``PanelLegResult``.
+    if status != "OK" and pty_tail and pty_tail not in text:
+        text = f"{text}\n[pty-tail] {pty_tail}" if text else f"[pty-tail] {pty_tail}"
+    return status, text
 
 
 def _exec_claude_agent_view_attempt(

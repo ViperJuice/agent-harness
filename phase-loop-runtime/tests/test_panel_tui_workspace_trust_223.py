@@ -146,6 +146,92 @@ def test_post_submit_trigger_text_does_not_block_or_inject(tmp_path, monkeypatch
     assert "AGREE" in text
 
 
+def test_production_shaped_cwd_full_path_token_answers(tmp_path, monkeypatch):
+    """CR F1/R5: production allocates ``mkdtemp('pl-panel-')/out`` — basename ``out`` is
+    vacuous. The modal must be answered via the run-unique FULL path, so a production
+    ``<uniq>/out`` cwd still clears the gate and completes."""
+    _fast_timing(monkeypatch)
+    out = tmp_path / "out"  # basename == "out", like production
+    out.mkdir()
+    script = (
+        _MODAL
+        + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; "
+        + "printf '\\nClaude Code v2.1.208\\nmanual mode on ready now\\n'; "
+        + "printf 'fine.\\n\\nAGREE\\n' > panel-claude.txt; sleep 3"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=out, prompt="review this\n",
+        output_file=out / "panel-claude.txt", timeout_s=30,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=30,
+    )
+    assert status == "claude_tui_file_output", f"full-path token must clear the gate; got {status!r}"
+    assert (out / "answer.txt").read_text().strip() == "y"
+
+
+def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch):
+    """CR F1/R5 (negative): a trust modal for a DIFFERENT directory whose basename is
+    also ``out`` must NOT be auto-answered (the old bare-basename token would have
+    vacuously matched). No ``y`` is sent; the gate is never cleared."""
+    _fast_timing(monkeypatch, ready_deadline=3.0, stall=120)
+    out = tmp_path / "out"
+    out.mkdir()
+    # Modal for a FOREIGN path (basename "out", different full path than our cwd).
+    script = (
+        "printf 'Permission Required: Accessing workspace:\\n/tmp/some-other-run/out\\n"
+        "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:'; "
+        "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; sleep 60"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=out, prompt="review this\n",
+        output_file=out / "panel-claude.txt", timeout_s=120,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=120,
+    )
+    # The gate signature was seen but our path-scoped conjunction did NOT match the
+    # foreign path, so we never answered and — crucially — never armed readiness / pasted
+    # the prompt into the y/n field. It fails CLOSED as trust_blocked (an uncleared gate),
+    # NOT by pasting the review into a foreign modal. And no stray "y" was written.
+    assert status == "claude_tui_workspace_trust_blocked", f"foreign-dir modal must fail closed; got {status!r}"
+    assert not (out / "answer.txt").exists(), "a stray y was written to a foreign-dir modal"
+
+
+def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, monkeypatch):
+    """CR F2/R6: a modal that IS answered but whose editor never reaches readiness is
+    ``claude_tui_editor_not_ready`` (an editor-readiness failure), NOT the misleading
+    ``claude_tui_workspace_trust_blocked``. (The prompt line is newline-terminated so the
+    cooked-mode echo of ``y`` produces no post-answer novel content — isolating the
+    "answered but no editor output" state, which in the real TUI is otherwise masked by
+    the redraw that follows the answer.)"""
+    _fast_timing(monkeypatch, ready_deadline=3.0, stall=120)
+    modal_nl = (
+        "printf 'Permission Required: Accessing workspace:\\n%s\\n"
+        "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:\\n' \"$PWD\"; "
+    )
+    script = modal_nl + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; sleep 60"
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=120,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=120,
+    )
+    assert (tmp_path / "answer.txt").read_text().strip() == "y", "the modal should have been answered"
+    assert status == "claude_tui_editor_not_ready", f"answered-but-unready must be editor_not_ready; got {status!r}"
+
+
+def test_non_typed_failure_also_carries_pty_tail(tmp_path, monkeypatch):
+    """CR F3/R3: the redacted tail must reach the leg result for EVERY non-OK failure,
+    not only the typed-degraded trio (a missing-canonical / eof / timeout too)."""
+    monkeypatch.setattr(pi, "_run_claude_tui_session",
+                        lambda **kw: (1, "", "claude_tui_missing_canonical_output", "diag tail Z"))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True)
+    status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+    assert status != "OK"
+    assert "[pty-tail] diag tail Z" in text, "non-typed failure dropped the diagnostic tail"
+
+
 def test_sanitized_pty_tail_redacts_strips_and_keeps_end(tmp_path):
     """The evidence tail strips ANSI + control bytes, is bounded, and keeps the END of
     the buffer (where the modal / reject context lives)."""
