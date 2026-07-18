@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `verification.json` records the live run phase alias (#85)
+
+`verification.json`'s `phase_alias` was re-derived from `.phase-loop/state.json:current_phase`,
+so it could disagree with the run's `terminal-summary.json` phase (and mis-attribute the phase)
+after a mid-run roadmap amendment changed `current_phase`. On the execute path the runner now
+threads the **live run alias** into `run_verification` (new optional `phase_alias` param), so the
+artifact is attributed to the phase that actually produced it. The `PHASE_LOOP_PHASE_ALIAS` env
+override still wins, and callers with no live run alias (hotfix / train re-verify) keep the
+`current_phase` fallback — behavior unchanged for them.
+
 ### Common options before the subcommand no longer silently reset (#84)
 
 `phase-loop --phase ROOM run` (and any common option placed BEFORE the subcommand —

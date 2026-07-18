@@ -14,6 +14,37 @@ from phase_loop_runtime.verification_evidence import (
 
 
 class VerificationEvidenceTest(unittest.TestCase):
+    def test_threaded_phase_alias_wins_over_current_phase(self):
+        # ah#85(b): verification.json must record the LIVE run alias threaded by the caller,
+        # not re-derive from state.json:current_phase (which drifts after a mid-run roadmap
+        # amendment). Here current_phase is OVERLAY but the run's alias is VIRTUALDEV.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".phase-loop").mkdir()
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            run_dir = repo / ".phase-loop/runs/test-run"
+
+            run_verification(
+                repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5,
+                phase_alias="VIRTUALDEV",
+            )
+            payload = json.loads((run_dir / "verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
+
+    def test_phase_alias_precedence_env_over_threaded_over_current_phase(self):
+        from phase_loop_runtime.verification_evidence import _phase_alias
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".phase-loop").mkdir()
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            self.assertEqual(_phase_alias(repo), "OVERLAY")                 # no alias -> current_phase
+            self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "VIRTUALDEV")  # threaded wins over current_phase
+            import os
+            from unittest.mock import patch
+            with patch.dict(os.environ, {"PHASE_LOOP_PHASE_ALIAS": "ENVWINS"}):
+                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")  # env escape-hatch wins
+
     def test_all_pass_commands_write_artifact_and_log(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

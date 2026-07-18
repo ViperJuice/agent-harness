@@ -311,6 +311,7 @@ def run_verification(
     timeout_s: float | None,
     operational_exemptions: list[Mapping[str, Any]] | None = None,
     python_pin: str | None = None,
+    phase_alias: str | None = None,
 ) -> VerificationResult:
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
@@ -392,7 +393,7 @@ def run_verification(
     result = VerificationResult(
         schema_version=SCHEMA_VERSION,
         run_id=run_path.name,
-        phase_alias=_phase_alias(repo_path),
+        phase_alias=_phase_alias(repo_path, phase_alias),
         commands=command_results,
         env_refresh=env_result,
         suite=suite_result,
@@ -779,11 +780,20 @@ def _resolve_run_dir(repo: Path, run_dir: Path) -> Path:
     return run_path
 
 
-def _phase_alias(repo: Path) -> str:
+def _phase_alias(repo: Path, provided: str | None = None) -> str:
+    # ah#85: resolve the verification artifact's phase alias, preferring (in order) an
+    # explicit operator env override, then a ``provided`` LIVE run alias threaded by the
+    # caller (the run that actually produced this verification), then ``current_phase``
+    # from state.json. Threading ``provided`` stops verification.json from mis-attributing
+    # the phase after a mid-run roadmap amendment changes ``current_phase`` (the env
+    # escape-hatch still wins; the state.json read remains the last-resort fallback for
+    # callers with no live run alias, e.g. hotfix / train re-verify).
     for key in ("PHASE_LOOP_PHASE_ALIAS", "PHASE_ALIAS"):
         value = os.environ.get(key)
         if value:
             return value
+    if provided:
+        return provided
     state_path = repo / ".phase-loop/state.json"
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))

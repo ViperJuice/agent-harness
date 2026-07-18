@@ -3510,6 +3510,8 @@ def run_loop(
                         roadmap=roadmap,
                         plan=verification_plan,
                         artifacts=artifacts,
+                        phase_alias=alias,  # ah#85: the live run alias, so verification.json
+                        # is attributed to this run's phase (not re-derived current_phase).
                     )
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
@@ -5966,6 +5968,7 @@ def _run_execute_verification(
     roadmap: Path,
     plan: Path,
     artifacts: dict[str, Path],
+    phase_alias: str | None = None,
 ) -> dict[str, object]:
     run_dir = artifacts.get("root")
     if run_dir is None:
@@ -6000,6 +6003,7 @@ def _run_execute_verification(
         float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
         operational_exemptions=operational_exemptions,
         python_pin=resolve_python_pin(roadmap, plan),
+        phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
     )
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
     validation = validate_verification_artifact(artifact_path)
