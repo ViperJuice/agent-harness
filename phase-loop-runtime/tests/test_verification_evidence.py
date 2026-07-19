@@ -435,19 +435,14 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_verification_artifact(artifact)
 
-    def test_tampered_end_offset_cannot_leak_next_stage_bytes(self):
-        # CR codex#1: a lying log_end_offset is clamped to the next stage's start, so a
-        # failing command's tail can never include the following stage's bytes.
+    def _tamper_end_and_validate(self, cmd0_argv):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             run_dir = repo / ".phase-loop/runs/test-run"
             run_verification(
                 repo,
                 run_dir,
-                [
-                    [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_MARK\\n'); sys.exit(1)"],
-                    [sys.executable, "-c", "print('CMD1_SECRET ' * 20)"],
-                ],
+                [cmd0_argv, [sys.executable, "-c", "print('CMD1_SECRET ' * 20)"]],
                 None,
                 None,
                 5,
@@ -456,10 +451,56 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             payload = json.loads(artifact.read_text(encoding="utf-8"))
             payload["commands"][0]["log_end_offset"] = 10_000_000  # lie: reach into cmd1
             artifact.write_text(json.dumps(payload), encoding="utf-8")
-            v = validate_verification_artifact(artifact)
-            tail = v.diagnostics[0]["raw_tail"]
-            self.assertIn("CMD0_MARK", tail)
-            self.assertNotIn("CMD1_SECRET", tail)
+            return validate_verification_artifact(artifact)
+
+    def test_tampered_end_offset_fails_closed_no_leak(self):
+        # CR codex#1: a lying log_end_offset (> the next stage's start) is an invalid
+        # recorded range -> fail closed to an empty tail, never the following stage's bytes.
+        v = self._tamper_end_and_validate(
+            [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_MARK\\n'); sys.exit(1)"]
+        )
+        d0 = v.diagnostics[0]
+        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
+        self.assertEqual(d0["raw_tail"], "")
+        self.assertEqual(d0["diagnostic_status"], "missing_output")
+
+    def test_tampered_end_on_zero_output_stage_cannot_leak_shared_start(self):
+        # CR codex#1 + gemini round 2: a zero-output failing stage shares its start offset
+        # with the next stage; the execution-order upper bound must still confine it so a
+        # tampered end cannot steal the next stage's bytes.
+        v = self._tamper_end_and_validate([sys.executable, "-c", "import sys; sys.exit(1)"])
+        d0 = v.diagnostics[0]
+        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
+        self.assertEqual(d0["raw_tail"], "")
+
+    def test_v2_failed_command_missing_failure_kind_is_rejected(self):
+        # CR codex#2 round 2: a v2 subprocess-backed failed stage must carry failure_kind;
+        # stripping it (e.g. to mislabel a timeout) is rejected at load.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "raise SystemExit(1)"]], None, None, 5)
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(payload["commands"][0]["failure_kind"], "nonzero_exit")
+            del payload["commands"][0]["failure_kind"]
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_verification_artifact(artifact)
+
+    def test_v2_failure_kind_inconsistent_with_exit_code_is_rejected(self):
+        # CR codex#2 round 2: a valid-enum-but-inconsistent value (timeout without exit 124)
+        # is rejected.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "raise SystemExit(1)"]], None, None, 5)
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["failure_kind"] = "timeout"  # exit is 1, not 124
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_verification_artifact(artifact)
 
     def test_raw_tail_byte_bounded_on_multibyte_output(self):
         # CR Fable#1: a multibyte / high-density-replacement tail still respects the cap.
