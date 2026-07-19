@@ -96,6 +96,21 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertTrue(r.not_applicable())
         self.assertFalse(r.has_gaps())
 
+    def test_mixed_roadmap_is_setup_error_at_runtime(self):
+        # CR codex round 3: a mixed roadmap (some criteria ID'd, some bare) must fail
+        # CLOSED at the runtime gate, not silently omit the bare goal.
+        r = self._cov(["EC-P1-1 — a", "bare goal b"], ["EC-P1-1 — proven by t"])
+        self.assertTrue(r.has_setup_errors())
+        self.assertFalse(r.has_gaps())
+
+    def test_dangling_ref_on_legacy_phase_is_gap(self):
+        # CR codex round 3: a plan referencing a goal ID against a legacy (no-ID) phase
+        # is a dangling gap, not a silent pass.
+        r = self._cov(["a bare goal"], ["EC-P1-99 — proven by t"])
+        self.assertTrue(r.has_gaps())
+        self.assertEqual(r.dangling_refs, ("EC-P1-99",))
+        self.assertFalse(r.not_applicable())
+
     def test_stale_sha_is_setup_error(self):
         r = self._cov(["EC-P1-1 — a"], ["EC-P1-1 — t"], break_sha=True)
         self.assertTrue(r.has_setup_errors())

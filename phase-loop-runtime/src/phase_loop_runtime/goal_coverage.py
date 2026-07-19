@@ -172,10 +172,21 @@ def check_goal_coverage(
         return _result(setup_diagnostics=(f"phase_alias_not_found:{alias}",))
 
     declared = tuple(match.declared_exit_criteria_ids)
-    if not declared:
-        return _result(applicable=False)  # legacy phase, opt-out — no gate
+    # Mixed-mode (some criteria ID'd, some bare) is a malformed roadmap — the offline
+    # `roadmap_lint` (H) check flags it, but the RUNTIME gate must not trust such a
+    # roadmap and silently omit the bare goal (CR codex). Fail closed as a setup error.
+    if declared and len(declared) < len(match.exit_criteria):
+        return _result(setup_diagnostics=(f"mixed_exit_criteria_ids:{match.alias} — some exit-criteria lack an EC-ID",))
 
     refs = extract_plan_goal_refs(plan_path)
+    if not declared:
+        # Legacy phase (no goal IDs). Only truly not_applicable when the plan ALSO
+        # references no goal IDs; a plan reference to a nonexistent goal is a dangling
+        # gap (CR codex — every unknown EC-ID reference is a contract_bug).
+        if not refs:
+            return _result(applicable=False)
+        return _result(applicable=True, referenced_ids=tuple(sorted(refs)), dangling_refs=tuple(sorted(refs)))
+
     declared_set = set(declared)
     return _result(
         applicable=True,
