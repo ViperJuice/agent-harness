@@ -33,6 +33,7 @@ DIAGNOSTIC_TAIL_BYTES = 4096
 FAILURE_KIND_TIMEOUT = "timeout"
 FAILURE_KIND_ERROR = "error"
 FAILURE_KIND_NONZERO_EXIT = "nonzero_exit"
+_VALID_FAILURE_KINDS = frozenset({FAILURE_KIND_TIMEOUT, FAILURE_KIND_ERROR, FAILURE_KIND_NONZERO_EXIT})
 
 # ah#90: evidence-provenance labels. Reconcile can adopt completion evidence from more than one
 # source; the label makes the provenance explicit so a committed prose closeout can never be read
@@ -833,25 +834,67 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
-def _stage_raw_tail(log_bytes: bytes, stage: Any) -> tuple[str, bool]:
-    """agent-harness#209: slice a failing stage's OWN bytes from verification.log
-    using its EXACT recorded ``[log_offset, log_end_offset)`` region (captured at run
-    time, never reconstructed post-hoc), then return a bounded tail + a truncation
-    flag. A stage with no recorded region (e.g. a v1 artifact, or an env_refresh that
-    ran no subprocess) yields ``("", False)`` — the caller flags that as
-    ``missing_output`` while still emitting typed exit context."""
+def _all_stage_starts(result: VerificationResult) -> list[int]:
+    """CR codex#1: every stage's recorded ``log_offset`` (commands + env_refresh +
+    suite), so a failing stage's slice can be clamped to the NEXT stage's start —
+    guaranteeing exact-stage isolation even if a tampered ``log_end_offset`` claims a
+    region that would reach into another stage's authenticated bytes."""
+    starts: list[int] = []
+    for command in result.commands:
+        if isinstance(command.log_offset, int):
+            starts.append(command.log_offset)
+    for stage in (result.env_refresh, result.suite):
+        off = getattr(stage, "log_offset", None) if stage is not None else None
+        if isinstance(off, int):
+            starts.append(off)
+    return sorted(starts)
+
+
+def _bounded_tail(region: bytes) -> tuple[str, bool]:
+    """CR Fable#1: return a tail whose UTF-8 byte length is <= DIAGNOSTIC_TAIL_BYTES
+    even for multibyte / binary output. Slice bytes, decode, then hard-trim on a char
+    boundary so ``errors='replace'`` (3 bytes per bad byte) can't blow the cap."""
+    truncated = len(region) > DIAGNOSTIC_TAIL_BYTES
+    text = region[-DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="replace")
+    encoded = text.encode("utf-8")
+    if len(encoded) > DIAGNOSTIC_TAIL_BYTES:
+        truncated = True
+        # drop a possibly-partial leading char so the final string is valid + bounded
+        text = encoded[-DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="ignore")
+    return text, truncated
+
+
+def _stage_raw_tail(log_bytes: bytes, stage: Any, next_start: int) -> tuple[str, bool, bool]:
+    """agent-harness#209: slice a failing stage's OWN bytes from verification.log using
+    its recorded ``[log_offset, log_end_offset)`` region (captured at run time, never
+    reconstructed post-hoc), clamped fail-closed to [0, next_start, len(log)] so it can
+    never include another stage's bytes. Returns (tail, truncated, range_valid). A stage
+    with no recorded region (v1 artifact, or an env_refresh that ran no subprocess) →
+    ``("", False, False)`` — the caller flags that ``missing_output`` while still
+    emitting typed exit context."""
     start = getattr(stage, "log_offset", None)
     end = getattr(stage, "log_end_offset", None)
-    if not isinstance(start, int) or not isinstance(end, int) or end <= start:
-        return "", False
-    region = log_bytes[start:end]
-    truncated = len(region) > DIAGNOSTIC_TAIL_BYTES
-    tail = region[-DIAGNOSTIC_TAIL_BYTES:]
-    return tail.decode("utf-8", errors="replace"), truncated
+    if not isinstance(start, int) or not isinstance(end, int):
+        return "", False, False
+    # Fail-closed clamp: never below 0, never past this stage's next-stage boundary or
+    # the log length, whatever the recorded end claims (CR codex#1).
+    upper = min(next_start, len(log_bytes))
+    lo = max(0, min(start, upper))
+    hi = max(lo, min(end, upper))
+    if hi <= lo:
+        return "", False, False
+    tail, truncated = _bounded_tail(log_bytes[lo:hi])
+    return tail, truncated, True
 
 
-def _stage_diagnostic(role: str, index: int | None, argv: list[str], stage: Any, log_bytes: bytes) -> dict[str, Any]:
-    raw_tail, truncated = _stage_raw_tail(log_bytes, stage)
+def _stage_diagnostic(
+    role: str, index: int | None, argv: list[str], stage: Any, log_bytes: bytes, next_start: int
+) -> dict[str, Any]:
+    raw_tail, truncated, _range_valid = _stage_raw_tail(log_bytes, stage, next_start)
+    # CR codex#2: only fall back to nonzero_exit when the stage records NO origin
+    # (v1 artifact, or an env_refresh with an externally-supplied exit_code that ran no
+    # subprocess). A recorded-but-unknown value is rejected at load, so it can't reach
+    # here — this default never escalates to a fabricated timeout/error.
     failure_kind = getattr(stage, "failure_kind", None) or FAILURE_KIND_NONZERO_EXIT
     return {
         "role": role,
@@ -872,16 +915,30 @@ def _build_failure_diagnostics(result: VerificationResult, log_bytes: bytes) -> 
     ``_nonzero_exit_findings`` traverses (commands -> env_refresh -> suite). Guaranteed
     non-empty whenever ``_nonzero_exit_findings`` is non-empty (identical stage set),
     which structurally enforces the #209 anti-scrubbing rule."""
+    starts = _all_stage_starts(result)
+
+    def _next_start(stage: Any) -> int:
+        off = getattr(stage, "log_offset", None)
+        if not isinstance(off, int):
+            return len(log_bytes)
+        later = [s for s in starts if s > off]
+        return later[0] if later else len(log_bytes)
+
     diagnostics: list[dict[str, Any]] = []
     for index, command in enumerate(result.commands):
         if command.exit_code != 0:
-            diagnostics.append(_stage_diagnostic("command", index, command.argv, command, log_bytes))
+            diagnostics.append(_stage_diagnostic("command", index, command.argv, command, log_bytes, _next_start(command)))
     if result.env_refresh is not None and result.env_refresh.exit_code != 0:
         diagnostics.append(
-            _stage_diagnostic("env_refresh", None, result.env_refresh.install_argv, result.env_refresh, log_bytes)
+            _stage_diagnostic(
+                "env_refresh", None, result.env_refresh.install_argv, result.env_refresh, log_bytes,
+                _next_start(result.env_refresh),
+            )
         )
     if result.suite is not None and result.suite.exit_code != 0:
-        diagnostics.append(_stage_diagnostic("suite", None, result.suite.argv, result.suite, log_bytes))
+        diagnostics.append(
+            _stage_diagnostic("suite", None, result.suite.argv, result.suite, log_bytes, _next_start(result.suite))
+        )
     return tuple(diagnostics)
 
 
@@ -986,7 +1043,11 @@ def _run_process(
         log_file.flush()
         exit_code = 124
         failure_kind = FAILURE_KIND_TIMEOUT
-    except FileNotFoundError as exc:
+    except OSError as exc:
+        # CR codex#3: not only FileNotFoundError — a PermissionError (non-executable
+        # target) or OSError(ENOEXEC) (bad interpreter/binary) is ALSO a stage failure,
+        # not an exception that should crash the whole verification. Record it as
+        # evidence (exit 127, failure_kind=error) so a diagnostic is still produced.
         log_file.write(f"{exc}\n".encode("utf-8", errors="replace"))
         log_file.flush()
         exit_code = 127
@@ -1067,8 +1128,9 @@ def _result_to_payload(result: VerificationResult) -> dict[str, Any]:
 
 
 def _apply_stage_v2_fields(payload: dict[str, Any], stage: Any) -> dict[str, Any]:
-    # agent-harness#209: additive schema-v2 stage fields, omit-if-None so a
-    # green-run / v1-shaped artifact stays lean and byte-stable.
+    # agent-harness#209: additive schema-v2 stage fields, omit-if-None. On a v2 run the
+    # offsets are always present; failure_kind is omitted on a passing stage (None) and
+    # a v1-shaped stage omits all three.
     if getattr(stage, "log_end_offset", None) is not None:
         payload["log_end_offset"] = stage.log_end_offset
     if getattr(stage, "failure_kind", None) is not None:
@@ -1307,6 +1369,16 @@ def _optional_str(data: Any, key: str) -> str | None:
     return _require_str(value, key)
 
 
+def _optional_failure_kind(data: Any) -> str | None:
+    # CR codex#2: failure_kind is a closed enum — reject an unknown value at load
+    # (-> malformed_artifact) rather than passing garbage through as if it were a
+    # runner-observed origin. None is allowed (v1 / no origin recorded).
+    value = _optional_str(data, "failure_kind")
+    if value is not None and value not in _VALID_FAILURE_KINDS:
+        raise ValueError(f"invalid failure_kind: {value!r}")
+    return value
+
+
 def _command_from_payload(data: Any) -> VerificationCommandEvidence:
     _require_keys(data, {"argv", "cwd", "exit_code", "duration_s", "log_offset"})
     return VerificationCommandEvidence(
@@ -1316,7 +1388,7 @@ def _command_from_payload(data: Any) -> VerificationCommandEvidence:
         duration_s=_require_float(data["duration_s"], "duration_s"),
         log_offset=_require_int(data["log_offset"], "log_offset"),
         log_end_offset=_optional_int(data, "log_end_offset"),
-        failure_kind=_optional_str(data, "failure_kind"),
+        failure_kind=_optional_failure_kind(data),
     )
 
 
@@ -1331,7 +1403,7 @@ def _env_refresh_from_payload(data: Any) -> VerificationEnvRefreshEvidence:
         exit_code=_require_int(data["exit_code"], "exit_code"),
         log_offset=_optional_int(data, "log_offset"),
         log_end_offset=_optional_int(data, "log_end_offset"),
-        failure_kind=_optional_str(data, "failure_kind"),
+        failure_kind=_optional_failure_kind(data),
     )
 
 
@@ -1343,5 +1415,5 @@ def _suite_from_payload(data: Any) -> VerificationSuiteEvidence:
         duration_s=_require_float(data["duration_s"], "duration_s"),
         log_offset=_optional_int(data, "log_offset"),
         log_end_offset=_optional_int(data, "log_end_offset"),
-        failure_kind=_optional_str(data, "failure_kind"),
+        failure_kind=_optional_failure_kind(data),
     )

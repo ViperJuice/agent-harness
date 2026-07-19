@@ -407,6 +407,73 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             self.assertIsNone(result.commands[0].log_end_offset)
             self.assertIsNone(result.commands[0].failure_kind)
 
+    def test_non_executable_target_is_evidence_not_a_crash(self):
+        # CR codex#3: a PermissionError (non-executable target) must be recorded as a
+        # failed stage (failure_kind=error), not crash run_verification.
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            target = repo / "noexec.sh"
+            target.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+            os.chmod(target, 0o644)
+            v = self._validate(repo, [[str(target)]])
+            self.assertFalse(v.ok)
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "error")
+
+    def test_load_rejects_unknown_failure_kind(self):
+        # CR codex#2: an out-of-enum failure_kind is rejected at load, not passed
+        # through as if runner-observed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "raise SystemExit(1)"]], None, None, 5)
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["failure_kind"] = "totally_bogus"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_verification_artifact(artifact)
+
+    def test_tampered_end_offset_cannot_leak_next_stage_bytes(self):
+        # CR codex#1: a lying log_end_offset is clamped to the next stage's start, so a
+        # failing command's tail can never include the following stage's bytes.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [
+                    [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_MARK\\n'); sys.exit(1)"],
+                    [sys.executable, "-c", "print('CMD1_SECRET ' * 20)"],
+                ],
+                None,
+                None,
+                5,
+            )
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["log_end_offset"] = 10_000_000  # lie: reach into cmd1
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            tail = v.diagnostics[0]["raw_tail"]
+            self.assertIn("CMD0_MARK", tail)
+            self.assertNotIn("CMD1_SECRET", tail)
+
+    def test_raw_tail_byte_bounded_on_multibyte_output(self):
+        # CR Fable#1: a multibyte / high-density-replacement tail still respects the cap.
+        from phase_loop_runtime.verification_evidence import DIAGNOSTIC_TAIL_BYTES
+
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c",
+                  f"import sys; sys.stdout.buffer.write(b'\\xe2\\x82\\xac' * {DIAGNOSTIC_TAIL_BYTES}); sys.exit(1)"]],
+            )
+            self.assertLessEqual(len(v.diagnostics[0]["raw_tail"].encode("utf-8")), DIAGNOSTIC_TAIL_BYTES)
+            self.assertTrue(v.diagnostics[0]["truncated"])
+
     def test_interpreter_blocker_surfaces_reason_not_scrubbed(self):
         # (j) a requires-python/pin mismatch synthesizes 127 evidence OUTSIDE
         # _run_process; its diagnostic must surface the "unavailable" reason.
