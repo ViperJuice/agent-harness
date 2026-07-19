@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reconcile/status survive a relocated repo root (#85)
+
+`.phase-loop/` state and events persist **absolute** repo/roadmap paths. When the directory
+was copied into a git worktree or the repo root moved/renamed (e.g.
+`/home/user/code/avatar-client` → `/mnt/workspace/worktrees/…`), `reconcile`/`status` compared
+the stored absolute roadmap path against the live one, found them unequal, and silently
+discarded every persisted phase status — replaying as all-unplanned. The roadmap
+path-equality gates in `reconcile` and `classifier` now match **repo-relative** (via the new
+`runtime_paths.roadmap_paths_match`, which keeps identical-absolute as a fast path and falls
+back to non-match when a path cannot be relativized), so persisted status and operator
+breakglass attestations survive relocation. Content-SHA provenance
+(`roadmap_sha256`/`phase_sha256`) remains the integrity backstop at every gate, so a genuinely
+different roadmap sharing the relative path is still rejected. A single informational
+`repo_relocated` ledger warning is emitted once per reconcile (whether the relocation is
+detected from the persisted snapshot or, for an events-only replay, from the first relocated
+event). Operator **breakglass SL-2 attestations** (`lane_ir_override`, `closeout_allow_unowned`)
+deliberately do **not** relocate: an operator authorization is bound to the repo root it was
+granted in, so those two gates stay fail-closed to the original absolute path and require
+re-attestation in the new location. `verification.json` is untouched.
+
 ### `verification.json` records the live run phase alias (#85)
 
 `verification.json`'s `phase_alias` was re-derived from `.phase-loop/state.json:current_phase`,

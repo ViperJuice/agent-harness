@@ -9,6 +9,7 @@ from .discovery import PLAN_RE, find_plan_artifact, manifest_plan_artifact, pars
 from .events import read_events
 from .models import BLOCKER_CLASSES, StateSnapshot, utc_now
 from .pipeline_adapter.branch_ops import REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX
+from .runtime_paths import roadmap_paths_match
 from .provenance import (
     phase_provenance_map,
     phase_sha256,
@@ -61,8 +62,17 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
     closeout_summary_by_phase: dict[str, dict[str, object]] = {}
     terminal_summary_by_phase: dict[str, dict[str, object]] = {}
     ledger_warnings.extend(_reconcile_plan_manifest(repo, roadmap, phases, read_only=read_only))
+    relocation_warned = False
     if snapshot:
-        same_roadmap = Path(snapshot.roadmap).expanduser().resolve() == roadmap.resolve()
+        same_roadmap, _relocated = roadmap_paths_match(snapshot.repo, snapshot.roadmap, repo, roadmap)
+        if same_roadmap and _relocated and not relocation_warned:
+            # ah#85(C): persisted state came from a different (moved/renamed/copied) repo
+            # root; we rebased it via repo-relative matching. Surface one informational
+            # portability warning instead of silently replaying as all-unplanned.
+            ledger_warnings.append(
+                _ledger_warning("state", str(snapshot.current_phase or ""), "", "repo_relocated")
+            )
+            relocation_warned = True
         if same_roadmap:
             for phase, status in snapshot.phases.items():
                 if phase not in phases:
@@ -119,8 +129,16 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
     for raw_event in read_events(repo):
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         event, normalized_legacy_executor_closeout = _normalize_legacy_executor_closeout_action(event)
-        if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
+        event_matches, event_relocated = roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)
+        if not event_matches:
             continue
+        if event_relocated and not relocation_warned:
+            # ah#85(C): emit the single portability warning here too, so an events-only reconcile
+            # (no snapshot in the copied `.phase-loop/`) still surfaces the relocation exactly once.
+            ledger_warnings.append(
+                _ledger_warning("event", str(event.get("phase", "")).upper(), "", "repo_relocated")
+            )
+            relocation_warned = True
         if normalized_legacy_executor_closeout and not legacy_executor_closeout_action_warned:
             ledger_warnings.append(
                 _ledger_warning(
@@ -724,7 +742,6 @@ def _plan_blocker(repo: Path, roadmap: Path, phase: str) -> dict:
 
 
 def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tuple[str, ...]:
-    roadmap_path = roadmap.resolve()
     plan_path = plan.resolve()
     current_roadmap_sha = roadmap_sha256(roadmap)
     current_phase_sha = phase_sha256(roadmap, phase)
@@ -736,11 +753,19 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
             continue
         if str(event.get("phase", "")).upper() != phase.upper():
             continue
+        # ah#85(C): operator BREAKGLASS SL-2 attestations do NOT relocate. Unlike repo-own,
+        # content-SHA-provenanced phase status, an operator authorization is bound to the repo
+        # root it was granted in; a relocated `.phase-loop/` must NOT transfer it to a different
+        # root (even with byte-identical roadmap content). Fail closed to the original path;
+        # re-attestation is required in the new location.
         try:
+            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
         except OSError:
             continue
-        if event_roadmap != roadmap_path:
+        # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
+        # path must not transfer the authorization to a different repo root.
+        if event_repo != repo.resolve() or event_roadmap != roadmap.resolve():
             continue
         metadata = event.get("metadata")
         payload = metadata.get("runner.lane_ir_override_invoked") if isinstance(metadata, dict) else None
@@ -770,7 +795,6 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
     drifted since it was written) no longer matches and does NOT authorize a later
     closeout.
     """
-    roadmap_path = roadmap.resolve()
     current_roadmap_sha = roadmap_sha256(roadmap)
     current_phase_sha = phase_sha256(roadmap, phase)
     plan = find_plan_artifact(repo, phase, roadmap=roadmap)
@@ -782,11 +806,18 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
             continue
         if str(event.get("phase", "")).upper() != phase.upper():
             continue
+        # ah#85(C): operator BREAKGLASS SL-2 attestations do NOT relocate (see _lane_ir_override).
+        # An `closeout_allow_unowned` authorization is bound to the repo root it was granted in;
+        # a relocated `.phase-loop/` must NOT transfer it to a different root. Fail closed to the
+        # original path; re-attestation is required in the new location.
         try:
+            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
         except OSError:
             continue
-        if event_roadmap != roadmap_path:
+        # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
+        # path must not transfer the authorization to a different repo root.
+        if event_repo != repo.resolve() or event_roadmap != roadmap.resolve():
             continue
         metadata = event.get("metadata")
         payload = metadata.get("runner.closeout_allow_unowned_invoked") if isinstance(metadata, dict) else None
@@ -841,7 +872,7 @@ def _clean_manual_repair_complete_supersedes_blocker(
     stale_blocked_after_complete = False
     for raw_event in read_events(repo):
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
-        if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
+        if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
             continue
         event_phase = str(event.get("phase", "")).upper()
         status = event.get("status")
@@ -881,7 +912,7 @@ def _clean_verified_dirty_closeout_recovery_supersedes_blocker(
     latest_event: dict | None = None
     for raw_event in read_events(repo):
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
-        if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
+        if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
             continue
         # BREAKGLASS SL-2: operator attestation events are not closeout/terminal events;
         # they must not shadow the verified-dirty-closeout recovery event as latest_event.
