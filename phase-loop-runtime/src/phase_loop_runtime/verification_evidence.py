@@ -15,9 +15,25 @@ from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# agent-harness#209: v1 artifacts (no per-stage log_end_offset/failure_kind) still
+# load — the v2 fields are additive and default to None on a v1 payload.
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})
 ARTIFACT_NAME = "verification.json"
 LOG_NAME = "verification.log"
+
+# agent-harness#209: per-stage raw-diagnostic tail cap. Bounds record/memory size;
+# it is NOT a secret-leak mitigation (a secret is tiny) — closeout-diagnostic
+# redaction is a separate follow-up. See the verification-evidence contract doc.
+DIAGNOSTIC_TAIL_BYTES = 4096
+
+# agent-harness#209: typed failure origins, observed by the runner at execution time
+# (not re-derived from exit_code — a child that itself returns 124/127 must NOT be
+# mislabeled timeout/error).
+FAILURE_KIND_TIMEOUT = "timeout"
+FAILURE_KIND_ERROR = "error"
+FAILURE_KIND_NONZERO_EXIT = "nonzero_exit"
+_VALID_FAILURE_KINDS = frozenset({FAILURE_KIND_TIMEOUT, FAILURE_KIND_ERROR, FAILURE_KIND_NONZERO_EXIT})
 
 # ah#90: evidence-provenance labels. Reconcile can adopt completion evidence from more than one
 # source; the label makes the provenance explicit so a committed prose closeout can never be read
@@ -391,6 +407,10 @@ class VerificationCommandEvidence:
     exit_code: int
     duration_s: float
     log_offset: int
+    # agent-harness#209 (schema v2, additive): exact end of this stage's bytes in
+    # verification.log + the runner-observed failure origin. None on a v1 artifact.
+    log_end_offset: int | None = None
+    failure_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -399,6 +419,9 @@ class VerificationEnvRefreshEvidence:
     manifests: list[str]
     install_argv: list[str]
     exit_code: int
+    log_offset: int | None = None
+    log_end_offset: int | None = None
+    failure_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -406,6 +429,9 @@ class VerificationSuiteEvidence:
     argv: list[str]
     exit_code: int
     duration_s: float
+    log_offset: int | None = None
+    log_end_offset: int | None = None
+    failure_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -439,6 +465,10 @@ class VerificationArtifactValidation:
     log_path: str | None = None
     exit_summary: dict[str, Any] | None = None
     findings: tuple[str, ...] = ()
+    # agent-harness#209: per-failing-stage raw diagnostics (typed failure_kind +
+    # bounded raw-output tail, in declared order). Populated only on the
+    # nonzero_exit branch (authenticated log). Empty on ok / integrity failures.
+    diagnostics: tuple[dict[str, Any], ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -448,6 +478,7 @@ class VerificationArtifactValidation:
             "log_path": self.log_path,
             "exit_summary": self.exit_summary or {},
             "findings": list(self.findings),
+            "diagnostics": [dict(item) for item in self.diagnostics],
         }
 
 
@@ -490,6 +521,12 @@ def run_verification(
             # the evidence gate even for a commands-only plan.
             log_file.write(f"suite interpreter unavailable: {interpreter.blocker}\n".encode("utf-8"))
             log_file.flush()
+            # agent-harness#209: this synthetic 127 evidence is built OUTSIDE
+            # ``_run_process``; point its log region at the "unavailable" line above
+            # and tag failure_kind=error so the diagnostic surfaces the blocker
+            # reason (requires-python / pin mismatch) instead of degrading to a
+            # scrubbed ``missing_output``.
+            blocker_end = log_file.tell()
             env_result = None
             if suite_command is not None:
                 command_results = []
@@ -497,6 +534,9 @@ def run_verification(
                     argv=list(suite_command),
                     exit_code=127,
                     duration_s=0.0,
+                    log_offset=0,
+                    log_end_offset=blocker_end,
+                    failure_kind=FAILURE_KIND_ERROR,
                 )
             else:
                 # No suite to carry the non-zero exit — synthesize a 127 command so
@@ -507,7 +547,9 @@ def run_verification(
                         cwd=str(repo_path),
                         exit_code=127,
                         duration_s=0.0,
-                        log_offset=log_file.tell(),
+                        log_offset=0,
+                        log_end_offset=blocker_end,
+                        failure_kind=FAILURE_KIND_ERROR,
                     )
                 ]
                 suite_result = None
@@ -535,6 +577,12 @@ def run_verification(
                     argv=suite_evidence.argv,
                     exit_code=suite_evidence.exit_code,
                     duration_s=suite_evidence.duration_s,
+                    # agent-harness#209: carry the suite's exact log region + observed
+                    # failure origin (previously discarded) so the gate can localize
+                    # a suite failure's diagnostic.
+                    log_offset=suite_evidence.log_offset,
+                    log_end_offset=suite_evidence.log_end_offset,
+                    failure_kind=suite_evidence.failure_kind,
                 )
 
     finished_at = _utc_now()
@@ -602,8 +650,13 @@ def load_verification_artifact(path: Path) -> VerificationResult:
             "log_sha256",
         },
     )
-    if data["schema_version"] != SCHEMA_VERSION:
-        raise ValueError(f"unsupported verification evidence schema_version: {data['schema_version']}")
+    # CR codex#4 (round 4): validate the TYPE before the frozenset membership test — a
+    # tampered non-int (e.g. ``[]`` / ``{}``) is unhashable and ``x not in frozenset``
+    # would raise an UNCAUGHT TypeError (the validator catches only OSError/JSONDecodeError/
+    # ValueError), crashing closeout instead of returning a ``malformed_artifact`` verdict.
+    schema_version = _require_int(data["schema_version"], "schema_version")
+    if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"unsupported verification evidence schema_version: {schema_version}")
     commands = [_command_from_payload(item) for item in _require_list(data["commands"], "commands")]
     env_refresh = None
     if data["env_refresh"] is not None:
@@ -611,8 +664,9 @@ def load_verification_artifact(path: Path) -> VerificationResult:
     suite = None
     if data["suite"] is not None:
         suite = _suite_from_payload(data["suite"])
+    _validate_v2_failure_kinds(schema_version, commands, suite, env_refresh)
     return VerificationResult(
-        schema_version=data["schema_version"],
+        schema_version=schema_version,
         run_id=_require_str(data["run_id"], "run_id"),
         phase_alias=_require_str(data["phase_alias"], "phase_alias"),
         commands=commands,
@@ -622,6 +676,49 @@ def load_verification_artifact(path: Path) -> VerificationResult:
         finished_at=_require_str(data["finished_at"], "finished_at"),
         log_sha256=_require_str(data["log_sha256"], "log_sha256"),
     )
+
+
+def _validate_v2_failure_kinds(
+    schema_version: int,
+    commands: list[VerificationCommandEvidence],
+    suite: "VerificationSuiteEvidence | None",
+    env_refresh: "VerificationEnvRefreshEvidence | None",
+) -> None:
+    """CR codex#2 (round 2) + Fable (round 3): a schema-v2 SUBPROCESS-backed stage that
+    FAILED must carry a runner-observed ``failure_kind`` — the runner always records one,
+    so its absence means a tampered/malformed artifact (a v2 timeout with its field
+    stripped would otherwise load and mislabel as ``nonzero_exit``). A stage is
+    subprocess-backed iff it recorded a ``log_offset`` (an int): commands and suite always
+    are; an env_refresh is only exempt when it ran NO subprocess (externally-supplied
+    ``exit_code`` -> ``log_offset is None``). Also enforce the runner's own invariants:
+    ``timeout`` <=> exit 124 and ``error`` <=> exit 127, so a valid-enum-but-inconsistent
+    value is rejected. (The reverse — a child that itself exits 124/127 relabelled
+    ``nonzero_exit`` — is intentionally NOT rejected: it is indistinguishable from a
+    genuine child 124/127 in the frozen artifact, a documented limitation.) v1 artifacts
+    are exempt (the field did not exist)."""
+    if schema_version < 2:
+        return
+    stages: list[tuple[str, Any]] = [("commands", c) for c in commands]
+    if suite is not None:
+        stages.append(("suite", suite))
+    if env_refresh is not None and isinstance(getattr(env_refresh, "log_offset", None), int):
+        stages.append(("env_refresh", env_refresh))
+    for label, stage in stages:
+        if stage.exit_code == 0:
+            # CR codex#4 (round 4): a PASSING v2 stage must carry NO failure origin. This
+            # closes a single-field pass/fail bypass — flipping a failed stage's exit_code
+            # 1->0 (log + failure_kind untouched) would otherwise read as green; the
+            # leftover non-null failure_kind now makes that single-field tamper fail closed
+            # (turning it green requires ALSO stripping failure_kind — a multi-field tamper).
+            if stage.failure_kind is not None:
+                raise ValueError(f"{label} passed (exit=0) but v2 evidence records failure_kind={stage.failure_kind}")
+            continue
+        if stage.failure_kind is None:
+            raise ValueError(f"{label} failed (exit={stage.exit_code}) but v2 evidence omits failure_kind")
+        if stage.failure_kind == FAILURE_KIND_TIMEOUT and stage.exit_code != 124:
+            raise ValueError(f"{label} failure_kind=timeout inconsistent with exit_code={stage.exit_code}")
+        if stage.failure_kind == FAILURE_KIND_ERROR and stage.exit_code != 127:
+            raise ValueError(f"{label} failure_kind=error inconsistent with exit_code={stage.exit_code}")
 
 
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
@@ -638,7 +735,7 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             findings=(str(exc),),
         )
     try:
-        actual_log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
+        log_bytes = log_path.read_bytes()
     except OSError as exc:
         return VerificationArtifactValidation(
             ok=False,
@@ -648,7 +745,11 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             exit_summary=_exit_summary(result),
             findings=(str(exc),),
         )
+    actual_log_sha256 = hashlib.sha256(log_bytes).hexdigest()
     if actual_log_sha256 != result.log_sha256:
+        # agent-harness#209: the log is UNAUTHENTICATED here — do NOT surface a raw
+        # tail from it (it could be forged/misleading). The verdict blocks on the
+        # more-severe integrity failure, not a stage diagnostic.
         return VerificationArtifactValidation(
             ok=False,
             code="log_sha256_mismatch",
@@ -659,6 +760,21 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
         )
     nonzero = _nonzero_exit_findings(result)
     if nonzero:
+        # agent-harness#209: the log is AUTHENTICATED at this point (sha matched), so
+        # a bounded per-stage raw tail is trustworthy. Localize each failing stage.
+        diagnostics = _build_failure_diagnostics(result, log_bytes)
+        # Anti-scrubbing invariant (structural, NOT a strippable assert): a
+        # nonzero-exit-class failed verdict can never carry empty diagnostics.
+        # ``_build_failure_diagnostics`` iterates the identical stage set as
+        # ``_nonzero_exit_findings``, so this is non-empty by construction; the guard
+        # below fails closed to the raw findings if that invariant is ever violated.
+        if not diagnostics:  # pragma: no cover - construction guarantees non-empty
+            diagnostics = tuple(
+                {"role": "unknown", "index": None, "argv": [], "exit_code": None,
+                 "failure_kind": FAILURE_KIND_NONZERO_EXIT, "raw_tail": finding,
+                 "truncated": False, "diagnostic_status": "present"}
+                for finding in nonzero
+            )
         return VerificationArtifactValidation(
             ok=False,
             code="nonzero_exit",
@@ -666,6 +782,7 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             log_path=str(log_path),
             exit_summary=_exit_summary(result),
             findings=tuple(nonzero),
+            diagnostics=diagnostics,
         )
     return VerificationArtifactValidation(
         ok=True,
@@ -766,6 +883,124 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
+def _stage_bounds(result: VerificationResult, log_len: int) -> dict[int, tuple[int, int]]:
+    """CR (rounds 2-3): each stage's authoritative byte window ``(lower, upper)`` from its
+    EXECUTION-order neighbours (env_refresh -> commands -> suite) — ``upper`` = the NEXT
+    stage's recorded ``log_offset`` (``log_len`` for the last), ``lower`` = the PREVIOUS
+    stage's recorded ``log_end_offset`` (``0`` for the first). Both edges are needed:
+    round 2 (codex+gemini) showed a tampered END leaking the NEXT stage's bytes; round 3
+    (Fable) showed a tampered backward START leaking a PRECEDING stage's bytes. Positional
+    (not a sorted/strict-``>`` scan) so a zero-output stage that shares a start offset with
+    its neighbour is still bounded correctly. Keyed by ``id(stage)`` (distinct instances)."""
+    ordered: list[Any] = []
+    if result.env_refresh is not None and isinstance(getattr(result.env_refresh, "log_offset", None), int):
+        ordered.append(result.env_refresh)
+    for command in result.commands:
+        if isinstance(command.log_offset, int):
+            ordered.append(command)
+    if result.suite is not None and isinstance(getattr(result.suite, "log_offset", None), int):
+        ordered.append(result.suite)
+    bounds: dict[int, tuple[int, int]] = {}
+    for i, stage in enumerate(ordered):
+        prev_end = ordered[i - 1].log_end_offset if i > 0 else 0
+        lower = prev_end if isinstance(prev_end, int) else 0
+        upper = ordered[i + 1].log_offset if i + 1 < len(ordered) else log_len
+        bounds[id(stage)] = (lower, upper)
+    return bounds
+
+
+def _bounded_tail(region: bytes) -> tuple[str, bool]:
+    """CR Fable#1: return a tail whose UTF-8 byte length is <= DIAGNOSTIC_TAIL_BYTES
+    even for multibyte / binary output. Slice bytes, decode, then hard-trim on a char
+    boundary so ``errors='replace'`` (3 bytes per bad byte) can't blow the cap."""
+    truncated = len(region) > DIAGNOSTIC_TAIL_BYTES
+    text = region[-DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="replace")
+    encoded = text.encode("utf-8")
+    if len(encoded) > DIAGNOSTIC_TAIL_BYTES:
+        truncated = True
+        # drop a possibly-partial leading char so the final string is valid + bounded
+        text = encoded[-DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="ignore")
+    return text, truncated
+
+
+def _stage_raw_tail(log_bytes: bytes, stage: Any, lower: int, upper: int) -> tuple[str, bool, bool]:
+    """agent-harness#209: slice a failing stage's OWN bytes from verification.log using
+    its recorded ``[log_offset, log_end_offset)`` region (captured at run time, never
+    reconstructed post-hoc). Returns (tail, truncated, range_valid). The recorded range is
+    VALIDATED against BOTH execution-order neighbour bounds, not clamped-and-guessed: in the
+    normal flow stages are written contiguously so ``start`` == ``lower`` (prev stage's end)
+    and ``end`` == ``upper`` (next stage's start) exactly. Any range violating
+    ``lower <= start <= end <= upper`` (with ``0 <= lower`` and ``upper <= len(log)``) is a
+    tampered/malformed artifact — FAIL CLOSED to an empty tail rather than surface bytes
+    that may belong to another stage. Round 2 (codex+gemini) needed the upper bound (a
+    tampered END leaking the NEXT stage); round 3 (Fable) needed the lower bound (a tampered
+    backward START leaking a PRECEDING stage). A stage with no recorded region (v1 artifact,
+    or an env_refresh that ran no subprocess) yields ``("", False, False)`` — the caller
+    flags ``missing_output`` while still emitting typed exit context."""
+    start = getattr(stage, "log_offset", None)
+    end = getattr(stage, "log_end_offset", None)
+    if not isinstance(start, int) or not isinstance(end, int):
+        return "", False, False
+    if not (0 <= lower <= start <= end <= upper <= len(log_bytes)):
+        return "", False, False
+    if end == start:
+        return "", False, True  # a legitimately output-less stage (range valid, empty)
+    tail, truncated = _bounded_tail(log_bytes[start:end])
+    return tail, truncated, True
+
+
+def _stage_diagnostic(
+    role: str, index: int | None, argv: list[str], stage: Any, log_bytes: bytes, bounds: tuple[int, int]
+) -> dict[str, Any]:
+    lower, upper = bounds
+    raw_tail, truncated, _range_valid = _stage_raw_tail(log_bytes, stage, lower, upper)
+    # CR codex#2: only fall back to nonzero_exit when the stage records NO origin
+    # (v1 artifact, or an env_refresh with an externally-supplied exit_code that ran no
+    # subprocess). A recorded-but-unknown value is rejected at load, so it can't reach
+    # here — this default never escalates to a fabricated timeout/error.
+    failure_kind = getattr(stage, "failure_kind", None) or FAILURE_KIND_NONZERO_EXIT
+    return {
+        "role": role,
+        "index": index,
+        "argv": list(argv),
+        "exit_code": stage.exit_code,
+        "failure_kind": failure_kind,
+        "raw_tail": raw_tail,
+        "truncated": truncated,
+        # codex plan-review: distinguish a silent (zero-byte) failure from one whose
+        # output we preserved — a scrubbed/output-less failure is itself suspicious.
+        "diagnostic_status": "present" if raw_tail else "missing_output",
+    }
+
+
+def _build_failure_diagnostics(result: VerificationResult, log_bytes: bytes) -> tuple[dict[str, Any], ...]:
+    """Per-failing-stage typed diagnostics in the SAME declared order
+    ``_nonzero_exit_findings`` traverses (commands -> env_refresh -> suite). Guaranteed
+    non-empty whenever ``_nonzero_exit_findings`` is non-empty (identical stage set),
+    which structurally enforces the #209 anti-scrubbing rule."""
+    bounds = _stage_bounds(result, len(log_bytes))
+    full = (0, len(log_bytes))
+
+    diagnostics: list[dict[str, Any]] = []
+    for index, command in enumerate(result.commands):
+        if command.exit_code != 0:
+            diagnostics.append(
+                _stage_diagnostic("command", index, command.argv, command, log_bytes, bounds.get(id(command), full))
+            )
+    if result.env_refresh is not None and result.env_refresh.exit_code != 0:
+        diagnostics.append(
+            _stage_diagnostic(
+                "env_refresh", None, result.env_refresh.install_argv, result.env_refresh, log_bytes,
+                bounds.get(id(result.env_refresh), full),
+            )
+        )
+    if result.suite is not None and result.suite.exit_code != 0:
+        diagnostics.append(
+            _stage_diagnostic("suite", None, result.suite.argv, result.suite, log_bytes, bounds.get(id(result.suite), full))
+        )
+    return tuple(diagnostics)
+
+
 _LOGIN_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 
 
@@ -831,10 +1066,17 @@ def _run_process(
         process_argv = _relogin_shell_shim(process_argv, path_prepend)
     offset = log_file.tell()
     started = time.monotonic()
+    # agent-harness#209: failure_kind is the runner-OBSERVED origin (which branch
+    # ran), never re-derived from exit_code downstream — a child that itself returns
+    # 124/127 stays nonzero_exit, not timeout/error.
+    failure_kind: str | None = None
     if not process_argv:
         log_file.write(b"empty verification command argv\n")
         log_file.flush()
-        return VerificationCommandEvidence(command_argv, ".", 127, _duration(started), offset)
+        return VerificationCommandEvidence(
+            command_argv, ".", 127, _duration(started), offset,
+            log_end_offset=log_file.tell(), failure_kind=FAILURE_KIND_ERROR,
+        )
     try:
         completed = subprocess.run(
             process_argv,
@@ -849,6 +1091,8 @@ def _run_process(
         log_file.write(output)
         log_file.flush()
         exit_code = int(completed.returncode)
+        if exit_code != 0:
+            failure_kind = FAILURE_KIND_NONZERO_EXIT
     except subprocess.TimeoutExpired as exc:
         output = exc.output or b""
         if isinstance(output, str):
@@ -857,11 +1101,20 @@ def _run_process(
         log_file.write(f"\nverification command timed out after {timeout_s}s\n".encode("utf-8"))
         log_file.flush()
         exit_code = 124
-    except FileNotFoundError as exc:
+        failure_kind = FAILURE_KIND_TIMEOUT
+    except OSError as exc:
+        # CR codex#3: not only FileNotFoundError — a PermissionError (non-executable
+        # target) or OSError(ENOEXEC) (bad interpreter/binary) is ALSO a stage failure,
+        # not an exception that should crash the whole verification. Record it as
+        # evidence (exit 127, failure_kind=error) so a diagnostic is still produced.
         log_file.write(f"{exc}\n".encode("utf-8", errors="replace"))
         log_file.flush()
         exit_code = 127
-    return VerificationCommandEvidence(command_argv, ".", exit_code, _duration(started), offset)
+        failure_kind = FAILURE_KIND_ERROR
+    return VerificationCommandEvidence(
+        command_argv, ".", exit_code, _duration(started), offset,
+        log_end_offset=log_file.tell(), failure_kind=failure_kind,
+    )
 
 
 def _is_pip_invocation(argv: Sequence[str]) -> bool:
@@ -905,7 +1158,15 @@ def _record_env_refresh(
         install_argv = [str(item) for item in env_refresh] if isinstance(env_refresh, Sequence) and not isinstance(env_refresh, (str, bytes)) else []
         install_argv = _align_install_interpreter(install_argv, suite_interpreter)
     process = _run_process(repo, log_file, install_argv, timeout_s, path_prepend=path_prepend)
-    return VerificationEnvRefreshEvidence(triggered, manifests, install_argv, process.exit_code)
+    # agent-harness#209: carry the env-refresh subprocess's exact log region + observed
+    # failure origin so an env_refresh failure (at the HEAD of the log) is localized
+    # precisely, not lost to a whole-log tail.
+    return VerificationEnvRefreshEvidence(
+        triggered, manifests, install_argv, process.exit_code,
+        log_offset=process.log_offset,
+        log_end_offset=process.log_end_offset,
+        failure_kind=process.failure_kind,
+    )
 
 
 def _result_to_payload(result: VerificationResult) -> dict[str, Any]:
@@ -925,31 +1186,53 @@ def _result_to_payload(result: VerificationResult) -> dict[str, Any]:
     return payload
 
 
+def _apply_stage_v2_fields(payload: dict[str, Any], stage: Any) -> dict[str, Any]:
+    # agent-harness#209: additive schema-v2 stage fields, omit-if-None. On a v2 run the
+    # offsets are always present; failure_kind is omitted on a passing stage (None) and
+    # a v1-shaped stage omits all three.
+    if getattr(stage, "log_end_offset", None) is not None:
+        payload["log_end_offset"] = stage.log_end_offset
+    if getattr(stage, "failure_kind", None) is not None:
+        payload["failure_kind"] = stage.failure_kind
+    if getattr(stage, "log_offset", None) is not None and "log_offset" not in payload:
+        payload["log_offset"] = stage.log_offset
+    return payload
+
+
 def _command_to_payload(command: VerificationCommandEvidence) -> dict[str, Any]:
-    return {
-        "argv": list(command.argv),
-        "cwd": command.cwd,
-        "exit_code": command.exit_code,
-        "duration_s": command.duration_s,
-        "log_offset": command.log_offset,
-    }
+    return _apply_stage_v2_fields(
+        {
+            "argv": list(command.argv),
+            "cwd": command.cwd,
+            "exit_code": command.exit_code,
+            "duration_s": command.duration_s,
+            "log_offset": command.log_offset,
+        },
+        command,
+    )
 
 
 def _env_refresh_to_payload(env_refresh: VerificationEnvRefreshEvidence) -> dict[str, Any]:
-    return {
-        "triggered": env_refresh.triggered,
-        "manifests": list(env_refresh.manifests),
-        "install_argv": list(env_refresh.install_argv),
-        "exit_code": env_refresh.exit_code,
-    }
+    return _apply_stage_v2_fields(
+        {
+            "triggered": env_refresh.triggered,
+            "manifests": list(env_refresh.manifests),
+            "install_argv": list(env_refresh.install_argv),
+            "exit_code": env_refresh.exit_code,
+        },
+        env_refresh,
+    )
 
 
 def _suite_to_payload(suite: VerificationSuiteEvidence) -> dict[str, Any]:
-    return {
-        "argv": list(suite.argv),
-        "exit_code": suite.exit_code,
-        "duration_s": suite.duration_s,
-    }
+    return _apply_stage_v2_fields(
+        {
+            "argv": list(suite.argv),
+            "exit_code": suite.exit_code,
+            "duration_s": suite.duration_s,
+        },
+        suite,
+    )
 
 
 def _write_artifact_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -1130,6 +1413,31 @@ def _require_float(value: Any, field: str) -> float:
     return float(value)
 
 
+def _optional_int(data: Any, key: str) -> int | None:
+    # agent-harness#209: v2 stage fields are optional; a v1 artifact omits them.
+    value = data.get(key) if isinstance(data, Mapping) else None
+    if value is None:
+        return None
+    return _require_int(value, key)
+
+
+def _optional_str(data: Any, key: str) -> str | None:
+    value = data.get(key) if isinstance(data, Mapping) else None
+    if value is None:
+        return None
+    return _require_str(value, key)
+
+
+def _optional_failure_kind(data: Any) -> str | None:
+    # CR codex#2: failure_kind is a closed enum — reject an unknown value at load
+    # (-> malformed_artifact) rather than passing garbage through as if it were a
+    # runner-observed origin. None is allowed (v1 / no origin recorded).
+    value = _optional_str(data, "failure_kind")
+    if value is not None and value not in _VALID_FAILURE_KINDS:
+        raise ValueError(f"invalid failure_kind: {value!r}")
+    return value
+
+
 def _command_from_payload(data: Any) -> VerificationCommandEvidence:
     _require_keys(data, {"argv", "cwd", "exit_code", "duration_s", "log_offset"})
     return VerificationCommandEvidence(
@@ -1138,6 +1446,8 @@ def _command_from_payload(data: Any) -> VerificationCommandEvidence:
         exit_code=_require_int(data["exit_code"], "exit_code"),
         duration_s=_require_float(data["duration_s"], "duration_s"),
         log_offset=_require_int(data["log_offset"], "log_offset"),
+        log_end_offset=_optional_int(data, "log_end_offset"),
+        failure_kind=_optional_failure_kind(data),
     )
 
 
@@ -1150,6 +1460,9 @@ def _env_refresh_from_payload(data: Any) -> VerificationEnvRefreshEvidence:
         manifests=[_require_str(item, "manifests[]") for item in _require_list(data["manifests"], "manifests")],
         install_argv=[_require_str(item, "install_argv[]") for item in _require_list(data["install_argv"], "install_argv")],
         exit_code=_require_int(data["exit_code"], "exit_code"),
+        log_offset=_optional_int(data, "log_offset"),
+        log_end_offset=_optional_int(data, "log_end_offset"),
+        failure_kind=_optional_failure_kind(data),
     )
 
 
@@ -1159,4 +1472,7 @@ def _suite_from_payload(data: Any) -> VerificationSuiteEvidence:
         argv=[_require_str(item, "argv[]") for item in _require_list(data["argv"], "argv")],
         exit_code=_require_int(data["exit_code"], "exit_code"),
         duration_s=_require_float(data["duration_s"], "duration_s"),
+        log_offset=_optional_int(data, "log_offset"),
+        log_end_offset=_optional_int(data, "log_end_offset"),
+        failure_kind=_optional_failure_kind(data),
     )

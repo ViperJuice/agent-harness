@@ -6,6 +6,37 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Preserve raw failure diagnostics on verification failure (#209)
+
+When runner-executed verification failed, the runner-owned verdict scrubbed the
+failing stage down to a bare `exit_code` — the raw reason survived in
+`verification.log` but never reached the terminal/closeout record, a named
+contributor to multi-day thrash (#213). The verification verdict
+(`VerificationArtifactValidation.to_json()`, consumed into the persisted closeout
+record) now carries a `diagnostics` list: one entry per failing stage, in declared
+order (`commands` → `env_refresh` → `suite`), each with a typed `failure_kind`
+(`timeout` / `error` / `nonzero_exit`), the stage's `argv`/`exit_code`, and a
+bounded `raw_tail` sliced from that stage's **exact** log region. A failed verdict
+can no longer be diagnostic-empty: a silent (output-less) failure still surfaces
+typed context flagged `diagnostic_status: missing_output`. Multi-step chains keep
+per-step order and reduce fail-closed (an earlier failing step blocks even if a
+later step passes).
+
+To localize each stage exactly, `verification.json` is bumped to **schema v2**
+(additive): every stage may carry `log_end_offset` + a runner-observed
+`failure_kind`, and `env_refresh`/`suite` now record their own `log_offset` (the
+suite's start offset was previously discarded, making post-hoc boundaries
+uncomputable). `failure_kind` is captured at execution time, never re-derived from
+`exit_code`, so a child that itself returns 124/127 is not mislabeled a
+timeout/missing-executable. **v1 artifacts still load** (new fields default null;
+`load_verification_artifact` accepts `schema_version` in `{1, 2}`). Diagnostics are
+built only on the sha-authenticated `nonzero_exit` branch — an unauthenticated log
+(sha mismatch / missing) blocks on the integrity failure without surfacing a
+possibly-forged tail. The bounded `raw_tail` is an excerpt of bytes already
+persisted in `verification.log` at the same trust level; a follow-up covers opt-in
+closeout-diagnostic redaction. Design converged through a cross-vendor plan review
+(codex + gemini + Fable) that rejected a post-hoc verdict-only approach.
+
 ### Versioned/absolute suite-interpreter guard, redone robustly (#221)
 
 `#219a`'s interpreter shim prepended a PATH dir whose bare `python`/`python3` resolve to a
