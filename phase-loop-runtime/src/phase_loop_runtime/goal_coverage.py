@@ -167,9 +167,14 @@ def check_goal_coverage(
         phases = _extract_phases(roadmap_path.read_text(encoding="utf-8"))
     except OSError as exc:
         return _result(setup_diagnostics=(f"roadmap_unreadable:{exc}",))
-    match = next((p for p in phases if p.alias.upper() == str(alias or "").upper()), None)
-    if match is None:
+    matches = [p for p in phases if p.alias.upper() == str(alias or "").upper()]
+    if not matches:
         return _result(setup_diagnostics=(f"phase_alias_not_found:{alias}",))
+    if len(matches) > 1:
+        # Duplicate phase alias — a malformed roadmap (roadmap_lint (C)). Selecting the
+        # first would silently exclude the other phase's goals (CR codex). Fail closed.
+        return _result(setup_diagnostics=(f"duplicate_phase_alias:{alias}",))
+    match = matches[0]
 
     # Run the FULL EC-ID reconciliation the offline `roadmap_lint` (H) check runs
     # (all-or-none, alias-scoped, UNIQUE) at RUNTIME — the gate must not trust a

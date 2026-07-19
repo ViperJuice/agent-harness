@@ -1,4 +1,5 @@
 """agent-harness#211: decidable goal-coverage check + EC-ID roadmap reconciliation."""
+import re
 
 import os
 import tempfile
@@ -112,6 +113,29 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertFalse(r.is_clean())
         r = self._cov(["EC-P2-1 — a", "EC-P1-2 — b"], ["EC-P2-1 — t", "EC-P1-2 — t"])
         self.assertTrue(r.has_setup_errors())
+
+    def test_duplicate_phase_alias_is_setup_error(self):
+        # CR codex round 5: a roadmap with two phases aliased P1 must fail closed at the
+        # runtime gate, not silently pick the first and exclude the second's goals.
+        with tempfile.TemporaryDirectory() as t:
+            repo, plan = _build(Path(t), ["EC-P1-1 — a"], ["EC-P1-1 — proven by t"])
+            rm = repo / "specs" / "phase-plans-v1.md"
+            # append a SECOND phase also aliased P1
+            rm.write_text(
+                rm.read_text().replace(
+                    "## Top Interface-Freeze Gates",
+                    "### Phase 2 — Dup (P1)\n\n**Objective**\ny\n\n**Exit criteria**\n- [ ] EC-P1-5 — c\n\n"
+                    "**Scope notes**\n1 lane\n\n**Key files**\n- `y.py`\n\n**Depends on**\n- (none)\n\n## Top Interface-Freeze Gates",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            # re-pin the plan's roadmap_sha256 to the amended roadmap so the anchor passes
+            new_sha = discovery.roadmap_sha256(rm)
+            plan.write_text(re.sub(r"roadmap_sha256: \w+", f"roadmap_sha256: {new_sha}", plan.read_text()), encoding="utf-8")
+            r = check_goal_coverage(repo, plan)
+            self.assertTrue(r.has_setup_errors())
+            self.assertTrue(any("duplicate_phase_alias" in d for d in r.setup_diagnostics))
 
     def test_dangling_ref_on_legacy_phase_is_gap(self):
         # CR codex round 3: a plan referencing a goal ID against a legacy (no-ID) phase
