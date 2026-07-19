@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import discovery
-from .roadmap_lint import EC_ID_LEADING_RE, _extract_phases
+from .roadmap_lint import EC_ID_LEADING_RE, _extract_phases, check_exit_criteria_ids as _check_exit_criteria_ids
 
 
 @dataclass(frozen=True)
@@ -171,12 +171,16 @@ def check_goal_coverage(
     if match is None:
         return _result(setup_diagnostics=(f"phase_alias_not_found:{alias}",))
 
+    # Run the FULL EC-ID reconciliation the offline `roadmap_lint` (H) check runs
+    # (all-or-none, alias-scoped, UNIQUE) at RUNTIME — the gate must not trust a
+    # malformed roadmap (mixed-mode, duplicate ID collapsing two goals into one, or a
+    # wrong-alias ID) and silently omit a goal (CR codex). Any violation -> setup error.
+    _ec_errors: list[str] = []
+    _check_exit_criteria_ids([match], _ec_errors)
+    if _ec_errors:
+        return _result(setup_diagnostics=(f"malformed_exit_criteria_ids: {_ec_errors[0]}",))
+
     declared = tuple(match.declared_exit_criteria_ids)
-    # Mixed-mode (some criteria ID'd, some bare) is a malformed roadmap — the offline
-    # `roadmap_lint` (H) check flags it, but the RUNTIME gate must not trust such a
-    # roadmap and silently omit the bare goal (CR codex). Fail closed as a setup error.
-    if declared and len(declared) < len(match.exit_criteria):
-        return _result(setup_diagnostics=(f"mixed_exit_criteria_ids:{match.alias} — some exit-criteria lack an EC-ID",))
 
     refs = extract_plan_goal_refs(plan_path)
     if not declared:

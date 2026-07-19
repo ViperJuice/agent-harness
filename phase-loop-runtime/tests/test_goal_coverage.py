@@ -103,6 +103,16 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertTrue(r.has_setup_errors())
         self.assertFalse(r.has_gaps())
 
+    def test_duplicate_or_wrong_alias_id_is_setup_error_at_runtime(self):
+        # CR codex round 4: the runtime gate must run the FULL reconciliation, not just
+        # mixed-mode. A duplicate ID (two goals collapsing to one) or a wrong-alias ID
+        # must fail closed, not silently omit a goal.
+        r = self._cov(["EC-P1-1 — a", "EC-P1-1 — b"], ["EC-P1-1 — proven by t"])
+        self.assertTrue(r.has_setup_errors())
+        self.assertFalse(r.is_clean())
+        r = self._cov(["EC-P2-1 — a", "EC-P1-2 — b"], ["EC-P2-1 — t", "EC-P1-2 — t"])
+        self.assertTrue(r.has_setup_errors())
+
     def test_dangling_ref_on_legacy_phase_is_gap(self):
         # CR codex round 3: a plan referencing a goal ID against a legacy (no-ID) phase
         # is a dangling gap, not a silent pass.
