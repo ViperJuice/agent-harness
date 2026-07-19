@@ -57,11 +57,15 @@ _CANDIDATE_MINORS = tuple(range(8, 15))  # python3.8 .. python3.14
 class SuiteInterpreter:
     """Outcome of resolving a suite interpreter for the target's requires-python.
 
-    ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH`` whose
-    ``python``/``python3`` resolve to the satisfying interpreter, or ``None`` when
-    the host default already satisfies (or there is no constraint).
-    ``blocker`` — a clear, named reason when no satisfying interpreter exists;
-    the caller fails closed. ``interpreter`` — the resolved path, for the log.
+    ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH``. When a
+    below/above-floor bare interpreter had to be redirected it holds
+    ``python``/``python3`` links to the satisfying interpreter; when the host default
+    already satisfies (ah#221) it holds only the fail-closed shadows of the
+    non-satisfying versioned ``python3.X`` names (bare names are left untouched so an
+    active venv is preserved). ``None`` only when there is no ``requires-python``
+    constraint at all. ``blocker`` — a clear, named reason when no satisfying
+    interpreter exists; the caller fails closed. ``interpreter`` — the resolved path,
+    for the log.
     """
 
     shim_dir: "Path | None"

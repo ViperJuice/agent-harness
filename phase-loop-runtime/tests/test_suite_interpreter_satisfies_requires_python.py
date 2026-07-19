@@ -31,9 +31,17 @@ from phase_loop_runtime.verification_evidence import (
 
 
 def _effective_minor(interp) -> tuple[int, int]:
-    """(major, minor) of the interpreter the suite would actually use."""
-    if interp.shim_dir is not None:
-        target = interp.shim_dir / "python3"
+    """(major, minor) of the interpreter the suite would actually use.
+
+    ah#221: when the host default already satisfies requires-python, the shim dir
+    exists only to carry the non-satisfying versioned-name shadows and does NOT
+    redirect bare ``python``/``python3`` (so an active venv is preserved). In that
+    shadows-only case the suite runs the host default, so fall back to
+    ``interp.interpreter`` when the shim has no ``python3`` link.
+    """
+    shim_python3 = interp.shim_dir / "python3" if interp.shim_dir is not None else None
+    if shim_python3 is not None and shim_python3.exists():
+        target = shim_python3
     else:
         assert interp.interpreter is not None
         target = Path(interp.interpreter)
