@@ -56,8 +56,10 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
     follow-up filed as #238 (empty-field/CWD hardening).
   - #85(D)/#90 rehydration: ⏳ reconcile must ingest a tracked `closeout.md` to rehydrate a
     completed roadmap without re-verification.
-  - #85(A) hash-scope: ⏳ DEFERRED product decision — prose-edits-invalidate-completion is
-    WAI-with-warning + test-locked; surface to the user rather than silently change.
+  - #85(A) hash-scope: **✅ RESOLVED WAI** (maintainer 2026-07-19: keep strict content-SHA
+    invalidation, do NOT loosen the hash input). The `gold_record_amendment` diagnostic
+    (`repairable`, `amendment_drift` naming drifted-vs-current SHA, `repair_hint`) already ships
+    and is test-locked. No code change. Only (D)/#90 remains before #85+#90 close.
 - **#84: ✅ DONE — merged as #232.** Root cause was an argparse subparser clobber (not the
   dispatcher): common opts before the subcommand were reset to defaults; added SUPPRESS.
   Residual non-common-arg clobber class → #233 (fail-closed, low severity).
