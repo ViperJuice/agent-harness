@@ -6,6 +6,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Goal-ID single source of truth — Increment 1 (#211)
+
+Redefines #211 from a fuzzy text-diff audit (proven undecidable) into a decidable
+**goal-coverage** check by removing the duplication between a roadmap's goals and a
+plan's restatement of them. Roadmap phase exit-criteria may now carry stable
+`EC-<ALIAS>-<N>` **goal IDs** (mirroring the `IF-0-<ALIAS>-<N>` gate scheme);
+`roadmap_lint` reconciles them (alias-scoped, unique, **all-or-none per phase**, gaps
+allowed so a deleted criterion never forces a renumber that would silently re-bind a
+downstream reference). `Phase.exit_criteria` stays `list[str]` (API-compatible); IDs
+are exposed via an additive accessor.
+
+A plan's `## Acceptance Criteria` items **reference** the goal IDs (item-leading:
+`- [ ] EC-P1-1 — proven by <test>`) instead of restating the goal. The new
+`goal_coverage.check_goal_coverage` verifies — by pure set membership, no
+word-matching — that every declared goal ID is referenced by ≥1 acceptance item;
+an unreferenced goal or a dangling/typo'd reference is a `contract_bug`, a prose
+mention (not item-leading) does not count, and a phase with no EC-IDs is
+`not_applicable` (legacy, opt-in per phase — nothing existing breaks). It runs at
+three points, all pure Python with **no `EmitPhaseCloseout` schema change**: a
+`goal-coverage-audit` CLI (exit 0/1/2), the phase-loop **preflight**, and a
+**closeout** re-check (mirroring the IF-gate `Produces` precedent, closing the
+window where a plan is edited mid-execution and loses a reference). Preflight and
+closeout are warn-default / opt-in block via `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`,
+never `human_required`.
+
+**Honest scope:** this guarantees *completeness* (no goal silently forgotten); it
+does **not** verify *adequacy* (that the referenced test actually discharges the
+goal) — that stays with code review + evidence authenticity (#91). It makes weak
+evidence human-reviewable at the reference point rather than hidden in a paraphrase.
+Increment 2 (planner skills emitting/referencing IDs by default + roadmap migration)
+is deferred behind a go/no-go. Design + hardenings converged through a cross-vendor
+plan review (codex + gemini + Fable).
+
 ### Preserve raw failure diagnostics on verification failure (#209)
 
 When runner-executed verification failed, the runner-owned verdict scrubbed the

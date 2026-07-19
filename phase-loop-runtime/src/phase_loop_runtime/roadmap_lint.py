@@ -15,6 +15,8 @@ Checks (all run even if earlier ones fail so the author sees every issue):
   (E) ``**Depends on**`` references only existing earlier-phase aliases.
   (F) The phase dependency DAG is acyclic.
   (G) Every phase declares a lane-count / partition hint (or is preamble).
+  (H) EC-<ALIAS>-<N> goal IDs on exit-criteria reconcile (agent-harness#211):
+      all-or-none per phase, alias-scoped, unique (gaps allowed, never renumber).
 
 Zero external deps (stdlib only). Parses by regex on stable headings — not a
 full Markdown parser.
@@ -26,7 +28,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,14 @@ class Phase:
     depends_on: List[str] = field(default_factory=list)  # aliases, or [] if (none)
     produces: List[str] = field(default_factory=list)    # IF-gate ids
     raw_body: str = ""
+    # agent-harness#211: parallel to `exit_criteria`, each element is the item-LEADING
+    # `EC-<ALIAS>-<N>` goal ID or None. `exit_criteria` stays List[str] for API-compat.
+    exit_criteria_ids: List[Optional[str]] = field(default_factory=list)
+
+    @property
+    def declared_exit_criteria_ids(self) -> List[str]:
+        """The non-None goal IDs declared on this phase's exit-criteria, in order."""
+        return [eid for eid in self.exit_criteria_ids if eid]
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +80,11 @@ REQUIRED_TOP_HEADINGS = [
 ]
 
 IF_GATE_RE = re.compile(r"\bIF-0-([A-Za-z0-9]+)-(\d+)\b")
+# agent-harness#211: goal IDs on exit-criteria, mirroring the IF-gate scheme.
+# `EC_ID_LEADING_RE` matches only an item-LEADING id (a reference/declaration counts
+# only at the start of a checkbox item, never a prose mention elsewhere).
+EC_ID_RE = re.compile(r"\bEC-([A-Za-z0-9]+)-(\d+)\b")
+EC_ID_LEADING_RE = re.compile(r"^EC-([A-Za-z0-9]+)-(\d+)\b")
 PREAMBLE_MARKER_RE = re.compile(r"preamble\s*/\s*interface-only|interface-freeze-only|preamble phase", re.IGNORECASE)
 
 
@@ -103,6 +118,7 @@ def _extract_phases(text: str) -> List[Phase]:
         )
         phase.objective = _field(body, "Objective")
         phase.exit_criteria = _checkbox_items(_field(body, "Exit criteria"))
+        phase.exit_criteria_ids = [_leading_ec_id(item) for item in phase.exit_criteria]
         phase.scope_notes = _field(body, "Scope notes")
         phase.non_goals = _field(body, "Non-goals")
         phase.key_files = _bullet_items(_field(body, "Key files"))
@@ -155,6 +171,14 @@ def _parse_produces(block: str) -> List[str]:
     if not stripped or stripped.lower() in {"(none)", "none"}:
         return []
     return [f"IF-0-{alias}-{n}" for alias, n in IF_GATE_RE.findall(stripped)]
+
+
+def _leading_ec_id(criterion_text: str) -> Optional[str]:
+    """agent-harness#211: the item-LEADING ``EC-<ALIAS>-<N>`` goal ID of an
+    exit-criterion, or None if the criterion is bare prose. Item-leading only —
+    an ID mentioned mid-text does not declare/reference a goal."""
+    m = EC_ID_LEADING_RE.match(criterion_text.strip())
+    return f"EC-{m.group(1)}-{m.group(2)}" if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +265,42 @@ def check_if_gates(phases: List[Phase], sections: Dict[str, str], errors: List[s
     only_declared = declared - produced_global
     for g in sorted(only_declared):
         errors.append(f"(D) gate {g} listed in `## Top Interface-Freeze Gates` but not in any phase's **Produces**")
+
+
+def check_exit_criteria_ids(phases: List[Phase], errors: List[str]) -> None:
+    """agent-harness#211: reconcile `EC-<ALIAS>-<N>` goal IDs on exit-criteria.
+
+    Opt-in ALL-OR-NONE per phase: either every exit-criterion carries a leading goal
+    ID (opted in → downstream plan coverage is enforced) or none do (legacy). A phase
+    mixing ID'd and bare criteria is an error — a bare criterion would otherwise be an
+    ungated dropped-goal hole. Each declared ID's alias segment must equal the phase
+    alias, and IDs must be unique within the phase. NOT contiguous: gaps are allowed so
+    a deleted criterion never forces renumbering (which would silently re-bind a
+    downstream plan's reference)."""
+    for ph in phases:
+        if not ph.exit_criteria:
+            continue
+        ids = ph.exit_criteria_ids
+        declared = [eid for eid in ids if eid]
+        if not declared:
+            continue  # legacy bare-prose phase — not opted in, no gate
+        if len(declared) != len(ph.exit_criteria):
+            errors.append(
+                f"(H) Phase {ph.number} ({ph.alias}): mixed exit-criteria — "
+                f"{len(declared)}/{len(ph.exit_criteria)} carry an EC-{ph.alias}-<N> goal ID. "
+                f"Opt-in is all-or-none: give EVERY exit-criterion an ID or none."
+            )
+        seen: Set[str] = set()
+        for eid in declared:
+            alias = eid.split("-")[1]
+            if alias != ph.alias:
+                errors.append(
+                    f"(H) Phase {ph.number} ({ph.alias}): goal ID {eid} names alias '{alias}', "
+                    f"not this phase's alias"
+                )
+            if eid in seen:
+                errors.append(f"(H) Phase {ph.number} ({ph.alias}): duplicate goal ID {eid}")
+            seen.add(eid)
 
 
 def check_depends_on(phases: List[Phase], errors: List[str]) -> List[Phase]:
@@ -332,6 +392,7 @@ def lint_roadmap_text(text: str) -> List[str]:
     check_phase_fields(phases, errors)
     check_numbering_and_aliases(phases, errors)
     check_if_gates(phases, sections, errors)
+    check_exit_criteria_ids(phases, errors)
     check_depends_on(phases, errors)
     check_dag_acyclic(phases, errors)
     check_lane_count_hint(phases, errors)

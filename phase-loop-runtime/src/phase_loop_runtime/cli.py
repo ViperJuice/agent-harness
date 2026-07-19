@@ -293,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -612,6 +612,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
             sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
             sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
+        if name == "goal-coverage-audit":
+            sub.description = "agent-harness#211: check that a plan's acceptance items reference every EC-<ALIAS>-<N> goal ID of its anchored roadmap phase (decidable completeness)."
+            sub.add_argument("--plan", required=True, help="Path to the phase plan to audit.")
         if name == "fleet-map":
             sub.description = (
                 "CS-0.7: extract the realized cross-repo interface graph (git+ref pins, "
@@ -1093,6 +1096,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
         return _evidence_audit_command(repo=repo, args=args, as_json=as_json)
+    if command == "goal-coverage-audit":
+        return _goal_coverage_audit_command(repo=repo, args=args, as_json=as_json)
     if command in {"run", "resume", "dry-run"} and bool(getattr(args, "reset_capability", False)):
         assert_roadmap_authorized(repo, args.roadmap)
         clear_degradation(repo)
@@ -3050,6 +3055,22 @@ def _export_schema_command(*, args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(rendered)
     return 0
+
+
+def _goal_coverage_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    from .goal_coverage import check_goal_coverage
+
+    try:
+        roadmap = select_roadmap(repo, args.roadmap) if getattr(args, "roadmap", None) else None
+        result = check_goal_coverage(repo, Path(args.plan), roadmap)
+    except Exception as exc:
+        # An unresolvable --roadmap/plan is a SETUP condition -> honor the 0/1/2 contract.
+        print(json.dumps({"code": "audit_setup_error", "error": str(exc)}, indent=2) if as_json else f"goal-coverage audit setup error: {exc}")
+        return 2
+    print(json.dumps(result.to_json(), indent=2) if as_json else result.render_text())
+    if result.has_setup_errors():
+        return 2
+    return 1 if result.has_gaps() else 0
 
 
 def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) -> int:
