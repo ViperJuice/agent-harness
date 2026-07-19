@@ -728,7 +728,7 @@ Completion reconcile:
 
 `phase-loop reconcile --phase <ALIAS> [--closeout-commit <SHA>]
 [--repair-summary <text>] [--verification-status passed]
-[--verification-log <path>] [--recovery-mode]`
+[--verification-log <path> | --closeout-artifact <path>] [--recovery-mode]`
 
 This synthesizes a v28-shape `manual_repair` event for the named phase,
 recording the current `HEAD` (or the supplied SHA) as the closeout commit and
@@ -743,14 +743,33 @@ to one CLI call. Use only as a recovery tool when the executor's work is
 correct but ownership classification or lane-evidence gaps left the runner
 blocked; do not use to bypass legitimate verification failures.
 
-When completion reconcile uses `--verification-status passed`, it must also
-provide `--verification-log <path>` pointing at the runner-owned
-`verification.json` artifact for the run. The runner validates the artifact
-schema, the sibling `verification.log` SHA-256 against `log_sha256`, and every
-command, env-refresh, and suite exit code before appending a completion repair
-event. Remediation output and event metadata include only the artifact path,
-validation code, and exit summary; raw verification log output is never copied
-into reconcile metadata.
+When completion reconcile uses `--verification-status passed`, it must provide
+runner evidence via **either** `--verification-log <path>` **or**
+`--closeout-artifact <path>` (mutually exclusive). `--verification-log` points at
+the runner-owned `verification.json` artifact for the run; the runner validates
+the artifact schema, the sibling `verification.log` SHA-256 against `log_sha256`,
+and every command, env-refresh, and suite exit code before appending a completion
+repair event. Remediation output and event metadata include only the artifact
+path, validation code, and exit summary; raw verification log output is never
+copied into reconcile metadata.
+
+`--closeout-artifact <path>` (ah#90) is an artifact-backed **recovery** path for
+rehydrating a phase whose committed closeout evidence survives but whose ephemeral
+`.phase-loop/runs/verification.json` does not (e.g. after an interrupted session).
+It adopts a **git-tracked, committed** closeout markdown as recovery evidence
+labeled `provenance=tracked_closeout_artifact`, and requires `--closeout-commit`
+and `--repair-summary`. The artifact is bound before acceptance: the resolved
+`--closeout-commit` must name a real commit reachable from `HEAD` (the index `:0`,
+tree-ish, and orphan commits are rejected), the path must be a non-empty regular
+**blob** at that commit (a directory, symlink, or gitlink is rejected), and its
+basename or content must reference the phase. This is an **audit anchor +
+provenance label** for an explicit, operator-reasoned manual recovery — NOT a
+runner verification pass and NOT an authorization gate; it never satisfies a phase
+that hard-requires runner verification (RG / `IF-0-RG-1`). The recorded
+`manual_repair` carries `evidence_provenance=tracked_closeout_artifact`, and
+`phase-loop status` surfaces it (`Closeout verification: passed (recovery
+evidence: tracked_closeout_artifact)`) so consumers can distinguish a recovery
+from a runner pass.
 
 Blocked-state recovery:
 

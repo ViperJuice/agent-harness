@@ -1471,6 +1471,9 @@ def _event_closeout_summary(event: dict) -> dict[str, object]:
         "closeout_push_ref": _optional_text(closeout.get("closeout_push_ref")),
         "closeout_refusal_reason": _optional_text(closeout.get("closeout_refusal_reason")),
         "verification_status": _optional_text(closeout.get("verification_status")) or ("passed" if closeout.get("closeout_commit") else None),
+        # ah#90: surface recovery-evidence provenance at the status boundary so consumers can tell
+        # a tracked-closeout recovery apart from a runner verification pass.
+        "evidence_provenance": _optional_text(closeout.get("evidence_provenance")),
     }
     return {key: value for key, value in summary.items() if value is not None}
 

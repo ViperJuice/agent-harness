@@ -2466,6 +2466,15 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     if closeout_artifact:
         # ah#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as recovery
         # evidence (provenance=tracked_closeout_artifact), NOT a fresh runner verification pass.
+        # RG hard-requires a runner-owned verification.json (IF-0-RG-1); a prose closeout must never
+        # satisfy it — keep RG fail-closed to the runner-verification path.
+        if _reconcile_verification_log_required(repo, roadmap, phase):
+            print(
+                "phase-loop reconcile: --closeout-artifact is not allowed for a phase that requires "
+                "runner verification (RG / IF-0-RG-1); use --verification-log with a verification.json.",
+                file=sys.stderr,
+            )
+            return 2
         # Require explicit audit fields so prose cannot silently masquerade as passed verification.
         missing = [
             flag
@@ -2483,7 +2492,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             )
             return 2
         verification_evidence = _validate_tracked_closeout_artifact(
-            repo, closeout_artifact, getattr(args, "closeout_commit")
+            repo, closeout_artifact, getattr(args, "closeout_commit"), phase
         )
         if not verification_evidence.get("ok"):
             print(
@@ -2503,7 +2512,11 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
                 )
                 return 2
 
-    closeout_commit = getattr(args, "closeout_commit", None) or topology.get("head")
+    if closeout_artifact and isinstance(verification_evidence, dict) and verification_evidence.get("closeout_commit"):
+        # Record the canonical resolved commit sha the artifact was verified against.
+        closeout_commit = verification_evidence["closeout_commit"]
+    else:
+        closeout_commit = getattr(args, "closeout_commit", None) or topology.get("head")
     if not isinstance(closeout_commit, str) or not closeout_commit:
         print("phase-loop reconcile: cannot resolve closeout commit SHA", file=sys.stderr)
         return 2
@@ -2582,49 +2595,93 @@ def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[
     return validation
 
 
-def _validate_tracked_closeout_artifact(repo: Path, value: str | None, closeout_commit: str) -> dict[str, object]:
-    """ah#90: adopt a TRACKED, COMMITTED closeout markdown as recovery evidence.
+def _git_capture(repo_path: Path, *args: str) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:  # pragma: no cover - git absent
+        return subprocess.CompletedProcess(args, returncode=127, stdout="", stderr="git not found")
 
-    Safety anchor: the artifact must exist in git at ``closeout_commit`` (not merely on disk),
-    so an untracked/hand-crafted prose file cannot masquerade as completion evidence. Returns a
-    provenance-labeled evidence dict; the distinct ``provenance``/``code`` ensure it can never be
-    read as a runner ``verification.json`` pass.
+
+def _validate_tracked_closeout_artifact(
+    repo: Path, value: str | None, closeout_commit: str, phase: str
+) -> dict[str, object]:
+    """ah#90: adopt a closeout markdown as *recovery* evidence for ``phase``.
+
+    This is an AUDIT anchor + provenance label for an explicit, operator-reasoned manual
+    recovery — NOT an authorization gate (an operator with write access can always commit prose
+    first). The distinct ``provenance``/``code`` ensure it can never be read as a runner
+    ``verification.json`` pass. The checks bind the evidence to committed history and to the
+    phase so an arbitrary or throwaway file is rejected:
+
+    - the path must resolve inside the repo (no traversal / outside-repo);
+    - ``closeout_commit`` must be an ANCESTOR of HEAD (reject orphan/dangling commits — forging
+      requires touching shared history);
+    - the object at ``closeout_commit:<relpath>`` must be a tracked, non-empty **blob** (a tree /
+      directory or absent path is rejected);
+    - the artifact must reference ``phase`` in its basename or content (reject an unrelated file).
     """
     if not value:
         return {"ok": False, "code": "missing_closeout_artifact", "artifact_path": None}
-    raw_path = Path(value)
-    artifact_path = (raw_path if raw_path.is_absolute() else repo / raw_path).resolve()
+    if not closeout_commit:
+        return {"ok": False, "code": "closeout_commit_not_a_commit", "artifact_path": None}
     repo_path = repo.resolve()
-    try:
-        inside_repo = artifact_path.is_relative_to(repo_path)
-    except AttributeError:  # pragma: no cover - py3.8 compatibility for downstream packagers
-        inside_repo = str(artifact_path).startswith(str(repo_path) + "/")
-    if not inside_repo:
+    raw_path = Path(value)
+    lexical = raw_path if raw_path.is_absolute() else (repo_path / raw_path)
+    artifact_path = lexical
+    # Containment via realpath (follows symlinks + `..`), so a path escaping the repo — including a
+    # symlink whose target is outside — is rejected.
+    real = Path(os.path.realpath(str(lexical)))
+    if real != repo_path and repo_path not in real.parents:
         return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
-    rel_path = artifact_path.relative_to(repo_path).as_posix()
-    # Require the artifact to be tracked AND present at the closeout commit.
-    probe = subprocess.run(
-        ["git", "-C", str(repo_path), "cat-file", "-e", f"{closeout_commit}:{rel_path}"],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode != 0:
+    # git rev-path is LEXICAL (not dereferenced), so a symlink entry is seen as a symlink
+    # (mode 120000) by ls-tree below rather than silently followed to its target.
+    rel = os.path.relpath(str(lexical), str(repo_path))
+    if rel.startswith(".."):
+        return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
+    rel_path = Path(rel).as_posix()
+    # Resolve to a canonical COMMIT sha. `^{commit}` rejects the index (`:0`), tree-ish, and refs
+    # that do not name a commit, so staged-but-uncommitted prose cannot drive completion.
+    rev = _git_capture(repo_path, "rev-parse", "--verify", "--quiet", f"{closeout_commit}^{{commit}}")
+    resolved = rev.stdout.strip()
+    if rev.returncode != 0 or not resolved:
+        return {"ok": False, "code": "closeout_commit_not_a_commit", "artifact_path": str(artifact_path)}
+    # History binding: the resolved commit must be reachable from HEAD (rejects orphan/dangling).
+    ancestor = _git_capture(repo_path, "merge-base", "--is-ancestor", resolved, "HEAD")
+    if ancestor.returncode != 0:
+        return {"ok": False, "code": "closeout_commit_not_in_history", "artifact_path": str(artifact_path)}
+    # Must be a regular-file blob at that commit — reject a tree (directory), symlink (120000),
+    # gitlink (160000), or absent path.
+    ls = _git_capture(repo_path, "ls-tree", resolved, "--", rel_path)
+    entry = ls.stdout.strip()
+    if ls.returncode != 0 or not entry:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    # Require non-empty content at that commit (guard a zero-byte prose file).
-    blob = subprocess.run(
-        ["git", "-C", str(repo_path), "cat-file", "-p", f"{closeout_commit}:{rel_path}"],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode == 0 and not blob.stdout.strip():
+    mode = entry.split()[0]
+    if mode not in {"100644", "100755"}:
+        return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
+    # Non-empty, checked by BYTE SIZE (no decode / no full-content buffering).
+    size = _git_capture(repo_path, "cat-file", "-s", f"{resolved}:{rel_path}")
+    if size.returncode == 0 and size.stdout.strip() in {"0", ""}:
         return {"ok": False, "code": "empty_closeout_artifact", "artifact_path": str(artifact_path)}
+    # Phase binding: the artifact must reference this phase, so an arbitrary tracked file (README,
+    # an unrelated phase's closeout) is rejected. Prefer the basename (the `<PHASE>-closeout.md`
+    # convention) and only read content as a fallback (errors="replace" avoids a binary crash).
+    token = phase.upper()
+    if token not in artifact_path.name.upper():
+        content = _git_capture(repo_path, "cat-file", "-p", f"{resolved}:{rel_path}")
+        if token not in content.stdout.upper():
+            return {"ok": False, "code": "closeout_artifact_phase_mismatch", "artifact_path": str(artifact_path)}
     return {
         "ok": True,
         "code": "recovered_from_tracked_closeout",
         "provenance": EVIDENCE_PROVENANCE_TRACKED_CLOSEOUT,
         "evidence": "recovery",
         "artifact_path": str(artifact_path),
-        "closeout_commit": closeout_commit,
+        "closeout_commit": resolved,
     }
 
 

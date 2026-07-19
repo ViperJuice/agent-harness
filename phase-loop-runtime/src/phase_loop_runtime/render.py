@@ -205,7 +205,11 @@ def _closeout_summary_lines(summary: dict[str, object]) -> list[str]:
     if summary.get("closeout_refusal_reason"):
         lines.append(f"Closeout refusal: {summary['closeout_refusal_reason']}")
     if summary.get("verification_status"):
-        lines.append(f"Closeout verification: {summary['verification_status']}")
+        line = f"Closeout verification: {summary['verification_status']}"
+        if summary.get("evidence_provenance"):
+            # ah#90: make recovery-from-committed-prose visibly distinct from a runner pass.
+            line += f" (recovery evidence: {summary['evidence_provenance']})"
+        lines.append(line)
     return lines
 
 
