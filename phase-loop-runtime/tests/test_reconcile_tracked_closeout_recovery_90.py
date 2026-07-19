@@ -170,6 +170,28 @@ class ValidateTrackedCloseoutArtifactTest(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "closeout_artifact_not_a_file")
 
+    def test_grafted_ancestry_is_rejected(self):
+        # codex: `.git/info/grafts` fakes ancestry and `--no-replace-objects` does NOT disable it,
+        # so a dangling commit can be made to look reachable from HEAD. An active graft file must
+        # be rejected before the ancestry check is trusted.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, _commit = _fixture(Path(td))
+            head = _git(repo, "rev-parse", "HEAD")
+            orig_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+            # Dangling commit D (orphan) carrying a valid RUNNER closeout blob.
+            _git(repo, "checkout", "-q", "--orphan", "dangle")
+            (repo / "RUNNER-closeout.md").write_text("# RUNNER done via graft\n", encoding="utf-8")
+            _git(repo, "add", "RUNNER-closeout.md")
+            _git(repo, "commit", "-qm", "dangling")
+            d = _git(repo, "rev-parse", "HEAD")
+            _git(repo, "checkout", "-q", "-f", orig_branch)  # back to original branch; D not an ancestor
+            graft = repo / ".git" / "info" / "grafts"
+            graft.parent.mkdir(parents=True, exist_ok=True)
+            graft.write_text(f"{head} {d}\n", encoding="utf-8")  # forge ancestry HEAD<-D
+            result = _validate_tracked_closeout_artifact(repo, "RUNNER-closeout.md", d, "RUNNER")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "closeout_commit_ancestry_untrusted")
+
     def test_empty_phase_token_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             repo, _roadmap, rel, commit = _fixture(Path(td))

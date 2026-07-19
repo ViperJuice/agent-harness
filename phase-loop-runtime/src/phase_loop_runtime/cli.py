@@ -2676,6 +2676,21 @@ def _validate_tracked_closeout_artifact(
     resolved = rev.stdout.strip()
     if rev.returncode != 0 or not resolved:
         return {"ok": False, "code": "closeout_commit_not_a_commit", "artifact_path": str(artifact_path)}
+    # A `.git/info/grafts` (deprecated) or `.git/shallow` file fakes/truncates ancestry, and
+    # `--no-replace-objects` does NOT disable grafts, so `merge-base --is-ancestor` can be fooled
+    # into treating an unreachable commit as reachable. Reject when either is active.
+    for git_rel in ("info/grafts", "shallow"):
+        probe = _git_capture(repo_path, "rev-parse", "--git-path", git_rel)
+        if probe.returncode == 0 and probe.stdout.strip():
+            gpath = Path(probe.stdout.strip())
+            if not gpath.is_absolute():
+                gpath = repo_path / gpath
+            try:
+                active = gpath.exists() and gpath.stat().st_size > 0
+            except OSError:  # pragma: no cover - stat race
+                active = True
+            if active:
+                return {"ok": False, "code": "closeout_commit_ancestry_untrusted", "artifact_path": str(artifact_path)}
     # History binding: the resolved commit must be reachable from HEAD (rejects orphan/dangling).
     ancestor = _git_capture(repo_path, "merge-base", "--is-ancestor", resolved, "HEAD")
     if ancestor.returncode != 0:
