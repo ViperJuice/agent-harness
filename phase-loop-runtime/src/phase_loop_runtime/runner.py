@@ -3648,41 +3648,21 @@ def run_loop(
                 # the plan-time preflight passed. Warn-default; blocks only under
                 # PHASE_LOOP_ACCEPTANCE_ENFORCE=block. Guarded so it can never break closeout.
                 if event_blocker is None and validation_plan is not None and child_automation:
-                    try:
-                        from .goal_coverage import check_goal_coverage
-
-                        coverage = check_goal_coverage(repo, validation_plan, roadmap)
-                    except Exception:
-                        coverage = None
-                    # Record the re-check result (clean or not) as closeout evidence.
-                    if coverage is not None and not coverage.not_applicable():
-                        child_automation["goal_coverage"] = coverage.to_json()
-                    # Gate on a gap OR a setup error (an un-auditable plan must not dodge
-                    # the closeout gate — CR codex/Fable). not_applicable (legacy, no IDs)
-                    # is the only pass-through.
-                    if coverage is not None and not coverage.not_applicable() and not coverage.is_clean():
-                        enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
-                        print(
-                            "phase-loop: goal-coverage closeout re-check "
-                            f"({'BLOCKED' if enforce_block else 'advisory; non-blocking'}; "
-                            f"set PHASE_LOOP_ACCEPTANCE_ENFORCE=block to gate) — {coverage.blocker_summary()}",
-                            file=sys.stderr,
+                    _cov_evidence, _cov_blocker = _goal_coverage_closeout_outcome(
+                        repo, roadmap, validation_plan,
+                        _phase_status_literal(automation_status) == "complete",
+                    )
+                    if _cov_evidence is not None:
+                        child_automation["goal_coverage"] = _cov_evidence
+                    if _cov_blocker is not None:
+                        status_after_launch = "blocked"
+                        set_phase_status(
+                            repo, roadmap, alias, classifications, status_after_launch,
+                            reason="goal_coverage_gap", trigger=launch_action,
+                            selection=selection, action=action,
                         )
-                        if enforce_block and _phase_status_literal(automation_status) == "complete":
-                            status_after_launch = "blocked"
-                            set_phase_status(
-                                repo, roadmap, alias, classifications, status_after_launch,
-                                reason="goal_coverage_gap", trigger=launch_action,
-                                selection=selection, action=action,
-                            )
-                            event_blocker = {
-                                "human_required": False,
-                                "blocker_class": "contract_bug",
-                                "blocker_summary": f"Goal-coverage gap at closeout (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): {coverage.blocker_summary()}",
-                                "required_human_inputs": (),
-                                "access_attempts": (),
-                            }
-                            automation_status = status_after_launch
+                        event_blocker = _cov_blocker
+                        automation_status = status_after_launch
                 if (
                     event_blocker is None
                     and child_automation
@@ -6081,6 +6061,52 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
             "access_attempts": (),
         }
     return None
+
+
+def _goal_coverage_closeout_outcome(
+    repo: Path, roadmap: Path, plan: Path, is_complete: bool
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """agent-harness#211: closeout re-check of goal coverage. Returns
+    ``(evidence_json_or_None, blocker_or_None)``. Mirrors the preflight semantics at
+    closeout (the mutation window): a gap OR a setup error warns by default and FAILS
+    CLOSED under ``PHASE_LOOP_ACCEPTANCE_ENFORCE=block`` for a ``complete`` phase; an
+    audit EXCEPTION likewise fails closed under enforcement (CR codex round 2 — the
+    inline try/except previously swallowed it to a silent pass). ``not_applicable``
+    (legacy, no IDs) is the only pass-through. Never ``human_required``."""
+    enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+
+    def _blocker(summary: str) -> dict[str, object]:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": summary,
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+
+    try:
+        from .goal_coverage import check_goal_coverage
+
+        coverage = check_goal_coverage(repo, plan, roadmap)
+    except Exception as exc:
+        print(f"phase-loop: goal-coverage closeout re-check errored ({exc})", file=sys.stderr)
+        if enforce_block and is_complete:
+            return None, _blocker(f"Goal-coverage closeout audit failed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block: {exc}")
+        return None, None
+    if coverage.not_applicable():
+        return None, None
+    evidence = coverage.to_json()
+    if coverage.is_clean():
+        return evidence, None  # record a passing re-check as evidence
+    print(
+        "phase-loop: goal-coverage closeout re-check "
+        f"({'BLOCKED' if (enforce_block and is_complete) else 'advisory; non-blocking'}; "
+        f"set PHASE_LOOP_ACCEPTANCE_ENFORCE=block to gate) — {coverage.blocker_summary()}",
+        file=sys.stderr,
+    )
+    if enforce_block and is_complete:
+        return evidence, _blocker(f"Goal-coverage gap at closeout (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): {coverage.blocker_summary()}")
+    return evidence, None
 
 
 def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:

@@ -190,5 +190,67 @@ class GoalCoveragePreflightTest(unittest.TestCase):
                 os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
 
 
+class GoalCoverageCloseoutTest(unittest.TestCase):
+    """CR codex round 2: the closeout re-check must fail closed under enforce on a gap,
+    a setup error, AND an audit exception — never a silent pass."""
+
+    def _run_closeout(self, ex, ac, enforce, *, is_complete=True, patch_exc=False, **kw):
+        from unittest.mock import patch as mpatch
+
+        from phase_loop_runtime.runner import _goal_coverage_closeout_outcome
+
+        old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+        try:
+            if enforce is None:
+                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+            else:
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = enforce
+            with tempfile.TemporaryDirectory() as t:
+                repo, plan = _build(Path(t), ex, ac, **kw)
+                roadmap = repo / "specs" / "phase-plans-v1.md"
+                if patch_exc:
+                    with mpatch("phase_loop_runtime.goal_coverage.check_goal_coverage", side_effect=RuntimeError("boom")):
+                        return _goal_coverage_closeout_outcome(repo, roadmap, plan, is_complete)
+                return _goal_coverage_closeout_outcome(repo, roadmap, plan, is_complete)
+        finally:
+            if old is None:
+                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+            else:
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+
+    def test_gap_blocks_under_enforce_warns_default(self):
+        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — t"], "block")
+        self.assertIsNotNone(blk)
+        self.assertFalse(blk["human_required"])
+        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — t"], None)
+        self.assertIsNone(blk)  # warn-default
+        self.assertIsNotNone(ev)  # but evidence recorded
+
+    def test_setup_error_blocks_under_enforce(self):
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], "block", break_sha=True)
+        self.assertIsNotNone(blk)
+
+    def test_exception_fails_closed_under_enforce(self):
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], "block", patch_exc=True)
+        self.assertIsNotNone(blk)
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], None, patch_exc=True)
+        self.assertIsNone(blk)  # warn-default: exception does not block
+
+    def test_clean_records_evidence_no_block(self):
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t"], "block")
+        self.assertIsNone(blk)
+        self.assertIsNotNone(ev)
+
+    def test_legacy_no_ids_no_evidence_no_block(self):
+        ev, blk = self._run_closeout(["a bare goal"], ["did work"], "block")
+        self.assertIsNone(blk)
+        self.assertIsNone(ev)  # not_applicable -> no evidence, no gate
+
+    def test_incomplete_phase_not_gated(self):
+        # a non-complete phase is not gated even with a gap under enforce.
+        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — t"], "block", is_complete=False)
+        self.assertIsNone(blk)
+
+
 if __name__ == "__main__":
     unittest.main()
