@@ -2687,20 +2687,24 @@ def _validate_tracked_closeout_artifact(
     ls = _git_capture(repo_path, "ls-tree", "-z", resolved, "--", f":(literal){rel_path}")
     if ls.returncode != 0:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    mode = obj_type = obj_id = None
+    mode = obj_id = None
     for record in ls.stdout.split("\0"):
         if not record:
             continue
         meta, _, entry_path = record.partition("\t")
         fields = meta.split()
         if entry_path == rel_path and len(fields) >= 3:
-            mode, obj_type, obj_id = fields[0], fields[1], fields[2]
+            mode, obj_id = fields[0], fields[2]
             break
     if obj_id is None:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    # Prove it is a regular-file BLOB — check git's reported object type AND the file mode, so a
-    # crafted tree entry with a blob mode pointing at a non-blob object is rejected.
-    if obj_type != "blob" or mode not in {"100644", "100755"}:
+    if mode not in {"100644", "100755"}:
+        return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
+    # Prove the OID is genuinely a BLOB by reading the object DB. ls-tree's own type column is
+    # DERIVED from the mode, so it cannot detect a crafted `100644 <non-blob-OID>` entry; and
+    # `cat-file -s` succeeds on trees/tags too. `cat-file -t` reads the real object type.
+    real_type = _git_capture(repo_path, "cat-file", "-t", obj_id)
+    if real_type.returncode != 0 or real_type.stdout.strip() != "blob":
         return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
     # Non-empty, checked by BYTE SIZE of the exact resolved OID — FAIL-CLOSED on any error.
     size = _git_capture(repo_path, "cat-file", "-s", obj_id)
