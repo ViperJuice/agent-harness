@@ -301,5 +301,59 @@ class GoalCoverageCloseoutTest(unittest.TestCase):
         self.assertIsNone(blk)
 
 
+class GoalCoveragePerformCloseoutTest(unittest.TestCase):
+    """CR codex round 4/5: the goal-coverage re-check must run at the CANONICAL closeout
+    (_perform_phase_closeout), which every completion path funnels through — so a
+    delegated/resume completion is gated too, not only the standard post-launch site."""
+
+    def test_perform_phase_closeout_blocks_gap_under_enforce(self):
+        import tempfile as _tf
+
+        from phase_loop_runtime.models import StateSnapshot, utc_now
+        from phase_loop_runtime.profiles import resolve_profile
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.runner import _perform_phase_closeout
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+        with _tf.TemporaryDirectory() as t:
+            repo = make_repo(Path(t))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "# Roadmap\n\n## Context\nx\n\n## Phases\n\n### Phase 1 — GC (GC)\n\n"
+                "**Objective**\nx\n\n**Exit criteria**\n- [ ] EC-GC-1 — a\n- [ ] EC-GC-2 — b\n\n"
+                "**Scope notes**\n2 lanes\n\n**Key files**\n- `x.py`\n\n**Depends on**\n- (none)\n\n"
+                "## Top Interface-Freeze Gates\n\n## Phase Dependency DAG\nGC\n\n## Execution Notes\nx\n\n## Verification\nx\n",
+                encoding="utf-8",
+            )
+            # plan references only EC-GC-1 -> EC-GC-2 is a gap
+            plan = write_phase_plan(
+                repo, "GC", roadmap,
+                body="# GC\n\n## Acceptance Criteria\n- [ ] EC-GC-1 — proven by `t`\n",
+                owned_files=("README.md",),
+            )
+            commit_fixture_paths(repo, "add GC plan", plan)
+            snapshot = StateSnapshot(
+                timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+                phases={"GC": "awaiting_phase_closeout"}, current_phase="GC",
+                dirty_paths=(), closeout_terminal_status="complete",
+                **snapshot_provenance(roadmap),
+            )
+            try:
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
+                status, event = _perform_phase_closeout(
+                    repo, roadmap, "GC", snapshot, resolve_profile("execute"),
+                    action="execute", closeout_mode="no_commit",
+                )
+                self.assertEqual(status, "blocked")
+                self.assertIsNotNone(event.blocker)
+                self.assertFalse(event.blocker["human_required"])
+            finally:
+                if old is None:
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                else:
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8238,6 +8238,24 @@ def _perform_phase_closeout(
     blocker = None
     status = terminal_status
 
+    # agent-harness#211: goal-coverage re-check at the CANONICAL closeout, which every
+    # completion path funnels through (standard execute, delegated child, resume) — the
+    # single post-launch re-check site does not cover the delegated/resume completions
+    # (CR codex round 4/5). Warn-default: a behavioral NO-OP unless
+    # PHASE_LOOP_ACCEPTANCE_ENFORCE=block, so existing closeout behavior is unchanged.
+    if terminal_status == "complete":
+        try:
+            _gc_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+        except Exception:
+            _gc_plan = None
+        if _gc_plan is not None:
+            _gc_evidence, _gc_blocker = _goal_coverage_closeout_outcome(repo, roadmap, _gc_plan, True)
+            if _gc_evidence is not None:
+                metadata["goal_coverage"] = _gc_evidence
+            if _gc_blocker is not None:
+                status = "blocked"
+                blocker = _gc_blocker
+
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so
         every terminal (commit, no-op, guard-refused, governed-block, unowned
