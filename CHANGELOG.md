@@ -28,12 +28,12 @@ present on the host is compared at its **full** version, so `python3.11` is shad
 `>=3.11.5` when the host's is 3.11.9 (no false-block). When the host default already satisfies, the
 shim carries only the shadows and leaves bare `python`/`python3` untouched, so an active venv is
 preserved. The interpreter version is probed with `cwd=repo`, so a version-manager shim
-(pyenv/asdf) is measured under the same `.python-version` context the suite runs in. The shim
-survives a normal login shell (`bash -lc`), but two invocations can still defeat a PATH-prepend by
-construction and remain the operator's explicit declared environment (documented escape hatches,
-also the opt-out for a legitimate tox-style multi-version suite): an **absolute-path** interpreter
-(`/usr/bin/python3.10`), and a login **profile** that deliberately prepends a below-floor
-`python3.X` ahead of the shim.
+(pyenv/asdf) is measured under the same `.python-version` context the suite runs in. A **login
+shell** (`bash -lc`) that re-sources a PATH-reordering profile is handled by re-prepending the shim
+inside the `-c` payload (which runs after profile loading), so the shim wins even against a profile
+that puts a below-floor `python3.X` first. The one remaining escape hatch is an **absolute-path**
+interpreter (`/usr/bin/python3.10`), which bypasses PATH entirely and is the author's explicit
+declared choice (also the opt-out for a legitimate tox-style multi-version suite).
 
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 

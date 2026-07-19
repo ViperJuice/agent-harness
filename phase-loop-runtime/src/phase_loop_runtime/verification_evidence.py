@@ -319,13 +319,14 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     versioned ``python3.X`` name (below OR above a bounded specifier) with a fail-closed
     wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
     interpreter errors instead of running green below/above the floor. This is an
-    executable-resolution guard (no command-string parsing), so a versioned name inside a
-    string literal or env path is unaffected. The shim survives a normal login shell
-    (``bash -lc`` — the dogfood form), but two invocations can still defeat a PATH-prepend by
-    construction and are the operator's explicit declared environment: an *absolute*-path
-    interpreter (``/usr/bin/python3.10``), and a login profile that DELIBERATELY prepends a
-    below-floor ``python3.X`` AHEAD of the shim dir. Returns a ``shim_dir`` to prepend to the suite
-    ``PATH``, or a named ``blocker`` when no satisfying interpreter exists.
+    executable-resolution guard (no command-string parsing of the interpreter), so a versioned
+    name inside a string literal or env path is unaffected. A login shell (``bash -lc``) that
+    re-sources a PATH-reordering profile is handled by re-prepending the shim inside the ``-c``
+    payload (``_relogin_shell_shim``), so the shim wins even against a profile that puts a
+    below-floor ``python3.X`` first. The one remaining escape hatch is an *absolute*-path
+    interpreter (``/usr/bin/python3.10``) — bypasses PATH entirely and is the author's explicit
+    declared choice. Returns a ``shim_dir`` to prepend to the suite ``PATH``, or a named
+    ``blocker`` when no satisfying interpreter exists.
     """
     specs = _read_requires_python_specs(repo)
     # Non-satisfying versioned names to fail-close (only when a constraint exists).
@@ -764,6 +765,47 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
+_LOGIN_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+
+
+def _relogin_shell_shim(argv: list[str], shim_dir: "Path | None") -> list[str]:
+    """ah#221: a LOGIN shell (``bash -lc``) re-sources profile files that can prepend a below-floor
+    ``python3.X`` AHEAD of the shim on PATH, defeating the guard. Re-prepend the shim dir at the
+    start of the ``-c`` payload — which runs AFTER profile loading — so the shim wins again. Only
+    the login (``-l``/``--login``) + ``-c`` shell form is rewritten; a non-login shell does not
+    source profiles, and a direct-argv invocation is already covered by the PATH prepend."""
+    if shim_dir is None or not argv:
+        return argv
+    if os.path.basename(argv[0]) not in _LOGIN_SHELLS:
+        return argv
+    is_login = False
+    c_index: int | None = None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--login":
+            is_login = True
+        elif a == "-c":
+            c_index = i + 1
+            break
+        elif a.startswith("-") and not a.startswith("--"):
+            # combined short flags, e.g. -lc, -il
+            if "l" in a[1:]:
+                is_login = True
+            if "c" in a[1:]:
+                c_index = i + 1
+                break
+        else:
+            break  # a non-flag arg before -c: not a form we rewrite
+        i += 1
+    if not is_login or c_index is None or c_index >= len(argv):
+        return argv
+    shim_q = "'" + str(shim_dir).replace("'", "'\\''") + "'"  # single-quote the literal path
+    rewritten = list(argv)
+    rewritten[c_index] = f'export PATH={shim_q}:"$PATH"; ' + rewritten[c_index]
+    return rewritten
+
+
 def _run_process(
     repo: Path,
     log_file: Any,
@@ -779,6 +821,8 @@ def _run_process(
         # interpreter rather than the host default.
         process_env = dict(process_env if process_env is not None else os.environ)
         process_env["PATH"] = f"{path_prepend}{os.pathsep}{process_env.get('PATH', '')}"
+        # ah#221: keep the shim winning inside a login shell whose profile reorders PATH.
+        process_argv = _relogin_shell_shim(process_argv, path_prepend)
     offset = log_file.tell()
     started = time.monotonic()
     if not process_argv:

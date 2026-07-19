@@ -274,6 +274,35 @@ class VersionedInterpreterEndToEndTest(unittest.TestCase):
             self.assertNotEqual(result.commands[0].exit_code, 0)  # shim wins, not the fake's exit 0
             self.assertIn("does not satisfy", (run_dir / "verification.log").read_text(encoding="utf-8"))
 
+    def test_login_shell_reordering_profile_still_fails_closed(self):
+        # ah#221 (maintainer decision): a login shell whose profile prepends a below-floor
+        # python3.X AHEAD of the shim must still fail closed — the shim is re-prepended inside the
+        # -c payload (which runs after profile loading), so it wins the PATH race.
+        import shutil as _sh
+        if _sh.which("bash") is None:
+            self.skipTest("bash not available")
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as home:
+            repo = Path(td)
+            _write_pyproject(repo, SATISFIED_SPEC)  # >=3.9 → python3.8 shadowed
+            badbin = Path(home) / "badbin"
+            badbin.mkdir()
+            fake = badbin / SHADOW
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")  # would pass if it ran
+            fake.chmod(0o755)
+            (Path(home) / ".bash_profile").write_text(f'export PATH="{badbin}:$PATH"\n', encoding="utf-8")
+            run_dir = repo / ".phase-loop/runs/test"
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                result = run_verification(
+                    repo,
+                    run_dir,
+                    [["bash", "-lc", f"{SHADOW} -c 'print(1)'"]],
+                    None,
+                    None,
+                    20,
+                )
+            self.assertNotEqual(result.commands[0].exit_code, 0)  # shim wins over the profile's python3.8
+            self.assertIn("does not satisfy", (run_dir / "verification.log").read_text(encoding="utf-8"))
+
     def test_string_literal_and_env_path_are_not_false_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
