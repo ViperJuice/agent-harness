@@ -26,7 +26,10 @@ satisfies a phase that hard-requires runner verification (RG / `IF-0-RG-1`), is 
 with `--verification-log`, and the existing runner-verification path is unchanged (still rejects a
 markdown as `malformed_artifact`). The provenance is surfaced at the status boundary
 (`Closeout verification: passed (recovery evidence: tracked_closeout_artifact)`), so consumers can
-tell a recovery apart from a runner pass.
+tell a recovery apart from a runner pass. This is an audit anchor for an operator-reasoned
+recovery, not an authorization gate; ancestry is checked with grafts/replace-refs neutralized, so
+an active `.git/info/grafts` or a **shallow clone** is rejected (`closeout_commit_ancestry_untrusted`)
+— unshallow (`git fetch --unshallow`) before recovering in a shallow checkout.
 
 ### Reconcile/status survive a relocated repo root (#85)
 
