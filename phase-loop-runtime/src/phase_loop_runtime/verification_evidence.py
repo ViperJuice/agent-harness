@@ -104,13 +104,18 @@ def _read_requires_python_specs(repo: Path) -> list[str]:
 
 def _version_satisfies(version: str, specs: list[str]) -> bool:
     try:
-        from packaging.specifiers import SpecifierSet
-        from packaging.version import Version
-
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # `packaging` is a hard dependency; only a broken install reaches the simple fallback.
+        return _version_satisfies_simple(version, specs)
+    try:
         parsed = Version(version)
         return all(parsed in SpecifierSet(spec, prereleases=True) for spec in specs)
-    except Exception:
-        return _version_satisfies_simple(version, specs)
+    except (InvalidVersion, InvalidSpecifier):
+        # ah#221 CR: a malformed version or requires-python specifier cannot be verified — FAIL
+        # CLOSED, rather than silently retrying under the permissive fallback and accepting it.
+        return False
 
 
 def _tuple3(version: str) -> tuple[int, int, int]:

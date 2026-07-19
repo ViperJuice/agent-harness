@@ -11,6 +11,7 @@ from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
     _nonsatisfying_shadow_names,
     _resolve_suite_interpreter,
+    _version_satisfies,
     _version_satisfies_simple,
     run_verification,
 )
@@ -168,6 +169,22 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
              mock.patch.object(ve, "_interpreter_full_version", return_value=None):
             names = set(_nonsatisfying_shadow_names([">=3.11"]))
         self.assertIn("python3.11", names)  # nominally satisfies, but present+unprobeable → shadowed
+
+
+class VersionSatisfiesPrimaryPathTest(unittest.TestCase):
+    # codex round-5: `_version_satisfies` must NOT swallow packaging parse errors and retry under
+    # the permissive fallback — a malformed version or specifier must FAIL CLOSED (packaging present).
+    def test_malformed_version_fails_closed(self):
+        self.assertFalse(_version_satisfies("garbage3.11.9", [">=3.11.5"]))
+
+    def test_malformed_operatorless_specifier_fails_closed(self):
+        self.assertFalse(_version_satisfies("3.11.9", ["3.11"]))  # bare "3.11" is not a valid PEP 440 specifier
+
+    def test_valid_inputs_still_evaluated(self):
+        self.assertTrue(_version_satisfies("3.11.9", [">=3.11.5"]))
+        self.assertFalse(_version_satisfies("3.11.4", [">=3.11.5"]))
+        self.assertTrue(_version_satisfies("3.11.9", ["==3.11.*"]))
+        self.assertFalse(_version_satisfies("3.10.9", ["~=3.11"]))  # 3.10.9 not compatible with ~=3.11
 
 
 class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
