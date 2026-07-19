@@ -175,6 +175,28 @@ def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
     return None
 
 
+# Wide fixed candidate set of versioned python executable names to consider shadowing when a
+# requires-python constraint exists (ah#221). Decoupled from `_CANDIDATE_MINORS` (the auto-resolve
+# host-probe list, which must stay bounded): writing a fail-closed wrapper is free, so shadow a wide
+# minor range plus python2* so an old `python3.7` or a future `python3.15` can't reopen the hole.
+_SHADOW_CANDIDATES = tuple(
+    [(f"python3.{m}", f"3.{m}") for m in range(0, 40)]
+    + [("python2.7", "2.7"), ("python2.6", "2.6"), ("python2", "2.0")]
+)
+
+
+def _nonsatisfying_shadow_names(specs: list[str]) -> tuple[str, ...]:
+    """Versioned python executable names that do NOT satisfy ``specs`` (empty when no constraint).
+
+    Uses the PEP 440 ``_version_satisfies`` predicate over ``_SHADOW_CANDIDATES``, so it covers
+    below-floor AND above a bounded upper bound, self-excludes any satisfying version, and is
+    independent of which interpreters the host happens to have.
+    """
+    if not specs:
+        return ()
+    return tuple(name for name, version in _SHADOW_CANDIDATES if not _version_satisfies(version, specs))
+
+
 def _build_interpreter_shim(
     run_path: Path,
     interpreter: "Path | None",
@@ -210,10 +232,11 @@ def _build_interpreter_shim(
         if wrapper.exists() or wrapper.is_symlink():
             wrapper.unlink()
         message = (
-            f"{name} does not satisfy {reason}; use bare python/python3 "
+            f"phase-loop: {name} does not satisfy {reason}; use bare python/python3 "
             "(shimmed to a satisfying interpreter) or an explicit absolute interpreter path."
         )
-        wrapper.write_text(f'#!/bin/sh\necho "phase-loop: {message}" >&2\nexit 1\n', encoding="utf-8")
+        safe = message.replace("'", "'\\''")  # single-quote for /bin/sh, escape embedded quotes
+        wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{safe}' >&2\nexit 1\n", encoding="utf-8")
         wrapper.chmod(0o755)
     return shim_dir
 
@@ -235,14 +258,8 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     interpreter exists.
     """
     specs = _read_requires_python_specs(repo)
-    # Non-satisfying versioned names to fail-close (only when a constraint exists). Uses the PEP
-    # 440 satisfaction predicate, so it self-excludes the satisfying interpreter's own version and
-    # covers an upper bound (e.g. `<3.13` shadows 3.13/3.14 too).
-    shadow_names = tuple(
-        f"python3.{minor}"
-        for minor in _CANDIDATE_MINORS
-        if not _version_satisfies(f"3.{minor}", specs)
-    ) if specs else ()
+    # Non-satisfying versioned names to fail-close (only when a constraint exists).
+    shadow_names = _nonsatisfying_shadow_names(specs)
 
     if python_pin:
         # The pin is the operator's explicit interpreter choice — but it must still

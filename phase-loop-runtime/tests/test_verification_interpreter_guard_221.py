@@ -7,6 +7,7 @@ from pathlib import Path
 
 from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
+    _nonsatisfying_shadow_names,
     _resolve_suite_interpreter,
     run_verification,
 )
@@ -70,21 +71,17 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
             si, names = _shim_names(run_path, repo, python_pin=sys.executable)
             self.assertIn(SHADOW, names)
 
-    def test_bounded_specifier_shadows_above_upper_bound(self):
-        # advisor: an upper bound makes higher minors unsupported too.
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            _write_pyproject(repo, ">=3.9,<3.11")
-            run_path = repo / "run"
-            run_path.mkdir()
-            # Only exercise the shadow computation, not host-interpreter availability, by reading the
-            # shim dir when one is produced; if the host cannot satisfy <3.11 it returns a blocker.
-            si = _resolve_suite_interpreter(repo, run_path, python_pin=sys.executable)
-            if si.shim_dir is not None:
-                names = {p.name for p in si.shim_dir.iterdir()}
-                self.assertIn("python3.8", names)  # below
-                self.assertIn("python3.12", names)  # above the upper bound
-                self.assertNotIn("python3.10", names)  # within range
+    def test_shadow_names_helper_is_host_independent(self):
+        # advisor: an upper bound makes higher minors unsupported too — test the pure helper
+        # directly so the assertion is not vacuous on CI lanes where sys.executable differs.
+        names = set(_nonsatisfying_shadow_names([">=3.9,<3.11"]))
+        self.assertIn("python3.8", names)  # below the floor
+        self.assertIn("python3.12", names)  # above the upper bound
+        self.assertIn("python3.7", names)  # old minor outside the host-probe range
+        self.assertIn("python2.7", names)  # python2 never satisfies a 3.x constraint
+        self.assertNotIn("python3.9", names)  # within range
+        self.assertNotIn("python3.10", names)  # within range
+        self.assertEqual((), _nonsatisfying_shadow_names([]))  # no constraint → nothing
 
     def test_no_requires_python_builds_no_shim(self):
         with tempfile.TemporaryDirectory() as td:
@@ -114,21 +111,24 @@ class VersionedInterpreterEndToEndTest(unittest.TestCase):
             self.assertNotEqual(result.commands[0].exit_code, 0)
             self.assertIsNotNone(result.suite)
             self.assertNotEqual(result.suite.exit_code, 0)
-            self.assertIn("does not satisfy", (run_dir / "verification.log").read_text(encoding="utf-8"))
+            # Pin BOTH legs: the shim wrapper message must appear >= 2 times (once per leg), so a
+            # lost suite-side PATH prepend cannot pass vacuously via command-not-found.
+            log = (run_dir / "verification.log").read_text(encoding="utf-8")
+            self.assertGreaterEqual(log.count("does not satisfy"), 2)
 
     def test_string_literal_and_env_path_are_not_false_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             _write_pyproject(repo, SATISFIED_SPEC)
             run_dir = repo / ".phase-loop/runs/test"
-            # The shadowed token appears only in a string literal / env path — bare python (shimmed
-            # to a satisfying interpreter) must run green, unlike the removed regex detector.
+            # The shadowed token appears only in a string literal / env path — a satisfying bare
+            # interpreter must run green, unlike the removed regex detector.
             result = run_verification(
                 repo,
                 run_dir,
                 [
-                    ["python", "-c", "print('mentions python3.8 only in output')"],
-                    ["python", "-c", "import os; os.environ['PYTHONPATH']='/opt/python3.8'; print('ok')"],
+                    ["python3", "-c", "print('mentions python3.8 only in output')"],
+                    ["python3", "-c", "import os; os.environ['PYTHONPATH']='/opt/python3.8'; print('ok')"],
                 ],
                 None,
                 None,
