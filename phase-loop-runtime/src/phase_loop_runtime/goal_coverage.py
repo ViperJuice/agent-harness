@@ -139,6 +139,15 @@ def extract_plan_goal_refs(plan: Path) -> set[str]:
     return refs
 
 
+def phase_declares_goal_ids(roadmap: Path | str, phase: str) -> bool:
+    """True iff the roadmap phase `phase` opts into goal IDs (declares any EC-<ALIAS>-<N>
+    on its exit-criteria). Used to decide whether an un-resolvable plan is un-auditable
+    (opted-in) vs simply out of scope (legacy)."""
+    phases = _extract_phases(Path(roadmap).read_text(encoding="utf-8"))
+    match = next((p for p in phases if p.alias.upper() == str(phase or "").upper()), None)
+    return bool(match and match.declared_exit_criteria_ids)
+
+
 def check_goal_coverage(
     repo: Path | str, plan: Path | str, roadmap: Path | str | None = None
 ) -> GoalCoverageResult:

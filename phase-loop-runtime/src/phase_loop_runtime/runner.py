@@ -8227,6 +8227,81 @@ def _perform_phase_closeout(
     allow_unowned_reason: str | None = None,
     run_mode: str = "autonomous",
 ) -> tuple[str, LoopEvent]:
+    """agent-harness#211: wrap the canonical closeout with the goal-coverage gate as the
+    FINAL word. The gate must run AFTER the inner closeout decides the terminal status —
+    injecting it early is overwritten by the downstream commit/no-op paths (CR codex round
+    6). Every completion path (standard execute, delegated child, resume) funnels through
+    here, so this covers the delegated/resume completions the post-launch site misses.
+    Warn-default = behavioral no-op unless PHASE_LOOP_ACCEPTANCE_ENFORCE=block."""
+    status, event = _perform_phase_closeout_impl(
+        repo, roadmap, phase, snapshot, selection,
+        action=action, closeout_mode=closeout_mode,
+        allow_unowned_reason=allow_unowned_reason, run_mode=run_mode,
+    )
+    if status != "complete":
+        return status, event
+    evidence, blocker = _goal_coverage_closeout_gate(repo, roadmap, phase)
+    if evidence is None and blocker is None:
+        return status, event
+    new_metadata = {**(event.metadata or {})}
+    if evidence is not None:
+        new_metadata["goal_coverage"] = evidence
+    if blocker is not None:
+        return "blocked", replace(
+            event, status="blocked", blocker=blocker, metadata=new_metadata
+        )
+    return status, replace(event, metadata=new_metadata)
+
+
+def _goal_coverage_closeout_gate(
+    repo: Path, roadmap: Path, phase: str
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Resolve the phase's plan and run the goal-coverage re-check for a COMPLETE closeout.
+    Returns (evidence, blocker). If the plan cannot be resolved (missing/manifest conflict)
+    AND the phase opted into goal IDs, the closeout is un-auditable -> fails CLOSED under
+    enforcement (CR codex round 6, #2); a non-opted-in phase with no resolvable plan skips."""
+    from .goal_coverage import check_goal_coverage, phase_declares_goal_ids
+
+    enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+    try:
+        plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    except Exception:
+        plan = None
+    if plan is None:
+        opted_in = False
+        try:
+            opted_in = phase_declares_goal_ids(roadmap, phase)
+        except Exception:
+            opted_in = False
+        if opted_in and enforce_block:
+            print(
+                "phase-loop: goal-coverage closeout gate — plan artifact unresolvable for an "
+                "opted-in phase; failing closed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+                file=sys.stderr,
+            )
+            return None, {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": f"Goal-coverage un-auditable at closeout (plan artifact not resolvable for opted-in phase {phase}) under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+        return None, None
+    return _goal_coverage_closeout_outcome(repo, roadmap, plan, True)
+
+
+def _perform_phase_closeout_impl(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    snapshot: StateSnapshot,
+    selection,
+    *,
+    action: str,
+    closeout_mode: str,
+    allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
+) -> tuple[str, LoopEvent]:
     terminal_status = snapshot.closeout_terminal_status or "executed"
     verification_status = "passed" if terminal_status == "complete" else "not_run"
     metadata = {
@@ -8237,24 +8312,6 @@ def _perform_phase_closeout(
     }
     blocker = None
     status = terminal_status
-
-    # agent-harness#211: goal-coverage re-check at the CANONICAL closeout, which every
-    # completion path funnels through (standard execute, delegated child, resume) — the
-    # single post-launch re-check site does not cover the delegated/resume completions
-    # (CR codex round 4/5). Warn-default: a behavioral NO-OP unless
-    # PHASE_LOOP_ACCEPTANCE_ENFORCE=block, so existing closeout behavior is unchanged.
-    if terminal_status == "complete":
-        try:
-            _gc_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
-        except Exception:
-            _gc_plan = None
-        if _gc_plan is not None:
-            _gc_evidence, _gc_blocker = _goal_coverage_closeout_outcome(repo, roadmap, _gc_plan, True)
-            if _gc_evidence is not None:
-                metadata["goal_coverage"] = _gc_evidence
-            if _gc_blocker is not None:
-                status = "blocked"
-                blocker = _gc_blocker
 
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so

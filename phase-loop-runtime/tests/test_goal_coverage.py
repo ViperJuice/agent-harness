@@ -306,7 +306,7 @@ class GoalCoveragePerformCloseoutTest(unittest.TestCase):
     (_perform_phase_closeout), which every completion path funnels through — so a
     delegated/resume completion is gated too, not only the standard post-launch site."""
 
-    def test_perform_phase_closeout_blocks_gap_under_enforce(self):
+    def _run(self, enforce):
         import tempfile as _tf
 
         from phase_loop_runtime.models import StateSnapshot, utc_now
@@ -322,37 +322,57 @@ class GoalCoveragePerformCloseoutTest(unittest.TestCase):
             roadmap.write_text(
                 "# Roadmap\n\n## Context\nx\n\n## Phases\n\n### Phase 1 — GC (GC)\n\n"
                 "**Objective**\nx\n\n**Exit criteria**\n- [ ] EC-GC-1 — a\n- [ ] EC-GC-2 — b\n\n"
-                "**Scope notes**\n2 lanes\n\n**Key files**\n- `x.py`\n\n**Depends on**\n- (none)\n\n"
+                "**Scope notes**\n2 lanes\n\n**Key files**\n- `README.md`\n\n**Depends on**\n- (none)\n\n"
                 "## Top Interface-Freeze Gates\n\n## Phase Dependency DAG\nGC\n\n## Execution Notes\nx\n\n## Verification\nx\n",
                 encoding="utf-8",
             )
-            # plan references only EC-GC-1 -> EC-GC-2 is a gap
+            # plan owns README.md and references only EC-GC-1 -> EC-GC-2 is a coverage gap
             plan = write_phase_plan(
                 repo, "GC", roadmap,
                 body="# GC\n\n## Acceptance Criteria\n- [ ] EC-GC-1 — proven by `t`\n",
                 owned_files=("README.md",),
             )
             commit_fixture_paths(repo, "add GC plan", plan)
+            (repo / "README.md").write_text("phase output\n", encoding="utf-8")  # dirty owned path -> commit path completes
             snapshot = StateSnapshot(
                 timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
                 phases={"GC": "awaiting_phase_closeout"}, current_phase="GC",
-                dirty_paths=(), closeout_terminal_status="complete",
+                phase_owned_dirty=True, phase_owned_dirty_paths=("README.md",),
+                dirty_paths=("README.md",), closeout_terminal_status="complete",
                 **snapshot_provenance(roadmap),
             )
             try:
-                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
-                status, event = _perform_phase_closeout(
+                if enforce is None:
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                else:
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = enforce
+                return _perform_phase_closeout(
                     repo, roadmap, "GC", snapshot, resolve_profile("execute"),
-                    action="execute", closeout_mode="no_commit",
+                    action="execute", closeout_mode="commit",
                 )
-                self.assertEqual(status, "blocked")
-                self.assertIsNotNone(event.blocker)
-                self.assertFalse(event.blocker["human_required"])
             finally:
                 if old is None:
                     os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
                 else:
                     os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+
+    def test_gap_blocks_at_canonical_closeout_under_enforce(self):
+        # A closeout that would otherwise COMPLETE (clean commit path) is blocked by the
+        # goal-coverage gate as the final word — asserting the gate's own contract_bug,
+        # not an unrelated blocker.
+        status, event = self._run("block")
+        self.assertEqual(status, "blocked")
+        self.assertIsNotNone(event.blocker)
+        self.assertEqual(event.blocker["blocker_class"], "contract_bug")
+        self.assertIn("goal-coverage", str(event.blocker["blocker_summary"]).lower())
+        self.assertFalse(event.blocker["human_required"])
+
+    def test_gap_warn_default_completes_with_evidence(self):
+        # Warn-default: the SAME gap does NOT block; the closeout completes and records
+        # goal_coverage evidence (behavioral no-op vs the gate).
+        status, event = self._run(None)
+        self.assertEqual(status, "complete")
+        self.assertIn("goal_coverage", event.metadata)
 
 
 if __name__ == "__main__":
