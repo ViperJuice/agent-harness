@@ -659,7 +659,7 @@ def load_verification_artifact(path: Path) -> VerificationResult:
     suite = None
     if data["suite"] is not None:
         suite = _suite_from_payload(data["suite"])
-    _validate_v2_failure_kinds(int(data["schema_version"]), commands, suite)
+    _validate_v2_failure_kinds(int(data["schema_version"]), commands, suite, env_refresh)
     return VerificationResult(
         schema_version=data["schema_version"],
         run_id=_require_str(data["run_id"], "run_id"),
@@ -677,20 +677,27 @@ def _validate_v2_failure_kinds(
     schema_version: int,
     commands: list[VerificationCommandEvidence],
     suite: "VerificationSuiteEvidence | None",
+    env_refresh: "VerificationEnvRefreshEvidence | None",
 ) -> None:
-    """CR codex#2 (round 2): a schema-v2 SUBPROCESS-backed stage (command or suite) that
+    """CR codex#2 (round 2) + Fable (round 3): a schema-v2 SUBPROCESS-backed stage that
     FAILED must carry a runner-observed ``failure_kind`` — the runner always records one,
     so its absence means a tampered/malformed artifact (a v2 timeout with its field
-    stripped would otherwise load and mislabel as ``nonzero_exit``). ``env_refresh`` is
-    exempt: a v2 env_refresh with an externally-supplied ``exit_code`` runs no subprocess
-    and legitimately records no origin. Also enforce the runner's own invariants:
+    stripped would otherwise load and mislabel as ``nonzero_exit``). A stage is
+    subprocess-backed iff it recorded a ``log_offset`` (an int): commands and suite always
+    are; an env_refresh is only exempt when it ran NO subprocess (externally-supplied
+    ``exit_code`` -> ``log_offset is None``). Also enforce the runner's own invariants:
     ``timeout`` <=> exit 124 and ``error`` <=> exit 127, so a valid-enum-but-inconsistent
-    value is rejected. v1 artifacts are exempt (the field did not exist)."""
+    value is rejected. (The reverse — a child that itself exits 124/127 relabelled
+    ``nonzero_exit`` — is intentionally NOT rejected: it is indistinguishable from a
+    genuine child 124/127 in the frozen artifact, a documented limitation.) v1 artifacts
+    are exempt (the field did not exist)."""
     if schema_version < 2:
         return
     stages: list[tuple[str, Any]] = [("commands", c) for c in commands]
     if suite is not None:
         stages.append(("suite", suite))
+    if env_refresh is not None and isinstance(getattr(env_refresh, "log_offset", None), int):
+        stages.append(("env_refresh", env_refresh))
     for label, stage in stages:
         if stage.exit_code == 0:
             continue
@@ -864,14 +871,15 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
-def _stage_upper_bounds(result: VerificationResult, log_len: int) -> dict[int, int]:
-    """CR codex#1 + gemini (round 2): each stage's authoritative upper byte bound = the
-    NEXT stage's recorded ``log_offset`` in EXECUTION order (env_refresh -> commands ->
-    suite), or ``log_len`` for the last. This must be positional, not a sorted list with
-    a strict ``>`` filter: a zero-output stage shares its start with the following stage,
-    and a ``> off`` filter would skip PAST that neighbour and let a tampered end reach into
-    its bytes. Keyed by ``id(stage)`` (distinct instances) so equal-valued stages don't
-    collide."""
+def _stage_bounds(result: VerificationResult, log_len: int) -> dict[int, tuple[int, int]]:
+    """CR (rounds 2-3): each stage's authoritative byte window ``(lower, upper)`` from its
+    EXECUTION-order neighbours (env_refresh -> commands -> suite) — ``upper`` = the NEXT
+    stage's recorded ``log_offset`` (``log_len`` for the last), ``lower`` = the PREVIOUS
+    stage's recorded ``log_end_offset`` (``0`` for the first). Both edges are needed:
+    round 2 (codex+gemini) showed a tampered END leaking the NEXT stage's bytes; round 3
+    (Fable) showed a tampered backward START leaking a PRECEDING stage's bytes. Positional
+    (not a sorted/strict-``>`` scan) so a zero-output stage that shares a start offset with
+    its neighbour is still bounded correctly. Keyed by ``id(stage)`` (distinct instances)."""
     ordered: list[Any] = []
     if result.env_refresh is not None and isinstance(getattr(result.env_refresh, "log_offset", None), int):
         ordered.append(result.env_refresh)
@@ -880,9 +888,12 @@ def _stage_upper_bounds(result: VerificationResult, log_len: int) -> dict[int, i
             ordered.append(command)
     if result.suite is not None and isinstance(getattr(result.suite, "log_offset", None), int):
         ordered.append(result.suite)
-    bounds: dict[int, int] = {}
+    bounds: dict[int, tuple[int, int]] = {}
     for i, stage in enumerate(ordered):
-        bounds[id(stage)] = ordered[i + 1].log_offset if i + 1 < len(ordered) else log_len
+        prev_end = ordered[i - 1].log_end_offset if i > 0 else 0
+        lower = prev_end if isinstance(prev_end, int) else 0
+        upper = ordered[i + 1].log_offset if i + 1 < len(ordered) else log_len
+        bounds[id(stage)] = (lower, upper)
     return bounds
 
 
@@ -900,23 +911,25 @@ def _bounded_tail(region: bytes) -> tuple[str, bool]:
     return text, truncated
 
 
-def _stage_raw_tail(log_bytes: bytes, stage: Any, next_start: int) -> tuple[str, bool, bool]:
+def _stage_raw_tail(log_bytes: bytes, stage: Any, lower: int, upper: int) -> tuple[str, bool, bool]:
     """agent-harness#209: slice a failing stage's OWN bytes from verification.log using
     its recorded ``[log_offset, log_end_offset)`` region (captured at run time, never
-    reconstructed post-hoc). Returns (tail, truncated, range_valid). The recorded range
-    is VALIDATED, not clamped-and-guessed (CR codex#1/gemini round 2): in the normal flow
-    stages are written contiguously so ``end`` == ``next_start`` exactly, hence any range
-    violating ``0 <= start <= end <= next_start <= len(log)`` is a tampered/malformed
-    artifact — FAIL CLOSED to an empty tail rather than surface bytes that may belong to
-    another stage (a negative/backward start is rejected, not clamped into a neighbour).
-    A stage with no recorded region (v1 artifact, or an env_refresh that ran no
-    subprocess) also yields ``("", False, False)`` — the caller flags ``missing_output``
-    while still emitting typed exit context."""
+    reconstructed post-hoc). Returns (tail, truncated, range_valid). The recorded range is
+    VALIDATED against BOTH execution-order neighbour bounds, not clamped-and-guessed: in the
+    normal flow stages are written contiguously so ``start`` == ``lower`` (prev stage's end)
+    and ``end`` == ``upper`` (next stage's start) exactly. Any range violating
+    ``lower <= start <= end <= upper`` (with ``0 <= lower`` and ``upper <= len(log)``) is a
+    tampered/malformed artifact — FAIL CLOSED to an empty tail rather than surface bytes
+    that may belong to another stage. Round 2 (codex+gemini) needed the upper bound (a
+    tampered END leaking the NEXT stage); round 3 (Fable) needed the lower bound (a tampered
+    backward START leaking a PRECEDING stage). A stage with no recorded region (v1 artifact,
+    or an env_refresh that ran no subprocess) yields ``("", False, False)`` — the caller
+    flags ``missing_output`` while still emitting typed exit context."""
     start = getattr(stage, "log_offset", None)
     end = getattr(stage, "log_end_offset", None)
     if not isinstance(start, int) or not isinstance(end, int):
         return "", False, False
-    if not (0 <= start <= end <= next_start <= len(log_bytes)):
+    if not (0 <= lower <= start <= end <= upper <= len(log_bytes)):
         return "", False, False
     if end == start:
         return "", False, True  # a legitimately output-less stage (range valid, empty)
@@ -925,9 +938,10 @@ def _stage_raw_tail(log_bytes: bytes, stage: Any, next_start: int) -> tuple[str,
 
 
 def _stage_diagnostic(
-    role: str, index: int | None, argv: list[str], stage: Any, log_bytes: bytes, next_start: int
+    role: str, index: int | None, argv: list[str], stage: Any, log_bytes: bytes, bounds: tuple[int, int]
 ) -> dict[str, Any]:
-    raw_tail, truncated, _range_valid = _stage_raw_tail(log_bytes, stage, next_start)
+    lower, upper = bounds
+    raw_tail, truncated, _range_valid = _stage_raw_tail(log_bytes, stage, lower, upper)
     # CR codex#2: only fall back to nonzero_exit when the stage records NO origin
     # (v1 artifact, or an env_refresh with an externally-supplied exit_code that ran no
     # subprocess). A recorded-but-unknown value is rejected at load, so it can't reach
@@ -952,25 +966,25 @@ def _build_failure_diagnostics(result: VerificationResult, log_bytes: bytes) -> 
     ``_nonzero_exit_findings`` traverses (commands -> env_refresh -> suite). Guaranteed
     non-empty whenever ``_nonzero_exit_findings`` is non-empty (identical stage set),
     which structurally enforces the #209 anti-scrubbing rule."""
-    bounds = _stage_upper_bounds(result, len(log_bytes))
-
-    def _next_start(stage: Any) -> int:
-        return bounds.get(id(stage), len(log_bytes))
+    bounds = _stage_bounds(result, len(log_bytes))
+    full = (0, len(log_bytes))
 
     diagnostics: list[dict[str, Any]] = []
     for index, command in enumerate(result.commands):
         if command.exit_code != 0:
-            diagnostics.append(_stage_diagnostic("command", index, command.argv, command, log_bytes, _next_start(command)))
+            diagnostics.append(
+                _stage_diagnostic("command", index, command.argv, command, log_bytes, bounds.get(id(command), full))
+            )
     if result.env_refresh is not None and result.env_refresh.exit_code != 0:
         diagnostics.append(
             _stage_diagnostic(
                 "env_refresh", None, result.env_refresh.install_argv, result.env_refresh, log_bytes,
-                _next_start(result.env_refresh),
+                bounds.get(id(result.env_refresh), full),
             )
         )
     if result.suite is not None and result.suite.exit_code != 0:
         diagnostics.append(
-            _stage_diagnostic("suite", None, result.suite.argv, result.suite, log_bytes, _next_start(result.suite))
+            _stage_diagnostic("suite", None, result.suite.argv, result.suite, log_bytes, bounds.get(id(result.suite), full))
         )
     return tuple(diagnostics)
 

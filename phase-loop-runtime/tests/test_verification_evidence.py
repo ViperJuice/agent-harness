@@ -473,6 +473,56 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
         self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
         self.assertEqual(d0["raw_tail"], "")
 
+    def test_tampered_backward_start_cannot_leak_preceding_stage_bytes(self):
+        # CR Fable round 3 (dual of the round-2 END leak): cmd0 PASSES printing a secret,
+        # cmd1 fails zero-output; tampering cmd1's log_offset BACKWARD must not surface
+        # cmd0's bytes as cmd1's diagnostic (lower-bound validation).
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [
+                    [sys.executable, "-c", "print('EARLIER_STAGE_SECRET' * 5)"],
+                    [sys.executable, "-c", "import sys; sys.exit(1)"],
+                ],
+                None,
+                None,
+                5,
+            )
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][1]["log_offset"] = 0  # lie: reach back into cmd0
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            d = v.diagnostics[0]
+            self.assertNotIn("EARLIER_STAGE_SECRET", d["raw_tail"])
+            self.assertEqual(d["raw_tail"], "")
+
+    def test_v2_subprocess_env_refresh_missing_failure_kind_is_rejected(self):
+        # CR Fable round 3 nit (a): a subprocess-backed v2 env_refresh (int log_offset)
+        # that failed must also carry failure_kind.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c", "print('ok')"]],
+                None,
+                {"triggered": True, "install_argv": [sys.executable, "-c", "raise SystemExit(2)"]},
+                5,
+            )
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertIsInstance(payload["env_refresh"].get("log_offset"), int)
+            self.assertEqual(payload["env_refresh"]["failure_kind"], "nonzero_exit")
+            del payload["env_refresh"]["failure_kind"]
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_verification_artifact(artifact)
+
     def test_v2_failed_command_missing_failure_kind_is_rejected(self):
         # CR codex#2 round 2: a v2 subprocess-backed failed stage must carry failure_kind;
         # stripping it (e.g. to mislabel a timeout) is rejected at load.
