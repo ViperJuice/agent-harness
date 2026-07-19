@@ -40,8 +40,9 @@ session's CRs. #222 (grok default effort) already landed. Remaining, by priority
 Next-most load-bearing after review infra: these govern whether a phase can be marked
 `complete`/`passed` correctly and whether lanes dispatch cleanly.
 
-- **#85 + #90 (shared root — closeout artifact/status).** Decomposed after a repro pass
-  confirmed each sub-bug still reproduces on current main:
+- **#85 + #90 (shared root — closeout artifact/status). ✅ FULLY CLOSED** (both issues closed
+  2026-07-19; B #235, C #237, A WAI, D #239). Decomposed after a repro pass confirmed each
+  sub-bug still reproduces on current main:
   - #85(B) phase-alias provenance drift: **✅ DONE — merged as #235.** verification.json now
     records the LIVE run alias threaded from `runner.py:3508` (env override > threaded >
     `state.json:current_phase` > "unknown"), so a mid-run roadmap amendment no longer
@@ -54,8 +55,11 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
     fail-closed to the original root (bound to repo AND roadmap — codex caught a shared-external-
     roadmap cross-root leak in round-2 CR). 3-round cross-vendor convergence. Defense-in-depth
     follow-up filed as #238 (empty-field/CWD hardening).
-  - #85(D)/#90 rehydration: ⏳ reconcile must ingest a tracked `closeout.md` to rehydrate a
-    completed roadmap without re-verification.
+  - #85(D)/#90 rehydration: **✅ DONE — merged as #239.** `reconcile --closeout-artifact` adopts a
+    git-tracked committed `<PHASE>-closeout.md` as recovery evidence (provenance
+    `tracked_closeout_artifact`, surfaced in status), audit-anchor not authorization-gate; bound to
+    a reachable commit + regular-file blob + closeout naming; RG-excluded; mutually exclusive with
+    `--verification-log`. 7-round cross-vendor CR convergence.
   - #85(A) hash-scope: **✅ RESOLVED WAI** (maintainer 2026-07-19: keep strict content-SHA
     invalidation, do NOT loosen the hash input). The `gold_record_amendment` diagnostic
     (`repairable`, `amendment_drift` naming drifted-vs-current SHA, `repair_hint`) already ships
