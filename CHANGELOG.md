@@ -6,6 +6,37 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Versioned/absolute suite-interpreter guard, redone robustly (#221)
+
+`#219a`'s interpreter shim prepended a PATH dir whose bare `python`/`python3` resolve to a
+`requires-python`-satisfying interpreter, but a suite (or a plan-level `commands` verification
+bullet) that explicitly named a **versioned** interpreter — `python3.10` — bypassed the bare-name
+shim and could run GREEN under an unsupported interpreter. The regex string-scan detector #220
+shipped for this was removed as unsound (fail-open on shell metacharacters + wired only to
+`suite_command`; false-block on `pythonX.Y` string literals / env paths). It is now redone at
+**executable-resolution** level: whenever a `requires-python` constraint exists, the shim also
+shadows every **non-satisfying** `python3.X` name (below OR above a bounded specifier, via the
+PEP 440 predicate) with a **fail-closed wrapper**, on every path where the shim is built (pin,
+host-default-satisfies, and auto-resolve). Because it intercepts the executable name (not a command
+string), `python3.10&&pytest` is caught while `python3.12 -c 'print("python3.10")'` and
+`PYTHONPATH=/opt/python3.10 pytest` are no longer false-blocked, and both the `suite_command` and
+`commands` paths are covered. The shadow set spans a wide fixed name range (`python3.0`–`python3.39`
+plus `python2*`), decoupled from the bounded host-probe list, so an old `python3.7` or a future
+`python3.15` cannot reopen the hole. Patch-level constraints are handled precisely: a candidate
+present on the host is compared at its **full** version, so `python3.11` is shadowed under
+`<3.11.5` when the host's is 3.11.9 (fail-closed, not fail-open) and is NOT shadowed under
+`>=3.11.5` when the host's is 3.11.9 (no false-block). When the host default already satisfies, the
+shim carries only the shadows and leaves bare `python`/`python3` untouched, so an active venv is
+preserved. The interpreter version is probed with `cwd=repo`, so a version-manager shim
+(pyenv/asdf) is measured under the same `.python-version` context the suite runs in. A **login
+shell** (`bash -lc`) that re-sources a PATH-reordering profile is handled by re-prepending the shim
+inside the `-c` payload (which runs after profile loading), so the shim wins even against a profile
+that puts a below-floor `python3.X` first. Escape hatches (the operator's explicit declared
+environment, each strictly harder for an operator than the guard it evades): an **absolute-path**
+interpreter (`/usr/bin/python3.10`) which bypasses PATH entirely; and — deferred to #241 for
+hardening with proper planning — exotic `bash --login -O opt -c` option forms and an interpreter
+absent at resolve time but introduced by the login profile under a patch-level constraint.
+
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 
 `phase-loop reconcile --verification-log <closeout.md>` rejected a tracked, committed closeout

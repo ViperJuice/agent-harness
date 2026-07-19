@@ -57,11 +57,15 @@ _CANDIDATE_MINORS = tuple(range(8, 15))  # python3.8 .. python3.14
 class SuiteInterpreter:
     """Outcome of resolving a suite interpreter for the target's requires-python.
 
-    ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH`` whose
-    ``python``/``python3`` resolve to the satisfying interpreter, or ``None`` when
-    the host default already satisfies (or there is no constraint).
-    ``blocker`` — a clear, named reason when no satisfying interpreter exists;
-    the caller fails closed. ``interpreter`` — the resolved path, for the log.
+    ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH``. When a
+    below/above-floor bare interpreter had to be redirected it holds
+    ``python``/``python3`` links to the satisfying interpreter; when the host default
+    already satisfies (ah#221) it holds only the fail-closed shadows of the
+    non-satisfying versioned ``python3.X`` names (bare names are left untouched so an
+    active venv is preserved). ``None`` only when there is no ``requires-python``
+    constraint at all. ``blocker`` — a clear, named reason when no satisfying
+    interpreter exists; the caller fails closed. ``interpreter`` — the resolved path,
+    for the log.
     """
 
     shim_dir: "Path | None"
@@ -100,30 +104,62 @@ def _read_requires_python_specs(repo: Path) -> list[str]:
 
 def _version_satisfies(version: str, specs: list[str]) -> bool:
     try:
-        from packaging.specifiers import SpecifierSet
-        from packaging.version import Version
-
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # `packaging` is a hard dependency; only a broken install reaches the simple fallback.
+        return _version_satisfies_simple(version, specs)
+    try:
         parsed = Version(version)
         return all(parsed in SpecifierSet(spec, prereleases=True) for spec in specs)
-    except Exception:
-        return _version_satisfies_simple(version, specs)
+    except (InvalidVersion, InvalidSpecifier):
+        # ah#221 CR: a malformed version or requires-python specifier cannot be verified — FAIL
+        # CLOSED, rather than silently retrying under the permissive fallback and accepting it.
+        return False
+
+
+def _tuple3(version: str) -> tuple[int, int, int]:
+    """``(major, minor, micro)`` of a dotted version, zero-padded — so patch-level
+    constraints compare correctly in the ``packaging``-unavailable fallback (ah#221 CR)."""
+    parts = [int(p) for p in re.findall(r"\d+", version)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
 
 
 def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
-    """Fallback when ``packaging`` is unavailable: compare (major, minor) tuples
-    against comma-separated ``>=``/``>``/``<=``/``<``/``==``/``!=`` constraints."""
-    try:
-        target = tuple(int(part) for part in version.split(".")[:2])
-    except ValueError:
+    """Fallback when ``packaging`` (a hard dependency) is unavailable: compare full
+    ``(major, minor, micro)`` tuples against comma-separated constraints. Uses the full
+    three-component version so a patch-level bound (``>=3.11.5``) is not fail-open. ``==X.Y.*`` /
+    ``!=X.Y.*`` wildcards are handled by prefix match. Any clause form this fallback does NOT model
+    (``~=``, ``===``, epochs, pre/post/dev releases) — and an unparseable version — FAILS CLOSED
+    (returns unsatisfied) rather than silently accepting an interpreter it cannot verify."""
+    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", version.strip()):
+        # Not a plain 1-3 component dotted-numeric version ("garbage3.11.9", "3.11.9pre", or a
+        # 4+-component "3.11.0.1" that `_tuple3` would truncate) → fail closed.
         return False
+    target = _tuple3(version)
     for spec in specs:
         for clause in spec.split(","):
             clause = clause.strip()
-            match = re.match(r"(>=|<=|==|!=|>|<)?\s*(\d+)(?:\.(\d+))?", clause)
-            if not match:
+            if not clause:
+                continue  # empty clause (e.g. trailing comma) imposes no constraint
+            wild = re.fullmatch(r"(==|!=)\s*(\d+(?:\.\d+)*)\.\*", clause)
+            if wild:
+                prefix = tuple(int(p) for p in wild.group(2).split("."))
+                matches = target[: len(prefix)] == prefix
+                if wild.group(1) == "==" and not matches:
+                    return False
+                if wild.group(1) == "!=" and matches:
+                    return False
                 continue
-            op = match.group(1) or ">="
-            bound = (int(match.group(2)), int(match.group(3) or 0))
+            # An operator is REQUIRED — a bare version ("3.11") is not a valid PEP 440 specifier and
+            # must fail closed, not default to ">=".
+            match = re.fullmatch(r"(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+){0,2})", clause)
+            if not match:
+                return False  # bare version, or unsupported form (~=, ===, epoch, …) → fail closed
+            op = match.group(1)
+            bound = _tuple3(match.group(2))
             if op == ">=" and not target >= bound:
                 return False
             if op == ">" and not target > bound:
@@ -160,44 +196,142 @@ def _interpreter_minor_version(interpreter: Path) -> str | None:
     return version or None
 
 
-def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
+def _lowest_satisfying_interpreter(specs: list[str], repo: "Path | None" = None) -> Path | None:
     for minor in _CANDIDATE_MINORS:
         interpreter = _interpreter_path(f"python3.{minor}")
         if interpreter is None:
             continue
-        version = _interpreter_minor_version(interpreter)
+        version = _interpreter_full_version(interpreter, repo)  # full version, repo-context probe
         if version and _version_satisfies(version, specs):
             return interpreter
     return None
 
 
-def _build_interpreter_shim(run_path: Path, interpreter: Path) -> Path:
+# Wide fixed candidate set of versioned python executable names to consider shadowing when a
+# requires-python constraint exists (ah#221). Decoupled from `_CANDIDATE_MINORS` (the auto-resolve
+# host-probe list, which must stay bounded): writing a fail-closed wrapper is free, so shadow a wide
+# minor range plus python2* so an old `python3.7` or a future `python3.15` can't reopen the hole.
+_SHADOW_CANDIDATES = tuple(
+    [(f"python3.{m}", f"3.{m}") for m in range(0, 40)]
+    + [("python2.7", "2.7"), ("python2.6", "2.6"), ("python2", "2.0")]
+)
+
+
+def _interpreter_full_version(interpreter: Path, cwd: "Path | None" = None) -> str | None:
+    """``major.minor.micro`` of ``interpreter`` (for patch-level requires-python).
+
+    Probes with ``cwd`` (the target repo) so a version-manager shim (pyenv/asdf) reports the SAME
+    interpreter the suite will actually execute under ``cwd=repo`` — otherwise it could report a
+    satisfying global version at resolve time while selecting an unsupported one from the repo's
+    ``.python-version`` at run time (ah#221 CR)."""
+    try:
+        out = subprocess.check_output(
+            [str(interpreter), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,  # a pathological python3.X must not stall guard construction
+            cwd=str(cwd) if cwd is not None else None,
+        )
+    except Exception:
+        return None
+    return out.strip() or None
+
+
+def _nonsatisfying_shadow_names(specs: list[str], repo: "Path | None" = None) -> tuple[str, ...]:
+    """Versioned python executable names that do NOT satisfy ``specs`` (empty when no constraint).
+
+    For a candidate that RESOLVES on the host, the executable's FULL (patch-level) version is
+    compared, so a patch-bound constraint is handled precisely: ``python3.11`` is shadowed under
+    ``<3.11.5`` when the host's is 3.11.9 (fail-closed, not fail-open), and NOT shadowed under
+    ``>=3.11.5`` when the host's is 3.11.9 (no false-block). For a candidate not present on the
+    host, the nominal ``3.X`` version is used (it cannot be invoked via PATH anyway). Covers
+    below-floor AND above a bounded upper bound, and self-excludes any satisfying version.
+    """
+    if not specs:
+        return ()
+    names: list[str] = []
+    for name, nominal in _SHADOW_CANDIDATES:
+        resolved = _interpreter_path(name)
+        if resolved is not None:
+            full = _interpreter_full_version(resolved, repo)
+            if full is None:
+                names.append(name)  # present but unprobeable → fail CLOSED (do not trust nominal)
+                continue
+            version = full
+        else:
+            version = nominal  # absent: cannot be invoked via PATH anyway
+        if not _version_satisfies(version, specs):
+            names.append(name)
+    return tuple(names)
+
+
+def _build_interpreter_shim(
+    run_path: Path,
+    interpreter: "Path | None",
+    shadow_names: "tuple[str, ...] | list[str]" = (),
+    specs: "list[str] | None" = None,
+) -> Path:
+    """Build the ``_interp_shim`` PATH dir (ah#219a / ah#221).
+
+    When ``interpreter`` is given, ``python``/``python3`` resolve to it. Each name in
+    ``shadow_names`` (e.g. ``python3.10``) is shadowed by a fail-closed wrapper so a suite or
+    ``commands`` entry that explicitly names a ``requires-python``-non-satisfying versioned
+    interpreter errors instead of running below the floor. Interception is at executable
+    resolution, so a string literal / env path mentioning the name is unaffected. An *absolute*
+    interpreter path bypasses PATH entirely and is the author's explicit declared choice.
+    """
     shim_dir = run_path / "_interp_shim"
     shim_dir.mkdir(parents=True, exist_ok=True)
-    target = interpreter.resolve()
-    for name in ("python", "python3"):
-        link = shim_dir / name
-        try:
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            os.symlink(target, link)
-        except OSError:
-            # Fall back to a tiny exec wrapper if symlinks are unavailable.
-            link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
-            link.chmod(0o755)
+    if interpreter is not None:
+        target = interpreter.resolve()
+        for name in ("python", "python3"):
+            link = shim_dir / name
+            try:
+                if link.exists() or link.is_symlink():
+                    link.unlink()
+                os.symlink(target, link)
+            except OSError:
+                # Fall back to a tiny exec wrapper if symlinks are unavailable.
+                link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
+                link.chmod(0o755)
+    reason = f"requires-python ({', '.join(specs)})" if specs else "the target's requires-python"
+    for name in shadow_names:
+        wrapper = shim_dir / name
+        if wrapper.exists() or wrapper.is_symlink():
+            wrapper.unlink()
+        message = (
+            f"phase-loop: {name} does not satisfy {reason}; use a satisfying interpreter "
+            "(bare python/python3, or an explicit absolute interpreter path)."
+        )
+        safe = message.replace("'", "'\\''")  # single-quote for /bin/sh, escape embedded quotes
+        wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{safe}' >&2\nexit 1\n", encoding="utf-8")
+        wrapper.chmod(0o755)
     return shim_dir
 
 
 def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | None) -> SuiteInterpreter:
     """Resolve an interpreter satisfying the target repo's ``requires-python``.
 
-    Mechanism C (agent-harness#219(a)): an explicit ``automation.python`` pin
+    Mechanism C (agent-harness#219(a) + #221): an explicit ``automation.python`` pin
     wins when present; otherwise auto-resolve from ``requires-python`` and shim
-    ``python``/``python3`` onto the lowest satisfying host ``pythonX.Y``. Returns
-    a ``shim_dir`` to prepend to the suite ``PATH`` (or ``None`` when the host
-    default already satisfies), or a named ``blocker`` when none exists.
+    ``python``/``python3`` onto the lowest satisfying host ``pythonX.Y``. When a
+    ``requires-python`` constraint exists, the shim ALSO shadows every NON-satisfying
+    versioned ``python3.X`` name (below OR above a bounded specifier) with a fail-closed
+    wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
+    interpreter errors instead of running green below/above the floor. This is an
+    executable-resolution guard (no command-string parsing of the interpreter), so a versioned
+    name inside a string literal or env path is unaffected. A realistic login shell
+    (``bash -lc "cmd"``) that re-sources a PATH-reordering profile is handled by re-prepending the
+    shim inside the ``-c`` payload (``_relogin_shell_shim``), so the shim wins even against a profile
+    that puts a below-floor ``python3.X`` first. Escape hatches (operator's declared environment,
+    adversary-equivalent): an *absolute*-path interpreter (``/usr/bin/python3.10``); and — tracked
+    for hardening in ah#241 — exotic ``bash --login -O opt -c`` option forms and an interpreter
+    absent at resolve time but introduced by the profile under a patch-level constraint. Returns a
+    ``shim_dir`` to prepend to the suite ``PATH``, or a named ``blocker`` when none satisfies.
     """
     specs = _read_requires_python_specs(repo)
+    # Non-satisfying versioned names to fail-close (only when a constraint exists).
+    shadow_names = _nonsatisfying_shadow_names(specs, repo)
 
     if python_pin:
         # The pin is the operator's explicit interpreter choice — but it must still
@@ -208,7 +342,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
         if resolved is None:
             return SuiteInterpreter(None, f"automation.python pin '{python_pin}' not found on host", None)
         if specs:
-            version = _interpreter_minor_version(resolved)
+            version = _interpreter_full_version(resolved, repo)  # full version, repo-context probe
             if not version or not _version_satisfies(version, specs):
                 return SuiteInterpreter(
                     None,
@@ -216,29 +350,38 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
                     f"does not satisfy requires-python ({', '.join(specs)})",
                     None,
                 )
-        return SuiteInterpreter(_build_interpreter_shim(run_path, resolved), None, str(resolved.resolve()))
+        return SuiteInterpreter(
+            _build_interpreter_shim(run_path, resolved, shadow_names, specs), None, str(resolved.resolve())
+        )
 
     if not specs:
         return SuiteInterpreter(None, None, None)  # no constraint → host default
 
-    # The suite may invoke bare ``python`` OR ``python3``. Skip the shim only when
-    # EVERY such interpreter present on PATH already satisfies requires-python; if
-    # ANY present one is below the floor — e.g. a bare ``python`` older than a
-    # satisfying ``python3`` (CR codex#3) — shim BOTH names onto a satisfying
-    # interpreter so a bare ``python`` in the suite can't silently be the old one.
+    # The suite may invoke bare ``python`` OR ``python3``. Only redirect the bare names when a
+    # present one is below the floor — but ALWAYS build a shim so the versioned-name shadows are
+    # on PATH (a satisfying bare ``python`` does not protect against an explicit ``python3.10``).
     present = [p for p in (_interpreter_path("python3"), _interpreter_path("python")) if p is not None]
+    # Full version — a present bare interpreter whose PATCH version is unsupported (e.g. 3.11.9
+    # under <3.11.5), or that cannot be probed, must NOT count as satisfying (else the shadows-only
+    # branch would leave it unredirected and the suite would run green under it).
     all_present_ok = bool(present) and all(
-        (version := _interpreter_minor_version(candidate)) and _version_satisfies(version, specs)
+        (version := _interpreter_full_version(candidate, repo)) and _version_satisfies(version, specs)
         for candidate in present
     )
     if all_present_ok:
-        return SuiteInterpreter(None, None, str(present[0].resolve()))
+        # Bare names already satisfy: do not redirect them, but still shadow non-satisfying
+        # versioned names so a `python3.10` in the suite/commands fails closed.
+        return SuiteInterpreter(
+            _build_interpreter_shim(run_path, None, shadow_names, specs), None, str(present[0].resolve())
+        )
 
-    candidate = _lowest_satisfying_interpreter(specs)
+    candidate = _lowest_satisfying_interpreter(specs, repo)
     if candidate is None:
         joined = ", ".join(specs)
         return SuiteInterpreter(None, f"no host interpreter satisfies requires-python ({joined})", None)
-    return SuiteInterpreter(_build_interpreter_shim(run_path, candidate), None, str(candidate.resolve()))
+    return SuiteInterpreter(
+        _build_interpreter_shim(run_path, candidate, shadow_names, specs), None, str(candidate.resolve())
+    )
 
 
 @dataclass(frozen=True)
@@ -623,6 +766,52 @@ def _nonzero_exit_findings(result: VerificationResult) -> list[str]:
     return findings
 
 
+_LOGIN_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+
+
+def _relogin_shell_shim(argv: list[str], shim_dir: "Path | None") -> list[str]:
+    """ah#221: a LOGIN shell (``bash -lc``) re-sources profile files that can prepend a below-floor
+    ``python3.X`` AHEAD of the shim on PATH, defeating the guard. Re-prepend the shim dir at the
+    start of the ``-c`` payload — which runs AFTER profile loading — so the shim wins again. Only
+    the login (``-l``/``--login``) + ``-c`` shell form is rewritten; a non-login shell does not
+    source profiles, and a direct-argv invocation is already covered by the PATH prepend."""
+    if shim_dir is None or not argv:
+        return argv
+    if os.path.basename(argv[0]) not in _LOGIN_SHELLS:
+        return argv
+    is_login = False
+    c_index: int | None = None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--login":
+            is_login = True
+        elif a == "-c":
+            c_index = i + 1
+            break
+        elif a.startswith("-") and not a.startswith("--"):
+            # combined short flags, e.g. -lc, -il
+            if "l" in a[1:]:
+                is_login = True
+            if "c" in a[1:]:
+                c_index = i + 1
+                break
+        else:
+            break  # a non-flag arg before -c: not a form we rewrite
+        i += 1
+    if not is_login or c_index is None or c_index >= len(argv):
+        return argv
+    if argv[c_index].startswith("-"):
+        # The command string is the first NON-option arg after `-c`; an option or `--` may precede
+        # it (`bash -lc -- 'cmd'`, `bash -lc -x 'cmd'`). Don't rewrite an ambiguous form — fail
+        # open to the plain PATH prepend rather than corrupt the option slot.
+        return argv
+    shim_q = "'" + str(shim_dir).replace("'", "'\\''") + "'"  # single-quote the literal path
+    rewritten = list(argv)
+    rewritten[c_index] = f'export PATH={shim_q}:"$PATH"; ' + rewritten[c_index]
+    return rewritten
+
+
 def _run_process(
     repo: Path,
     log_file: Any,
@@ -638,6 +827,8 @@ def _run_process(
         # interpreter rather than the host default.
         process_env = dict(process_env if process_env is not None else os.environ)
         process_env["PATH"] = f"{path_prepend}{os.pathsep}{process_env.get('PATH', '')}"
+        # ah#221: keep the shim winning inside a login shell whose profile reorders PATH.
+        process_argv = _relogin_shell_shim(process_argv, path_prepend)
     offset = log_file.tell()
     started = time.monotonic()
     if not process_argv:
