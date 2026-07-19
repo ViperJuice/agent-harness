@@ -47,8 +47,13 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
     `state.json:current_phase` > "unknown"), so a mid-run roadmap amendment no longer
     mis-attributes the artifact's phase. Callsite pinned by a static AST test (runtime
     run_loop is bundle-gated / `dotfiles_integration`-marked / CI-excluded).
-  - #85(C) repo-path portability: ⏳ NEXT — repo-relative normalization in
-    events/state_ops/reconcile/classifier/runner so closeout survives a moved/renamed repo root.
+  - #85(C) repo-path portability: **✅ DONE — merged as #237.** reconcile/classifier roadmap
+    path-equality gates now match repo-relative (`runtime_paths.roadmap_paths_match`),
+    content-SHA-backstopped, so persisted status survives a moved/renamed/copied repo root
+    (symptom #5); one `repo_relocated` warning. Operator breakglass SL-2 attestations stay
+    fail-closed to the original root (bound to repo AND roadmap — codex caught a shared-external-
+    roadmap cross-root leak in round-2 CR). 3-round cross-vendor convergence. Defense-in-depth
+    follow-up filed as #238 (empty-field/CWD hardening).
   - #85(D)/#90 rehydration: ⏳ reconcile must ingest a tracked `closeout.md` to rehydrate a
     completed roadmap without re-verification.
   - #85(A) hash-scope: ⏳ DEFERRED product decision — prose-edits-invalidate-completion is
