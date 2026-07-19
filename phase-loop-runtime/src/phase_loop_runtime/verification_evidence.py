@@ -113,21 +113,33 @@ def _version_satisfies(version: str, specs: list[str]) -> bool:
         return _version_satisfies_simple(version, specs)
 
 
+def _tuple3(version: str) -> tuple[int, int, int]:
+    """``(major, minor, micro)`` of a dotted version, zero-padded — so patch-level
+    constraints compare correctly in the ``packaging``-unavailable fallback (ah#221 CR)."""
+    parts = [int(p) for p in re.findall(r"\d+", version)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
 def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
-    """Fallback when ``packaging`` is unavailable: compare (major, minor) tuples
-    against comma-separated ``>=``/``>``/``<=``/``<``/``==``/``!=`` constraints."""
+    """Fallback when ``packaging`` is unavailable: compare (major, minor, MICRO) tuples
+    against comma-separated ``>=``/``>``/``<=``/``<``/``==``/``!=`` constraints. Uses the full
+    three-component version so a patch-level bound (e.g. ``>=3.11.5``) is not fail-open. A ``.*``
+    wildcard is not modeled here (the ``packaging`` primary path handles it) and degrades
+    fail-closed."""
     try:
-        target = tuple(int(part) for part in version.split(".")[:2])
+        target = _tuple3(version)
     except ValueError:
         return False
     for spec in specs:
         for clause in spec.split(","):
             clause = clause.strip()
-            match = re.match(r"(>=|<=|==|!=|>|<)?\s*(\d+)(?:\.(\d+))?", clause)
+            match = re.match(r"(>=|<=|==|!=|>|<)?\s*(\d+(?:\.\d+){0,2})", clause)
             if not match:
                 continue
             op = match.group(1) or ">="
-            bound = (int(match.group(2)), int(match.group(3) or 0))
+            bound = _tuple3(match.group(2))
             if op == ">=" and not target >= bound:
                 return False
             if op == ">" and not target > bound:

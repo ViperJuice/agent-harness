@@ -11,6 +11,7 @@ from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
     _nonsatisfying_shadow_names,
     _resolve_suite_interpreter,
+    _version_satisfies_simple,
     run_verification,
 )
 
@@ -167,6 +168,26 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
              mock.patch.object(ve, "_interpreter_full_version", return_value=None):
             names = set(_nonsatisfying_shadow_names([">=3.11"]))
         self.assertIn("python3.11", names)  # nominally satisfies, but present+unprobeable → shadowed
+
+
+class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
+    # codex round-3: the `packaging`-unavailable fallback must not be minor-only (fail-open).
+    def test_patch_level_bounds_are_not_fail_open(self):
+        self.assertFalse(_version_satisfies_simple("3.11.0", [">=3.11.5"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.4", ["==3.11.5"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.4", [">=3.11.5"]))
+
+    def test_patch_level_satisfying_cases(self):
+        self.assertTrue(_version_satisfies_simple("3.11.9", [">=3.11.5"]))
+        self.assertTrue(_version_satisfies_simple("3.11.5", [">=3.11.5"]))
+        self.assertTrue(_version_satisfies_simple("3.11.4", ["<3.11.5"]))
+        self.assertFalse(_version_satisfies_simple("3.11.9", ["<3.11.5"]))
+
+    def test_minor_only_specs_still_work(self):
+        self.assertTrue(_version_satisfies_simple("3.11.9", [">=3.9"]))
+        self.assertFalse(_version_satisfies_simple("3.8.0", [">=3.9"]))
+        self.assertTrue(_version_satisfies_simple("3.10.2", [">=3.9,<3.11"]))
+        self.assertFalse(_version_satisfies_simple("3.11.0", [">=3.9,<3.11"]))
 
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):
