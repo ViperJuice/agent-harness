@@ -121,6 +121,52 @@ class CloseoutModeDefaultTest(unittest.TestCase):
             self.assertIs(p.parse_args(["--json", cmd, *extra]).json, True, cmd)
             self.assertIs(p.parse_args([cmd, *extra]).json, False, cmd)  # omitted default
 
+    def test_dual_declared_args_survive_subparser_clobber_force_replan(self):
+        # ah#233: the same subparser-copy-back clobber #232 fixed for the common-args
+        # helper ALSO affects dual-declared options (top-level parser AND the
+        # run/resume/dry-run subparser) that live outside `_add_common_subparser_args`.
+        # Empirically: `--force-replan run` -> False and
+        # `--allow-cross-phase-dirty REASON run` -> None (both silently dropped) before
+        # the subparser copies gained `default=argparse.SUPPRESS`.
+        p = build_parser()
+
+        self.assertIs(p.parse_args(["--force-replan", "run"]).force_replan, True)
+        self.assertIs(p.parse_args(["run", "--force-replan"]).force_replan, True)
+        self.assertIs(p.parse_args(["run"]).force_replan, False)
+
+        self.assertEqual(
+            p.parse_args(["--allow-cross-phase-dirty", "reason", "run"]).allow_cross_phase_dirty,
+            "reason",
+        )
+        self.assertEqual(
+            p.parse_args(["run", "--allow-cross-phase-dirty", "reason"]).allow_cross_phase_dirty,
+            "reason",
+        )
+        self.assertIsNone(p.parse_args(["run"]).allow_cross_phase_dirty)
+
+        self.assertIs(p.parse_args(["--full-phase", "run"]).full_phase, True)
+        self.assertIs(p.parse_args(["run"]).full_phase, False)
+
+        self.assertIs(p.parse_args(["--no-deprecation-hints", "run"]).no_deprecation_hints, True)
+        self.assertIs(p.parse_args(["run"]).no_deprecation_hints, False)
+
+        self.assertEqual(p.parse_args(["--rotate-executors", "codex,claude", "run"]).rotate_executors, "codex,claude")
+        self.assertIsNone(p.parse_args(["run"]).rotate_executors)
+
+        self.assertEqual(p.parse_args(["--rotation-mode", "work_unit", "run"]).rotation_mode, "work_unit")
+        self.assertEqual(p.parse_args(["run"]).rotation_mode, "phase")
+
+        self.assertEqual(
+            p.parse_args(["--rotation-on-policy-pin", "fallback-next", "run"]).rotation_on_policy_pin,
+            "fallback-next",
+        )
+        self.assertEqual(p.parse_args(["run"]).rotation_on_policy_pin, "skip")
+
+        # the pattern also holds on resume; --full-phase/--no-deprecation-hints are not
+        # registered on dry-run's subparser (scoped to run/resume only, unchanged by #233).
+        self.assertIs(p.parse_args(["--force-replan", "resume"]).force_replan, True)
+        self.assertEqual(p.parse_args(["--rotate-executors", "codex", "dry-run"]).rotate_executors, "codex")
+
     def test_execute_leg_stays_manual(self):
         # The inner execute leg keeps the manual default; the flip is scoped to the
         # outer run loop and must NOT turn execute legs into pushers.

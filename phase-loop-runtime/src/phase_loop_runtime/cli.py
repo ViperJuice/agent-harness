@@ -330,13 +330,21 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Opt into governed mode: a bounded pre-merge panel review before each "
                 "implementation phase commits (model-routing-v2). Default is autonomous (no panel).",
             )
-            sub.add_argument("--force-replan", action="store_true")
+            # ah#233: --force-replan and --allow-cross-phase-dirty are ALSO declared on
+            # the top-level parser (build_parser), which owns the before-subcommand
+            # position. Without `default=argparse.SUPPRESS` the subparser's copy
+            # re-defaults the attribute and `_SubParsersAction` copies it back OVER a
+            # value the operator placed before the subcommand (same clobber class as
+            # ah#84 / ah#232), so `phase-loop --force-replan run` silently dropped to
+            # False and `phase-loop --allow-cross-phase-dirty REASON run` to None.
+            sub.add_argument("--force-replan", action="store_true", default=argparse.SUPPRESS)
             sub.add_argument("--no-dispatch-lock", action="store_true", help="Disable the per-roadmap dispatch lock for this run.")
             if parallel_dispatch_enabled():
                 sub.add_argument("--parallel-dispatch", action="store_true", help="Run roadmap phases through the serial coordinator wave loop.")
             sub.add_argument(
                 "--allow-cross-phase-dirty",
                 help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
+                default=argparse.SUPPRESS,
             )
             sub.add_argument(
                 "--closeout-allow-unowned",
@@ -354,14 +362,20 @@ def build_parser() -> argparse.ArgumentParser:
                 )
                 sub.add_argument("--reason", help="Operator-supplied reason for the lane-IR override audit trail.")
             sub.add_argument("--reset-capability", action="store_true")
-            sub.add_argument("--rotate-executors")
-            sub.add_argument("--rotation-mode", choices=("phase", "work_unit"))
-            sub.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"))
+            # ah#233: same before-subcommand clobber as --force-replan above. The
+            # rotation-mode/rotation-on-policy-pin subparser copies additionally used
+            # to clobber the top-level "phase"/"skip" defaults to None (masked by the
+            # `or "phase"` / `or "skip"` at the run_loop() call site below) -- SUPPRESS
+            # fixes the clobber at the source so that masking is no longer load-bearing.
+            sub.add_argument("--rotate-executors", default=argparse.SUPPRESS)
+            sub.add_argument("--rotation-mode", choices=("phase", "work_unit"), default=argparse.SUPPRESS)
+            sub.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"), default=argparse.SUPPRESS)
             sub.add_argument("--enable-tier-3", action="store_true", help="Enable default-off closeout-time Tier 3 evidence audit.")
             sub.add_argument("--tier-3-budget", type=int, default=3, help="Maximum Tier 3 evidence-audit calls per closeout. Default 3.")
         if name in {"run", "resume"}:
-            sub.add_argument("--full-phase", action="store_true", help="Count --max-phases as complete plan-plus-execute phase cycles.")
-            sub.add_argument("--no-deprecation-hints", action="store_true", help="Suppress legacy --max-phases action-count hints.")
+            # ah#233: same before-subcommand clobber as --force-replan above.
+            sub.add_argument("--full-phase", action="store_true", help="Count --max-phases as complete plan-plus-execute phase cycles.", default=argparse.SUPPRESS)
+            sub.add_argument("--no-deprecation-hints", action="store_true", help="Suppress legacy --max-phases action-count hints.", default=argparse.SUPPRESS)
         if name == "maintain-skills":
             sub.description = "Skill Maintenance: planner-only by default; edits require --apply-skill-edits and --allow-skill."
             sub.add_argument("--min-reflections", type=int, default=2)
