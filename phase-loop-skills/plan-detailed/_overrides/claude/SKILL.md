@@ -98,7 +98,7 @@ Synthesize into a concrete change list. Follow these rules rigorously — they'r
 
 **Verification.** Concrete shell/test commands (`pnpm test path/to/foo`, `cargo check`, `psql -c '…'`, `curl …`), behaviors to observe, edge cases to check. No "manually verify that it works" items.
 
-**Acceptance criteria.** 2–5 `- [ ]` items. Testable assertions, not prose. "Users can log in" fails. "`POST /api/auth` returns 200 with a valid session cookie for a registered user" passes.
+**Acceptance criteria.** 2–5 `- [ ]` items. Testable assertions, not prose. "Users can log in" fails. "`POST /api/auth` returns 200 with a valid session cookie for a registered user" passes. If this bounded change implements a roadmap phase's `EC-<ALIAS>-<N>` goal, reference that ID instead of restating it (`- [ ] EC-<ALIAS>-<N> — proven by \`<command>\``) — the roadmap goal is the single source of truth; a standalone change with no roadmap goal uses plain testable assertions.
 
 ### Step 4 — Write the plan doc
 

@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Planner skills emit and reference goal IDs — goal-ID Increment 2 (#211)
+
+The planner **skills** now produce roadmaps/plans that use the decidable goal-coverage
+mechanism shipped in Increment 1 (#247), so it applies to real roadmaps, not just
+fixtures. All four harnesses' `phase-roadmap-builder` emit each exit-criterion led by a
+stable goal ID — `- [ ] EC-<ALIAS>-<N> — <assertion>` — with the convention documented
+(all-or-none per phase, unique + alias-scoped, gaps allowed, never reuse/renumber a
+deleted ID). All four harnesses' `plan-phase` and `plan-detailed` author acceptance
+items that **reference** the roadmap goal by its `EC-<ALIAS>-<N>` ID and name the
+proving command, instead of restating (and drifting from) the goal text — so validation
+always checks the plan against the original goal and a plan can never silently weaken
+it. `validate_plan_doc.py` gains a `(P)` warn: when the anchored roadmap phase declares
+goal IDs, every declared ID should be referenced by an acceptance item and every
+reference should resolve (no dangling); legacy phases with no goal IDs get no finding.
+
+Opt-in and non-breaking: existing `specs/phase-plans-v*.md` roadmaps are untouched and
+stay `not_applicable` until re-authored; a phase that declares no goal IDs uses the
+prior testable-assertion authoring. No runtime code change (Increment 1 ships the
+mechanism); the skills bundle is regenerated and byte-parity is green. (Consiliency/agent-harness#211)
+
 ### Broker reconciles publish scope with the branch's actual content (#202)
 
 `publish_committed_branch` publishes the whole committed branch by `(repo, branch,

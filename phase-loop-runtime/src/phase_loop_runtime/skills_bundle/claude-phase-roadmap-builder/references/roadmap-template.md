@@ -92,8 +92,8 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 <One or two sentences stating what this phase achieves.>
 
 **Exit criteria**
-- [ ] <Testable assertion. Checkable by shell command or integration test, not vibes.>
-- [ ] <Testable assertion.>
+- [ ] EC-<ALIAS>-1 — <Testable assertion. Checkable by shell command or integration test, not vibes.>
+- [ ] EC-<ALIAS>-2 — <Testable assertion.>
 
 **Scope notes**
 - <Lane decomposition hint: e.g., "decompose into 3 lanes: (a) identity module, (b) registry updates, (c) walker changes — each owns disjoint files".>
@@ -122,7 +122,7 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 ...
 
 **Exit criteria**
-- [ ] ...
+- [ ] EC-<ALIAS>-1 — ...
 
 **Scope notes**
 - ...

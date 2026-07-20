@@ -76,6 +76,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - A malformed heading cascades — fix the heading first. A heading that fails the phase regex is not parsed as a phase at all, so its fields, alias, `Depends on`, and produced gates disappear and downstream checks (unknown-alias, IF-gate reconciliation, DAG acyclicity) light up with secondary errors. When a heading error appears, correct it and re-run before chasing the rest.
 - Each `**Field**` label sits on its own line, with the field body on the following lines. `**Objective** text on the same line` is not recognized and reads as a missing field.
 - Lists are bulleted: `Key files` uses `- ` bullets and `Exit criteria` uses `- [ ]` / `- [x]` checkboxes. Prose in place of bullets reads as empty.
+- Each exit-criterion leads with a stable goal ID `EC-<ALIAS>-<N>` (alias = the phase alias): `- [ ] EC-<ALIAS>-1 — <assertion>`. A downstream plan REFERENCES the ID instead of restating (and drifting from) the goal. Rules: **all-or-none per phase** (every criterion carries an ID or none do — a mixed phase is a `phase-loop validate-roadmap` (H) error); **unique + alias-scoped**; **gaps allowed — never reuse or renumber** a deleted ID (a plan references it by ID). Runtime `goal-coverage` checks each ID is referenced by ≥1 plan acceptance item.
 - Every implementation phase declares a lane hint in `Scope notes` (or a `**Lanes**` block): a literal such as `decompose into N lanes`, `Single lane` (with justification), or partition words (`disjoint`, `owns`, `partition`, `lane A`/`lane B`), unless the phase is marked preamble/interface-only.
 - Required top-level headings, unique aliases, non-decreasing phase numbers, `IF-0-<ALIAS>-<n>` gate IDs reconciled with `Produces`, `(none)` roots, and an acyclic DAG are enforced too. Run the validator and fix every reported issue before hand review.
 
@@ -105,7 +106,7 @@ Use this shape so `opencode-plan-phase` can parse it:
 **Objective**
 
 **Exit criteria**
-- [ ] <testable criterion>
+- [ ] EC-<ALIAS>-1 — <testable criterion>
 
 **Scope notes**
 
