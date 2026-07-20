@@ -259,7 +259,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(self._codex_schema_request())
         self.assertIn(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, spec.command)
         spec = _dc_replace(spec, codex_output_schema=None)
-        resolved = _resolve_command_context(spec, None)
+        resolved, _staged = _resolve_command_context(spec, None)
         self.assertNotIn("--output-schema", resolved)
         self.assertNotIn(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, resolved)
         self.assertEqual(resolved[-1], spec.command[-1])  # prompt preserved

@@ -323,7 +323,7 @@ def test_grok_resolve_command_context_materializes(tmp_path):
     assert launcher.GROK_CONTEXT_PLACEHOLDER in " ".join(spec.command)
     log_path = tmp_path / "run" / "launch.log"
     log_path.parent.mkdir(parents=True)
-    resolved = launcher._resolve_command_context(spec, log_path)
+    resolved, _staged = launcher._resolve_command_context(spec, log_path)
     joined = " ".join(resolved)
     assert launcher.GROK_CONTEXT_PLACEHOLDER not in joined, "context placeholder was never substituted"
     context_file = log_path.parent / "context.md"

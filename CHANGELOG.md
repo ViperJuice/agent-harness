@@ -6,6 +6,44 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### codex review-leg cannot write the reviewed live tree (#177)
+
+The product-loop `review` action's codex leg was built with `--sandbox
+danger-full-access` (or `--dangerously-bypass-approvals-and-sandbox`) against the
+live worktree — the same as write actions — so a codex review leg could mutate the
+reviewed tree. The `review` action now points codex at a **staged copy** instead of
+the live repo (matching the agy review leg), the airtight barrier for
+`IF-0-SANDBOX-1` (`build_codex_command` gains a `read_only` flag;
+`build_codex_launch_spec` threads `read_only=(action == "review")`; all winning over
+`bypass_approvals`):
+
+- **`--cd <staged copy>`** — the review leg's working directory is a throwaway,
+  gitignore-aware copy of the tree (via the same `_stage_review_tree` agy uses),
+  materialized at launch and cleaned afterward. codex cannot reach the live tree at
+  all, regardless of which config layer (user / system / enterprise) declares an
+  out-of-sandbox MCP server. This is the primary guarantee.
+- `--sandbox read-only` and `--ignore-user-config` are kept as defense in depth
+  (block shell writes; drop user-config MCP; auth still resolves via `CODEX_HOME`;
+  `--model`/`model_reasoning_effort` are passed explicitly so the run is hermetic),
+  and `--skip-git-repo-check` because the staged copy carries no `.git`.
+
+A cross-vendor review blocked an earlier flag-only fix (`--sandbox read-only` +
+`--ignore-user-config`) as an overclaim: MCP tools run **outside** codex's shell
+sandbox (openai/codex#4152) and can be declared in config layers `--ignore-user-config`
+does not drop, so only the staged copy makes the guarantee airtight. This brings the
+codex review leg to the `IF-0-SANDBOX-1` bar the other vendors already meet (agy =
+staged copy, grok = read-only `--tools` allow-list, claude = plan/read-only), with a
+filesystem-level write-proof test.
+
+The shared review-stage cleanup was also hardened (benefiting the agy leg too): the
+launch-time cleanup now removes the **exact** copy paths the materializer created,
+rather than inferring ownership from an `--add-dir`/`--cd` argv basename — so an
+*execute* run against a live repo that happens to be named `pl-review-stage-*` can
+never be deleted. Stage materialization now self-cleans if the copy or a later
+launch-time resolution step (e.g. output-schema materialization) fails, closing a leak
+window since staging runs before the launch cleanup `finally`.
+(Consiliency/agent-harness#177)
+
 ### Goal-ID single source of truth — Increment 1 (#211)
 
 Redefines #211 from a fuzzy text-diff audit (proven undecidable) into a decidable

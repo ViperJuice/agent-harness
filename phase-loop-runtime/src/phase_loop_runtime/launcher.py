@@ -109,8 +109,18 @@ GROK_REVIEW_READONLY_TOOLS = "read_file,grep,list_dir,search_tool"
 # the staged path. The copy is cleaned in `launch_with_spec`'s `finally`. Build
 # without launch never materializes anything (the placeholder stays inert).
 GEMINI_REVIEW_STAGE_PREFIX = "__PHASE_LOOP_REVIEW_STAGE__:"
+# codex review-leg sandbox (IF-0-SANDBOX-1, agent-harness#177). `--sandbox read-only`
+# scopes only codex's model-generated SHELL commands; MCP servers (declared across the
+# user/system/enterprise config layers) run OUTSIDE that sandbox (openai/codex#4152), so
+# flag-based hardening cannot fully guarantee the reviewed tree is unwritable. The sound
+# mechanism — matching agy — is to point codex `--cd` at a STAGED COPY, never the live
+# repo: a write can only ever hit the throwaway copy regardless of config layer. Same
+# lifecycle as the agy prefix: `build_codex_command` emits the repo path behind this
+# prefix for the read-only `review` path; `_resolve_command_context` materializes the
+# copy at LAUNCH and substitutes it; cleaned in `launch_with_spec`'s `finally`.
+CODEX_REVIEW_STAGE_PREFIX = "__PHASE_LOOP_CODEX_REVIEW_STAGE__:"
 # Directory name prefix for a materialized review-stage copy — the launch-time
-# cleanup detects staged dirs among the resolved `--add-dir` values by this prefix.
+# cleanup detects staged dirs among the resolved `--add-dir`/`--cd` values by this prefix.
 _REVIEW_STAGE_DIR_PREFIX = "pl-review-stage-"
 
 # grok execute-time tool DENY-list (#154). Removes the privileged non-coding
@@ -404,18 +414,41 @@ def build_codex_command(
     json_output: bool = False,
     bypass_approvals: bool = False,
     closeout_schema: dict[str, Any] | None = None,
+    read_only: bool = False,
 ) -> list[str]:
+    # agent-harness#177 (IF-0-SANDBOX-1): a read-only `review` leg points `--cd` at a
+    # STAGED COPY placeholder, not the live repo — the airtight guarantee that a write
+    # can never reach the reviewed tree, resolved at launch by `_resolve_command_context`
+    # (dry-run/build-without-launch leaves the placeholder pointing at the live repo).
+    cd_value = f"{CODEX_REVIEW_STAGE_PREFIX}{repo}" if read_only else str(repo)
     command = [
         "codex",
         "exec",
         "--cd",
-        str(repo),
+        cd_value,
         "--model",
         selection.model,
         "-c",
         f'model_reasoning_effort="{_codex_cli_effort(selection.effort)}"',
     ]
-    if bypass_approvals:
+    if read_only:
+        # agent-harness#177 (IF-0-SANDBOX-1): the product-loop `review` action must NOT be
+        # able to write the reviewed live tree. Defense in depth, all winning over
+        # bypass_approvals (a review is never granted write/exec on the worktree):
+        #   0. `--cd <staged copy>` (above) is the PRIMARY, airtight barrier — codex
+        #      cannot reach the live tree at all, regardless of which config layer (user/
+        #      system/enterprise) declares an out-of-sandbox MCP server (openai/codex#4152).
+        #   1. `--sandbox read-only` blocks writes by codex's model-generated SHELL
+        #      commands (per `codex exec --help`, the sandbox scopes shell execution).
+        #   2. `--ignore-user-config` drops `$CODEX_HOME/config.toml` (where user MCP
+        #      servers live); auth still resolves via CODEX_HOME, and --model /
+        #      model_reasoning_effort are passed explicitly, so the review run is hermetic.
+        #   3. `--skip-git-repo-check` — the staged copy excludes `.git`, so codex exec
+        #      must be told not to require a git checkout at --cd.
+        command.extend(
+            ["--sandbox", "read-only", "--ignore-user-config", "--skip-git-repo-check"]
+        )
+    elif bypass_approvals:
         command.append("--dangerously-bypass-approvals-and-sandbox")
     else:
         command.extend(["--sandbox", "danger-full-access"])
@@ -942,6 +975,9 @@ def build_codex_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRe
         json_output=request.json_output,
         bypass_approvals=request.bypass_approvals,
         closeout_schema=closeout_schema,
+        # agent-harness#177: the product-loop review action runs codex read-only so it
+        # cannot mutate the reviewed live tree (parity with the grok/agy review legs).
+        read_only=request.action == "review",
     )
     return LaunchSpec(
         executor="codex",
@@ -1811,7 +1847,7 @@ def launch_with_spec(
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
         return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
-    command = _resolve_command_context(spec, log_path, dry_run=dry_run)
+    command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
     # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
     # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
     # invocation; the build path guarantees this structurally, so a violation is a
@@ -1841,12 +1877,14 @@ def launch_with_spec(
     finally:
         # Clean from the RESOLVED command so the launch-time materialized codex
         # schema path (run-scoped or fallback) is removed here (#63), alongside any
-        # build-time cleanup paths. Build-without-launch never reaches this.
+        # build-time cleanup paths. Review-stage copies are cleaned by their EXACT
+        # materialized paths (not inferred from an argv basename, which could match a
+        # live `--cd`/`--add-dir` path — #177 CR-F2). Build-without-launch never reaches this.
         cleanup_evidence = _cleanup_paths(
             tuple(dict.fromkeys((
                 *spec.cleanup_paths,
                 *_schema_cleanup_paths(command),
-                *_review_stage_cleanup_paths(command),
+                *staged_review_paths,
             )))
         )
     if cleanup_evidence:
@@ -2565,28 +2603,35 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     parent = log_path.parent if log_path is not None else Path(tempfile.gettempdir())
     parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=_REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
-    rel_paths = _git_review_tree_paths(repo)
-    if rel_paths is None:
-        # Not a git tree (or git unavailable): copy the whole tree minus VCS metadata.
-        shutil.copytree(
-            repo,
-            staged,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(".git"),
-            symlinks=True,
-        )
+    # Self-clean on any copy failure: the mkdtemp dir is already on disk, so a partial
+    # (or complete) tree snapshot would otherwise leak if copying raises — the caller
+    # only records paths for cleanup that this function successfully RETURNS (#177 CR-F3).
+    try:
+        rel_paths = _git_review_tree_paths(repo)
+        if rel_paths is None:
+            # Not a git tree (or git unavailable): copy the whole tree minus VCS metadata.
+            shutil.copytree(
+                repo,
+                staged,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(".git"),
+                symlinks=True,
+            )
+            return staged
+        for rel in rel_paths:
+            src = repo / rel
+            # ``git ls-files`` can list a path that no longer exists on disk (e.g. a
+            # tracked file deleted-but-unstaged); skip it rather than fail the leg.
+            if not src.exists() and not src.is_symlink():
+                continue
+            dest = staged / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_symlink() or src.is_file():
+                shutil.copy2(src, dest, follow_symlinks=False)
         return staged
-    for rel in rel_paths:
-        src = repo / rel
-        # ``git ls-files`` can list a path that no longer exists on disk (e.g. a
-        # tracked file deleted-but-unstaged); skip it rather than fail the leg.
-        if not src.exists() and not src.is_symlink():
-            continue
-        dest = staged / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_symlink() or src.is_file():
-            shutil.copy2(src, dest, follow_symlinks=False)
-    return staged
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
 
 
 def _git_review_tree_paths(repo: Path) -> list[str] | None:
@@ -2617,47 +2662,88 @@ def _git_review_tree_paths(repo: Path) -> list[str] | None:
     return list(dict.fromkeys(paths))
 
 
-def _resolve_gemini_review_stage(
-    command: list[str], log_path: Path | None, *, dry_run: bool = False
+def _resolve_review_stage(
+    command: list[str],
+    prefix: str,
+    log_path: Path | None,
+    *,
+    dry_run: bool = False,
+    materialized: list[str] | None = None,
 ) -> list[str]:
-    """Substitute the agy review-leg stage placeholder with a materialized staged
-    copy of the reviewed tree (IF-0-SANDBOX-1). No-op when the placeholder is
-    absent (non-review gemini actions keep the live ``--add-dir <repo>``).
+    """Substitute a review-leg stage placeholder (``prefix`` + live repo path) with a
+    materialized staged copy of the reviewed tree (IF-0-SANDBOX-1). No-op when the
+    placeholder is absent (non-review actions keep the live path). Used for both the
+    agy ``--add-dir`` and codex ``--cd`` placeholders.
+
+    When a copy is materialized, its exact path is appended to ``materialized`` so the
+    caller cleans precisely what THIS launch created — never inferring ownership from an
+    argv basename, which could match a live path (#177 CR-F2).
 
     On ``dry_run`` nothing is launched, so no copy is materialized — the placeholder
-    resolves to the live repo path for a deterministic, side-effect-free command
-    render (the write-capable leg never runs, so there is nothing to sandbox)."""
+    resolves to the live repo path for a deterministic, side-effect-free command render
+    (the write-capable leg never runs, so there is nothing to sandbox)."""
     resolved = list(command)
     for index, part in enumerate(resolved):
-        if isinstance(part, str) and part.startswith(GEMINI_REVIEW_STAGE_PREFIX):
-            live_repo = Path(part[len(GEMINI_REVIEW_STAGE_PREFIX):])
-            resolved[index] = str(live_repo) if dry_run else str(_stage_review_tree(live_repo, log_path))
+        if isinstance(part, str) and part.startswith(prefix):
+            live_repo = Path(part[len(prefix):])
+            if dry_run:
+                resolved[index] = str(live_repo)
+            else:
+                staged = str(_stage_review_tree(live_repo, log_path))
+                resolved[index] = staged
+                if materialized is not None:
+                    materialized.append(staged)
             break
     return resolved
 
 
-def _review_stage_cleanup_paths(command: list[str]) -> tuple[str, ...]:
-    """Staged review-tree copies to remove after launch — the ``--add-dir`` values
-    whose dir name carries ``_REVIEW_STAGE_DIR_PREFIX`` (see ``_stage_review_tree``)."""
-    paths: list[str] = []
-    for index, part in enumerate(command):
-        if part == "--add-dir" and index + 1 < len(command):
-            value = command[index + 1]
-            if Path(value).name.startswith(_REVIEW_STAGE_DIR_PREFIX):
-                paths.append(value)
-    return tuple(paths)
-
-
 def _resolve_command_context(
     spec: LaunchSpec, log_path: Path | None, *, dry_run: bool = False
+) -> tuple[list[str], tuple[str, ...]]:
+    """Resolve launch-time placeholders in ``spec.command`` and return
+    ``(resolved_command, materialized_stage_paths)``. ``materialized_stage_paths`` are
+    the exact review-stage copies created for this launch (empty unless a review leg
+    staged a copy); the caller removes them in its ``finally``.
+
+    If resolution raises AFTER a stage copy was materialized (e.g. a later
+    output-schema materialization fails), the partial/complete copies are cleaned here
+    before re-raising, since resolution runs before the caller's cleanup ``try/finally``
+    (#177 CR-F3)."""
+    materialized: list[str] = []
+    try:
+        command = _resolve_command_context_inner(
+            spec, log_path, dry_run=dry_run, materialized=materialized
+        )
+    except BaseException:
+        _cleanup_paths(tuple(materialized))
+        raise
+    return command, tuple(materialized)
+
+
+def _resolve_command_context_inner(
+    spec: LaunchSpec,
+    log_path: Path | None,
+    *,
+    dry_run: bool = False,
+    materialized: list[str],
 ) -> list[str]:
-    if spec.executor == "codex" and CODEX_OUTPUT_SCHEMA_PLACEHOLDER in " ".join(spec.command):
-        if spec.codex_output_schema is None:
-            # Inconsistent (placeholder without a schema): never hand codex a
-            # literal placeholder — drop the --output-schema pair.
-            return _drop_arg_pair(spec.command, "--output-schema")
-        schema_path = _materialize_codex_schema(spec.codex_output_schema, log_path)
-        return [part.replace(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, schema_path) for part in spec.command]
+    if spec.executor == "codex":
+        # IF-0-SANDBOX-1 (agent-harness#177): a read-only `review` leg carries the repo
+        # behind the codex stage placeholder in `--cd` — materialize a gitignore-aware
+        # COPY and point codex at it so it can never mutate the reviewed tree. Non-review
+        # actions keep the live `--cd <repo>` unchanged. Resolve staging FIRST, then the
+        # (independent) output-schema placeholder.
+        command = _resolve_review_stage(
+            spec.command, CODEX_REVIEW_STAGE_PREFIX, log_path, dry_run=dry_run, materialized=materialized
+        )
+        if CODEX_OUTPUT_SCHEMA_PLACEHOLDER in " ".join(command):
+            if spec.codex_output_schema is None:
+                # Inconsistent (placeholder without a schema): never hand codex a
+                # literal placeholder — drop the --output-schema pair.
+                return _drop_arg_pair(command, "--output-schema")
+            schema_path = _materialize_codex_schema(spec.codex_output_schema, log_path)
+            return [part.replace(CODEX_OUTPUT_SCHEMA_PLACEHOLDER, schema_path) for part in command]
+        return command
     if spec.executor == "claude" and any(
         placeholder in " ".join(spec.command)
         for placeholder in (
@@ -2692,7 +2778,9 @@ def _resolve_command_context(
         # placeholder — materialize a gitignore-aware COPY and point --add-dir at it
         # so the write-capable agy leg can never mutate the reviewed tree. Non-review
         # actions keep the live repo path unchanged.
-        staged_command = _resolve_gemini_review_stage(spec.command, log_path, dry_run=dry_run)
+        staged_command = _resolve_review_stage(
+            spec.command, GEMINI_REVIEW_STAGE_PREFIX, log_path, dry_run=dry_run, materialized=materialized
+        )
         repo_path = _command_repo_path(staged_command, "--add-dir")
         if repo_path is None:
             return staged_command
