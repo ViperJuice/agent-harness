@@ -68,7 +68,7 @@ roadmap-amendment rules for downstream replanning.
 7. Add verification:
    - lane-specific commands;
    - whole-phase regression commands;
-   - acceptance criteria copied or refined from the roadmap exit criteria.
+   - acceptance criteria: when the roadmap phase declares `EC-<ALIAS>-<N>` goal IDs, REFERENCE each by ID and name the command that proves it (`- [ ] EC-<ALIAS>-<N> — proven by <cmd>`) — do NOT restate the goal text (the roadmap exit-criterion is the single source of truth). If the phase declares no EC-IDs (legacy), author testable assertions as before. Plan-internal done-conditions (no EC-ref) stay allowed.
 
 ## Plan Document Contract
 
@@ -128,7 +128,7 @@ SL-0 — <name>
   execution.
 
 ## Acceptance Criteria
-- [ ] <testable assertion>
+- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`
 ```
 
 ## Validation Checklist

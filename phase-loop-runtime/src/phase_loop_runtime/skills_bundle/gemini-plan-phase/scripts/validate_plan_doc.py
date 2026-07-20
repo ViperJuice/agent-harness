@@ -793,6 +793,104 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
     ]
 
 
+# --- (P) goal-ID coverage: acceptance references the roadmap's EC-<ALIAS>-<N> goals -----
+# check (P) uses ONLY the AUTHORITATIVE Increment-1 runtime parse (goal_coverage +
+# roadmap_lint), the exact functions the goal-coverage gate calls — so the validator and
+# the gate can never disagree. It deliberately does NOT re-implement the roadmap/plan
+# parser: a divergent local parse is worse than none for a WARN-level lint (it produces
+# false dangling/unreferenced warnings). When phase_loop_runtime is not importable (a bare
+# `python validate_plan_doc.py` outside the runtime), the check is INERT but VISIBLE — it
+# emits an INFO line rather than silently passing, and the runtime gate still enforces
+# coverage downstream.
+_P_RUNTIME_UNAVAILABLE = object()
+_P_DUPLICATE_ALIAS = object()
+
+
+def _authoritative_goal_coverage(resolved_roadmap: Path, path: Optional[Path], phase: str):
+    """Return ``(declared, refs)`` from the AUTHORITATIVE runtime parse; or
+    ``_P_RUNTIME_UNAVAILABLE`` when phase_loop_runtime is not importable; or
+    ``_P_DUPLICATE_ALIAS`` when the roadmap has >1 phase with this alias (the gate itself
+    fails closed on that — check_goal_coverage returns a duplicate_phase_alias setup
+    error). Only ImportError routes to UNAVAILABLE (ah#221: never conflate a missing
+    dependency with a parse error — a genuine parse failure surfaces)."""
+    try:
+        import phase_loop_runtime  # noqa: F401 — package-presence probe ONLY
+    except ImportError:
+        return _P_RUNTIME_UNAVAILABLE
+    # The package is present: symbol imports must FAIL LOUD on API drift (a renamed/moved
+    # runtime function), never be masked as "unavailable" (ah#221 — do not conflate a
+    # missing dependency with a drifted API). An uncaught ImportError here surfaces the bug.
+    from phase_loop_runtime import roadmap_lint as _rl  # type: ignore
+    from phase_loop_runtime.goal_coverage import extract_plan_goal_refs  # type: ignore
+    want = phase.strip().upper()
+    matches = [
+        p for p in _rl._extract_phases(resolved_roadmap.read_text(encoding="utf-8"))
+        if str(getattr(p, "alias", "")).upper() == want
+    ]
+    if len(matches) > 1:
+        return _P_DUPLICATE_ALIAS
+    declared: set = set()
+    for p in matches:
+        declared.update(p.declared_exit_criteria_ids or ())
+    refs = set(extract_plan_goal_refs(Path(path))) if (path is not None and Path(path).exists()) else set()
+    return declared, refs
+
+
+def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:
+    """rigor-v1: when the anchored roadmap phase declares `EC-<ALIAS>-<N>` goal IDs, every
+    declared ID must be referenced by >=1 acceptance item and every referenced ID must
+    exist in the phase (no dangling). A plan that references goal IDs against a phase that
+    declares NONE is also flagged dangling — mirrors the runtime rule that every unknown
+    EC-ref is a contract bug. A phase with no IDs AND a plan with no refs -> no finding
+    (opt-in / legacy). Autonomy-first WARN; the runtime `goal-coverage` gate enforces the
+    same set membership. Inert (but visible) when the roadmap can't be resolved or the
+    runtime is not importable."""
+    metadata = _parse_frontmatter(src)
+    roadmap_value = metadata.get("roadmap", "")
+    phase = metadata.get("phase", "")
+    if not roadmap_value or not phase or repo_root is None:
+        return []
+    rp = Path(roadmap_value)
+    resolved = rp if rp.is_absolute() else repo_root / rp
+    if not resolved.exists():
+        return []
+    result = _authoritative_goal_coverage(resolved, path, phase)
+    if result is _P_RUNTIME_UNAVAILABLE:
+        return [
+            "(P) INFO: goal-coverage not checked here — phase_loop_runtime is not importable "
+            "in this environment; the runtime goal-coverage gate still enforces coverage "
+            "downstream (run inside the phase-loop runtime to check it at planning time)."
+        ]
+    if result is _P_DUPLICATE_ALIAS:
+        return [
+            f"(P) WARN: the roadmap declares more than one phase with alias `{phase}` — goal "
+            "coverage is un-auditable until each phase has a unique alias (roadmap_lint also "
+            "flags this)."
+        ]
+    declared, refs = result
+    out: Findings = []
+    if not declared:
+        if refs:
+            out.append(
+                "(P) WARN: acceptance references goal IDs but the roadmap phase declares "
+                f"none (dangling — legacy phase, or wrong roadmap/phase?): {', '.join(sorted(refs))}"
+            )
+        return out
+    unref = sorted(declared - refs)
+    if unref:
+        out.append(
+            "(P) WARN: roadmap phase declares goal IDs not referenced by any acceptance "
+            f"item — every goal must be proven by the plan: {', '.join(unref)}"
+        )
+    dangling = sorted(refs - declared)
+    if dangling:
+        out.append(
+            "(P) WARN: acceptance references goal IDs absent from the roadmap phase "
+            f"(dangling — renumbered, deleted, or wrong alias?): {', '.join(dangling)}"
+        )
+    return out
+
+
 # Release/package signal (issue #18). Either the explicit release-dispatch
 # mutation in frontmatter, OR a lane owning a release artifact (manifest /
 # version file / changelog / release workflow).
@@ -1064,6 +1162,7 @@ def main(argv: List[str]) -> int:
     findings: Findings = []
     findings.extend(_check_frontmatter(src, path, repo_root))
     findings.extend(_check_a_required_headings(src))
+    findings.extend(_check_p_goal_id_coverage(src, path, repo_root))
 
     lane_index_body = _extract_section(src, "Lane Index & Dependencies")
     lanes = _parse_lane_index(lane_index_body)

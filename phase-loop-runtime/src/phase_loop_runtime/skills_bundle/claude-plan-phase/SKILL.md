@@ -508,8 +508,8 @@ SL-2 — <lane name>
 - (If `--consensus` was used) **Architectural choices**: <consensus summary, or unresolved disagreement with dissent recorded>
 
 ## Acceptance Criteria
-- [ ] <Testable assertion 1 drawn from the spec phase's Exit criteria>
-- [ ] <Testable assertion 2>
+- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`
+- [ ] EC-<ALIAS>-<M> — proven by `<command / test>`
 
 ## Verification
 <Concrete end-to-end commands to run after all lanes merge. pnpm, supabase, curl, playwright, etc.>
@@ -589,6 +589,7 @@ Before writing the plan doc, verify:
 - [ ] **DAG has no cycles** — a topological sort of `Depends on:` succeeds.
 - [ ] **Every `impl` task has a preceding `test` task** in the same lane.
 - [ ] **Every acceptance criterion is a testable assertion**, not prose. "Users can log in" is not testable; "`POST /api/auth` returns 200 with a valid session cookie for a registered user" is. `validate_plan_doc.py` WARNs (check K) on a criterion that names no command/path/assertion.
+- [ ] **Reference the roadmap goal ID, don't restate it.** When the anchored roadmap phase declares `EC-<ALIAS>-<N>` exit-criterion IDs, author each acceptance item as `- [ ] EC-<ALIAS>-<N> — proven by <command>` — reference the goal by ID (the roadmap exit-criterion is the single source of truth) rather than restating the goal text, so validation always checks the plan against the original goal and a plan can never silently weaken it. Every declared EC-ID should be referenced by ≥1 acceptance item (runtime `goal-coverage` + `validate_plan_doc.py` check P). Write the ID as **plain text at the item's start** — `- [ ] EC-<ALIAS>-<N> — …` — never backticked or bolded (`` `EC-…` ``/`**EC-…**` are not recognized as leading refs), and copy the alias **verbatim** from the roadmap (a case- or digit-drifted `EC-p1-1` reads as a dangling ref). One item may reference several IDs when a single command proves them: `- [ ] EC-<ALIAS>-1, EC-<ALIAS>-2 — proven by \`<cmd>\``. Plan-internal done-conditions (no EC-ref) stay allowed. If the phase declares no EC-IDs (legacy), author testable assertions as before.
 - [ ] **Each acceptance criterion names the command that proves it.** The definition of done (canonical term: `acceptance_criteria`) and the `## Verification` commands are one contract, not two parallel lists — cite the proving command (or test file) in or beside each `- [ ]` item so done is mechanically checkable.
 - [ ] **Grep assertions are paired with tests.** Any acceptance criterion using `rg` or `grep` as its sole check must also cite a test file — grep alone is defeated by renaming a symbol to pass the regex.
 - [ ] **UI changes get a visual check.** When any lane owns UI/visual files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`, `*.css`/`*.scss`, `components/**`), `## Verification` must include a browser/screenshot step (Playwright-via-PMCP or claude-in-chrome) and at least one acceptance criterion phrased as a visually observable outcome. `validate_plan_doc.py` WARNs (check L) when UI files change but Verification names no browser step.

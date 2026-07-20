@@ -51,7 +51,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 6. Document impact:
    - list docs or API/schema files that need updates;
    - if none, state why.
-7. Add dependencies, ordering, verification commands, and acceptance criteria.
+7. Add dependencies, ordering, verification commands, and acceptance criteria (testable assertions, each naming the command that proves it). If this bounded change implements a roadmap phase's `EC-<ALIAS>-<N>` goal, reference that ID instead of restating it (`- [ ] EC-<ALIAS>-<N> — proven by <cmd>`); a standalone change with no roadmap goal uses plain testable assertions.
 
 Do not run the verification commands while planning unless the user explicitly asked for a validation run. Many test tools write caches or require writable temp directories, so executing them can dirty a smoke-test repo even when source files stay unchanged.
 

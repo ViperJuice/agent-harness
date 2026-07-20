@@ -172,7 +172,16 @@ For each inter-phase freeze, write one `IF-0-<ALIAS>-<N>` entry naming the concr
 Use the skeleton from `references/roadmap-template.md`. Each phase MUST contain:
 
 - `**Objective**` — one or two sentences.
-- `**Exit criteria**` — checkbox list (`- [ ] …`), each item testable.
+- `**Exit criteria**` — checkbox list, each item testable and **led by a stable goal
+  ID** `EC-<ALIAS>-<N>` (alias = this phase's alias): `- [ ] EC-<ALIAS>-1 — <assertion>`.
+  Goal IDs are the single source of truth a downstream plan REFERENCES instead of
+  restating (and drifting from) the goal. Rules: **all-or-none per phase** (every
+  exit-criterion carries an ID, or none do — a mixed phase is a `phase-loop
+  validate-roadmap` (H) error); **unique + alias-scoped**; **gaps allowed — never reuse
+  or renumber** a deleted ID (a downstream plan references it by ID, so renumbering
+  would silently re-bind it; the lint allows gaps precisely so a deletion never forces a
+  renumber). Runtime `goal-coverage` then checks every ID is referenced by ≥1 plan
+  acceptance item.
 - `**Scope notes**` — lane decomposition hints, parallelism advice, edge cases.
 - `**Non-goals**` — explicitly deferred.
 - `**Key files**` — paths the phase touches.
