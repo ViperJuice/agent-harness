@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Dual-declared run-family options survive before the subcommand (#233)
+
+Follow-up to the argparse copy-back clobber fixed in #84/#232. Those PRs added
+`default=argparse.SUPPRESS` to the common subparser args (`_add_common_subparser_args`),
+but the same clobber still hit options that are dual-declared (top-level **and** on the
+run/resume/dry-run subparser) outside that helper. So `phase-loop --force-replan run`
+silently dropped to `False`, `phase-loop --allow-cross-phase-dirty REASON run` to `None`,
+and likewise `--rotate-executors`, `--rotation-mode`, `--rotation-on-policy-pin` (the last
+two also clobbered the top-level `"phase"`/`"skip"` defaults to `None`, masked at the call
+site by `or "phase"`/`or "skip"`), `--full-phase`, and `--no-deprecation-hints`. Each
+subparser copy now carries `default=argparse.SUPPRESS` (identical to #232's pattern), so a
+value parsed before the subcommand survives in both option positions. The top-level parser
+still declares each option with its concrete default, so the attribute is never absent from
+the final namespace. CLI-only fix. (Consiliency/agent-harness#233)
+
 ### Planner skills emit and reference goal IDs — goal-ID Increment 2 (#211)
 
 The planner **skills** now produce roadmaps/plans that use the decidable goal-coverage
