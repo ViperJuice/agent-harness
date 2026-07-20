@@ -932,16 +932,48 @@ def _classify_leg(rc: int, review_text: str, log_text: str, mode: str = "review"
     ``terminal_verdict``) is a real review (`ok`) — a terse "DISAGREE" counts; a
     long review missing the terminal verdict, or junk that merely mentions the
     words, is NON-CONFORMING and fails closed (`degraded`), never a silent pass.
+
+    ah#252: a conforming ``rc == 0`` review is classified ``OK`` BEFORE the
+    ``_AUTH_SIGNATURE`` scan runs. The codex leg's ``log_text`` includes its full
+    transcript (stdout + stderr — codex echoes both the prompt and its own final
+    message onto stderr too, see ``_exec_leg``), so a review whose own PROSE
+    merely discusses "unauthorized" / "rate limit exceeded" / etc. as subject
+    matter (routine in legal, security, and auth-code reviews) used to match the
+    auth-error scan and force a clean, conforming review to ``DEGRADED`` —
+    discarding a valid result. A genuinely de-authed/rate-limited CLI cannot
+    also emit a real, complete, conforming AGREE/PARTIALLY AGREE/DISAGREE (rc==0
+    only reflects the CLI process exiting cleanly, not that a substantive review
+    was produced), so this reorder does not weaken detection of a real auth
+    failure: any leg that is NOT a conforming rc==0 review still falls through to
+    the auth-signature scan exactly as before, and a hard failure (rc != 0) is
+    still caught by the ``rc != 0`` branch even when no auth phrase matched.
+
+    The early-OK bypass is restricted to ``mode == "review"`` (ah#252 CR, codex): only
+    there does ``_completion_ok`` require a conforming terminal verdict — a strong
+    predicate a de-authed/rate-limited CLI cannot satisfy. In ``advisory`` mode
+    ``_completion_ok`` is only ``len(body) >= 40``, so a genuine auth banner (e.g.
+    ``"401 Unauthorized: authentication token expired; please log in again."``) would
+    clear it and fail OPEN past the auth scan. Advisory therefore keeps the original
+    auth-scan-first order; it may false-DEGRADE an advisory whose prose merely mentions
+    auth vocabulary, but that is the fail-CLOSED direction and advisory boards are
+    non-gating by design.
     """
     if rc == 124:  # `timeout` binary / our own timeout maps here
         return "TIMEOUT"
+    body = (review_text or "").strip()
+    if rc == 0 and body and mode == "review" and _completion_ok(body, mode):
+        return "OK"
     if _AUTH_SIGNATURE.search(log_text or ""):
         return "DEGRADED"
     if rc != 0:
         return "ERROR"
-    body = (review_text or "").strip()
     if not body:
         return "EMPTY"
+    # AFTER the auth scan (so an auth banner still fails closed in BOTH modes): a
+    # substantive body classifies OK. In advisory mode this is the pre-existing #63
+    # behavior (prose above the length threshold, no terminal verdict required); in
+    # review mode a conforming verdict already returned OK above, so this only catches
+    # the review-early-branch's rc!=0 edge, which never reaches here.
     if _completion_ok(body, mode):
         return "OK"
     # review: substantial text but no conforming terminal verdict → fail-closed.
@@ -2322,6 +2354,17 @@ def _exec_leg(
             _elapsed = time.monotonic() - _t0
             review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
             rc = proc.returncode
+            # ah#252: codex echoes BOTH the user prompt and its own final message
+            # into the stderr transcript (verified empirically against codex-cli
+            # 0.144.6 — the session log, including the last user turn and the
+            # agent's last message, prints to stderr even though stdout also
+            # carries the final message alone), so a review that discusses
+            # "unauthorized"/"rate limit exceeded" as SUBJECT MATTER puts that
+            # substring on stderr too — scoping this to stderr-only would NOT
+            # remove it from ``log_text``. The real fix lives in ``_classify_leg``
+            # (see its docstring): a conforming rc==0 verdict is classified OK
+            # BEFORE the auth-signature scan ever runs, so which stream(s) the
+            # body appears in here no longer matters.
             log_text = (proc.stdout or "") + (proc.stderr or "")
             if rc != 0 or review_text.strip():
                 break  # hard failure OR real output → stop (never hammer, never waste)
