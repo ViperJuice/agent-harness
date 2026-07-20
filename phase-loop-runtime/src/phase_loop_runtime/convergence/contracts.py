@@ -42,6 +42,10 @@ class BrokerRequest:
     branch: str
     head_sha: str
     owned_paths: Tuple[str, ...]
+    # Base ref the broker independently re-diffs head_sha against to verify that the
+    # admitted owned_paths cover the branch's actual mutation (agent-harness#202). The
+    # broker uses `origin/<base>...head_sha` (three-dot), matching the #201 coordinator.
+    base: str = "main"
     draft: bool = True
     pr_body: str = ""
 

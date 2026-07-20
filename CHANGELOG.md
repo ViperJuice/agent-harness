@@ -6,6 +6,40 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Broker reconciles publish scope with the branch's actual content (#202)
+
+`publish_committed_branch` publishes the whole committed branch by `(repo, branch,
+head_sha)`, and the admission's approval digest covers the coordinator-supplied
+`owned_paths` — but the broker never checked that those `owned_paths` actually
+matched what the branch changed. The broker now **re-derives the branch's diff vs its
+declared base itself** (`origin/<base>...head_sha`, three-dot — the same derivation
+the #201 coordinator uses) and refuses to publish when the admitted `owned_paths` do
+**not** cover what the branch actually changed, catching drift or coordinator bugs
+where the declared scope diverges from the real branch content. Every outcome fails
+closed *before* any push, and each is a **proven no-effect** (`no_effect_terminal_proven`
+— the push is never reached) distinguished only by its detail string: a changed path
+outside the admitted scope → `owned-scope-exceeded:<paths>`; a non-empty `owned_paths`
+with an empty branch diff → `owned-scope-empty-diff` (also catches a gamed `base==head`
+ref); a git-diff failure → `owned-scope-diff-failed`. A #202 reject has zero *mutation*
+ambiguity (nothing was pushed), so it is not `outcome_ambiguous_blocked` — which is
+permanent and poisons the repo's broker epoch, a blast radius a purely-local read-only
+git failure must not trigger. `no_effect_terminal_proven` is also the only valid
+`provider_call_in_flight →` reject transition (`rejected_before_start` is reachable only
+pre-intent, and the service records intent before the adapter runs). Directory
+`owned_paths` entries cover files beneath them, so an over-specified scope never
+false-rejects.
+
+Scope note: `base` is a coordinator-supplied ref *name* (not the digest-bound
+`base_sha`), so this reconciles against the **declared** base — it closes accidental
+drift and coordinator bugs, not a coordinator that deliberately games the base ref
+(binding `base` into the approval digest would be the stronger, separate step). Only
+the `run_train` prebuilt coordinator path reaches this check today, and it runs in the
+node workspace where `origin/<base>` is already present, so there is no added fetch or
+regression. `BrokerRequest` gains a `base` field (default `main`);
+`publish_from_worktree` gains a matching `base` parameter; the `run_train` prebuilt
+path threads the same `_DEFAULT_BASE` its owned-paths were derived from. Follow-up
+hardening from the #201 panel (codex + grok). (Consiliency/agent-harness#202)
+
 ### codex review-leg cannot write the reviewed live tree (#177)
 
 The product-loop `review` action's codex leg was built with `--sandbox

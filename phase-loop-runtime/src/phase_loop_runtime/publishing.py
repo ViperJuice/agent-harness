@@ -91,6 +91,7 @@ def publish_from_worktree(
     prebuilt: bool = False,
     broker_client: BrokerClient | None = None,
     admission: AdmissionRequest | None = None,
+    base: str = "main",
 ) -> dict[str, Any]:
     """Perform the #28 publish flow for one repo/worktree (IF-0-P1-1).
 
@@ -192,7 +193,7 @@ def publish_from_worktree(
         return _blocked("custom_title_unsupported", "BrokerRequest has no pr_title field")
     if broker_client is None or admission is None:
         return _blocked("broker_required", "publish mutation requires an admitted broker client")
-    execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, str(repo), branch, head_sha, tuple(owned_paths), draft=draft, pr_body=pr_body or ""))
+    execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, str(repo), branch, head_sha, tuple(owned_paths), base=base, draft=draft, pr_body=pr_body or ""))
     if not execution.accepted or execution.publish_result is None:
         return _blocked(execution.reason or execution.evidence.terminal_state, execution.evidence.evidence_reference)
     return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}

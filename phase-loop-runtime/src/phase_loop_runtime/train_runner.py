@@ -1057,6 +1057,10 @@ def run_train(
                     "draft": True,  # P3 invariant: draft-only, never merge
                     "pr_body": pr_body,
                     "prebuilt": True,
+                    # agent-harness#202: the broker re-diffs against this SAME base the
+                    # owned_paths were derived from, so its server-authoritative scope
+                    # check reconciles with the coordinator's diff (both origin/<base>...HEAD).
+                    "base": _DEFAULT_BASE,
                 }
                 # Route the prebuilt publish through the broker EXACTLY as the
                 # execute path does: a broker-authoritative coordinator_runtime

@@ -54,6 +54,8 @@ def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
                 return CompletedProcess(cmd, 0, stdout=_BRANCH + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=_HEAD + "\n", stderr="")
+            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
+                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout="commit subject line\n", stderr="")
             if sub[0] == "push":
@@ -184,6 +186,8 @@ def _routing_fake(repos, seen_paths):
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=meta["head"] + "\n", stderr="")
+            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
+                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout=f"{meta['branch']} subject\n", stderr="")
             if sub[0] == "push":
@@ -274,6 +278,8 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path):
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=meta["head"] + "\n", stderr="")
+            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
+                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout="subject\n", stderr="")
             if sub[0] == "push":

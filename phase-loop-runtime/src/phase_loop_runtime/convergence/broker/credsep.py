@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Mapping
 
-from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, PublishCommittedBranchResult
+from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, BrokerVerb, PublishCommittedBranchResult
 
 MUTATION_CREDENTIAL_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
 # Repo-redirect env var: gh resolves its target repo from GH_REPO over cwd's origin,
@@ -89,8 +89,92 @@ class GitHubBrokerAdapter:
         # NEVER fabricated as success — it is a permanent ambiguous block.
         return None, BrokerTerminalEvidence(request.admission.idempotency_key, "outcome_ambiguous_blocked", reference)
 
+    def _scope_rejected(self, request: BrokerRequest, reference: str):
+        # agent-harness#202: a definitive #202 scope reject returns BEFORE any push, so the
+        # mutation code is unreached — a PROVEN no-effect, not an inferred one. This is a
+        # valid PROVIDER_CALL_IN_FLIGHT -> NO_EFFECT_TERMINAL_PROVEN transition (unlike
+        # rejected_before_start, which is only reachable pre-intent), and fails closed
+        # (accepted is granted only on effect_terminal_observed).
+        return None, BrokerTerminalEvidence(request.admission.idempotency_key, "no_effect_terminal_proven", reference)
+
+    def _branch_diff_paths(self, base: str, head_sha: str):
+        # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
+        # its declared base — `origin/<base>...head_sha` (three-dot: changes on the branch
+        # since its merge-base), the SAME derivation the #201 coordinator used. The broker
+        # runs in the coordinator's node workspace (its repo_path IS that checkout — the
+        # line-93 identity check proves it holds head_sha), and #201's _prebuilt_owned_paths
+        # already ran this diff there, so `origin/<base>` is present. Returns the changed
+        # file paths, or None on any git failure (caller fails closed). check=False so a
+        # diff error is a controlled fail-closed, not a raise.
+        #
+        # Path-format contract: this and the #201 coordinator BOTH use `git diff
+        # --name-only`, so paths are quoted identically on both sides (a non-ASCII path is
+        # C-quoted the same way in `owned_paths` and here) and compare equal. A `-z`
+        # NUL-split on BOTH sides would be more robust to quoting/newlines-in-names (a
+        # broker-hardening follow-up). NOTE: a definitive OR transient diff failure records a
+        # per-triple no-effect terminal that later replays (see execute), so recovering from
+        # a transient failure needs a new head_sha — a liveness cost, never an epoch brick.
+        completed = self.run(
+            ["git", "-C", str(self.repo_path), "diff", "--name-only", f"origin/{base}...{head_sha}"],
+            capture_output=True, text=True,
+        )
+        if completed.returncode:
+            return None
+        return frozenset(p.strip() for p in completed.stdout.splitlines() if p.strip())
+
+    @staticmethod
+    def _covered_by_owned(path: str, owned_paths) -> bool:
+        # A changed path is within the admitted scope if it equals an owned entry or sits
+        # under an owned directory entry. Directory ownership (owned entry is a parent
+        # dir) is honored so an over-specified owned scope never false-rejects.
+        for owned in owned_paths:
+            owned = owned.strip().rstrip("/")
+            if owned and (path == owned or path.startswith(owned + "/")):
+                return True
+        return False
+
     def execute(self, request: BrokerRequest):
         if self._output("branch", "--show-current") != request.branch or self._output("rev-parse", "HEAD") != request.head_sha: raise ValueError("branch/head mismatch")
+        # agent-harness#202 (non-blocking hardening from the #201 panel): reconcile the
+        # admitted owned_paths against the branch's ACTUAL content. This gates the FIRST
+        # execution for a (repo, branch, head_sha) triple; BrokerService replays a recorded
+        # terminal for that triple WITHOUT re-invoking the adapter, and its dedup key
+        # excludes base/owned_paths. That is sound because a REPLAY MAKES NO ADAPTER CALL AT
+        # ALL — there is no push/mutation on a replay, so there is nothing to re-authorize.
+        # The scope check only needs to gate the FIRST execution (the only one that acts). A
+        # corrected-scope retry of the SAME commit replays the prior terminal — consistent
+        # with the broker's per-triple terminal permanence (produce a new commit/head to
+        # re-attempt). For
+        # publish_committed_branch the broker re-derives the branch's diff vs its declared
+        # base itself and refuses to publish if the admitted owned_paths (which the
+        # approval digest covers) do NOT cover what the branch actually changed — catching
+        # DRIFT/BUGS where the coordinator-supplied owned_paths diverge from the real
+        # branch content. NOTE: `base` is a coordinator-supplied ref name (not the
+        # digest-bound base_sha), so this reconciles against the DECLARED base; it is not
+        # a defense against a coordinator that deliberately games the base ref (binding
+        # base into the approval digest would be the stronger, separate step). Every outcome is
+        # a PROVEN no-effect: all three return BEFORE the push, so no mutation is reached.
+        # All use no_effect_terminal_proven (NOT outcome_ambiguous_blocked) — a #202 reject
+        # has zero MUTATION ambiguity (nothing was pushed), and ambiguous terminals are
+        # permanent AND poison the repo's broker epoch (evidence.epoch_blocked); a purely-
+        # local read-only git-diff failure must not permanently brick a repo's publishing.
+        # They differ only by the detail string:
+        #   * diff error                       -> no_effect_terminal_proven (diff-failed)
+        #   * branch changed uncovered paths   -> no_effect_terminal_proven (scope exceeded)
+        #   * owned claims changes the branch  -> no_effect_terminal_proven (empty-diff
+        #     doesn't have vs base (drift/game)   mismatch), catching base==head gaming.
+        if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            branch_diff = self._branch_diff_paths(request.base, request.head_sha)
+            if branch_diff is None:
+                return self._scope_rejected(request, "owned-scope-diff-failed")
+            uncovered = sorted(p for p in branch_diff if not self._covered_by_owned(p, request.owned_paths))
+            if uncovered:
+                return self._scope_rejected(request, "owned-scope-exceeded:" + ",".join(uncovered[:20]))
+            if not branch_diff and request.owned_paths:
+                # The admitted scope claims owned changes, but the branch has NO diff vs
+                # base — the admission does not match the mutation (drift, or a gamed
+                # base ref such as base==head). Fail closed.
+                return self._scope_rejected(request, "owned-scope-empty-diff")
         origin_url = self._origin_url()          # ONE canonical url, used explicitly everywhere
         origin_repo = self._slug_for(origin_url) # validate allow-list + derive the gh slug from the SAME url
         ref = build_non_force_branch_ref(request.branch)
