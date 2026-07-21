@@ -31,6 +31,9 @@ direct-index ``_GROK_EFFORT`` dict, now ``_grok_panel_effort``/
 its historical 4-key vocabulary.
 """
 import unittest
+from pathlib import Path
+
+import pytest
 
 from phase_loop_runtime.advisor_board.harness_mapping import (
     MECH_FLAG,
@@ -44,6 +47,7 @@ from phase_loop_runtime.profiles import (
     SHIPPED_MODEL_POLICY,
     max_effort_planner_eligible,
     resolve_execution_policy,
+    resolve_model_selection_from_policy,
     resolve_profile_for_executor,
     shipped_model_policy_rule,
 )
@@ -56,6 +60,61 @@ def _resolve(action, executor, *, model_policy=False):
         action=action, executor=executor, model_selection=selection, model_policy_rule=rule
     )
     return rp.model, rp.effort
+
+
+# --- codex CR gap (cross-vendor review of ah#231): end-to-end operator-effort
+# regression coverage ---------------------------------------------------------
+#
+# Neither existing test drives an OPERATOR effort override through the REAL
+# policy chain onto a grok CLI command:
+#   * `_resolve` above (and every test built on it) proves `max` only via the
+#     shipped model_policy's `effort="max"` field, never `operator_effort=`
+#     (the `runner.py` codepath that carries a `--effort` CLI flag).
+#   * `test_grokexec.test_build_grok_command_clamps_explicit_effort` builds a
+#     `ModelSelection` DIRECTLY (`dataclasses.replace`), bypassing
+#     `resolve_execution_policy`/`normalize_provider_effort` entirely.
+# So neither would fail if a future edit narrowed grok's `supported_efforts`
+# (dropping `xhigh`/`minimal`/`max`) and reintroduced the
+# `normalize_provider_effort` `ValueError` this module's docstring describes
+# guarding against. This test wires the full chain
+# (`resolve_profile_for_executor` -> `resolve_execution_policy` with
+# `operator_effort=`, mirroring `runner.py`'s `--effort` handling, ->
+# `resolve_model_selection_from_policy` -> `launcher.build_grok_command`) so a
+# regression there fails HERE.
+@pytest.mark.parametrize(
+    ("operator_effort", "expected_cli_effort"),
+    [
+        ("max", "high"),
+        ("xhigh", "high"),
+        ("minimal", "low"),
+    ],
+)
+def test_grok_execute_operator_effort_survives_real_policy_chain_to_cli(operator_effort, expected_cli_effort):
+    action = "execute"
+    executor = "grok"
+    # `execute` deliberately keeps `model_class="implementer"` (not "planner"),
+    # so the `max_effort_planner_eligible` force-clamp guard in
+    # `resolve_execution_policy` never fires here — an operator effort must
+    # survive on grok's broad `supported_efforts` alone, exactly the path the
+    # codex CR flagged as untested.
+    selection = resolve_profile_for_executor(action=action, executor=executor)
+    execution_policy = resolve_execution_policy(
+        action=action,
+        executor=executor,
+        model_selection=selection,
+        operator_effort=operator_effort,
+        model_policy_rule=shipped_model_policy_rule(action),
+    )
+    # Reaching this line without a ValueError IS part of the assertion: a
+    # narrowed `supported_efforts` would raise inside `resolve_execution_policy`
+    # (via `normalize_provider_effort`) before this point.
+    resolved_selection = resolve_model_selection_from_policy(
+        profile=selection.profile, resolved_policy=execution_policy
+    )
+    command = launcher.build_grok_command(
+        Path("/repo"), resolved_selection, action=action, context_file="ctx"
+    )
+    assert command[command.index("--reasoning-effort") + 1] == expected_cli_effort
 
 
 class GrokMaxEffortPlannerEligibilityTest(unittest.TestCase):
