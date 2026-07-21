@@ -1,4 +1,5 @@
 import json
+import unittest.mock
 from types import SimpleNamespace
 
 from phase_loop_runtime.convergence.broker.credsep import BrokerEnvironmentBoundary, GitHubBrokerAdapter, build_non_force_branch_ref
@@ -474,3 +475,78 @@ def test_empty_owned_and_empty_diff_does_not_reach_push(tmp_path):
     assert evidence.terminal_state == "no_effect_terminal_proven"
     assert evidence.evidence_reference == "owned-scope-empty-diff"
     assert not any("push" in c or "create" in c for c in run.calls)
+
+
+# --- agent-harness#250 (IF-0-BRK-1 sharpening, cross-vendor CR): "identical parsing" on
+# both sides is not a strong enough freeze if BOTH sides strip whitespace identically —
+# that still approves the WRONG path when the diff path and the owned entry differ only
+# by whitespace/newlines. The freeze must be filename BYTE-IDENTITY: split on \0, discard
+# only the terminal empty element, never .strip()/trim an individual path. ---
+def test_branch_diff_paths_preserves_embedded_newline_and_whitespace_verbatim(tmp_path):
+    # A `-z` diff NUL-delimits paths but does NOT strip whitespace or escape embedded
+    # newlines inside a path — the adapter must hand back exactly what git printed.
+    weird = " leading-space.py"
+    newline_name = "has\nnewline.py"
+    stdout = f"a.py\0{weird}\0{newline_name}\0"
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), stdout, 0),
+    ])
+    adapter = GitHubBrokerAdapter(tmp_path, run=run)
+    paths = adapter._branch_diff_paths("main", _HEAD)
+    assert paths == frozenset({"a.py", weird, newline_name})
+    # Byte-identity, not merely "no exception": a stripped/trimmed variant must be ABSENT.
+    assert "leading-space.py" not in paths
+    assert "has" not in paths and "newline.py" not in paths
+
+
+def test_whitespace_only_difference_is_not_covered_by_a_trimmed_owned_entry(tmp_path):
+    # The adversarial case a `.strip()` bug would create: the branch actually changed
+    # " a.py" (leading space) — a file OUTSIDE the admitted scope — while the admission
+    # only covers "a.py" (no leading space). If either side trimmed the path, " a.py"
+    # would collapse to "a.py" and be WRONGLY approved. Un-stripped, they must never
+    # match: the coverage check must reject it as uncovered.
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), " a.py\0", 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
+    assert result is None
+    assert evidence.terminal_state == "no_effect_terminal_proven"
+    assert "owned-scope-exceeded" in evidence.evidence_reference
+    assert " a.py" in evidence.evidence_reference
+    assert not any("push" in c or "create" in c for c in run.calls)
+
+
+def test_broker_and_coordinator_diff_derivation_agree_byte_for_byte_on_weird_paths(tmp_path):
+    # The load-bearing coupling itself, proven directly: feed the SAME raw `-z` stdout
+    # (including a whitespace-padded and a newline-embedded path) through BOTH the
+    # broker's _branch_diff_paths and the coordinator's parsing logic, and assert the
+    # resulting path sets are byte-identical — neither side may diverge by trimming.
+    from phase_loop_runtime.train_runner import _prebuilt_owned_paths
+
+    weird = "  padded-both-sides.py  "
+    newline_name = "embedded\nnewline-file.py"
+    stdout = f"a.py\0{weird}\0{newline_name}\0"
+
+    broker_run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), stdout, 0),
+    ])
+    broker_paths = GitHubBrokerAdapter(tmp_path, run=broker_run)._branch_diff_paths("main", _HEAD)
+
+    class _FakeCompleted:
+        def __init__(self, out, rc=0):
+            self.stdout, self.returncode, self.stderr = out, rc, ""
+
+    with unittest.mock.patch(
+        "phase_loop_runtime.train_runner.subprocess.run",
+        return_value=_FakeCompleted(stdout),
+    ):
+        coordinator_paths = _prebuilt_owned_paths(tmp_path, "main")
+
+    assert broker_paths == frozenset(coordinator_paths)
+    assert broker_paths == frozenset({"a.py", weird, newline_name})

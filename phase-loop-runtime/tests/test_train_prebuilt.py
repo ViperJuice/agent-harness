@@ -455,6 +455,29 @@ class TestPrebuiltPreflightRealGit:
         # coordinator never derives a scope the broker would then false-reject.
         assert sorted(paths) == ["owned/new.py", "owned/old.py"]
 
+    # --- agent-harness#250 (IF-0-BRK-1 sharpening): "identical parsing" is not a strong
+    # enough freeze if both sides identically .strip() a path — that still approves the
+    # WRONG path when the real filename and an owned entry differ only by
+    # whitespace/newlines. Prove against a REAL git repo that a leading/trailing-
+    # whitespace filename and a filename with an embedded newline survive the `-z`
+    # NUL-split byte-for-byte (no trimming), which is what the coverage check needs to
+    # never collapse two distinct filenames into one.
+    def test_owned_paths_preserve_whitespace_and_embedded_newline_filenames_verbatim(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        padded = "  padded.py  "
+        newline_name = "has\nnewline.py"
+        (repo / padded).write_text("x\n")
+        (repo / newline_name).write_text("y\n")
+        _git(repo, "add", "--", padded, newline_name)
+        _git(repo, "commit", "-q", "-m", "weird filenames")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        assert set(paths) == {padded, newline_name}
+        # A stripped/trimmed variant must be ABSENT — proving neither side trims.
+        assert "padded.py" not in paths
+        assert "has" not in paths and "newline.py" not in paths
+
 
 # ---------------------------------------------------------------------------
 # 6. Dirty prebuilt workspace fails preflight (via the default preflight path)
