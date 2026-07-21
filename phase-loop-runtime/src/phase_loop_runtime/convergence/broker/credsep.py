@@ -118,13 +118,26 @@ class GitHubBrokerAdapter:
         # deleted `unowned/x` source is hidden and the coverage check never sees it. With
         # `--no-renames` both endpoints are reported as an add + a delete, so the unowned
         # source is caught by the coverage check below.
+        #
+        # agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR): capture stdout as
+        # BYTES (no `text=True`). `text=True` applies universal-newline decoding, which
+        # translates the raw bytes `\r` AND `\r\n` into `\n` at decode time — AFTER which a
+        # NUL-split can no longer tell `a\r.py`, `a\r\n.py`, and `a\n.py` apart, so three
+        # DISTINCT valid git paths collapse onto the SAME Python string (a false-approve:
+        # the broker could admit a changed path different from the one actually covered).
+        # `text=True` also raises `UnicodeDecodeError` on a non-UTF-8 filename byte (a git
+        # path is bytes, not guaranteed UTF-8). Splitting the raw bytes on `b"\0"` and
+        # decoding each element with `os.fsdecode` (surrogateescape) avoids both: no
+        # newline translation, and no crash on invalid UTF-8. The coordinator's
+        # `_prebuilt_owned_paths` (train_runner.py) MUST use this identical bytes-capture +
+        # `os.fsdecode` policy so the two derivations stay byte-identical.
         completed = self.run(
             ["git", "-C", str(self.repo_path), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...{head_sha}"],
-            capture_output=True, text=True,
+            capture_output=True,
         )
         if completed.returncode:
             return None
-        return frozenset(p for p in completed.stdout.split("\0") if p)
+        return frozenset(os.fsdecode(p) for p in completed.stdout.split(b"\0") if p)
 
     # agent-harness#250 (N2): `base` is interpolated into `origin/{base}...{head_sha}` with
     # no validation. Not shell injection (argv, not shell), but git REVISION syntax is

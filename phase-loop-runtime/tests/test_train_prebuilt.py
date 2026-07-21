@@ -478,6 +478,49 @@ class TestPrebuiltPreflightRealGit:
         assert "padded.py" not in paths
         assert "has" not in paths and "newline.py" not in paths
 
+    # --- agent-harness#250 (IF-0-BRK-1 byte-identity hole, cross-vendor CR): the previous
+    # `text=True` capture applied universal-newline decoding, which translates the raw
+    # bytes `\r` AND `\r\n` into `\n` at decode time — AFTER which the NUL-split can no
+    # longer tell `a\r.py`, `a\r\n.py`, and `a\n.py` apart, so three DISTINCT valid git
+    # paths collapsed onto the SAME Python string. Prove against a REAL git repo that all
+    # three survive as distinct entries with the bytes-capture + os.fsdecode fix.
+    def test_owned_paths_distinguish_cr_crlf_and_lf_filenames(self, tmp_path: Path):
+        import os as _os
+
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        cr_name = _os.fsdecode(b"a\rcr.py")
+        crlf_name = _os.fsdecode(b"a\r\ncrlf.py")
+        lf_name = "a\nlf.py"
+        for name in (cr_name, crlf_name, lf_name):
+            (repo / name).write_text("x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "cr/crlf/lf filenames")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # All three must be present AND distinct — a universal-newline collapse would
+        # merge two or more of these onto the same string.
+        assert set(paths) == {cr_name, crlf_name, lf_name}
+        assert len(paths) == 3
+
+    # --- agent-harness#250: a git path is bytes, not guaranteed UTF-8. `text=True` would
+    # raise UnicodeDecodeError on a non-UTF-8 filename byte; the fix (bytes-capture +
+    # os.fsdecode with surrogateescape) must not crash and must round-trip losslessly.
+    def test_owned_paths_do_not_raise_on_invalid_utf8_filename(self, tmp_path: Path):
+        import os as _os
+
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        invalid_bytes = b"invalid-\xffbyte.py"
+        name = _os.fsdecode(invalid_bytes)
+        (repo / name).write_text("x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "invalid utf-8 filename")
+
+        paths = _prebuilt_owned_paths(repo, "main")  # must not raise
+        assert len(paths) == 1
+        assert _os.fsencode(paths[0]) == invalid_bytes
+
 
 # ---------------------------------------------------------------------------
 # 6. Dirty prebuilt workspace fails preflight (via the default preflight path)

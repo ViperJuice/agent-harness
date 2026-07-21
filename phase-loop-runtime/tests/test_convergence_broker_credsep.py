@@ -1,4 +1,5 @@
 import json
+import os
 import unittest.mock
 from types import SimpleNamespace
 
@@ -45,7 +46,7 @@ def _base_responses():
         # agent-harness#202/#250: broker's server-authoritative diff, now `-z --no-renames`
         # (NUL-delimited). _request() owns ("a.py",), so the branch changing only a.py
         # stays within the admitted scope.
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
         (("log",), "commit subject line", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -109,7 +110,7 @@ def test_branch_change_outside_owned_scope_is_rejected_before_push(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0b.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0b.py\0", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -129,7 +130,7 @@ def test_nonempty_owned_but_empty_branch_diff_is_rejected(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "", 0),  # branch changed nothing vs base
+        (("diff", "--name-only", "-z", "--no-renames"), b"", 0),  # branch changed nothing vs base
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -155,7 +156,7 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0b.py\0", 0),  # b.py outside owned ("a.py",)
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0b.py\0", 0),  # b.py outside owned ("a.py",)
     ])
     service = BrokerService(
         _AdmitAll(),
@@ -189,7 +190,7 @@ def test_diff_failure_fails_closed_no_effect_no_push(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "", 1),
+        (("diff", "--name-only", "-z", "--no-renames"), b"", 1),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -203,7 +204,7 @@ def test_directory_owned_entry_covers_changed_files_under_it(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "src/pkg/mod.py\0src/pkg/other.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"src/pkg/mod.py\0src/pkg/other.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -222,7 +223,7 @@ def test_broker_re_diffs_against_the_request_base(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -275,7 +276,7 @@ def test_unresolvable_origin_fails_closed(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),  # #202 scope check passes; origin fails after
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),  # #202 scope check passes; origin fails after
         (("get-url",), "not-a-git-url", 0),
     ])
     try:
@@ -360,7 +361,7 @@ def test_rename_of_unowned_file_into_owned_scope_is_caught(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "owned/y.py\0unowned/x.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"owned/y.py\0unowned/x.py\0", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("owned"))
     assert result is None
@@ -377,7 +378,7 @@ def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "owned/new.py\0owned/old.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"owned/new.py\0owned/old.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -412,7 +413,7 @@ def test_pr_create_carries_explicit_base(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -449,7 +450,7 @@ def test_valid_base_with_slash_is_not_rejected_by_the_guard(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -468,7 +469,7 @@ def test_empty_owned_and_empty_diff_does_not_reach_push(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning())  # owned_paths=()
     assert result is None
@@ -487,7 +488,7 @@ def test_branch_diff_paths_preserves_embedded_newline_and_whitespace_verbatim(tm
     # newlines inside a path — the adapter must hand back exactly what git printed.
     weird = " leading-space.py"
     newline_name = "has\nnewline.py"
-    stdout = f"a.py\0{weird}\0{newline_name}\0"
+    stdout = f"a.py\0{weird}\0{newline_name}\0".encode()
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
@@ -510,7 +511,7 @@ def test_whitespace_only_difference_is_not_covered_by_a_trimmed_owned_entry(tmp_
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), " a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b" a.py\0", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -530,7 +531,7 @@ def test_whitespace_padded_owned_entry_does_not_falsely_cover_a_different_clean_
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py "))
     assert result is None
@@ -550,7 +551,7 @@ def test_byte_identical_weird_filename_is_approved_end_to_end(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only", "-z", "--no-renames"), f"{weird}\0", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), f"{weird}\0".encode(), 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -572,7 +573,7 @@ def test_broker_and_coordinator_diff_derivation_agree_byte_for_byte_on_weird_pat
 
     weird = "  padded-both-sides.py  "
     newline_name = "embedded\nnewline-file.py"
-    stdout = f"a.py\0{weird}\0{newline_name}\0"
+    stdout = f"a.py\0{weird}\0{newline_name}\0".encode()
 
     broker_run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
@@ -583,7 +584,7 @@ def test_broker_and_coordinator_diff_derivation_agree_byte_for_byte_on_weird_pat
 
     class _FakeCompleted:
         def __init__(self, out, rc=0):
-            self.stdout, self.returncode, self.stderr = out, rc, ""
+            self.stdout, self.returncode, self.stderr = out, rc, b""
 
     with unittest.mock.patch(
         "phase_loop_runtime.train_runner.subprocess.run",
@@ -593,3 +594,74 @@ def test_broker_and_coordinator_diff_derivation_agree_byte_for_byte_on_weird_pat
 
     assert broker_paths == frozenset(coordinator_paths)
     assert broker_paths == frozenset({"a.py", weird, newline_name})
+
+
+# --- agent-harness#250 (IF-0-BRK-1 byte-identity hole, cross-vendor CR): `text=True`
+# universal-newline decoding translates the raw bytes `\r` AND `\r\n` into `\n` at decode
+# time — AFTER which a NUL-split can no longer tell `a\r.py`, `a\r\n.py`, and `a\n.py`
+# apart, so three DISTINCT valid git paths collapse onto the SAME Python string (a
+# false-approve: the broker could admit a changed path different from the one actually
+# covered by owned_paths). Bytes-capture + `os.fsdecode` (no `text=True`) must keep all
+# three distinct. ---
+def test_branch_diff_paths_distinguishes_cr_crlf_and_lf_filenames(tmp_path):
+    cr_name = "a\rcr.py"
+    crlf_name = "a\r\ncrlf.py"
+    lf_name = "a\nlf.py"
+    stdout = f"{cr_name}\0{crlf_name}\0{lf_name}\0".encode()
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), stdout, 0),
+    ])
+    paths = GitHubBrokerAdapter(tmp_path, run=run)._branch_diff_paths("main", _HEAD)
+    # All three must be present, AND distinct — a text=True universal-newline collapse
+    # would merge them onto a single "a\nlf.py" (or fewer) entries.
+    assert paths == frozenset({cr_name, crlf_name, lf_name})
+    assert len(paths) == 3
+
+
+def test_branch_diff_paths_does_not_raise_on_invalid_utf8_filename(tmp_path):
+    # A git path is bytes, not guaranteed UTF-8. `text=True` would raise
+    # UnicodeDecodeError; bytes-capture + os.fsdecode (surrogateescape) must not crash and
+    # must round-trip the raw bytes losslessly.
+    invalid_bytes = b"invalid-\xffbyte.py"
+    stdout = invalid_bytes + b"\0"
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), stdout, 0),
+    ])
+    paths = GitHubBrokerAdapter(tmp_path, run=run)._branch_diff_paths("main", _HEAD)
+    assert len(paths) == 1
+    decoded = next(iter(paths))
+    assert os.fsencode(decoded) == invalid_bytes
+
+
+# --- agent-harness#250 (IF-0-BRK-1 byte-identity, coupled freeze): the broker and
+# coordinator derivations must agree byte-for-byte on a `\r`-bearing filename specifically
+# (the exact escape codex's CR flagged), not just on whitespace/newline cases already
+# covered above. ---
+def test_broker_and_coordinator_agree_byte_for_byte_on_cr_bearing_filename(tmp_path):
+    from phase_loop_runtime.train_runner import _prebuilt_owned_paths
+
+    cr_name = "a\rcr.py"
+    stdout = f"{cr_name}\0".encode()
+
+    broker_run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), stdout, 0),
+    ])
+    broker_paths = GitHubBrokerAdapter(tmp_path, run=broker_run)._branch_diff_paths("main", _HEAD)
+
+    class _FakeCompleted:
+        def __init__(self, out, rc=0):
+            self.stdout, self.returncode, self.stderr = out, rc, b""
+
+    with unittest.mock.patch(
+        "phase_loop_runtime.train_runner.subprocess.run",
+        return_value=_FakeCompleted(stdout),
+    ):
+        coordinator_paths = _prebuilt_owned_paths(tmp_path, "main")
+
+    assert broker_paths == frozenset(coordinator_paths) == frozenset({cr_name})

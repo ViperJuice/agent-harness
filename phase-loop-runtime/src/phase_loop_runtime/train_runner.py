@@ -56,6 +56,7 @@ module is fully testable without live network access.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -253,22 +254,32 @@ def _prebuilt_owned_paths(
     coverage check then catches it). Changing this diff command without changing the
     broker's in lockstep desyncs the two derivations — a false owned-scope-exceeded reject
     that STICKS (the broker records a per-triple no-effect terminal that replays).
+
+    agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR): capture stdout as BYTES
+    (no ``text=True``). ``text=True`` applies universal-newline decoding, which translates
+    the raw bytes ``\\r`` AND ``\\r\\n`` into ``\\n`` at decode time — after which a NUL-split
+    can no longer tell ``a\\r.py``, ``a\\r\\n.py``, and ``a\\n.py`` apart, collapsing three
+    distinct valid git paths onto the same Python string. ``text=True`` also raises
+    ``UnicodeDecodeError`` on a non-UTF-8 filename byte. Splitting the raw bytes on
+    ``b"\\0"`` and decoding each element with ``os.fsdecode`` (surrogateescape) avoids both,
+    and MUST stay identical to the broker's own ``_branch_diff_paths`` decode policy
+    (``convergence/broker/credsep.py``) so the two sides never desync.
     """
     completed = subprocess.run(
         ["git", "-C", str(workspace), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...HEAD"],
         capture_output=True,
-        text=True,
         timeout=30,
     )
     if completed.returncode != 0:
         # Fail CLOSED: a diff error must not yield an empty owned-paths scope that the
         # broker admission would approve while the push still publishes the real branch
         # (approved-nothing / published-something scope mismatch).  Raising blocks the node.
+        stderr_text = os.fsdecode(completed.stderr).strip() if completed.stderr else ""
         raise RuntimeError(
             f"could not compute prebuilt owned paths vs 'origin/{base}': "
-            f"{completed.stderr.strip() or 'git diff failed'}"
+            f"{stderr_text or 'git diff failed'}"
         )
-    owned = [p for p in completed.stdout.split("\0") if p]
+    owned = [os.fsdecode(p) for p in completed.stdout.split(b"\0") if p]
     if not owned:
         # A prebuilt node that is ahead-of-base yet has no net file changes has nothing
         # to publish — fail closed rather than admit an empty scope.
