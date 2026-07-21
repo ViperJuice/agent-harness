@@ -215,9 +215,11 @@ lane-scheduler + work-unit path (#244), and closeout gates are not re-checked at
 -child completion (#245). Make both gate families run identically on every path.
 
 **Exit criteria**
-- [ ] #244: the verification-evidence + acceptance-coverage preflight gates run on the
-  lane-scheduler and work-unit paths (not only the direct path); a test drives a
-  lane-scheduler/work-unit run and asserts the preflight gate fires.
+- [ ] #244: the verification-evidence + acceptance-coverage preflight gates run on BOTH the
+  lane-scheduler branch AND the (separate) work-unit branch, not only the direct path.
+  Independent tests drive a lane-scheduler run and a work-unit run and each asserts the
+  preflight gate fires — a lane-scheduler-only test would leave work-unit dispatch bypassing
+  the gate.
 - [ ] #245: the produced-gates + goal-coverage closeout gates are re-checked when a
   delegated child completes; a test drives a delegated-child completion and asserts both
   gates evaluate (a missing gate → the same block as on the direct path).
@@ -231,11 +233,17 @@ lane-scheduler + work-unit path (#244), and closeout gates are not re-checked at
 
 **Scope notes**
 - Decompose into 2 lanes: (a) `#244` preflight-parity — factor the direct-path preflight
-  gates into the IF-0-PAR-1 helper and invoke it from the lane-scheduler/work-unit dispatch
-  path (`_launch_ready_lane_wave`, runner.py ~1864); (b) `#245` closeout-parity — factor the
-  direct-path closeout gates into the IF-0-PAR-2 helper and invoke it from the delegated-child
-  completion path (`launch_delegated_child`, runner.py ~3766). Publish both helper signatures
-  (IF-0-PAR-1, IF-0-PAR-2) on day 1 so each lane builds against the frozen entry point.
+  gates into the IF-0-PAR-1 helper and invoke it on BOTH dispatch branches, which are
+  SEPARATE: the lane-scheduler branch (`if lane_scheduler_mode != "off"` →
+  `_launch_ready_lane_wave`, runner.py ~1864) AND the work-unit branch (`if work_unit_mode`,
+  runner.py ~1878). Prefer a single common invocation point BEFORE both branches so neither
+  can be added later without the gate; if wired per-branch instead, both must call the helper.
+  Require INDEPENDENT tests for each mode — a lane-scheduler-only test would pass while
+  work-unit dispatch still bypasses verification-evidence + goal-coverage preflight, leaving
+  #244 half-unmet. (b) `#245` closeout-parity — factor the direct-path closeout gates into the
+  IF-0-PAR-2 helper and invoke it from the delegated-child completion path
+  (`launch_delegated_child`, runner.py ~3766). Publish both helper signatures (IF-0-PAR-1,
+  IF-0-PAR-2) on day 1 so each lane builds against the frozen entry point.
 - **Serialize the two `runner.py` integrations** — both lanes edit `runner.py`, so this is a
   single-writer file across the two lanes, NOT two fully-parallel single-writer lanes.
   Coordinate the edits (e.g. land the helper-extraction commit first, then wire each callsite)
