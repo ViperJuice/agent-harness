@@ -883,6 +883,125 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertTrue(v.ok)
             self.assertEqual(v.code, "ok")
 
+    def test_whitespace_padded_final_line_seal_lookalike_treated_as_unsealed(self):
+        # agent-harness#243 CR (round 2, cross-vendor): _extract_artifact_seal used to
+        # `.strip()` the final line before the anchored exact-match regex, so a final line with
+        # incidental leading/trailing SPACE around an otherwise well-formed marker was still
+        # accepted as a valid seal. A legacy/externally-built log whose final captured line
+        # happens to have surrounding whitespace around a marker-shaped lookalike must be
+        # treated as UNSEALED (skip the seal check, still validates) -- not seal-matched (which
+        # would then fail closed on a legitimate legacy artifact whose digest was never sealed
+        # in the first place).
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = (
+                b"legacy stage output\n"
+                b" verification-artifact-sha256:" + b"e" * 64 + b" \n"
+            )
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            # Treated as UNSEALED legacy (whitespace-padded lookalike is not an exact seal
+            # match) -> back-compat pass, NOT an artifact_seal_mismatch rejection.
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_in_dict_key(self):
+        # agent-harness#243 CR (round 2, cross-vendor): the leaf-values-only walk dropped dict
+        # KEYS entirely, so a secret embedded in a KEY (not a value) -- e.g. an argv-parsing
+        # bug that folds `--api-key=X` into a single dict key -- silently passed both the
+        # redaction path and the fatal closeout gate. Both must catch it once the walker also
+        # tests `str(key)`.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+                "extra": {"api_key=AKIAIOSFODNN7EXAMPLEKEY": "safe-looking-value"},
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_numeric_scalar_secret(self):
+        # agent-harness#243 CR (round 2, cross-vendor): the leaf-values-only walk yielded only
+        # `isinstance(value, str)` leaves, so a non-string scalar (int/float/bool) was silently
+        # dropped from the matched corpus -- the old json.dumps(...)-blob approach stringified
+        # it in place and could still catch it. Exercise the restored non-string-scalar
+        # coverage via an argv element that is a Python int (not a str) sitting adjacent to a
+        # `--token` flag -- the split-argv adjacency join (defect 3's fix) is what makes this
+        # concretely matchable, and it specifically requires the int leaf to be stringified.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "x", "--token", 123456789012345],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("123456789012345", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_split_argv_flag_value_pair(self):
+        # agent-harness#243 CR (round 2, cross-vendor, defect 3): a SPLIT argv flag/value pair
+        # -- e.g. argv=["tool", "--token", "ABCDEFGHIJKL"] -- puts the keyword and the value in
+        # separate list elements, so examining one leaf at a time never sees them contiguous
+        # and the old (post-fix, pre-CR2) secret_like_value pattern -- which needs the keyword
+        # and value adjacent -- never matched. The traversal now also matches the space-joined
+        # concatenation of a list's stringified elements.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "x", "--token", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
 
 if __name__ == "__main__":
     unittest.main()

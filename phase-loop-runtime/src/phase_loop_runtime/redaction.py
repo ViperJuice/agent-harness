@@ -35,7 +35,14 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("raw_diff", re.compile(r"diff --git|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@")),
     ("raw_spec_body", re.compile(r"raw spec bod(?:y|ies)|spec body bytes|verbatim spec", re.I)),
     ("raw_transcript", re.compile(r"raw transcript|transcript bytes|verbatim transcript", re.I)),
-    ("secret_like_value", re.compile(r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}", re.I)),
+    # agent-harness#243 CR (defect 3): a split argv flag/value pair (e.g.
+    # ``["--token", "ABCDEFGHIJKL"]``) has no ``[:=]`` between the keyword and the value --
+    # only whitespace, once the elements are joined back into a contiguous string by the
+    # traversal below. The separator alternation accepts EITHER ``[:=]`` (the original
+    # ``key=value``/``key: value`` shape) OR one-or-more spaces (the argv-adjacency shape),
+    # as ONE shared pattern (SSOT) so both the redaction path and the fatal closeout gate stay
+    # in sync.
+    ("secret_like_value", re.compile(r"(?:api[_-]?key|secret|token|password)\s*(?:[:=]\s*|\s+)['\"]?[A-Za-z0-9_\-]{12,}", re.I)),
     ("absolute_private_path", re.compile(r"/(?:home|users|mnt/(?:private|evidence|secure|raw|HC_Volume_[^/\s]+))/(?:[^\"'\s]+)", re.I)),
     ("provider_payload", re.compile(r"raw provider payload|provider payload|anthropic[_-]?payload|openai[_-]?payload", re.I)),
     ("credential_payload", re.compile(r"credential payload|private key|-----begin [a-z ]*private key-----", re.I)),
@@ -166,10 +173,29 @@ def redact_diagnostics_metadata_only(
     return redacted
 
 
+def _scalar_text(value: Any) -> str | None:
+    """Return the raw text to match a scalar leaf against, or ``None`` for containers/``None``.
+
+    agent-harness#243 CR (defect 2): the pre-fix walker yielded only ``isinstance(value, str)``
+    leaves, so a non-string scalar secret (e.g. ``{"account_id": 123456789012345}``) -- which
+    the old ``json.dumps(...)``-blob matcher DID catch, since ``json.dumps`` stringifies it in
+    place -- was silently dropped. ``str(value)`` restores that coverage for ``int``/``float``/
+    ``bool`` leaves. ``None`` is skipped (``str(None)`` -> ``"None"`` is never a secret and
+    would only add noise).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return None
+
+
 def _iter_leaf_strings(value: Any) -> Iterator[str]:
-    """Depth-first yield of every leaf ``str`` value inside a nested dict/list/tuple
-    structure (e.g. a diagnostic's nested ``argv`` list, or a closeout payload's nested
-    ``evidence_refs``).
+    """Depth-first yield of every text fragment inside a nested dict/list/tuple structure
+    (e.g. a diagnostic's nested ``argv`` list, or a closeout payload's nested
+    ``evidence_refs``) that must be matched against ``_FORBIDDEN_METADATA_PATTERNS``.
 
     agent-harness#243 CR: forbidden-metadata matching used to run against a
     ``json.dumps(...)`` serialization of the whole structure. ``json.dumps`` backslash-escapes
@@ -177,20 +203,52 @@ def _iter_leaf_strings(value: Any) -> Iterator[str]:
     double-quoted secret like ``api_key="SECRETVALUE12"`` — the serialized blob becomes
     ``api_key=\\"SECRETVALUE12\\"``, the injected backslash sits between ``=`` and the quote,
     so the pattern's optional ``['\"]?`` matches zero quotes and the following
-    ``[A-Za-z0-9_\\-]{12,}`` starts at the backslash and fails to match. Walking the RAW,
-    unescaped leaf strings and matching each one directly closes that blind spot while
-    remaining a superset of what the serialized-blob approach caught (every case that matched
-    a substring of the escaped blob matches at least as well against the raw leaf it came
-    from).
+    ``[A-Za-z0-9_\\-]{12,}`` starts at the backslash and fails to match. Walking RAW, unescaped
+    text and matching it directly closes that blind spot.
+
+    A follow-up cross-vendor review (codex + gemini) found the leaf-only walk was not a true
+    superset of a reasonable whole-payload matcher — it missed three shapes:
+
+    1. Dict KEYS (a genuine regression vs. the old ``json.dumps(...)`` blob matcher): the blob
+       included key text verbatim (e.g. ``json.dumps({"api_key=ABCDEFGHIJKL": "safe"})`` ->
+       ``{"api_key=ABCDEFGHIJKL": "safe"}``, which DOES match ``secret_like_value`` since the
+       keyword+separator+value run contiguously inside the key's own quoted text); a
+       leaf-VALUES-only walk silently dropped that key. Fixed: every dict key is tested via
+       ``str(key)``.
+    2. Non-string scalars: see ``_scalar_text`` above. (Note: a bare non-string scalar with no
+       adjacent keyword, e.g. a lone ``123456789012345``, does not itself match any current
+       forbidden pattern — restoring it to the tested corpus matters once it sits next to a
+       keyword, per point 3 below, or against a future pattern.)
+    3. Split argv/list flag+value pairs: ``argv=["tool", "--token", "ABCDEFGHIJKL"]`` puts the
+       keyword and the value in ADJACENT list elements. This was NOT actually caught by the old
+       blob matcher either — ``json.dumps`` puts a closing quote, comma, and space between
+       ``"--token"`` and ``"ABCDEFGHIJKL"`` in the serialized array, breaking the immediate
+       keyword-then-separator adjacency ``secret_like_value`` requires — so this is new
+       coverage, not a restored regression. Fixed: for every list/tuple, in addition to
+       recursing into each element, also match the SPACE-JOINED concatenation of the
+       stringified scalar elements, so an adjacent flag→value pair becomes one contiguous
+       string a keyword+separator+value pattern can match (the separator alternation on
+       ``secret_like_value`` accepts plain whitespace, not just ``[:=]``, to match this joined
+       form).
     """
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for item in value.values():
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
             yield from _iter_leaf_strings(item)
-    elif isinstance(value, (list, tuple)):
+        return
+    if isinstance(value, (list, tuple)):
+        parts: list[str] = []
         for item in value:
             yield from _iter_leaf_strings(item)
+            scalar = _scalar_text(item)
+            if scalar is not None:
+                parts.append(scalar)
+        if parts:
+            yield " ".join(parts)
+        return
+    scalar = _scalar_text(value)
+    if scalar is not None:
+        yield scalar
 
 
 def _forbidden_metadata_kind(payload: Mapping[str, Any]) -> str | None:

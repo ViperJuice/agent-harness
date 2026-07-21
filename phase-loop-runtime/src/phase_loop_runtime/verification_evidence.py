@@ -911,9 +911,17 @@ def _extract_artifact_seal(log_bytes: bytes) -> str | None:
     if last_non_empty is None:
         return None
     try:
-        decoded = last_non_empty.decode("ascii").strip()
+        decoded = last_non_empty.decode("ascii")
     except UnicodeDecodeError:
         return None
+    # agent-harness#243 CR (cross-vendor): normalize ONLY a terminal "\r" (the line
+    # already has no "\n" — it came from split(b"\n")). A general ``.strip()`` here would
+    # accept a leading/trailing-SPACE marker lookalike on the final line as a valid seal,
+    # falsely rejecting (or falsely sealing) a legacy artifact whose final captured line
+    # happens to have incidental surrounding whitespace. The anchored regex below requires
+    # an EXACT prefix+64-hex-digest match with no whitespace on either side.
+    if decoded.endswith("\r"):
+        decoded = decoded[:-1]
     match = _ARTIFACT_SEAL_LINE_RE.match(decoded)
     if match is None:
         return None

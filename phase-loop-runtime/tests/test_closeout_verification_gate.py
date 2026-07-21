@@ -210,6 +210,41 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             # The secret must not appear anywhere in the serialized closeout record.
             self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
 
+    def test_closeout_diagnostic_with_split_argv_secret_is_redacted_to_metadata_only(self):
+        # agent-harness#243 CR (round 2, cross-vendor, defect 3): a secret split across TWO
+        # adjacent argv elements (a real subprocess invocation shape -- e.g. `tool --token
+        # SECRET` -- rather than a single pre-joined string) must be caught end-to-end through
+        # the closeout path, not just at the redaction-helper level. Before the fix, examining
+        # each argv leaf in isolation never saw the "--token" flag and the secret value
+        # contiguous, so `secret_like_value` never matched and the raw secret argv leaked
+        # straight into the persisted closeout record.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c", "import sys; sys.exit(1)", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]],
+                None,
+                None,
+                5,
+            )
+
+            closeout = self._closeout(plan, run_dir)
+
+            self.assertEqual(closeout["verification"]["status"], "blocked")  # nonzero still blocks
+            result = closeout["verification"]["results"][0]
+            self.assertEqual(result["code"], "nonzero_exit")
+            diag = result["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("argv", diag)
+            # The secret must not appear anywhere in the serialized closeout record.
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
     def test_closeout_force_all_redaction_suppresses_benign_tail(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
