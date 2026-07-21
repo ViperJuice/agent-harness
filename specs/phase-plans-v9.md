@@ -70,7 +70,13 @@ issues in `Consiliency/agent-harness`; phases reference issues rather than resta
 1. **Cross-vendor CR + green CI before every admin-merge.** This is a public repo: each
    phase's lanes merge only after a completed cross-vendor code review (codex + gemini +
    claude/Fable; backfill the third seat with grok when gemini is subscription-contended)
-   and green CI.
+   and green CI. **The CR mechanism is READ-ONLY inlined-diff review** — each seat reviews a
+   self-contained artifact (full diff + source inlined), NOT a write-capable staged working
+   tree. The `launcher._stage_review_tree` write-capable review path (the agy governed-review
+   leg) is therefore NOT on this roadmap's merge-gating path, so the #259 symlink-escape is
+   off-path for v9's CRs as run. Guard rail: if any lane in this roadmap DOES invoke the
+   write-capable staged review leg, **#259 (symlink containment) is a hard prerequisite** and
+   must land first — do not rely on `_stage_review_tree` isolation until #259 is fixed.
 2. **Bounded lanes are sonnet-dispatchable** in isolated git worktrees (implement + test +
    push a branch; the orchestrator runs the CR + merge).
 3. **Hardening stays fail-closed.** No fix may convert a fail-closed gate into a fail-open
@@ -272,6 +278,12 @@ coordinator so the two never desync on path format.
   `git diff --name-only -z --no-renames`, parse NUL-delimited, and agree on format
   (IF-0-BRK-1); a rename of an unowned file into owned space is now caught (both endpoints
   surface); a test proves the rename escape is closed.
+- [ ] IF-0-BRK-1 is frozen as filename BYTE-identity, not symmetric parsing: both sides split
+  on NUL, discard ONLY the terminal empty element, and do NOT trim any path element. A
+  regression test asserts a filename with leading/trailing whitespace AND one with an embedded
+  newline compare byte-for-byte between broker diff-paths and coordinator owned-paths, and that
+  a wrong (whitespace-bearing) path is NOT approved — a rename-escape test alone is
+  insufficient because both parsers could symmetrically trim and still pass it.
 - [ ] `head_sha`-pinned push (`git push <url> <head_sha>:refs/heads/<branch>`) — a test
   proves a ref advancing between validation and push cannot publish unverified content.
 - [ ] `gh pr create` passes `--base <request.base>`; base revision-syntax is guarded
@@ -424,7 +436,11 @@ closeout) as an opt-in-to-block gate, autonomy-first.
 
 - [ ] All open bounded-hardening issues (#238, #243, #231) are closed via merged PRs (with
   #241 either done or explicitly deferred), each cross-vendor CR'd.
-- [ ] The gate-parity gaps (#244, #245) are closed with a single shared re-check helper.
+- [ ] The gate-parity gaps are closed with TWO shared helpers: a preflight helper
+  (IF-0-PAR-1, #244) reused by the direct + lane-scheduler/work-unit paths, and a *separate*
+  closeout helper (IF-0-PAR-2, #245) reused by the direct + delegated-child paths. A conflated
+  single helper does NOT satisfy this — preflight `{verification, goal-coverage}` and closeout
+  `{produced-gates, goal-coverage}` are distinct gate families at distinct lifecycle points.
 - [ ] The broker #250 hardening cluster is closed with the broker + #201 coordinator in
   sync on the `-z --no-renames` path format.
 - [ ] The two features (#191, #91) are delivered, with the abdreg/abdresolve worktree work
