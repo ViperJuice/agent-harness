@@ -50,11 +50,39 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # ``..."api_key":"SECRET"...``: the KEY's own closing quote sits directly between the
     # keyword and the ``:`` separator, so the (pre-existing) ``\s*`` before the separator
     # alternation never advances past that quote character and the match fails. The optional
-    # ``['\"]?`` inserted here between the keyword and the separator absorbs that closing quote
-    # (a no-op for every previously-matched shape -- ``key=value``, ``key: value``,
+    # ``['\"]?`` inserted here between the keyword and the separator absorbed that closing
+    # quote (a no-op for every previously-matched shape -- ``key=value``, ``key: value``,
     # space-joined argv -- since none of those have a quote in that position), closing the gap
     # for literal JSON text without forking a second pattern.
-    ("secret_like_value", re.compile(r"(?:api[_-]?key|secret|token|password)['\"]?\s*(?:[:=]\s*|\s+)['\"]?[A-Za-z0-9_\-]{12,}", re.I)),
+    #
+    # agent-harness#243 CR (cross-vendor, codex): the round-4 fix only tolerated a SINGLE
+    # optional quote character on each side of the separator. A shell-escaped verbatim
+    # command/log line -- e.g. an operational command captured as text containing
+    # ``api_key: \"SECRET\"`` (a literal backslash immediately before the quote, as produced
+    # by ``curl -H "X-Api-Key: \"SECRET\""`` or any shlex/json re-quoting of an already-quoted
+    # value) -- still broke the match: the backslash sat in the one slot the old pattern
+    # expected either a bare quote or nothing, so neither the single optional pre-separator
+    # quote nor the single optional pre-value quote advanced past it and
+    # ``[A-Za-z0-9_\-]{12,}`` never found a place to start. Rather than special-case yet another
+    # escaping shape, both quote slots are now a character class -- ``[\s'\"\\]*`` (whitespace,
+    # single quote, double quote, backslash, zero-or-more) -- run BEFORE the required separator
+    # and again AFTER it. This closes the WHOLE quoting/escaping class in one shared pattern:
+    # plain (``key=value``), single/double-quoted (``key='value'`` / ``key="value"``),
+    # backslash-escaped (``key: \"value\"``, any depth of shell/JSON re-quoting), and JSON
+    # (``"key":"value"``) all reduce to "some run of separator-ish noise, then the value". The
+    # required separator itself is unchanged in kind (``[:=]`` OR one-or-more of the same noise
+    # class, so a keyword glued directly to an unrelated word with zero separator still does
+    # NOT match) -- only the noise TOLERATED on each side of it grew from "one optional quote"
+    # to "any run of whitespace/quote/backslash", which is a superset that keeps every
+    # previously-matched shape matching while adding escaped-quote coverage. Single shared
+    # pattern (SSOT): both the redaction path and the fatal closeout gate stay in sync.
+    (
+        "secret_like_value",
+        re.compile(
+            r"(?:api[_-]?key|secret|token|password)[\s'\"\\]*(?:[:=][\s'\"\\]*|[\s'\"\\]+)[A-Za-z0-9_\-]{12,}",
+            re.I,
+        ),
+    ),
     ("absolute_private_path", re.compile(r"/(?:home|users|mnt/(?:private|evidence|secure|raw|HC_Volume_[^/\s]+))/(?:[^\"'\s]+)", re.I)),
     ("provider_payload", re.compile(r"raw provider payload|provider payload|anthropic[_-]?payload|openai[_-]?payload", re.I)),
     ("credential_payload", re.compile(r"credential payload|private key|-----begin [a-z ]*private key-----", re.I)),
