@@ -275,6 +275,31 @@ class RotationState:
             self.cursor = (self.cursor + 1) % len(self.executors)
 
 
+_MISSING = object()
+
+
+def _delegated_child_produced_if_gates(child_automation: dict[str, object]) -> object:
+    """agent-harness#245 produced-gates parity: recover the delegated child's
+    ``produced_if_gates`` list the same way ``_ratification_audit_payload`` does
+    — prefer the raw ``native_closeout_payload`` (the BAML-validated
+    ``EmitPhaseCloseout`` doc, where ``produced_if_gates`` is a REQUIRED list
+    field, always present even when empty), then fall back to the flattened
+    top-level key ``_parse_native_closeout_status`` copies onto
+    ``child_automation`` itself. Returns the sentinel ``_MISSING`` (not
+    ``None``) when neither is present, so callers can tell "no key at all"
+    (a genuine legacy/plain-text automation block with no native closeout —
+    the documented NATIVE-compat graceful fallback) apart from "key present
+    but empty list" (a real closeout that produced zero gates, which must
+    still reach ``validate_produced_gates`` for evaluation).
+    """
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict) and "produced_if_gates" in payload:
+        return payload.get("produced_if_gates")
+    if "produced_if_gates" in child_automation:
+        return child_automation.get("produced_if_gates")
+    return _MISSING
+
+
 def _delegated_child_closeout_result(
     *,
     decision: DelegationDecision,
@@ -300,6 +325,18 @@ def _delegated_child_closeout_result(
         result["blocker_class"] = child_automation.get("automation_blocker_class")
         result["blocker_summary"] = child_automation.get("automation_blocker_summary")
         result["next_command"] = child_automation.get("automation_next_command")
+        # agent-harness#245 produced-gates parity: carry the child's own
+        # produced_if_gates declaration through so the delegated-completion
+        # recheck (_closeout_gate_recheck -> validate_produced_gates, called
+        # from the "delegated" branch below) evaluates the REAL gate list
+        # instead of silently degrading to the missing-key NATIVE-compat
+        # warn-pass. Only add the key when the child actually supplied one —
+        # a genuine legacy/plain-text child closeout has no native payload
+        # and no flattened key here either, so it keeps the documented
+        # graceful fallback for that case.
+        produced_if_gates = _delegated_child_produced_if_gates(child_automation)
+        if produced_if_gates is not _MISSING:
+            result["produced_if_gates"] = produced_if_gates
         return {key: value for key, value in result.items() if value is not None}
     if terminal_summary:
         result["status"] = terminal_summary.get("terminal_status")
@@ -1861,6 +1898,59 @@ def run_loop(
                     ),
                 )
                 return (_DispatchOutcome("break", None), None)
+            if (
+                not dry_run
+                and (lane_scheduler_mode != "off" or work_unit_mode)
+                and status in {"planned", "executed"}
+                and plan is not None
+            ):
+                # agent-harness#244/#247: the lane-scheduler and work-unit dispatch
+                # branches below fire BEFORE dispatch_decision/selection are resolved,
+                # bypassing the direct path's execute-time preflight gates
+                # (verification-evidence + acceptance/goal-coverage). Route through the
+                # SAME _execute_dispatch_preflight_gates() helper the direct launch site
+                # uses (below, ~launch_action == "execute") so PHASE_LOOP_VERIFY_ENFORCE
+                # / PHASE_LOOP_ACCEPTANCE_ENFORCE are not silently inert for these modes.
+                # `status in {"planned", "executed"}` is exactly the precondition under
+                # which launch_action later resolves to "execute" (see below), so this is
+                # the correct analog of the direct path's `launch_action == "execute"` gate.
+                _dispatch_preflight_result = _execute_dispatch_preflight_gates(repo, roadmap, plan)
+                if _dispatch_preflight_result is not None:
+                    _dispatch_preflight_blocker, _dispatch_preflight_gate = _dispatch_preflight_result
+                    classifications[alias] = "blocked"
+                    _dispatch_preflight_terminal_summary = build_terminal_summary(
+                        terminal_status="blocked",
+                        terminal_blocker=_dispatch_preflight_blocker,
+                        verification_status="blocked",
+                        next_action=str(_dispatch_preflight_blocker["blocker_summary"]),
+                    )
+                    append_event(
+                        repo,
+                        LoopEvent(
+                            timestamp=utc_now(),
+                            repo=str(repo),
+                            roadmap=str(roadmap),
+                            phase=alias,
+                            action=action,
+                            status="blocked",
+                            model=selection.model,
+                            reasoning_effort=selection.effort,
+                            source=selection.source,
+                            override_reason=selection.override_reason,
+                            blocker=_dispatch_preflight_blocker,
+                            metadata={
+                                "execute_dispatch_preflight": {
+                                    "status": "blocked",
+                                    "gate": _dispatch_preflight_gate,
+                                    "lane_scheduler_mode": lane_scheduler_mode,
+                                    "work_unit_mode": work_unit_mode,
+                                },
+                                "terminal_summary": _dispatch_preflight_terminal_summary,
+                            },
+                            **event_provenance(roadmap, alias),
+                        ),
+                    )
+                    return (_DispatchOutcome("break", None), None)
             if lane_scheduler_mode != "off" and status in {"planned", "executed"} and plan is not None:
                 decision = _launch_ready_lane_wave(
                     repo=repo,
@@ -2941,7 +3031,17 @@ def run_loop(
                     )
                     return (_DispatchOutcome("break", None), None)
             if not dry_run and launch_action == "execute" and plan is not None:
-                verification_preflight_blocker = _execute_verification_preflight_blocker(repo, roadmap, plan)
+                # agent-harness#244/#247: routed through the SINGLE shared
+                # _execute_dispatch_preflight_gates() helper (also used by the
+                # lane-scheduler and work-unit dispatch branches above) so this
+                # direct-launch site and those execution modes share one
+                # gate-invocation point instead of drifting copies.
+                _direct_preflight_result = _execute_dispatch_preflight_gates(repo, roadmap, plan)
+                verification_preflight_blocker = (
+                    _direct_preflight_result[0]
+                    if _direct_preflight_result is not None and _direct_preflight_result[1] == "verification_preflight"
+                    else None
+                )
                 if verification_preflight_blocker is not None:
                     classifications[alias] = "blocked"
                     terminal_summary = build_terminal_summary(
@@ -3005,10 +3105,17 @@ def run_loop(
                         pipeline_mode=effective_pipeline_mode,
                     )
                     return (_DispatchOutcome("break", None), None)
-                # agent-harness#211: goal-coverage preflight (warn-default; opt-in block via
-                # PHASE_LOOP_ACCEPTANCE_ENFORCE=block). Decidable check that the plan's
-                # acceptance items reference every EC-<ALIAS>-<N> goal ID of the phase.
-                goal_coverage_blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+                # agent-harness#211/#244/#247: goal-coverage preflight (warn-default;
+                # opt-in block via PHASE_LOOP_ACCEPTANCE_ENFORCE=block). Decidable check
+                # that the plan's acceptance items reference every EC-<ALIAS>-<N> goal ID
+                # of the phase. Reuses the SAME _execute_dispatch_preflight_gates() call
+                # above rather than re-invoking the gate (matches the prior behavior: the
+                # verification-preflight gate always ran first and short-circuited this).
+                goal_coverage_blocker = (
+                    _direct_preflight_result[0]
+                    if _direct_preflight_result is not None and _direct_preflight_result[1] == "goal_coverage_preflight"
+                    else None
+                )
                 if goal_coverage_blocker is not None:
                     classifications[alias] = "blocked"
                     terminal_summary = build_terminal_summary(
@@ -3610,59 +3717,30 @@ def run_loop(
                     child_automation["original_returncode"] = failed_launch_closeout_override.get("original_returncode")
                 automation_status = child_automation.get("automation_status")
                 validation_plan = post_launch_plan or plan
-                fleet_missing_gates: tuple[str, ...] = ()
-                fleet_produced_gates: tuple[str, ...] = ()
-                if validation_plan is not None and child_automation:
-                    gate_validation = validate_produced_gates(validation_plan, child_automation)
-                    fleet_missing_gates = tuple(str(g) for g in gate_validation.missing_gates)
-                    fleet_produced_gates = tuple(str(g) for g in gate_validation.produced_gates)
-                    if gate_validation.warning:
-                        child_automation["produced_gates_warning"] = gate_validation.warning
-                        child_automation["produced_gates_validation"] = gate_validation.to_json()
-                    if not gate_validation.ok:
-                        status_after_launch = "blocked"
-                        set_phase_status(
-                            repo,
-                            roadmap,
-                            alias,
-                            classifications,
-                            status_after_launch,
-                            reason="gate_validation_failed",
-                            trigger=launch_action,
-                            selection=selection,
-                            action=action,
-                        )
-                        child_automation["produced_gates_validation"] = gate_validation.to_json()
-                        event_blocker = {
-                            "human_required": False,
-                            "blocker_class": gate_validation.blocker_class or "contract_bug",
-                            "blocker_summary": gate_validation.blocker_summary
-                            or "completed closeout produced_if_gates failed validation",
-                            "required_human_inputs": (),
-                            "access_attempts": (),
-                        }
-                        automation_status = status_after_launch
-                # agent-harness#211: closeout re-check of goal coverage. Mirrors the
-                # produced-gates precedent (re-reads the live plan on disk) and closes the
-                # mutation window — a plan can lose an EC-ID reference DURING execution, after
-                # the plan-time preflight passed. Warn-default; blocks only under
-                # PHASE_LOOP_ACCEPTANCE_ENFORCE=block. Guarded so it can never break closeout.
-                if event_blocker is None and validation_plan is not None and child_automation:
-                    _cov_evidence, _cov_blocker = _goal_coverage_closeout_outcome(
-                        repo, roadmap, validation_plan,
-                        _phase_status_literal(automation_status) == "complete",
+                # agent-harness#245/#247: produced-gates + goal-coverage (#211) closeout
+                # re-check, routed through the SINGLE shared _closeout_gate_recheck()
+                # helper (also used by the delegated-child completion below) so both
+                # paths share one gate-invocation point instead of drifting copies.
+                _gate_outcome = _closeout_gate_recheck(
+                    repo, roadmap, validation_plan, child_automation, automation_status, event_blocker,
+                )
+                fleet_missing_gates = _gate_outcome.missing_gates
+                fleet_produced_gates = _gate_outcome.produced_gates
+                automation_status = _gate_outcome.automation_status
+                event_blocker = _gate_outcome.event_blocker
+                if _gate_outcome.blocked_reason is not None:
+                    status_after_launch = "blocked"
+                    set_phase_status(
+                        repo,
+                        roadmap,
+                        alias,
+                        classifications,
+                        status_after_launch,
+                        reason=_gate_outcome.blocked_reason,
+                        trigger=launch_action,
+                        selection=selection,
+                        action=action,
                     )
-                    if _cov_evidence is not None:
-                        child_automation["goal_coverage"] = _cov_evidence
-                    if _cov_blocker is not None:
-                        status_after_launch = "blocked"
-                        set_phase_status(
-                            repo, roadmap, alias, classifications, status_after_launch,
-                            reason="goal_coverage_gap", trigger=launch_action,
-                            selection=selection, action=action,
-                        )
-                        event_blocker = _cov_blocker
-                        automation_status = status_after_launch
                 if (
                     event_blocker is None
                     and child_automation
@@ -3789,8 +3867,36 @@ def run_loop(
                                     .get("parent_child", {})
                                     .get("child_closeout_result", {})
                                 )
+                                delegated_status_reason = "delegated_child_reduction"
                                 if isinstance(closeout, dict):
                                     status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
+                                    if event_blocker is None:
+                                        # agent-harness#245: re-check the produced-gates + goal-coverage
+                                        # closeout gates HERE — this is the only reduction point for a
+                                        # delegated child's OWN completion. It never reaches the direct
+                                        # closeout re-check above (there, automation_status == "delegated",
+                                        # not "complete", so both gates trivially pass). Route through the
+                                        # SAME _closeout_gate_recheck() helper the direct site uses so
+                                        # PHASE_LOOP_VERIFY_ENFORCE / PHASE_LOOP_ACCEPTANCE_ENFORCE stay in
+                                        # parity between the direct and delegated paths. ``closeout`` is
+                                        # normalized with an explicit terminal status (its native
+                                        # "status" key doesn't match what validate_produced_gates()
+                                        # expects); _delegated_child_closeout_result() also carries the
+                                        # child's real produced_if_gates onto ``closeout`` (see
+                                        # _delegated_child_produced_if_gates()) whenever the child emitted a
+                                        # native BAML closeout, so validate_produced_gates() evaluates the
+                                        # actual gate list here rather than the NATIVE-compatibility
+                                        # warn-pass. That warn-pass still applies only to a genuine
+                                        # legacy/plain-text child closeout with no native payload at all.
+                                        closeout["automation_status"] = status_after_launch
+                                        _delegated_gate_plan = post_launch_plan or plan
+                                        _delegated_gate_outcome = _closeout_gate_recheck(
+                                            repo, roadmap, _delegated_gate_plan, closeout, status_after_launch, event_blocker,
+                                        )
+                                        if _delegated_gate_outcome.blocked_reason is not None:
+                                            status_after_launch = "blocked"
+                                            event_blocker = _delegated_gate_outcome.event_blocker
+                                            delegated_status_reason = _delegated_gate_outcome.blocked_reason
                                 else:
                                     status_after_launch = "blocked"
                                     event_blocker = {
@@ -3806,7 +3912,7 @@ def run_loop(
                                     alias,
                                     classifications,
                                     status_after_launch,
-                                    reason="delegated_child_reduction",
+                                    reason=delegated_status_reason,
                                     trigger=launch_action,
                                     selection=selection,
                                     action=action,
@@ -6141,6 +6247,97 @@ def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Pat
             "access_attempts": (),
         }
     return None
+
+
+class _CloseoutGateOutcome(NamedTuple):
+    automation_status: object
+    event_blocker: dict[str, object] | None
+    blocked_reason: str | None
+    missing_gates: tuple[str, ...]
+    produced_gates: tuple[str, ...]
+
+
+def _execute_dispatch_preflight_gates(repo: Path, roadmap: Path, plan: Path) -> tuple[dict[str, object], str] | None:
+    """agent-harness#244/#247: the SINGLE shared execute-time preflight gate-invocation
+    point. Runs the verification-evidence preflight (``_execute_verification_preflight_blocker``)
+    then the acceptance/goal-coverage preflight (``_execute_goal_coverage_preflight``, #211),
+    in the same order the historical direct-launch call site used. Every execute dispatch
+    path — the direct launch, the lane-scheduler wave dispatch, and the work-unit attempt
+    dispatch (agent-harness#244) — MUST route through this function rather than
+    re-deriving the two gate calls, so ``PHASE_LOOP_VERIFY_ENFORCE`` /
+    ``PHASE_LOOP_ACCEPTANCE_ENFORCE`` stay in parity across execution modes. Returns
+    ``(blocker, gate_name)`` for the first gate that blocks (``gate_name`` is
+    ``"verification_preflight"`` or ``"goal_coverage_preflight"``, used by callers to
+    shape mode-specific event metadata), else ``None``."""
+    verification_preflight_blocker = _execute_verification_preflight_blocker(repo, roadmap, plan)
+    if verification_preflight_blocker is not None:
+        return verification_preflight_blocker, "verification_preflight"
+    goal_coverage_blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+    if goal_coverage_blocker is not None:
+        return goal_coverage_blocker, "goal_coverage_preflight"
+    return None
+
+
+def _closeout_gate_recheck(
+    repo: Path,
+    roadmap: Path,
+    plan: Path | None,
+    child_automation: dict[str, object],
+    automation_status: object,
+    event_blocker: dict[str, object] | None,
+) -> _CloseoutGateOutcome:
+    """agent-harness#245/#247: the SINGLE shared closeout gate re-check for the
+    produced-gates gate (``validate_produced_gates``) and the acceptance/goal-coverage
+    gate (``_goal_coverage_closeout_outcome``, #211). Mutates ``child_automation`` in
+    place with gate evidence/warnings, exactly as the historical inline direct-path
+    check did. Preserves the original asymmetric gating: produced-gates always runs (an
+    earlier unrelated blocker, e.g. a runner-owned verification failure, does not
+    suppress it); goal-coverage runs ONLY if no blocker has fired yet
+    (``event_blocker is None``) — a produced-gates failure short-circuits the
+    (redundant) goal-coverage re-check for the same reduction, matching the
+    pre-existing direct-path behavior byte-for-byte. Every path that can reduce a
+    phase to a terminal status from live automation output — the direct
+    launch-result reduction AND the delegated-child completion (agent-harness#245) —
+    MUST route through this function instead of re-deriving the two gate calls, so
+    ``PHASE_LOOP_VERIFY_ENFORCE`` / ``PHASE_LOOP_ACCEPTANCE_ENFORCE`` stay in parity
+    between the direct and delegated paths. Returns the (possibly updated)
+    ``automation_status``/``event_blocker``, and — when a gate newly blocked — the
+    ``set_phase_status`` reason the caller should record (``None`` if neither gate
+    blocked)."""
+    missing_gates: tuple[str, ...] = ()
+    produced_gates: tuple[str, ...] = ()
+    blocked_reason: str | None = None
+    if plan is not None and child_automation:
+        gate_validation = validate_produced_gates(plan, child_automation)
+        missing_gates = tuple(str(g) for g in gate_validation.missing_gates)
+        produced_gates = tuple(str(g) for g in gate_validation.produced_gates)
+        if gate_validation.warning:
+            child_automation["produced_gates_warning"] = gate_validation.warning
+            child_automation["produced_gates_validation"] = gate_validation.to_json()
+        if not gate_validation.ok:
+            automation_status = "blocked"
+            child_automation["produced_gates_validation"] = gate_validation.to_json()
+            event_blocker = {
+                "human_required": False,
+                "blocker_class": gate_validation.blocker_class or "contract_bug",
+                "blocker_summary": gate_validation.blocker_summary
+                or "completed closeout produced_if_gates failed validation",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+            blocked_reason = "gate_validation_failed"
+    if event_blocker is None and plan is not None and child_automation:
+        _cov_evidence, _cov_blocker = _goal_coverage_closeout_outcome(
+            repo, roadmap, plan,
+            _phase_status_literal(automation_status) == "complete",
+        )
+        if _cov_evidence is not None:
+            child_automation["goal_coverage"] = _cov_evidence
+        if _cov_blocker is not None:
+            automation_status = "blocked"
+            event_blocker = _cov_blocker
+            blocked_reason = "goal_coverage_gap"
+    return _CloseoutGateOutcome(automation_status, event_blocker, blocked_reason, missing_gates, produced_gates)
 
 
 def _run_execute_verification(
