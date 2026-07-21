@@ -520,6 +520,49 @@ def test_whitespace_only_difference_is_not_covered_by_a_trimmed_owned_entry(tmp_
     assert not any("push" in c or "create" in c for c in run.calls)
 
 
+def test_whitespace_padded_owned_entry_does_not_falsely_cover_a_different_clean_path(tmp_path):
+    # The DANGEROUS direction of the adversarial case: the admitted scope is "a.py "
+    # (trailing space — e.g. a sloppily-authored owned_paths entry), but the branch
+    # actually changed the DIFFERENT file "a.py" (no trailing space). If the coverage
+    # check trimmed the OWNED side, "a.py " would collapse to "a.py" and wrongly approve
+    # a path that was never actually admitted — "approves the wrong path". Un-stripped,
+    # "a.py" != "a.py " and the change must be rejected as uncovered.
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py "))
+    assert result is None
+    assert evidence.terminal_state == "no_effect_terminal_proven"
+    assert "owned-scope-exceeded" in evidence.evidence_reference
+    assert "a.py" in evidence.evidence_reference
+    assert not any("push" in c or "create" in c for c in run.calls)
+
+
+def test_byte_identical_weird_filename_is_approved_end_to_end(tmp_path):
+    # The legitimate-flow counterpart: a real whitespace-padded filename that IS
+    # byte-identical between the branch diff and the admitted owned_paths (the normal
+    # live-flow shape, where the coordinator derives owned_paths from the SAME diff)
+    # must be approved and reach push — proving the fix doesn't just close the escape,
+    # it also stops false-rejecting a legitimate weird filename.
+    weird = "  padded.py  "
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), f"{weird}\0", 0),
+        (("log",), "subject", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 0),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning(weird))
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+
+
 def test_broker_and_coordinator_diff_derivation_agree_byte_for_byte_on_weird_paths(tmp_path):
     # The load-bearing coupling itself, proven directly: feed the SAME raw `-z` stdout
     # (including a whitespace-padded and a newline-embedded path) through BOTH the

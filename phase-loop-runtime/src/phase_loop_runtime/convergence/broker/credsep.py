@@ -144,8 +144,18 @@ class GitHubBrokerAdapter:
         # A changed path is within the admitted scope if it equals an owned entry or sits
         # under an owned directory entry. Directory ownership (owned entry is a parent
         # dir) is honored so an over-specified owned scope never false-rejects.
+        #
+        # agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR sharpening): only
+        # `.rstrip("/")` a trailing directory separator — never `.strip()` general
+        # whitespace off an owned entry. `path` is now the byte-exact `-z`-derived diff
+        # path (never trimmed); trimming `owned` here would break that symmetry in BOTH
+        # directions: an owned entry with incidental trailing whitespace ("a.py ") would
+        # wrongly cover a DIFFERENT actually-changed file ("a.py") — approving the wrong
+        # path — and a legitimate whitespace/newline filename that IS byte-identical
+        # between the diff and the owned scope would be false-rejected by an asymmetric
+        # trim on only one side.
         for owned in owned_paths:
-            owned = owned.strip().rstrip("/")
+            owned = owned.rstrip("/")
             if owned and (path == owned or path.startswith(owned + "/")):
                 return True
         return False
