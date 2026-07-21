@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-07-21
+
+### `verification.json` records the phase alias on the train re-verify path (#236)
+
+Follow-up to #235 (ah#85b), which threaded the live run alias into `run_verification`
+on the execute path. The train re-verify path (`train_runner._live_reverify`) also calls
+`run_verification` but passed no `phase_alias`, so `verification.json` fell back to
+`current_phase` → `'unknown'` even though a phase alias was already resolved in scope. It
+now threads the resolved (reconcile-recomputed) phase, so a re-verify records the actual
+phase rather than `'unknown'`. (Consiliency/agent-harness#236)
+
+### Panel/advisor-board: a codex review is no longer mislabeled DEGRADED for discussing auth (#252)
+
+`_classify_leg` scanned a leg's full transcript for auth-error signatures; because the
+codex leg's `log_text` includes its stdout+stderr (codex echoes its own review onto
+stderr), a clean, conforming codex review whose prose merely *discusses* "unauthorized" /
+"rate limit exceeded" (routine in security/auth reviews) was forced to `DEGRADED` and the
+operator told to discard a valid review. A conforming **review-mode** `rc==0` verdict is
+now classified `OK` before the auth scan (its terminal-verdict predicate is one a
+de-authed CLI can't fake). Advisory mode keeps auth-scan-first (its weaker length
+predicate could otherwise fail open on a real banner), preserving the #63 behavior.
+Fail-closed for genuine auth failures is unchanged. (Consiliency/agent-harness#252)
+
 ### Dual-declared run-family options survive before the subcommand (#233)
 
 Follow-up to the argparse copy-back clobber fixed in #84/#232. Those PRs added
@@ -274,6 +297,15 @@ common subparser arg now carries `SUPPRESS` (matching `--closeout-mode`/`--pipel
 `--lane-scheduler`), so a value placed before the subcommand survives — an explicit
 `--phase` reaches the dispatcher and the requested phase runs. The dispatcher was correct;
 this is a CLI-only fix.
+
+### Panel/CR grok leg no longer errors on default runs — effort clamped to grok's CLI ceiling (#222)
+
+The panel / advisor-board grok leg hard-coded `--reasoning-effort max` on the default
+path, but grok's CLI accepts only `high | medium | low` and rejects `max`, so the grok
+leg **errored on every default panel/CR run** (it never contributed a review). The
+panel-path effort is now clamped to grok's ceiling (`max → high`), so the grok leg runs
+at its real maximum instead of failing. Sibling of the grokexec-path clamp in #224.
+(Consiliency/agent-harness#222)
 
 ### grokexec leg clamps `--reasoning-effort` to grok's CLI subset (#224)
 
