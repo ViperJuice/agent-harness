@@ -186,12 +186,14 @@ def redact_diagnostics_metadata_only(
 
 
 def apply_diagnostics_redaction(validation_payload: dict[str, Any]) -> dict[str, Any]:
-    """agent-harness#266 (source redaction).
+    """agent-harness#266 (source redaction); agent-harness#243 CR recheck (whole-summary
+    redaction, closing the ``suite_command`` sibling-field gap).
 
     SSOT wrapper around :func:`redact_diagnostics_metadata_only` for every call site that
-    stores a ``VerificationArtifactValidation.to_json()`` payload into a PERSISTED copy —
-    ``runner_verification`` (and everything merged/derived from it: ``launch.json``,
-    ``child_automation``, the run ledger event), the hotfix ``artifact_validation`` ledger
+    stores a ``VerificationArtifactValidation.to_json()`` payload — or a larger PERSISTED
+    validation *summary* that embeds one, e.g. ``runner_verification`` (see
+    ``runner._run_execute_verification``) — into a PERSISTED copy: ``launch.json``,
+    ``child_automation``, the run ledger event, the hotfix ``artifact_validation`` ledger
     event and CLI payload, and the closeout record. Each of those copies used to redact
     independently (or, before agent-harness#266, not at all) -- a prior round redacted ONLY
     the rebuilt closeout record, leaving ``runner_verification`` (and everything derived from
@@ -204,23 +206,70 @@ def apply_diagnostics_redaction(validation_payload: dict[str, Any]) -> dict[str,
     those derived copies at once instead of re-implementing the same redaction ad hoc (or
     forgetting it) at each downstream call site.
 
+    A cross-vendor CR recheck (codex, agent-harness#243) found that round only rewrote the
+    NESTED ``diagnostics`` list, leaving a SIBLING field -- ``runner_verification`` /
+    ``summary["suite_command"]``, persisted right BESIDE the redacted diagnostic -- carrying
+    the SAME secret argv raw: for a failing suite, ``suite_command`` is the exact command that
+    produced the (now-redacted) diagnostic. This function now walks the WHOLE payload
+    recursively (not just a top-level ``diagnostics`` key): every nested ``diagnostics`` list,
+    at any depth, still gets the structured metadata-only treatment above; every OTHER field
+    whose name looks command/argv-shaped (``suite_command``, ``install_argv``, ``commands``,
+    …) is separately checked against the SAME ``_FORBIDDEN_METADATA_PATTERNS`` matcher (via
+    ``_iter_leaf_strings``, so a split argv flag/value pair is caught the same way it is inside
+    a diagnostic) and, on a match, replaced wholesale with a ``"<redacted:<field>>"`` placeholder
+    -- dropping the value rather than trying to scrub just the matched substring, since a
+    command argv has no safe partial-redaction shape. The command/argv name heuristic is
+    intentionally narrow (not "scan every field") so it never touches unrelated structural
+    fields that legitimately look secret-shaped out of context -- e.g. ``artifact_path`` /
+    ``verification_artifact_path`` under a local checkout rooted at ``/home/<user>/...`` would
+    otherwise spuriously match the ``absolute_private_path`` pattern.
+
     Mutates and returns ``validation_payload`` in place (mirrors ``dict.update`` ergonomics of
-    the call sites this replaces). A payload with no ``diagnostics`` key, or an empty/falsy
-    one, is returned unchanged. Idempotent: an already metadata-only-redacted diagnostic list,
-    re-run through this function, is a no-op -- an already-redacted diagnostic dict carries no
-    secret-shaped free text (only safe structural fields plus a short redaction-reason label),
-    so it never re-matches a forbidden-metadata pattern and is copied through unchanged (a
-    ``force_all`` re-application only re-shapes an already-safe dict, never reintroduces raw
-    text). ``PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all`` (operator override) forces every
-    diagnostic in the payload to metadata-only regardless of a pattern match.
+    the call sites this replaces). A payload with no matching fields is returned unchanged.
+    Idempotent: an already metadata-only-redacted diagnostic list, or an already-``<redacted:…>``
+    sibling field, re-run through this function, is a no-op -- neither carries secret-shaped
+    free text anymore, so neither re-matches a forbidden-metadata pattern and both are copied
+    through unchanged (a ``force_all`` re-application only re-shapes an already-safe diagnostic
+    dict, never reintroduces raw text). ``PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all`` (operator
+    override) forces every diagnostic in the payload to metadata-only regardless of a pattern
+    match; it does not force-redact sibling command fields (those are already default-on
+    pattern-triggered, independent of the diagnostics-specific operator override).
     """
-    diagnostics = validation_payload.get("diagnostics")
-    if diagnostics:
-        validation_payload["diagnostics"] = redact_diagnostics_metadata_only(
-            diagnostics,
-            force_all=(os.environ.get("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", "").strip().lower() == "all"),
-        )
+    force_all = os.environ.get("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", "").strip().lower() == "all"
+    _redact_validation_payload_in_place(validation_payload, force_all=force_all)
     return validation_payload
+
+
+_COMMAND_FIELD_NAME_HINTS = ("command", "argv", "cmd")
+
+
+def _looks_like_command_field(key: str) -> bool:
+    """Narrow, name-based heuristic for "this sibling field holds a command/argv value" —
+    see the ``apply_diagnostics_redaction`` docstring for why this is intentionally NOT a
+    blanket scan of every field (that would also catch, and wrongly redact, legitimate
+    absolute path fields like ``artifact_path``/``log_path``).
+    """
+    lowered = key.lower()
+    return any(hint in lowered for hint in _COMMAND_FIELD_NAME_HINTS)
+
+
+def _redact_validation_payload_in_place(payload: Any, *, force_all: bool) -> None:
+    """Recursive worker for :func:`apply_diagnostics_redaction`. No-op on a non-dict input."""
+    if not isinstance(payload, dict):
+        return
+    diagnostics = payload.get("diagnostics")
+    if diagnostics:
+        payload["diagnostics"] = redact_diagnostics_metadata_only(diagnostics, force_all=force_all)
+    for key, value in payload.items():
+        if key == "diagnostics":
+            continue  # already narrowed to metadata-only, per-entry, above.
+        if isinstance(value, dict):
+            _redact_validation_payload_in_place(value, force_all=force_all)
+        elif isinstance(value, (list, tuple)) and any(isinstance(item, dict) for item in value):
+            for item in value:
+                _redact_validation_payload_in_place(item, force_all=force_all)
+        elif _looks_like_command_field(key) and _forbidden_metadata_kind(value) is not None:
+            payload[key] = f"<redacted:{key}>"
 
 
 def _scalar_text(value: Any) -> str | None:
@@ -321,7 +370,11 @@ def _iter_leaf_strings(value: Any) -> Iterator[str]:
         yield scalar
 
 
-def _forbidden_metadata_kind(payload: Mapping[str, Any]) -> str | None:
+def _forbidden_metadata_kind(payload: Any) -> str | None:
+    # Any -- not just Mapping -- since callers (e.g. the sibling command-field scan in
+    # ``_redact_validation_payload_in_place``) also test a bare scalar or list/tuple value
+    # (a field's value, not the whole enclosing dict); ``_iter_leaf_strings`` already handles
+    # every shape.
     leaves = list(_iter_leaf_strings(payload))
     for kind, pattern in _FORBIDDEN_METADATA_PATTERNS:
         for leaf in leaves:

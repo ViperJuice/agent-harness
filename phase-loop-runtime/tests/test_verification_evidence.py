@@ -1025,6 +1025,65 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         out = apply_diagnostics_redaction(payload)
         self.assertEqual(out, {"ok": True, "code": "ok", "diagnostics": []})
 
+    def test_apply_diagnostics_redaction_scrubs_sibling_suite_command_field(self):
+        # agent-harness#243 CR recheck (codex): a secret-bearing SIBLING command field --
+        # persisted BESIDE (not inside) the ``diagnostics`` list -- must be redacted too, at
+        # this same SSOT call. Unit-level coverage of the ``redaction`` module directly
+        # (test_run_execute_verification_redacts_suite_command_sibling_field_at_source above
+        # covers the full runner.py egress path end to end).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "ok": False,
+            "code": "nonzero_exit",
+            "suite_command": [sys.executable, "-c", "print('token=AKIAIOSFODNN7EXAMPLEKEY')"],
+            "verification_artifact_path": "/home/example/.phase-loop/runs/x/verification.json",
+            "diagnostics": [
+                {
+                    "role": "suite", "index": None,
+                    "argv": [sys.executable, "-c", "print('token=AKIAIOSFODNN7EXAMPLEKEY')"],
+                    "exit_code": 1, "failure_kind": "nonzero_exit",
+                    "raw_tail": "token=AKIAIOSFODNN7EXAMPLEKEY\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], "<redacted:suite_command>")
+        self.assertTrue(out["diagnostics"][0]["redacted"])
+        self.assertNotIn("raw_tail", out["diagnostics"][0])
+        self.assertNotIn("argv", out["diagnostics"][0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        # A legitimate absolute path field is NOT touched even though it lives under
+        # ``/home/...`` -- the sibling-field scan is name-scoped to command/argv-shaped
+        # fields, not a blanket scan of every field's leaf strings.
+        self.assertEqual(out["verification_artifact_path"], "/home/example/.phase-loop/runs/x/verification.json")
+
+    def test_apply_diagnostics_redaction_leaves_non_secret_suite_command_unchanged(self):
+        # Non-secret command strings must survive redaction untouched.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {"ok": True, "code": "ok", "suite_command": [sys.executable, "-m", "pytest", "-q"]}
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-q"])
+
+    def test_apply_diagnostics_redaction_scrubs_nested_suite_command_at_any_depth(self):
+        # The whole-summary walk must find a command-shaped sibling field even when it is
+        # nested a level down (e.g. a ``runner_verification`` copy embedded inside a larger
+        # ``child_automation`` dict), not just at the payload's own top level.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "automation_status": "complete",
+            "runner_verification": {
+                "ok": False,
+                "suite_command": ["tool", "--password", "SUPERSECRETVALUE123"],
+            },
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["runner_verification"]["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn("SUPERSECRETVALUE123", json.dumps(out))
+
     def test_redact_diagnostics_metadata_only_scrubs_double_quoted_secret(self):
         # agent-harness#243 CR (defect 1): the pre-fix matcher tested a json.dumps(...)
         # serialization of the diagnostic. json.dumps backslash-escapes an embedded double
@@ -1490,6 +1549,85 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertTrue(diag["redacted"])
             self.assertEqual(diag["redaction_reason"], "operator_forced")
             self.assertNotIn("raw_tail", diag)
+
+    def test_run_execute_verification_redacts_suite_command_sibling_field_at_source(self):
+        # agent-harness#243 CR recheck (codex): the prior source-redaction round narrowed the
+        # NESTED ``diagnostics`` list but left a SIBLING field -- ``suite_command``, persisted
+        # right BESIDE the redacted diagnostic in the same summary -- carrying the RAW secret
+        # argv. For a FAILING suite, ``suite_command`` is the exact secret-bearing argv used to
+        # produce the diagnostic, so the secret still egressed through launch.json/state --json/
+        # child_automation/events.jsonl despite the nested diagnostic itself being clean. The
+        # prior regression test (test_run_execute_verification_redacts_secret_at_source_...)
+        # missed this because it put the secret in a PLAN command while using a BENIGN suite --
+        # here the secret lives in the suite command itself.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            suite_snippet = f"import sys; print('api_key={secret}'); sys.exit(1)"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, {suite_snippet!r}]\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            benign_command = f"{sys.executable} -c \"print('benign command output')\""
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{benign_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed on the suite stage.
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            suite_diagnostics = [d for d in result["validation"]["diagnostics"] if d.get("role") == "suite"]
+            self.assertEqual(len(suite_diagnostics), 1)
+            suite_diag = suite_diagnostics[0]
+            self.assertTrue(suite_diag["redacted"])
+            self.assertNotIn("raw_tail", suite_diag)
+            self.assertNotIn("argv", suite_diag)
+
+            # The SIBLING suite_command field -- carrying the identical secret argv -- must
+            # ALSO be redacted at the source, not just the nested diagnostic.
+            self.assertNotIn(secret, json.dumps(result.get("suite_command")))
+            self.assertNotIn(secret, json.dumps(result))
+
+            # verification.log on disk is the intentional local source of truth -- stays FULL.
+            log_text = (run_dir / "verification.log").read_text(encoding="utf-8")
+            self.assertIn(secret, log_text)
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
 
 if __name__ == "__main__":

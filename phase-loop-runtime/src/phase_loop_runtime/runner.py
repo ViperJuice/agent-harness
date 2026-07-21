@@ -6190,17 +6190,6 @@ def _run_execute_verification(
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
     validation = validate_verification_artifact(artifact_path)
     validation_json = validation.to_json()
-    # agent-harness#266 (source redaction): this ``validation_json`` becomes
-    # ``runner_verification["validation"]`` below, which is then merged verbatim into
-    # ``launch.json`` (``merge_launch_metadata`` at the launch-action call site) and copied into
-    # ``child_automation`` -- both of which are read back RAW by ``inspect_state()`` /
-    # ``phase-loop state --json`` and by the run ledger event a repair prompt directs an agent
-    # to inspect. Redact any secret/PII-shaped diagnostic to metadata-only HERE, at the single
-    # point ``validation.to_json()`` is first captured into a payload that gets persisted, so
-    # every derived copy (launch.json, child_automation, the ledger event) inherits the redacted
-    # form instead of each downstream call site needing its own redaction pass (or forgetting
-    # one). The on-disk ``verification.log`` is untouched -- only this egress copy is narrowed.
-    validation_json = apply_diagnostics_redaction(validation_json)
     summary = {
         "ok": validation.ok,
         "code": validation.code,
@@ -6213,6 +6202,21 @@ def _run_execute_verification(
         "validation": validation_json,
         "run_id": result.run_id,
     }
+    # agent-harness#266 (source redaction) / agent-harness#243 CR recheck (whole-summary
+    # redaction): this ``summary`` becomes ``runner_verification`` below, which is then merged
+    # verbatim into ``launch.json`` (``merge_launch_metadata`` at the launch-action call site)
+    # and copied into ``child_automation`` -- both of which are read back RAW by
+    # ``inspect_state()`` / ``phase-loop state --json`` and by the run ledger event a repair
+    # prompt directs an agent to inspect. Redact any secret/PII-shaped value to metadata-only
+    # (or a ``<redacted:field>`` placeholder) HERE, at the single point this whole persisted
+    # summary is first assembled, so every derived copy (launch.json, child_automation, the
+    # ledger event) inherits the redacted form instead of each downstream call site needing its
+    # own redaction pass (or forgetting one). This covers BOTH the nested
+    # ``validation["diagnostics"]`` list AND sibling command/argv-shaped fields -- most notably
+    # ``suite_command``, which a prior round left unredacted right beside the redacted
+    # diagnostic even though, for a failing suite, it carries the IDENTICAL secret argv. The
+    # on-disk ``verification.log`` is untouched -- only this egress copy is narrowed.
+    summary = apply_diagnostics_redaction(summary)
     if not validation.ok:
         summary["blocker_summary"] = f"Runner-owned verification failed: {validation.code}"
     return summary
