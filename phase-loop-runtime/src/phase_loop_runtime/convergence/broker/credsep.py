@@ -107,20 +107,37 @@ class GitHubBrokerAdapter:
         # file paths, or None on any git failure (caller fails closed). check=False so a
         # diff error is a controlled fail-closed, not a raise.
         #
-        # Path-format contract: this and the #201 coordinator BOTH use `git diff
-        # --name-only`, so paths are quoted identically on both sides (a non-ASCII path is
-        # C-quoted the same way in `owned_paths` and here) and compare equal. A `-z`
-        # NUL-split on BOTH sides would be more robust to quoting/newlines-in-names (a
-        # broker-hardening follow-up). NOTE: a definitive OR transient diff failure records a
-        # per-triple no-effect terminal that later replays (see execute), so recovering from
-        # a transient failure needs a new head_sha — a liveness cost, never an epoch brick.
+        # agent-harness#250 (N1/N4): `-z --no-renames`, NOT plain `--name-only`. `-z`
+        # NUL-delimits output (no `core.quotepath` C-quoting of non-ASCII paths, no
+        # newline-in-filename ambiguity) — this and the #201 coordinator's
+        # `_prebuilt_owned_paths` MUST use the identical `-z --no-renames` command and
+        # NUL-split so the two sides never desync (a desync false-rejects/under-rejects and
+        # the reject is STICKY: it records a per-triple no-effect terminal that replays).
+        # `--no-renames` closes the rename-escape: plain `--name-only` reports only a
+        # rename's DESTINATION, so `git mv unowned/x owned/y` shows only `owned/y` — the
+        # deleted `unowned/x` source is hidden and the coverage check never sees it. With
+        # `--no-renames` both endpoints are reported as an add + a delete, so the unowned
+        # source is caught by the coverage check below.
         completed = self.run(
-            ["git", "-C", str(self.repo_path), "diff", "--name-only", f"origin/{base}...{head_sha}"],
+            ["git", "-C", str(self.repo_path), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...{head_sha}"],
             capture_output=True, text=True,
         )
         if completed.returncode:
             return None
-        return frozenset(p.strip() for p in completed.stdout.splitlines() if p.strip())
+        return frozenset(p for p in completed.stdout.split("\0") if p)
+
+    # agent-harness#250 (N2): `base` is interpolated into `origin/{base}...{head_sha}` with
+    # no validation. Not shell injection (argv, not shell), but git REVISION syntax is
+    # accepted unchecked: `base="main~5"` widens the diff (still fails closed via
+    # uncovered-paths, so at worst a spurious reject) and `base == request.branch` shrinks
+    # the checked set to nothing (the empty-diff reject below now catches that case too,
+    # but reject it explicitly and early rather than lean on that side effect). Reject any
+    # revision-syntax token or a base identical to the branch being published.
+    _BASE_REVISION_SYNTAX_TOKENS = ("~", "^", "@{", "..")
+
+    @classmethod
+    def _base_invalid(cls, base: str, branch: str) -> bool:
+        return base == branch or any(tok in base for tok in cls._BASE_REVISION_SYNTAX_TOKENS)
 
     @staticmethod
     def _covered_by_owned(path: str, owned_paths) -> bool:
@@ -159,36 +176,53 @@ class GitHubBrokerAdapter:
         # permanent AND poison the repo's broker epoch (evidence.epoch_blocked); a purely-
         # local read-only git-diff failure must not permanently brick a repo's publishing.
         # They differ only by the detail string:
+        #   * base is revision-syntax/self-referential -> no_effect_terminal_proven (invalid-base)
         #   * diff error                       -> no_effect_terminal_proven (diff-failed)
         #   * branch changed uncovered paths   -> no_effect_terminal_proven (scope exceeded)
-        #   * owned claims changes the branch  -> no_effect_terminal_proven (empty-diff
-        #     doesn't have vs base (drift/game)   mismatch), catching base==head gaming.
+        #   * branch has NO diff vs base       -> no_effect_terminal_proven (empty-diff);
+        #     (whether or not owned_paths is empty) catches drift/base==head gaming AND
+        #     an empty-owned+empty-diff request that would otherwise fall through every
+        #     reject and reach push with nothing meaningful admitted (agent-harness#250 N3).
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            # agent-harness#250 (N2): reject git revision syntax (`~ ^ @{ ..`) or a base
+            # identical to the branch BEFORE diffing — a widened/collapsed diff is never
+            # computed against an ungoverned base.
+            if self._base_invalid(request.base, request.branch):
+                return self._scope_rejected(request, "owned-scope-invalid-base")
             branch_diff = self._branch_diff_paths(request.base, request.head_sha)
             if branch_diff is None:
                 return self._scope_rejected(request, "owned-scope-diff-failed")
             uncovered = sorted(p for p in branch_diff if not self._covered_by_owned(p, request.owned_paths))
             if uncovered:
                 return self._scope_rejected(request, "owned-scope-exceeded:" + ",".join(uncovered[:20]))
-            if not branch_diff and request.owned_paths:
-                # The admitted scope claims owned changes, but the branch has NO diff vs
-                # base — the admission does not match the mutation (drift, or a gamed
-                # base ref such as base==head). Fail closed.
+            if not branch_diff:
+                # Nothing to publish vs base — whether or not owned_paths claims changes,
+                # an empty diff must never reach push/PR-create. Fail closed.
                 return self._scope_rejected(request, "owned-scope-empty-diff")
         origin_url = self._origin_url()          # ONE canonical url, used explicitly everywhere
         origin_repo = self._slug_for(origin_url) # validate allow-list + derive the gh slug from the SAME url
         ref = build_non_force_branch_ref(request.branch)
         # Push + ls-remote target the EXPLICIT validated url, never the `origin` alias,
         # so remote.origin.pushurl / url.*.pushInsteadOf cannot redirect the mutation.
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, ref], capture_output=True, text=True)
+        # agent-harness#250 (N5): push the EXACT validated head_sha to the branch ref
+        # (`<head_sha>:refs/heads/<branch>`), not the mutable `refs/heads/<branch>` — the
+        # local branch ref could advance between the line-154 HEAD==head_sha check and this
+        # push (concurrent writer in the same workspace); pinning the source side means the
+        # push can only ever publish the validated commit, never whatever the ref points to
+        # by the time this runs.
+        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
         # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
         # Derive a deterministic title from the branch HEAD's commit subject and pass
         # the request's pr_body verbatim (empty body is valid once --title is present).
-        # --head pins the branch explicitly so gh never infers a wrong head.
+        # --head pins the branch explicitly so gh never infers a wrong head. agent-harness#250
+        # (N6): --base pins the PR's base explicitly too — without it `gh` opens the PR
+        # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
+        # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
+        # diff this adapter scope-checked (vs request.base).
         title = self._output("log", "-1", "--format=%s") or request.branch
-        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--title", title, "--body", request.pr_body or title]
+        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
         if created.returncode: return self._ambiguous(request, "pr-unconfirmed")

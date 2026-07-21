@@ -242,9 +242,20 @@ def _prebuilt_owned_paths(
     merge-base) so the published PR's owned-paths reflect exactly the committed
     work.  Stubbable seam: inject ``_prebuilt_owned_paths_fn`` into
     :func:`run_train`.
+
+    agent-harness#250 (N1/N4): ``-z --no-renames``, NOT plain ``--name-only``, and this
+    MUST stay byte-for-byte identical to the broker's own re-derivation in
+    ``GitHubBrokerAdapter._branch_diff_paths`` (``convergence/broker/credsep.py``). ``-z``
+    NUL-delimits output (no ``core.quotepath`` C-quoting, no newline-in-filename
+    ambiguity); ``--no-renames`` reports a rename as an add + a delete instead of hiding
+    the source under the destination, so a branch that renames an UNOWNED file into this
+    node's owned tree still surfaces the unowned source path here (the broker's own
+    coverage check then catches it). Changing this diff command without changing the
+    broker's in lockstep desyncs the two derivations — a false owned-scope-exceeded reject
+    that STICKS (the broker records a per-triple no-effect terminal that replays).
     """
     completed = subprocess.run(
-        ["git", "-C", str(workspace), "diff", "--name-only", f"origin/{base}...HEAD"],
+        ["git", "-C", str(workspace), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...HEAD"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -257,7 +268,7 @@ def _prebuilt_owned_paths(
             f"could not compute prebuilt owned paths vs 'origin/{base}': "
             f"{completed.stderr.strip() or 'git diff failed'}"
         )
-    owned = [p.strip() for p in completed.stdout.splitlines() if p.strip()]
+    owned = [p for p in completed.stdout.split("\0") if p]
     if not owned:
         # A prebuilt node that is ahead-of-base yet has no net file changes has nothing
         # to publish — fail closed rather than admit an empty scope.

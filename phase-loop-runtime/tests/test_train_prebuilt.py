@@ -412,6 +412,49 @@ class TestPrebuiltPreflightRealGit:
         paths = _prebuilt_owned_paths(repo, "main")
         assert sorted(paths) == ["a.py", "b.py"]
 
+    # --- agent-harness#250 (N1/N4): `-z --no-renames` against a REAL git repo, proving
+    # the rename source is surfaced (not hidden behind the destination) and a legit
+    # within-scope rename still lists both endpoints identically to the broker's own
+    # `_branch_diff_paths` re-derivation (the two MUST agree byte-for-byte).
+    def test_rename_of_a_file_surfaces_both_source_and_destination(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        (repo / "unowned").mkdir()
+        (repo / "unowned" / "x.py").write_text("x\n")
+        _git(repo, "add", "unowned/x.py")
+        _git(repo, "commit", "-q", "-m", "add unowned file")
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "fetch", "-q", "origin")
+
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        (repo / "owned").mkdir()
+        _git(repo, "mv", "unowned/x.py", "owned/x.py")
+        _git(repo, "commit", "-q", "-m", "move unowned file into owned/")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # Both the destination AND the source must be present — a plain `--name-only`
+        # (rename-detecting) diff would report ONLY "owned/x.py", hiding the unowned
+        # source from any downstream coverage check.
+        assert sorted(paths) == ["owned/x.py", "unowned/x.py"]
+
+    def test_rename_within_the_same_owned_directory_lists_both_endpoints(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        (repo / "owned").mkdir()
+        (repo / "owned" / "old.py").write_text("x\n")
+        _git(repo, "add", "owned/old.py")
+        _git(repo, "commit", "-q", "-m", "add owned file")
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "fetch", "-q", "origin")
+
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        _git(repo, "mv", "owned/old.py", "owned/new.py")
+        _git(repo, "commit", "-q", "-m", "rename within owned/")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # A within-scope rename lists BOTH endpoints (delete + add), not just the dest —
+        # matching the broker side so a directory-owned entry covers both and the
+        # coordinator never derives a scope the broker would then false-reject.
+        assert sorted(paths) == ["owned/new.py", "owned/old.py"]
+
 
 # ---------------------------------------------------------------------------
 # 6. Dirty prebuilt workspace fails preflight (via the default preflight path)

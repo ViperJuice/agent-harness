@@ -41,9 +41,10 @@ def _base_responses():
     return [
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        # agent-harness#202: broker's server-authoritative diff. _request() owns ("a.py",),
-        # so the branch changing only a.py stays within the admitted scope.
-        (("diff", "--name-only"), "a.py\n", 0),
+        # agent-harness#202/#250: broker's server-authoritative diff, now `-z --no-renames`
+        # (NUL-delimited). _request() owns ("a.py",), so the branch changing only a.py
+        # stays within the admitted scope.
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
         (("log",), "commit subject line", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -107,7 +108,7 @@ def test_branch_change_outside_owned_scope_is_rejected_before_push(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "a.py\nb.py\n", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0b.py\0", 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -127,7 +128,7 @@ def test_nonempty_owned_but_empty_branch_diff_is_rejected(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "", 0),  # branch changed nothing vs base
+        (("diff", "--name-only", "-z", "--no-renames"), "", 0),  # branch changed nothing vs base
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -153,7 +154,7 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "a.py\nb.py\n", 0),  # b.py outside owned ("a.py",)
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0b.py\0", 0),  # b.py outside owned ("a.py",)
     ])
     service = BrokerService(
         _AdmitAll(),
@@ -187,7 +188,7 @@ def test_diff_failure_fails_closed_no_effect_no_push(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "", 1),
+        (("diff", "--name-only", "-z", "--no-renames"), "", 1),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py"))
     assert result is None
@@ -201,7 +202,7 @@ def test_directory_owned_entry_covers_changed_files_under_it(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "src/pkg/mod.py\nsrc/pkg/other.py\n", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "src/pkg/mod.py\0src/pkg/other.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -220,7 +221,7 @@ def test_broker_re_diffs_against_the_request_base(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "a.py\n", 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
         (("log",), "subject", 0),
         (("get-url",), "https://github.com/owner/repo.git", 0),
         (("push",), "", 0),
@@ -273,7 +274,7 @@ def test_unresolvable_origin_fails_closed(tmp_path):
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), _HEAD, 0),
-        (("diff", "--name-only"), "a.py\n", 0),  # #202 scope check passes; origin fails after
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),  # #202 scope check passes; origin fails after
         (("get-url",), "not-a-git-url", 0),
     ])
     try:
@@ -347,3 +348,129 @@ def test_push_and_lsremote_bind_to_explicit_origin_url_not_alias(tmp_path):
     lsrem = next(c for c in run.calls if "ls-remote" in c)
     assert origin in push and "origin" not in push[push.index("push") + 1:], f"push not bound to explicit url: {push!r}"
     assert origin in lsrem and "origin" not in lsrem[lsrem.index("ls-remote") + 1:], f"ls-remote not bound to explicit url: {lsrem!r}"
+
+
+# --- agent-harness#250 (N1/N4): `-z --no-renames` closes the rename-escape where a
+# rename's DESTINATION is reported but its unowned SOURCE is hidden. ---
+def test_rename_of_unowned_file_into_owned_scope_is_caught(tmp_path):
+    # `git mv unowned/x.py owned/y.py` with plain --name-only reports only owned/y.py
+    # (destination), passing the coverage check. With --no-renames both endpoints are
+    # reported as an add + a delete, so the unowned source must be caught here.
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "owned/y.py\0unowned/x.py\0", 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("owned"))
+    assert result is None
+    assert evidence.terminal_state == "no_effect_terminal_proven"
+    assert "owned-scope-exceeded" in evidence.evidence_reference
+    assert "unowned/x.py" in evidence.evidence_reference
+    assert not any("push" in c or "create" in c for c in run.calls)
+
+
+def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
+    # A rename where BOTH endpoints sit under the owned tree must NOT be false-rejected:
+    # --no-renames reports it as delete(owned/old.py) + add(owned/new.py), and both are
+    # covered by the owned "owned" directory entry.
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "owned/new.py\0owned/old.py\0", 0),
+        (("log",), "subject", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 0),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("owned"))
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+
+
+# --- agent-harness#250 (N5): push the EXACT validated head_sha, not the mutable branch
+# ref — a ref-advance between the HEAD==head_sha check and the push must not be able to
+# publish unverified content. ---
+def test_push_targets_exact_head_sha_not_mutable_ref(tmp_path):
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    push = next(c for c in run.calls if "push" in c)
+    # The pushspec must be exactly "<head_sha>:refs/heads/<branch>" — pinning the SOURCE
+    # side of the refspec to the validated sha, never the bare mutable ref.
+    assert f"{_HEAD}:refs/heads/{_BRANCH}" in push, f"push not pinned to head_sha: {push!r}"
+    assert f"refs/heads/{_BRANCH}" not in push, f"push must not carry the bare mutable ref: {push!r}"
+
+
+# --- agent-harness#250 (N6): `gh pr create` must carry --base <request.base> so the PR's
+# actual base matches the base the broker scope-checked against. ---
+def test_pr_create_carries_explicit_base(tmp_path):
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("log",), "subject", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 0),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
+    create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
+    assert "--base" in create and create[create.index("--base") + 1] == "release/2.0", f"create lacks --base: {create!r}"
+
+
+# --- agent-harness#250 (N2): reject git revision syntax / a self-referential base
+# BEFORE diffing — fail closed through the existing no_effect_terminal_proven reject. ---
+@pytest.mark.parametrize("bad_base", ["main~5", "main^2", "main@{upstream}", "main..other", _BRANCH])
+def test_revision_syntax_or_self_referential_base_is_rejected(tmp_path, bad_base):
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        # No diff response registered: if the adapter attempted to diff on a bad base,
+        # _FakeRun would raise AssertionError("unexpected command") — proving the reject
+        # happens BEFORE the diff call, not just via a downstream scope check.
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base=bad_base))
+    assert result is None
+    assert evidence.terminal_state == "no_effect_terminal_proven"
+    assert evidence.evidence_reference == "owned-scope-invalid-base"
+    assert not any("push" in c or "diff" in c for c in run.calls)
+
+
+def test_valid_base_with_slash_is_not_rejected_by_the_guard(tmp_path):
+    # A legitimate non-default base (e.g. a release branch) must NOT trip the
+    # revision-syntax guard merely for containing a slash.
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "a.py\0", 0),
+        (("log",), "subject", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 0),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD}]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+
+
+# --- agent-harness#250 (N3): empty owned_paths AND empty branch diff must not reach
+# push — the pre-#250 guard only fired when owned_paths was non-empty. ---
+def test_empty_owned_and_empty_diff_does_not_reach_push(tmp_path):
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), _HEAD, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), "", 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning())  # owned_paths=()
+    assert result is None
+    assert evidence.terminal_state == "no_effect_terminal_proven"
+    assert evidence.evidence_reference == "owned-scope-empty-diff"
+    assert not any("push" in c or "create" in c for c in run.calls)
