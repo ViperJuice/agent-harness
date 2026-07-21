@@ -257,12 +257,26 @@ class GitHubBrokerAdapter:
         remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
         if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
         if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid"], cwd=self.repo_path, capture_output=True, text=True)
+        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid,baseRefName"], cwd=self.repo_path, capture_output=True, text=True)
         if listed.returncode: return self._ambiguous(request, "pr-read-failed")
         try:
             prs = json.loads(listed.stdout or "[]")
         except json.JSONDecodeError:
             return self._ambiguous(request, "pr-read-unparsable")
-        match = next((p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")), None)
-        if match is None: return self._ambiguous(request, "pr-head-unconfirmed")
+        # Head-only matching is not enough (agent-harness#250, cross-vendor CR, codex):
+        # GitHub allows a PR's base to be retargeted after creation, and a same-head PR
+        # could simply target a different base than the one scope-checked above. A PR
+        # matched on headRefOid alone could therefore be recorded as the successful
+        # effect of THIS request even though it no longer targets (or never targeted)
+        # request.base — silently bypassing the #202 owned-scope check, since a later
+        # branch-based merge would use whatever base the PR actually carries. Require
+        # BOTH headRefOid AND baseRefName to equal the request's before accepting the
+        # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
+        # genuinely exists at that head, so this is not a provable no-effect).
+        head_matches = [p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")]
+        match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
+        if match is None:
+            if head_matches:
+                return self._ambiguous(request, "pr-base-unconfirmed")
+            return self._ambiguous(request, "pr-head-unconfirmed")
         return PublishCommittedBranchResult(request.branch, request.head_sha, match["url"]), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", match["url"])

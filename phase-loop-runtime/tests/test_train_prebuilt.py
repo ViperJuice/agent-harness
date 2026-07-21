@@ -521,6 +521,54 @@ class TestPrebuiltPreflightRealGit:
         assert len(paths) == 1
         assert _os.fsencode(paths[0]) == invalid_bytes
 
+    # --- agent-harness#250 (cross-vendor CR, codex): a DOWNSTREAM consumer of the
+    # surrogate-escaped `_prebuilt_owned_paths` output re-encoded it with a strict
+    # (default utf-8) str.encode() when building the owned-path digest in
+    # `_default_build_admission`, raising UnicodeEncodeError on the very surrogates
+    # os.fsdecode produces for an invalid-UTF-8 filename byte -- so the LIVE publish
+    # path still crashed on an owned path git itself accepted. The fix swaps that
+    # encode() for os.fsencode (same surrogateescape policy as os.fsdecode), so it
+    # must not raise here and must produce a deterministic digest. ---
+    def test_default_build_admission_does_not_raise_on_invalid_utf8_owned_path(self, tmp_path: Path):
+        import os as _os
+        from types import SimpleNamespace
+
+        from phase_loop_runtime.train_runner import _default_build_admission
+
+        invalid_bytes = b"invalid-\xffbyte.py"
+        owned_paths = [_os.fsdecode(invalid_bytes)]
+        runtime = _make_runtime(broker_client=None)
+        node = SimpleNamespace(node_id="repo-a")
+
+        # Must NOT raise UnicodeEncodeError.
+        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
+        assert admission is not None
+        assert admission.approval_digest
+
+        # The digest must be deterministic for the same owned_paths (not a random
+        # per-call artifact of the surrogate handling).
+        admission2 = _default_build_admission(runtime, node, tmp_path, owned_paths)
+        assert admission.approval_digest == admission2.approval_digest
+
+    def test_default_build_admission_digest_unchanged_for_ascii_owned_paths(self, tmp_path: Path):
+        """os.fsencode(s) == s.encode('utf-8') for ordinary ASCII/UTF-8 paths, so this
+        fix must not change the digest (and therefore the approval) for the normal case."""
+        import hashlib
+        import os as _os
+        from types import SimpleNamespace
+
+        from phase_loop_runtime.train_runner import _default_build_admission
+
+        owned_paths = ["a.py", "src/pkg/mod.py"]
+        runtime = _make_runtime(broker_client=None)
+        node = SimpleNamespace(node_id="repo-a")
+
+        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
+
+        expected_owned_digest = hashlib.sha256(_os.fsencode("\0".join(owned_paths))).hexdigest()
+        assert expected_owned_digest == hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+        assert admission.approval_digest
+
 
 # ---------------------------------------------------------------------------
 # 6. Dirty prebuilt workspace fails preflight (via the default preflight path)

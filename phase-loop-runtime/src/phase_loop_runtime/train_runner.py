@@ -113,7 +113,15 @@ def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Pat
     factory = FencedAdmissionFactory()
     base = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True)
     base_sha = base.stdout.strip() or ("0" * 40)
-    owned_digest = hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+    # agent-harness#250 (cross-vendor CR, codex): owned_paths are surrogate-escaped
+    # strings from os.fsdecode (see _prebuilt_owned_paths), which can carry lone
+    # surrogates for an invalid-UTF-8 filename byte. A strict str.encode() raises
+    # UnicodeEncodeError on those surrogates, aborting the LIVE publish path on an
+    # owned path that git itself accepted. os.fsencode uses the same surrogateescape
+    # policy as os.fsdecode, so it round-trips losslessly back to the original bytes
+    # instead of raising. For ordinary ASCII/UTF-8 paths os.fsencode(s) == s.encode()
+    # (utf-8), so existing digests for normal paths are byte-for-byte unchanged.
+    owned_digest = hashlib.sha256(os.fsencode("\0".join(owned_paths))).hexdigest()
     approval = factory.approval(
         roadmap_digest=runtime.roadmap_digest,
         effective_code=owned_digest,
