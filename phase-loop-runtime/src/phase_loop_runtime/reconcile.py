@@ -790,7 +790,7 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
                 continue
             event_repo = Path(str(event_repo_raw)).resolve()
             event_roadmap = Path(str(event_roadmap_raw)).resolve()
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError, TypeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -805,6 +805,14 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         event_plan = payload.get("plan_path")
         if event_plan:
             try:
+                # ah#238 (codex CR follow-up): apply the SAME raw-string is_absolute() check
+                # used for repo/roadmap above to plan_path — a relative plan_path (e.g.
+                # "plans/x.md") is just as CWD-dependent, and a "~/x.md" plan_path would
+                # rebind through the current user's $HOME rather than being rejected as
+                # relative. Check on the RAW string, BEFORE expanduser()/resolve(), so a
+                # leading "~" is treated as relative here, full stop.
+                if not Path(str(event_plan)).is_absolute():
+                    continue
                 # Defense-in-depth (same crash class as the repo/roadmap guard above):
                 # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
                 # ValueError for an otherwise-well-typed string containing an embedded null
@@ -878,7 +886,7 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
                 continue
             event_repo = Path(str(event_repo_raw)).resolve()
             event_roadmap = Path(str(event_roadmap_raw)).resolve()
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError, TypeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -893,6 +901,14 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         event_plan = payload.get("plan_path")
         if event_plan and plan_path is not None:
             try:
+                # ah#238 (codex CR follow-up): apply the SAME raw-string is_absolute() check
+                # used for repo/roadmap above to plan_path — a relative plan_path (e.g.
+                # "plans/x.md") is just as CWD-dependent, and a "~/x.md" plan_path would
+                # rebind through the current user's $HOME rather than being rejected as
+                # relative. Check on the RAW string, BEFORE expanduser()/resolve(), so a
+                # leading "~" is treated as relative here, full stop.
+                if not Path(str(event_plan)).is_absolute():
+                    continue
                 # Defense-in-depth (same crash class as the repo/roadmap guard above):
                 # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
                 # ValueError for an otherwise-well-typed string containing an embedded null
