@@ -45,9 +45,15 @@ issues in `Consiliency/agent-harness`; phases reference issues rather than resta
   completeness) — deferred: no production roadmap declares `EC-<ALIAS>-<N>` IDs yet, so the
   enforce path has no production inputs. Revisit when a real roadmap adopts goal IDs.
 - **#248 fleet-wide IF-0-SANDBOX-1 external isolation** (spawn-cwd, live paths in prompts,
-  symlink-in-copy) — deferred: a large cross-vendor redesign (bwrap/container-level
-  isolation) defending a bar *no* vendor's review leg currently meets. Not driven by a
-  demonstrated threat.
+  full bwrap/container-level isolation) — deferred: a large cross-vendor redesign defending a
+  bar *no* vendor's review leg currently meets. **Caveat (surfaced by the v9 roadmap CR):** the
+  symlink-in-copy sub-case is NOT purely hypothetical — `launcher._stage_review_tree` copies
+  the review tree with `copytree(..., symlinks=True)` + `copy2(..., follow_symlinks=False)`, so
+  an absolute symlink in the repo is preserved into the staged tree and a write through it can
+  escape to the live/external target. That concrete fail-open is tracked as its own issue
+  (#259 — a minimal fail-closed symlink-containment slice), separate from the full #248
+  isolation redesign; it is intentionally NOT folded into this hardening roadmap to keep v9
+  converging.
 - Bulk-migrating the existing `specs/phase-plans-v1..v8` roadmaps to goal IDs — opt-in per
   roadmap by design; not a backlog item.
 - **This roadmap (v9) also opts OUT of `EC-<ALIAS>-<N>` goal IDs** — a conscious decision, not
@@ -98,18 +104,28 @@ issues in `Consiliency/agent-harness`; phases reference issues rather than resta
 These gates are the narrowest contracts that unblock downstream lanes/phases.
 `/claude-plan-phase` concretizes each (exact signature/format) when it plans the owning phase.
 
-1. **IF-0-BRK-1** — the NUL-delimited (`-z`) changed-path format shared by the broker
-   `GitHubBrokerAdapter._branch_diff_paths` and the coordinator
-   `train_runner._prebuilt_owned_paths`: both must emit/parse paths identically (with
-   `--no-renames` so a rename surfaces both endpoints) so the broker's coverage check and
-   the coordinator's owned-paths derivation cannot desync.
-2. **IF-0-PAR-1** — the shared re-check helper the delegated-child closeout path invokes so
-   the produced-gates + goal-coverage gates run at delegated completion exactly as on the
-   direct path (one function both callers use).
+1. **IF-0-BRK-1** — the NUL-delimited (`-z --no-renames`) changed-path format shared by the
+   broker `GitHubBrokerAdapter._branch_diff_paths` and the coordinator
+   `train_runner._prebuilt_owned_paths`. The freeze is filename **byte-identity**, not merely
+   symmetric parsing: both sides split on the NUL byte (`\0`), discard ONLY the terminal
+   empty element (trailing NUL), and do NOT `.strip()`/trim any path element — a filename may
+   legitimately carry leading/trailing whitespace or an embedded newline, and identically
+   trimming it on both sides would still let the scope comparison approve the wrong path.
+   `--no-renames` surfaces both endpoints of a rename. This guarantees the broker's coverage
+   check and the coordinator's owned-paths derivation cannot desync on any path.
+2. **IF-0-PAR-1** — the shared **preflight** helper both the direct path and the
+   lane-scheduler / work-unit dispatch path invoke, so the verification-evidence +
+   acceptance/goal-coverage PREFLIGHT gates run identically on every dispatch path (#244).
+3. **IF-0-PAR-2** — the shared **closeout** helper both the direct path and the
+   delegated-child completion path invoke, so the produced-gates + goal-coverage CLOSEOUT
+   gates run at delegated completion exactly as on the direct path (#245). This is a separate
+   gate family from IF-0-PAR-1: preflight gates `{verification, goal-coverage}` and closeout
+   gates `{produced-gates, goal-coverage}` sit at different lifecycle points, so they need two
+   helpers, not one.
 
-> IF-0-BRK-1 and IF-0-PAR-1 are the only *real* freezes (intra-phase, published day-1 so a
-> phase's lanes build against the same contract). The `IF-0-P1-1`, `IF-0-FAB-1`, and
-> `IF-0-FAV-1` tokens in those phases' `Produces` blocks are **synthetic phase-completion
+> IF-0-BRK-1, IF-0-PAR-1, and IF-0-PAR-2 are the only *real* freezes (intra-phase, published
+> day-1 so a phase's lanes build against the same contract). The `IF-0-P1-1`, `IF-0-FAB-1`,
+> and `IF-0-FAV-1` tokens in those phases' `Produces` blocks are **synthetic phase-completion
 > tokens** — they satisfy the roadmap's Produces↔gates reconciliation but freeze nothing and
 > have no downstream consumers (those phases' work is independent, no cross-phase freeze).
 
@@ -129,10 +145,19 @@ lanes, each fail-closed and CR-gated. #241 is a deferred lowest-priority lane.
 - [ ] #243: verification-evidence hardening beyond #209 — whole-artifact integrity check +
   closeout-diagnostic redaction, with a test proving a tampered/oversized artifact is
   rejected and diagnostics are redacted to metadata-only.
-- [ ] #231: grok is NOT `max_effort_planner_eligible` (narrow-reject, matching gemini/pi);
-  a test asserts grok is excluded from max-effort planner-of-record selection while still
-  usable as a panel/reviewer leg and as a non-max planner; the panel `_GROK_EFFORT` lookup
-  is hardened; a plain-English rationale note for reviewers/planners is added at the registry.
+- [ ] #231: `max_effort_planner_eligible("grok")` returns False (narrow-reject, matching
+  gemini/pi), via a capability signal DECOUPLED from run-level effort translation (e.g.
+  `planner_max_class`) so grok still honors an explicit `max` at its real ceiling (`high`)
+  for effort purposes while not being a max-CLASS planner-of-record. A test asserts
+  `max_effort_planner_eligible("grok") is False` and that grok remains usable as a
+  panel/reviewer leg and as a non-max planner (codex stays eligible). *Representational, not
+  runtime selection-gating:* `max_effort_planner_eligible` is consulted only in the effort
+  max→high fallback (`profiles.py:344`), never in `resolve_dispatch_decision`
+  (`capability_registry.py:762`), and grok is never the AUTOSEL default planner — so this
+  lane makes the eligibility signal honest, it does NOT add a dispatch-selection gate (moot).
+  The panel `_GROK_EFFORT` lookup is hardened to a `.get`-with-clamp (parity with
+  `_grok_cli_effort`); a plain-English rationale note for reviewers/planners is added at the
+  registry.
 - [ ] Full non-dotfiles suite green; each lane merged via cross-vendor CR + green CI.
 
 **Scope notes**
@@ -148,8 +173,10 @@ lanes, each fail-closed and CR-gated. #241 is a deferred lowest-priority lane.
 
 **Non-goals**
 - Any change that converts a fail-closed gate to fail-open.
-- #231 does NOT reduce any vendor's own maximum effort — it only bars grok from being
-  selected as the max-effort *planner-of-record* (where it would silently downgrade to `high`).
+- #231 does NOT reduce any vendor's own maximum effort — grok still runs at its real ceiling
+  (`high`) everywhere, including when an explicit `max` is requested. It only marks grok as
+  not a max-CLASS *planner-of-record* so the eligibility signal stops advertising a `max`
+  planning class grok cannot actually deliver. It does NOT add a dispatch-selection gate.
 
 **Key files**
 - phase-loop-runtime/src/phase_loop_runtime/reconcile.py (the two SL-2 breakglass gates — #238; NOT convergence/reconcile.py)
@@ -188,17 +215,25 @@ lane-scheduler + work-unit path (#244), and closeout gates are not re-checked at
 - [ ] #245: the produced-gates + goal-coverage closeout gates are re-checked when a
   delegated child completes; a test drives a delegated-child completion and asserts both
   gates evaluate (a missing gate → the same block as on the direct path).
-- [ ] The re-check is a single shared helper both the direct and delegated/scheduler paths
-  invoke (IF-0-PAR-1); no path-specific duplication that could drift.
+- [ ] Preflight parity is a shared PREFLIGHT helper both the direct and lane-scheduler/
+  work-unit paths invoke (IF-0-PAR-1); closeout parity is a *separate* shared CLOSEOUT helper
+  both the direct and delegated-child paths invoke (IF-0-PAR-2). Two helpers, not one — the
+  preflight gate family `{verification, goal-coverage}` and the closeout gate family
+  `{produced-gates, goal-coverage}` sit at different lifecycle points. No path-specific
+  duplication that could drift within either family.
 - [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
 
 **Scope notes**
-- Decompose into 2 lanes: (a) `#244` preflight-parity on the lane-scheduler/work-unit
-  dispatch path; (b) `#245` delegated-child closeout re-check. They share the gate helpers,
-  so publish IF-0-PAR-1 (the shared re-check entry point) on day 1 so lane (a) and lane (b)
-  build against the same contract rather than each re-plumbing the gates.
-- Single-writer file: whichever module owns the shared gate-invocation helper — assign it
-  to lane (b) and have lane (a) consume it.
+- Decompose into 2 lanes: (a) `#244` preflight-parity — factor the direct-path preflight
+  gates into the IF-0-PAR-1 helper and invoke it from the lane-scheduler/work-unit dispatch
+  path (`_launch_ready_lane_wave`, runner.py ~1864); (b) `#245` closeout-parity — factor the
+  direct-path closeout gates into the IF-0-PAR-2 helper and invoke it from the delegated-child
+  completion path (`launch_delegated_child`, runner.py ~3766). Publish both helper signatures
+  (IF-0-PAR-1, IF-0-PAR-2) on day 1 so each lane builds against the frozen entry point.
+- **Serialize the two `runner.py` integrations** — both lanes edit `runner.py`, so this is a
+  single-writer file across the two lanes, NOT two fully-parallel single-writer lanes.
+  Coordinate the edits (e.g. land the helper-extraction commit first, then wire each callsite)
+  rather than racing two branches on the same module.
 
 **Non-goals**
 - #246 enforce-mode (parked — see Non-Goals).
@@ -213,6 +248,7 @@ lane-scheduler + work-unit path (#244), and closeout gates are not re-checked at
 
 **Produces**
 - IF-0-PAR-1
+- IF-0-PAR-2
 
 **Spec closeout policy**
 - schema: `spec_delta_closeout.v1`
