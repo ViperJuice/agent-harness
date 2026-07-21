@@ -824,6 +824,28 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             exit_summary=_exit_summary(result),
             findings=("verification.log sha256 does not match verification.json log_sha256",),
         )
+    # agent-harness#243 (CR round 3, defect 1): with the log now sha-authenticated, verify the
+    # whole-artifact seal BEFORE branching on pass/fail — so a FAILING artifact is seal-protected
+    # too. Previously the seal was checked only on the would-be-PASS path (round 1, to avoid
+    # reclassifying #209 failing-artifact tamper tests), leaving a field/structural edit of a
+    # FAILING artifact (e.g. rewriting phase_alias, or deleting a passing sibling) undetected. A
+    # seal MISMATCH is its OWN integrity verdict (``artifact_seal_mismatch``), never a per-stage
+    # reclassification, and ordered AFTER ``log_sha256_mismatch`` / the load-time
+    # malformed/oversized guards. The seal digest excludes the per-stage byte-offset fields (see
+    # ``_canonical_artifact_digest``), so a legitimate #209 offset tamper does NOT trip the seal
+    # here — it still flows to the ``nonzero_exit`` branch where the #209 neighbour-bounds check
+    # fails it closed to an empty tail, exactly as before (zero reclassification). An UNSEALED
+    # legacy/older artifact skips this check (back-compat).
+    seal_finding = _artifact_seal_finding(artifact_path, log_bytes)
+    if seal_finding is not None:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="artifact_seal_mismatch",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            exit_summary=_exit_summary(result),
+            findings=(seal_finding,),
+        )
     nonzero = _nonzero_exit_findings(result)
     if nonzero:
         # agent-harness#209: the log is AUTHENTICATED at this point (sha matched), so
@@ -850,24 +872,10 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             findings=tuple(nonzero),
             diagnostics=diagnostics,
         )
-    # agent-harness#243 (whole-artifact integrity): this is the would-be PASS path. A
-    # verdict-flipping edit that removes the failing stage (e.g. deleting a failed
-    # ``commands[]`` entry, or a multi-field internally-consistent edit) leaves no nonzero
-    # exit and reaches HERE, having passed every #209 per-stage check. Verify the
-    # whole-artifact seal before declaring a pass — the recomputed payload digest must match
-    # the digest sealed in the (sha-authenticated) log trailer. Placed on the OK path only,
-    # AFTER the nonzero/integrity branches, so an already-failing/tampered artifact keeps its
-    # more-specific verdict; an UNSEALED artifact (v1/older) skips this check (back-compat).
-    seal_finding = _artifact_seal_finding(artifact_path, log_bytes)
-    if seal_finding is not None:
-        return VerificationArtifactValidation(
-            ok=False,
-            code="artifact_seal_mismatch",
-            artifact_path=str(artifact_path),
-            log_path=str(log_path),
-            exit_summary=_exit_summary(result),
-            findings=(seal_finding,),
-        )
+    # agent-harness#243 (whole-artifact integrity): the whole-artifact seal was already verified
+    # above (before the pass/fail branch), so a verdict-flipping structural edit that removes the
+    # failing stage — leaving no nonzero exit and reaching HERE — was caught there. Nothing more to
+    # check: this is a clean, sealed (or legacy-unsealed) PASS.
     return VerificationArtifactValidation(
         ok=True,
         code="ok",
@@ -877,13 +885,44 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
     )
 
 
+# agent-harness#243 (CR round 3): per-stage byte-offset fields excluded from the whole-artifact
+# seal digest. Offset integrity is enforced STRUCTURALLY by the #209 neighbour-bounds check (a
+# tampered ``log_offset``/``log_end_offset`` fails closed to an empty diagnostic tail); keeping
+# offsets OUT of the seal lets a legitimate #209 offset-tamper still flow to the ``nonzero_exit``
+# branch (where bounds catch it) instead of being reclassified as an ``artifact_seal_mismatch``.
+# Offsets never affect pass/fail (``exit_code``, which the seal DOES cover, does) — so excluding
+# them loses no forgery protection.
+_SEAL_EXCLUDED_STAGE_FIELDS = frozenset({"log_offset", "log_end_offset"})
+
+
+def _strip_seal_excluded_offsets(stage: Any) -> Any:
+    """Return a copy of a stage mapping with the per-stage byte-offset fields dropped (see
+    ``_SEAL_EXCLUDED_STAGE_FIELDS``). Non-mapping / ``None`` stages pass through unchanged."""
+    if not isinstance(stage, Mapping):
+        return stage
+    return {key: value for key, value in stage.items() if key not in _SEAL_EXCLUDED_STAGE_FIELDS}
+
+
 def _canonical_artifact_digest(payload: Mapping[str, Any]) -> str:
     """agent-harness#243: SHA-256 over the artifact payload MINUS the derived ``log_sha256``
-    field, canonically serialized (sorted keys, tight separators). ``log_sha256`` is excluded
-    to break the seal<->log circular reference (the seal lives inside the log that
-    ``log_sha256`` covers). Deterministic, so the writer and the validator agree byte-for-byte
-    over a JSON round-trip."""
-    material = {key: value for key, value in payload.items() if key != "log_sha256"}
+    field AND the per-stage byte-offset fields (``log_offset``/``log_end_offset`` on
+    ``commands[]`` / ``suite`` / ``env_refresh``), canonically serialized (sorted keys, tight
+    separators). ``log_sha256`` is excluded to break the seal<->log circular reference (the seal
+    lives inside the log that ``log_sha256`` covers). The byte offsets are excluded so a #209
+    offset tamper is caught by the neighbour-bounds check (fail-closed empty tail on the
+    ``nonzero_exit`` branch) rather than reclassified as a seal mismatch — see
+    ``_SEAL_EXCLUDED_STAGE_FIELDS``. Deterministic, so the writer and the validator agree
+    byte-for-byte over a JSON round-trip."""
+    material: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "log_sha256":
+            continue
+        if key == "commands" and isinstance(value, list):
+            material[key] = [_strip_seal_excluded_offsets(item) for item in value]
+        elif key in ("suite", "env_refresh"):
+            material[key] = _strip_seal_excluded_offsets(value)
+        else:
+            material[key] = value
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -926,6 +965,26 @@ def _extract_artifact_seal(log_bytes: bytes) -> str | None:
     if match is None:
         return None
     return match.group(1)
+
+
+def _artifact_seal_region_start(log_bytes: bytes) -> int | None:
+    """agent-harness#243 (CR round 3, defect 2): byte offset at which the whole-artifact seal
+    trailer region begins (the separator newline the writer inserts before the trailer line),
+    or None when the log carries no valid seal (a v1/older / externally-built / unsealed log).
+
+    The runner appends the seal as ``\\n<prefix><digest>\\n`` AFTER the last stage's bytes, so a
+    legitimate last stage's ``log_end_offset`` equals this offset exactly. Bounding the final
+    stage's tail here (instead of ``len(log)``) keeps the seal trailer OUTSIDE every stage
+    region: no stage tail can legitimately include the ``verification-artifact-sha256:`` line,
+    and a tampered ``log_end_offset`` that reaches into the trailer is rejected as out-of-range
+    (``end > upper``) rather than swallowing + persisting the seal bytes as stage output."""
+    if _extract_artifact_seal(log_bytes) is None:
+        return None
+    # Drop the writer's trailing newline(s); the last remaining ``\n`` is the separator between
+    # the final stage's bytes and the (newline-free) trailer line — its index is the bound.
+    stripped = log_bytes.rstrip(b"\r\n")
+    separator = stripped.rfind(b"\n")
+    return separator if separator >= 0 else 0
 
 
 def _artifact_seal_finding(artifact_path: Path, log_bytes: bytes) -> str | None:
@@ -1131,8 +1190,18 @@ def _build_failure_diagnostics(result: VerificationResult, log_bytes: bytes) -> 
     ``_nonzero_exit_findings`` traverses (commands -> env_refresh -> suite). Guaranteed
     non-empty whenever ``_nonzero_exit_findings`` is non-empty (identical stage set),
     which structurally enforces the #209 anti-scrubbing rule."""
-    bounds = _stage_bounds(result, len(log_bytes))
-    full = (0, len(log_bytes))
+    # agent-harness#243 (CR round 3, defect 2): bound stage regions at the seal trailer's START,
+    # not ``len(log)``. Otherwise the final stage's upper bound would be ``len(log)`` — which
+    # INCLUDES the appended ``verification-artifact-sha256:`` trailer — so a tampered
+    # ``log_end_offset`` extended to ``len(log)`` would pass the range check and its tail would
+    # swallow (and persist as unredacted stage output) the seal bytes. Treating the trailer as
+    # outside every stage region keeps a legitimate last stage exactly (its ``log_end_offset`` ==
+    # seal-start) while rejecting any offset that reaches into the trailer. An UNSEALED log has no
+    # trailer, so the bound stays ``len(log)`` (back-compat).
+    seal_start = _artifact_seal_region_start(log_bytes)
+    stage_region_end = seal_start if seal_start is not None else len(log_bytes)
+    bounds = _stage_bounds(result, stage_region_end)
+    full = (0, stage_region_end)
 
     diagnostics: list[dict[str, Any]] = []
     for index, command in enumerate(result.commands):

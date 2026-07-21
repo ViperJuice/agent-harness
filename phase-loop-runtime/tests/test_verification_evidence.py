@@ -711,6 +711,61 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertFalse(v.ok)
             self.assertEqual(v.code, "oversized_artifact")
 
+    def test_failing_artifact_field_tamper_is_caught_as_seal_mismatch(self):
+        # agent-harness#243 CR round 3 (defect 1): a FAILING artifact whose non-offset field is
+        # tampered (seal stale) was previously UNCAUGHT on the failing path -- the seal was only
+        # checked on the would-be-PASS branch, so the nonzero_exit verdict masked the tamper.
+        # The seal check now runs BEFORE the pass/fail branch, so a failing artifact is
+        # seal-protected too: this is caught as its own integrity verdict.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "import sys; sys.exit(1)"]])
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["phase_alias"] = "FORGED-WHILE-FAILING"  # tamper a sealed field; log untouched
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")  # not masked by nonzero_exit
+
+    def test_last_stage_tail_cannot_swallow_seal_trailer(self):
+        # agent-harness#243 CR round 3 (defect 2): extending the LAST (failing) stage's
+        # log_end_offset to len(log) used to make its tail swallow the appended
+        # ``verification-artifact-sha256:`` trailer (persisting the seal bytes as unredacted
+        # stage output). log_offset/log_end_offset are excluded from the seal, so this is NOT a
+        # seal break -- it flows to the nonzero_exit branch, where the stage region is now bounded
+        # at the seal trailer's START, so the out-of-range offset fails closed to an EMPTY tail
+        # and the trailer can never appear in a stage diagnostic.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(repo, [[sys.executable, "-c", "import sys; sys.stderr.write('CMD_MARK\\n'); sys.exit(1)"]])
+            log_bytes = (artifact.parent / "verification.log").read_bytes()
+            self.assertIn(b"verification-artifact-sha256:", log_bytes)
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["log_end_offset"] = len(log_bytes)  # lie: reach into the trailer
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # offset tamper is NOT a seal break
+            self.assertEqual(len(v.diagnostics), 1)
+            self.assertNotIn("verification-artifact-sha256:", v.diagnostics[0]["raw_tail"])
+            self.assertEqual(v.diagnostics[0]["raw_tail"], "")  # fail-closed on the out-of-range offset
+
+    def test_correctly_sealed_failing_artifact_reports_failure_normally(self):
+        # agent-harness#243 CR round 3: moving the seal check earlier must NOT reclassify a
+        # LEGITIMATE (correctly-sealed) failing artifact -- it still reports its stage failure via
+        # the normal nonzero_exit path with a preserved diagnostic tail, exactly as before. Only an
+        # actual seal MISMATCH changes the outcome.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(
+                Path(td),
+                [[sys.executable, "-c", "import sys; sys.stderr.write('LEGIT_FAILURE_MARK\\n'); sys.exit(1)"]],
+            )
+            v = validate_verification_artifact(artifact)  # no tampering
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # NOT artifact_seal_mismatch
+            self.assertEqual(len(v.diagnostics), 1)
+            self.assertIn("LEGIT_FAILURE_MARK", v.diagnostics[0]["raw_tail"])
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "nonzero_exit")
+
     def test_redact_diagnostics_metadata_only_scrubs_secret_shaped_tail(self):
         from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
 
