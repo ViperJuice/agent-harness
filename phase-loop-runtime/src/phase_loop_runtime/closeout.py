@@ -35,7 +35,7 @@ from .models import (
     SourceTruthImpact,
     WorkUnitCloseout,
 )
-from .redaction import build_source_truth_impact, metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+from .redaction import apply_diagnostics_redaction, build_source_truth_impact, metadata_redaction_diagnostic
 from .verification_evidence import ARTIFACT_NAME, validate_verification_artifact
 
 
@@ -365,16 +365,16 @@ def _apply_verification_evidence_gate(
         return None
     validation = validate_verification_artifact(artifact_path)
     validation_payload = validation.to_json()
-    # agent-harness#243 (closeout-diagnostic redaction): the failure diagnostics carry a
-    # bounded ``raw_tail`` excerpt of verification.log bytes. Before they enter the PERSISTED
-    # closeout record (downstream prompts may read it), redact any secret/PII-shaped diagnostic
-    # to metadata-only. The on-disk verification.log is untouched — only the closeout egress is
-    # narrowed. ``PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all`` forces full raw_tail suppression.
-    if validation_payload.get("diagnostics"):
-        validation_payload["diagnostics"] = redact_diagnostics_metadata_only(
-            validation_payload["diagnostics"],
-            force_all=(os.environ.get("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", "").strip().lower() == "all"),
-        )
+    # agent-harness#243 (closeout-diagnostic redaction) / agent-harness#266 (source redaction):
+    # the failure diagnostics carry a bounded ``raw_tail`` excerpt of verification.log bytes.
+    # Before they enter the PERSISTED closeout record (downstream prompts may read it), redact
+    # any secret/PII-shaped diagnostic to metadata-only via the shared SSOT wrapper (the SAME
+    # one applied at the ``runner_verification``/hotfix source points -- see
+    # ``redaction.apply_diagnostics_redaction``). The on-disk verification.log is untouched —
+    # only the closeout egress is narrowed. This is a SEPARATE re-validation of the artifact
+    # (not a copy of the already-redacted ``runner_verification``), so it still needs its own
+    # redaction pass; the shared helper keeps that pass byte-identical to every other copy.
+    validation_payload = apply_diagnostics_redaction(validation_payload)
     mode = verification_enforcement_mode(os.environ)
     # agent-harness#219(b-i) + CR codex#1: the per-command exit codes are
     # authoritative over the executor's self-asserted "passed". A non-zero

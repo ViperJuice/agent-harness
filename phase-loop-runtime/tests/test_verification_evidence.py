@@ -959,6 +959,72 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertEqual(out[0]["redaction_reason"], "operator_forced")
         self.assertNotIn("raw_tail", out[0])
 
+    def test_apply_diagnostics_redaction_is_idempotent_on_an_already_redacted_payload(self):
+        # agent-harness#266: source redaction now runs at MULTIPLE points that can, in
+        # principle, see the same payload more than once (e.g. an already-redacted
+        # ``runner_verification["validation"]`` copy passed back through the shared helper).
+        # Re-applying it must not corrupt an already-redacted diagnostic: no forbidden pattern
+        # should re-match the safe structural fields + short redaction-reason label, so the
+        # diagnostic passes through unchanged and stays free of the original secret.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "ok": False,
+            "code": "nonzero_exit",
+            "diagnostics": [
+                {
+                    "role": "command", "index": 0,
+                    "argv": [sys.executable, "-c", "x"],
+                    "exit_code": 1, "failure_kind": "nonzero_exit",
+                    "raw_tail": "api_key=AKIAIOSFODNN7EXAMPLEKEY\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        once = apply_diagnostics_redaction(payload)
+        diag_once = once["diagnostics"][0]
+        self.assertTrue(diag_once["redacted"])
+        self.assertEqual(diag_once["redaction_reason"], "secret_like_value")
+        self.assertNotIn("raw_tail", diag_once)
+
+        twice = apply_diagnostics_redaction(once)
+        diag_twice = twice["diagnostics"][0]
+        # A second pass over an already-redacted diagnostic is a no-op: it does not re-match a
+        # forbidden pattern, so it is copied through as-is (same shape, same fields).
+        self.assertEqual(diag_twice, diag_once)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(twice))
+
+    def test_apply_diagnostics_redaction_reads_force_all_env_var(self):
+        # agent-harness#266: the SSOT helper must honor the SAME
+        # PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all override the pre-existing closeout path did,
+        # so every source-redaction call site (runner_verification, hotfix, reconcile
+        # --verification-log, closeout) picks it up uniformly.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "diagnostics": [
+                {
+                    "role": "command", "index": 0, "argv": ["x"], "exit_code": 1,
+                    "failure_kind": "nonzero_exit", "raw_tail": "totally benign output\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        with patch.dict(os.environ, {"PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS": "all"}):
+            out = apply_diagnostics_redaction(payload)
+        self.assertTrue(out["diagnostics"][0]["redacted"])
+        self.assertEqual(out["diagnostics"][0]["redaction_reason"], "operator_forced")
+
+    def test_apply_diagnostics_redaction_passes_through_payload_with_no_diagnostics(self):
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {"ok": True, "code": "ok", "diagnostics": []}
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out, {"ok": True, "code": "ok", "diagnostics": []})
+
     def test_redact_diagnostics_metadata_only_scrubs_double_quoted_secret(self):
         # agent-harness#243 CR (defect 1): the pre-fix matcher tested a json.dumps(...)
         # serialization of the diagnostic. json.dumps backslash-escapes an embedded double
@@ -1293,6 +1359,137 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertIsNotNone(gate)
         assert gate is not None
         self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_run_execute_verification_redacts_secret_at_source_and_closes_launch_json_state_json_egress(self):
+        # agent-harness#266 (source redaction, CR recheck of #243): a prior round redacted
+        # ONLY the rebuilt closeout record, leaving ``runner_verification`` -- and everything
+        # merged/derived from it -- carrying the RAW ``raw_tail``. That raw copy is a
+        # deterministic egress: ``merge_launch_metadata`` writes ``runner_verification`` into
+        # ``launch.json`` (mirroring the ``run_loop`` launch-action call site at runner.py
+        # ~3581); ``inspect_state()`` reads the WHOLE launch file back out as
+        # ``latest_launch_metadata``; and ``phase-loop state --json`` (which the harness SKILL
+        # directs agents to run for exact state) serializes that object verbatim. Reproduce the
+        # full path end to end, then confirm the fix closes it: the secret must be redacted at
+        # the SOURCE (inside ``_run_execute_verification``, before ``launch.json`` is ever
+        # written), so ``state --json`` / ``inspect_state()`` never sees it.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = (
+                f'{sys.executable} -c "import sys; '
+                f"print('api_key={secret}'); sys.exit(1)\""
+            )
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed (not an early-return stub).
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("argv", diag)
+            # Structured fields relied on by reconcile/verification consumers survive redaction.
+            self.assertIn("exit_code", diag)
+            self.assertIn("failure_kind", diag)
+            self.assertIn("role", diag)
+            self.assertIn("index", diag)
+            self.assertIn("truncated", diag)
+            self.assertNotIn(secret, json.dumps(result))
+
+            # verification.log on disk is the intentional local source of truth -- stays FULL.
+            log_text = (run_dir / "verification.log").read_text(encoding="utf-8")
+            self.assertIn(secret, log_text)
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            launch_metadata = summary["latest_launch_metadata"]
+            self.assertIsInstance(launch_metadata, dict)
+            egress_diag = launch_metadata["runner_verification"]["validation"]["diagnostics"][0]
+            self.assertTrue(egress_diag["redacted"])
+            self.assertNotIn("raw_tail", egress_diag)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_force_all_redaction_flows_through_source(self):
+        # agent-harness#266: PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all must force-suppress
+        # `raw_tail`/`argv` at the SOURCE too (not only in the closeout record), so the operator
+        # override also covers launch.json / child_automation / the ledger event.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            benign_command = f'{sys.executable} -c "print(\'benign failing output\'); import sys; sys.exit(1)"'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{benign_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {"PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS": "all"}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["redaction_reason"], "operator_forced")
+            self.assertNotIn("raw_tail", diag)
 
 
 if __name__ == "__main__":

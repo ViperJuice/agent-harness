@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping
@@ -182,6 +183,44 @@ def redact_diagnostics_metadata_only(
             }
         )
     return redacted
+
+
+def apply_diagnostics_redaction(validation_payload: dict[str, Any]) -> dict[str, Any]:
+    """agent-harness#266 (source redaction).
+
+    SSOT wrapper around :func:`redact_diagnostics_metadata_only` for every call site that
+    stores a ``VerificationArtifactValidation.to_json()`` payload into a PERSISTED copy —
+    ``runner_verification`` (and everything merged/derived from it: ``launch.json``,
+    ``child_automation``, the run ledger event), the hotfix ``artifact_validation`` ledger
+    event and CLI payload, and the closeout record. Each of those copies used to redact
+    independently (or, before agent-harness#266, not at all) -- a prior round redacted ONLY
+    the rebuilt closeout record, leaving ``runner_verification`` (and everything derived from
+    it) carrying the RAW ``raw_tail``/``argv`` text. That raw copy reaches an agent/harness
+    context deterministically: ``merge_launch_metadata`` writes it into ``launch.json``,
+    ``inspect_state()`` reads the whole launch file back out as ``latest_launch_metadata``,
+    and ``phase-loop state --json`` (which the harness SKILL explicitly directs agents to run)
+    serializes that object verbatim. Redacting at the SOURCE -- the first place a validation's
+    ``to_json()`` is captured into a payload that will be persisted -- closes every one of
+    those derived copies at once instead of re-implementing the same redaction ad hoc (or
+    forgetting it) at each downstream call site.
+
+    Mutates and returns ``validation_payload`` in place (mirrors ``dict.update`` ergonomics of
+    the call sites this replaces). A payload with no ``diagnostics`` key, or an empty/falsy
+    one, is returned unchanged. Idempotent: an already metadata-only-redacted diagnostic list,
+    re-run through this function, is a no-op -- an already-redacted diagnostic dict carries no
+    secret-shaped free text (only safe structural fields plus a short redaction-reason label),
+    so it never re-matches a forbidden-metadata pattern and is copied through unchanged (a
+    ``force_all`` re-application only re-shapes an already-safe dict, never reintroduces raw
+    text). ``PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all`` (operator override) forces every
+    diagnostic in the payload to metadata-only regardless of a pattern match.
+    """
+    diagnostics = validation_payload.get("diagnostics")
+    if diagnostics:
+        validation_payload["diagnostics"] = redact_diagnostics_metadata_only(
+            diagnostics,
+            force_all=(os.environ.get("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", "").strip().lower() == "all"),
+        )
+    return validation_payload
 
 
 def _scalar_text(value: Any) -> str | None:

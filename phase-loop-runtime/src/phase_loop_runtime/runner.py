@@ -193,6 +193,7 @@ from .governed_premerge import (
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
+from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
 from .route_log import build_route_log, with_route_log
 from .release_guard import (
@@ -6189,6 +6190,17 @@ def _run_execute_verification(
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
     validation = validate_verification_artifact(artifact_path)
     validation_json = validation.to_json()
+    # agent-harness#266 (source redaction): this ``validation_json`` becomes
+    # ``runner_verification["validation"]`` below, which is then merged verbatim into
+    # ``launch.json`` (``merge_launch_metadata`` at the launch-action call site) and copied into
+    # ``child_automation`` -- both of which are read back RAW by ``inspect_state()`` /
+    # ``phase-loop state --json`` and by the run ledger event a repair prompt directs an agent
+    # to inspect. Redact any secret/PII-shaped diagnostic to metadata-only HERE, at the single
+    # point ``validation.to_json()`` is first captured into a payload that gets persisted, so
+    # every derived copy (launch.json, child_automation, the ledger event) inherits the redacted
+    # form instead of each downstream call site needing its own redaction pass (or forgetting
+    # one). The on-disk ``verification.log`` is untouched -- only this egress copy is narrowed.
+    validation_json = apply_diagnostics_redaction(validation_json)
     summary = {
         "ok": validation.ok,
         "code": validation.code,
