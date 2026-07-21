@@ -180,7 +180,7 @@ def _setup_p3_done(
 
 def _make_merge_pr_stub(merge_log: List[str], merged_sha_map: Optional[Dict[str, str]] = None):
     """Merge stub that records workspace names and returns deterministic merged SHAs."""
-    def _merge_pr(workspace: Path, branch: str) -> str:
+    def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
         merge_log.append(workspace.name)
         if merged_sha_map and workspace.name in merged_sha_map:
             return merged_sha_map[workspace.name]

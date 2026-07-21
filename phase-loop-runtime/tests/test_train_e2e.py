@@ -113,7 +113,7 @@ def _reverify_pass(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
 
 def _make_merge_pr_stub(merge_log: List[str]):
     """Records each merge call and returns a deterministic merged SHA."""
-    def _merge_pr(workspace: Path, branch: str) -> str:
+    def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
         merge_log.append(workspace.name)
         return f"sha-merged-{workspace.name}"
     return _merge_pr
