@@ -454,29 +454,43 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             return validate_verification_artifact(artifact)
 
     def test_tampered_end_offset_fails_closed_no_leak(self):
-        # CR codex#1: a lying log_end_offset (> the next stage's start) is an invalid
-        # recorded range -> fail closed to an empty tail, never the following stage's bytes.
+        # CR codex#1 (round 1-3): a lying log_end_offset (> the next stage's start) was an
+        # invalid recorded range that the #209 neighbour-bounds check failed closed to an
+        # empty tail. agent-harness#243 CR round 4: the artifacts these tests build via
+        # ``run_verification`` are SEALED, and the seal digest now covers the per-stage
+        # offset fields too (a prior round's exclusion was itself the #243 CR round-4
+        # defect being fixed). A sealed artifact's offset tamper now trips the STRONGER
+        # ``artifact_seal_mismatch`` verdict before ever reaching the nonzero_exit /
+        # neighbour-bounds branch -- still zero leak, just a different (and more
+        # correct) verdict code. See ``test_unsealed_legacy_offset_tamper_still_bounded_by_neighbor_checks``
+        # below for the neighbour-bounds check's continuing role on an UNSEALED artifact.
         v = self._tamper_end_and_validate(
             [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_MARK\\n'); sys.exit(1)"]
         )
-        d0 = v.diagnostics[0]
-        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
-        self.assertEqual(d0["raw_tail"], "")
-        self.assertEqual(d0["diagnostic_status"], "missing_output")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.code, "artifact_seal_mismatch")
+        self.assertEqual(v.diagnostics, ())
+        self.assertNotIn("CMD1_SECRET", " ".join(v.findings))
 
     def test_tampered_end_on_zero_output_stage_cannot_leak_shared_start(self):
-        # CR codex#1 + gemini round 2: a zero-output failing stage shares its start offset
-        # with the next stage; the execution-order upper bound must still confine it so a
-        # tampered end cannot steal the next stage's bytes.
+        # CR codex#1 + gemini round 2 (updated agent-harness#243 CR round 4): a zero-output
+        # failing stage shares its start offset with the next stage. On the SEALED artifacts
+        # these tests build, the seal now covers offsets, so this tamper trips
+        # artifact_seal_mismatch before the neighbour-bounds check is even reached -- no
+        # leak either way.
         v = self._tamper_end_and_validate([sys.executable, "-c", "import sys; sys.exit(1)"])
-        d0 = v.diagnostics[0]
-        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
-        self.assertEqual(d0["raw_tail"], "")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.code, "artifact_seal_mismatch")
+        self.assertEqual(v.diagnostics, ())
+        self.assertNotIn("CMD1_SECRET", " ".join(v.findings))
 
     def test_tampered_backward_start_cannot_leak_preceding_stage_bytes(self):
-        # CR Fable round 3 (dual of the round-2 END leak): cmd0 PASSES printing a secret,
-        # cmd1 fails zero-output; tampering cmd1's log_offset BACKWARD must not surface
-        # cmd0's bytes as cmd1's diagnostic (lower-bound validation).
+        # CR Fable round 3 (dual of the round-2 END leak, updated agent-harness#243 CR
+        # round 4): cmd0 PASSES printing a secret, cmd1 fails zero-output; tampering cmd1's
+        # log_offset BACKWARD used to be caught by the neighbour-bounds lower-bound check on
+        # the nonzero_exit branch. The SEALED artifact this test builds now has offsets
+        # covered by the seal, so the tamper trips artifact_seal_mismatch first -- still no
+        # leak, just caught one layer earlier.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             run_dir = repo / ".phase-loop/runs/test-run"
@@ -496,9 +510,104 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             payload["commands"][1]["log_offset"] = 0  # lie: reach back into cmd0
             artifact.write_text(json.dumps(payload), encoding="utf-8")
             v = validate_verification_artifact(artifact)
-            d = v.diagnostics[0]
-            self.assertNotIn("EARLIER_STAGE_SECRET", d["raw_tail"])
-            self.assertEqual(d["raw_tail"], "")
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+            self.assertEqual(v.diagnostics, ())
+            self.assertNotIn("EARLIER_STAGE_SECRET", " ".join(v.findings))
+
+    def test_unsealed_legacy_offset_tamper_still_bounded_by_neighbor_checks(self):
+        # agent-harness#243 CR round 4: on an UNSEALED legacy artifact (no valid seal
+        # trailer in the log), the whole-artifact seal check is skipped entirely (back-compat)
+        # -- so the #209 neighbour-bounds check (``_stage_bounds`` / ``_stage_raw_tail``)
+        # remains the sole offset-integrity guard, exactly as it did before #243 existed.
+        # This is the dual of the sealed-artifact tests above: same tamper shape, but on a
+        # hand-built log with NO seal trailer, and the assertion is that it still fails
+        # closed via nonzero_exit / bounded-empty-tail, not via a seal mismatch it can no
+        # longer detect (there is nothing to seal-check).
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = b"CMD0_MARK\nCMD1_SECRET_OUTPUT " * 5 + b"\n"
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 2,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [
+                    {
+                        "argv": ["x"], "cwd": ".", "exit_code": 1, "duration_s": 0.1,
+                        "log_offset": 0, "log_end_offset": 10, "failure_kind": "nonzero_exit",
+                    },
+                    {
+                        "argv": ["y"], "cwd": ".", "exit_code": 0, "duration_s": 0.1,
+                        "log_offset": 10, "log_end_offset": len(log_bytes),
+                    },
+                ],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            # tamper: extend cmd0's end offset to reach into cmd1's (secret-bearing) region.
+            payload["commands"][0]["log_end_offset"] = len(log_bytes)
+            artifact = run_dir / "verification.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # no seal trailer -> neighbour-bounds guards
+            self.assertEqual(v.diagnostics[0]["raw_tail"], "")
+            self.assertNotIn("CMD1_SECRET", v.diagnostics[0]["raw_tail"])
+
+    def test_unsealed_legacy_backward_start_tamper_still_bounded_by_neighbor_checks(self):
+        # agent-harness#243 CR round 4: dual of the test above, exercising the LOWER edge of
+        # the #209 neighbour-bounds check (Fable round 3's contribution -- a tampered backward
+        # ``log_offset`` must not leak a PRECEDING stage's bytes) on an UNSEALED artifact. All
+        # three sealed tests that used to cover this edge (in ``VerificationFailureDiagnosticsTest``
+        # above) now short-circuit at the whole-artifact seal check before ever reaching
+        # ``_stage_raw_tail`` -- so this unsealed variant is what keeps the lower-edge fail-closed
+        # path itself under live test coverage.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            secret = b"EARLIER_STAGE_SECRET" * 5
+            log_bytes = secret + b"\n"  # cmd0 (passing) prints the secret; cmd1 fails zero-output
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            cmd0_end = len(secret)
+            payload = {
+                "schema_version": 2,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [
+                    {
+                        "argv": ["x"], "cwd": ".", "exit_code": 0, "duration_s": 0.1,
+                        "log_offset": 0, "log_end_offset": cmd0_end,
+                    },
+                    {
+                        "argv": ["y"], "cwd": ".", "exit_code": 1, "duration_s": 0.1,
+                        "log_offset": len(log_bytes), "log_end_offset": len(log_bytes),
+                        "failure_kind": "nonzero_exit",
+                    },
+                ],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            # tamper: pull cmd1's start BACKWARD into cmd0's (secret-bearing) region.
+            payload["commands"][1]["log_offset"] = 0
+            artifact = run_dir / "verification.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # no seal trailer -> neighbour-bounds guards
+            self.assertEqual(v.diagnostics[0]["raw_tail"], "")
+            self.assertNotIn("EARLIER_STAGE_SECRET", v.diagnostics[0]["raw_tail"])
 
     def test_v2_subprocess_env_refresh_missing_failure_kind_is_rejected(self):
         # CR Fable round 3 nit (a): a subprocess-backed v2 env_refresh (int log_offset)
@@ -727,13 +836,16 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertEqual(v.code, "artifact_seal_mismatch")  # not masked by nonzero_exit
 
     def test_last_stage_tail_cannot_swallow_seal_trailer(self):
-        # agent-harness#243 CR round 3 (defect 2): extending the LAST (failing) stage's
-        # log_end_offset to len(log) used to make its tail swallow the appended
-        # ``verification-artifact-sha256:`` trailer (persisting the seal bytes as unredacted
-        # stage output). log_offset/log_end_offset are excluded from the seal, so this is NOT a
-        # seal break -- it flows to the nonzero_exit branch, where the stage region is now bounded
-        # at the seal trailer's START, so the out-of-range offset fails closed to an EMPTY tail
-        # and the trailer can never appear in a stage diagnostic.
+        # agent-harness#243 CR round 3 (defect 2), updated CR round 4: extending the LAST
+        # (failing) stage's log_end_offset to len(log) used to make its tail swallow the
+        # appended ``verification-artifact-sha256:`` trailer (persisting the seal bytes as
+        # unredacted stage output). Round 3 fixed the bounding (``_artifact_seal_region_start``
+        # keeps stage regions OUTSIDE the trailer, kept unchanged here) but excluded offsets
+        # from the seal digest, so the tamper flowed to the nonzero_exit branch where bounding
+        # caught it. Round 4 folds offsets INTO the seal digest (this file's actual fix), so
+        # this exact tamper is now caught EARLIER, as its own seal-integrity verdict -- still
+        # zero leak (the trailer never appears anywhere, since diagnostics are never built),
+        # just a stronger, earlier-firing check.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             artifact = self._run(repo, [[sys.executable, "-c", "import sys; sys.stderr.write('CMD_MARK\\n'); sys.exit(1)"]])
@@ -744,10 +856,9 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             artifact.write_text(json.dumps(payload), encoding="utf-8")
             v = validate_verification_artifact(artifact)
             self.assertFalse(v.ok)
-            self.assertEqual(v.code, "nonzero_exit")  # offset tamper is NOT a seal break
-            self.assertEqual(len(v.diagnostics), 1)
-            self.assertNotIn("verification-artifact-sha256:", v.diagnostics[0]["raw_tail"])
-            self.assertEqual(v.diagnostics[0]["raw_tail"], "")  # fail-closed on the out-of-range offset
+            self.assertEqual(v.code, "artifact_seal_mismatch")  # offset tamper IS a seal break now
+            self.assertEqual(v.diagnostics, ())
+            self.assertNotIn("verification-artifact-sha256:", " ".join(v.findings))
 
     def test_correctly_sealed_failing_artifact_reports_failure_normally(self):
         # agent-harness#243 CR round 3: moving the seal check earlier must NOT reclassify a
@@ -765,6 +876,44 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertEqual(len(v.diagnostics), 1)
             self.assertIn("LEGIT_FAILURE_MARK", v.diagnostics[0]["raw_tail"])
             self.assertEqual(v.diagnostics[0]["failure_kind"], "nonzero_exit")
+
+    def test_coordinated_offset_tamper_across_sealed_stages_is_seal_mismatch(self):
+        # agent-harness#243 CR round 4 (codex + Fable, the headline defect this round fixes):
+        # a prior round excluded per-stage offsets from the seal digest so a #209 offset tamper
+        # would still be caught by the neighbour-bounds check on the nonzero_exit branch. But a
+        # COORDINATED two-stage tamper -- extend the failing stage's log_end_offset to N AND
+        # move its passing sibling's log_offset to the SAME N -- is internally CONSISTENT with
+        # the neighbour-bounds check (both edges agree with each other), so it passed that
+        # check while the seal digest stayed unchanged (offsets excluded) -- forging ownership
+        # of the widened range and surfacing both stages' output in the failing diagnostic's
+        # tail. With offsets now covered by the seal, this coordinated tamper changes the
+        # digest and is caught as artifact_seal_mismatch before any diagnostic is built.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(
+                repo,
+                [
+                    [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_FAIL_MARK\\n'); sys.exit(1)"],
+                    [sys.executable, "-c", "print('CMD1_SIBLING_SECRET ' * 20)"],
+                ],
+            )
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            # N must land STRICTLY INSIDE the sibling's own original [log_offset, log_end_offset)
+            # region -- an N beyond the log's total length fails closed for an unrelated reason
+            # (the overall len(log) bound), not because of the coordinated-tamper bypass this
+            # test targets. +100 is comfortably inside the ~400-byte secret-bearing region below.
+            cmd1_start = payload["commands"][1]["log_offset"]
+            self.assertLess(cmd1_start + 100, payload["commands"][1]["log_end_offset"])
+            coordinated_n = cmd1_start + 100
+            payload["commands"][0]["log_end_offset"] = coordinated_n  # extend failing stage's end
+            payload["commands"][1]["log_offset"] = coordinated_n  # move sibling's start to match
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+            self.assertEqual(v.diagnostics, ())  # no diagnostic built at all -- zero leak
+            self.assertNotIn("CMD1_SIBLING_SECRET", " ".join(v.findings))
+            self.assertNotIn("CMD0_FAIL_MARK", " ".join(v.findings))
 
     def test_redact_diagnostics_metadata_only_scrubs_secret_shaped_tail(self):
         from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
@@ -903,6 +1052,94 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         diagnostics = closeout_shaped_payload["verification"]["results"][0]["diagnostics"]
         closeout_shaped_payload["verification"]["results"][0]["diagnostics"] = redact_diagnostics_metadata_only(diagnostics)
         self.assertIsNone(metadata_redaction_diagnostic(closeout_shaped_payload))
+
+    def test_redact_diagnostics_metadata_only_scrubs_json_struct_secret_in_raw_tail(self):
+        # agent-harness#243 CR round 4 (codex + Fable): a failing command that PRINTS ordinary
+        # JSON credentials, e.g. ``print(json.dumps({"api_key": "SECRET"}))``, is captured
+        # verbatim into ``raw_tail`` as the literal text ``{"api_key":"SECRET"}``. The
+        # closing quote on the JSON KEY sits directly between the keyword and the ``:``
+        # separator, breaking the (then-)required keyword->separator->value adjacency, so
+        # neither redaction nor the fatal gate caught it. Must be redacted-to-metadata-only
+        # and independently caught by the fatal closeout gate.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"api_key":"AKIAIOSFODNN7EXAMPLEKEY"}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_nested_json_struct_secret(self):
+        # agent-harness#243 CR round 4: the same JSON-struct blind spot, one level deeper --
+        # the secret key/value pair is nested inside another object
+        # (``{"outer": {"token": "SECRET"}}``), as printed verbatim by a failing command.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"outer":{"token":"AKIAIOSFODNN7EXAMPLEKEY"}}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_json_struct_password(self):
+        # agent-harness#243 CR round 4: same JSON-struct blind spot with the "password" keyword.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"password": "AKIAIOSFODNN7EXAMPLEKEY"}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_metadata_redaction_diagnostic_catches_json_struct_secret_as_nested_mapping(self):
+        # agent-harness#243 CR round 4: the JSON-struct blind spot also applies when the
+        # secret is a genuine NESTED PYTHON MAPPING inside the closeout payload (not merely
+        # literal JSON text inside a raw_tail string) -- e.g. some other closeout field that
+        # is itself a dict rather than a pre-serialized string. `_iter_leaf_strings` used to
+        # yield a Mapping's key and its scalar value as two SEPARATE leaves, so neither carried
+        # the other's keyword context.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic
+
+        self.assertIsNotNone(metadata_redaction_diagnostic({"api_key": "AKIAIOSFODNN7EXAMPLEKEY"}))
+        self.assertIsNotNone(metadata_redaction_diagnostic({"outer": {"token": "AKIAIOSFODNN7EXAMPLEKEY"}}))
+        self.assertIsNotNone(metadata_redaction_diagnostic({"password": "AKIAIOSFODNN7EXAMPLEKEY"}))
+        # No false positive on an ordinary benign nested mapping.
+        self.assertIsNone(metadata_redaction_diagnostic({"outer": {"status": "ok"}}))
 
     def test_legacy_lookalike_seal_marker_not_final_line_still_validates(self):
         # agent-harness#243 CR (defect 2): the seal is written as the FINAL trailer line of

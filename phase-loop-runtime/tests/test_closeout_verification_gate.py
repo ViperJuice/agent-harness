@@ -245,6 +245,98 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             # The secret must not appear anywhere in the serialized closeout record.
             self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
 
+    def test_closeout_diagnostic_with_json_struct_secret_is_redacted_to_metadata_only(self):
+        # agent-harness#243 CR round 4 (codex + Fable): a failing command that PRINTS ordinary
+        # JSON credentials (e.g. ``print(json.dumps({"api_key": "SECRET"}))``) is captured
+        # verbatim into raw_tail as literal JSON text. The closing quote on the JSON key sits
+        # between the keyword and the ``:`` separator, breaking the keyword->separator->value
+        # adjacency the matcher required -- so this JSON-formatted secret bypassed BOTH the
+        # redaction path and the fatal metadata gate end-to-end through the real closeout path.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c",
+                  "import json, sys; print(json.dumps({'api_key': 'AKIAIOSFODNN7EXAMPLEKEY'})); sys.exit(1)"]],
+                None,
+                None,
+                5,
+            )
+
+            closeout = self._closeout(plan, run_dir)
+
+            self.assertEqual(closeout["verification"]["status"], "blocked")  # nonzero still blocks
+            result = closeout["verification"]["results"][0]
+            self.assertEqual(result["code"], "nonzero_exit")
+            diag = result["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            # The secret must not appear anywhere in the serialized closeout record.
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
+    def test_closeout_diagnostic_with_nested_json_struct_secret_is_redacted_to_metadata_only(self):
+        # agent-harness#243 CR round 4: the same JSON-struct blind spot, one level deeper --
+        # a secret nested inside another JSON object, printed verbatim by a failing command.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c",
+                  "import json, sys; print(json.dumps({'outer': {'token': 'AKIAIOSFODNN7EXAMPLEKEY'}})); sys.exit(1)"]],
+                None,
+                None,
+                5,
+            )
+
+            closeout = self._closeout(plan, run_dir)
+
+            self.assertEqual(closeout["verification"]["status"], "blocked")
+            result = closeout["verification"]["results"][0]
+            self.assertEqual(result["code"], "nonzero_exit")
+            diag = result["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
+    def test_closeout_diagnostic_with_json_struct_password_is_redacted_to_metadata_only(self):
+        # agent-harness#243 CR round 4: same JSON-struct blind spot with the "password" keyword.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c",
+                  "import json, sys; print(json.dumps({'password': 'AKIAIOSFODNN7EXAMPLEKEY'})); sys.exit(1)"]],
+                None,
+                None,
+                5,
+            )
+
+            closeout = self._closeout(plan, run_dir)
+
+            self.assertEqual(closeout["verification"]["status"], "blocked")
+            result = closeout["verification"]["results"][0]
+            self.assertEqual(result["code"], "nonzero_exit")
+            diag = result["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
     def test_closeout_force_all_redaction_suppresses_benign_tail(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

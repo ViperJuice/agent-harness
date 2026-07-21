@@ -831,11 +831,15 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
     # FAILING artifact (e.g. rewriting phase_alias, or deleting a passing sibling) undetected. A
     # seal MISMATCH is its OWN integrity verdict (``artifact_seal_mismatch``), never a per-stage
     # reclassification, and ordered AFTER ``log_sha256_mismatch`` / the load-time
-    # malformed/oversized guards. The seal digest excludes the per-stage byte-offset fields (see
-    # ``_canonical_artifact_digest``), so a legitimate #209 offset tamper does NOT trip the seal
-    # here — it still flows to the ``nonzero_exit`` branch where the #209 neighbour-bounds check
-    # fails it closed to an empty tail, exactly as before (zero reclassification). An UNSEALED
-    # legacy/older artifact skips this check (back-compat).
+    # malformed/oversized guards.
+    #
+    # agent-harness#243 (CR round 4): the seal digest now covers the per-stage byte-offset
+    # fields too (see ``_canonical_artifact_digest``), so on a SEALED artifact ANY offset tamper
+    # — including a coordinated tamper across two stages that stays internally consistent with
+    # the #209 neighbour-bounds check — now trips SEAL MISMATCH here, never reaching the
+    # ``nonzero_exit`` branch. An UNSEALED legacy/older artifact (no valid seal trailer) skips
+    # this check entirely (back-compat); for that case the #209 neighbour-bounds check in
+    # ``_stage_bounds``/``_stage_raw_tail`` remains the sole offset-integrity guard, unchanged.
     seal_finding = _artifact_seal_finding(artifact_path, log_bytes)
     if seal_finding is not None:
         return VerificationArtifactValidation(
@@ -885,44 +889,33 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
     )
 
 
-# agent-harness#243 (CR round 3): per-stage byte-offset fields excluded from the whole-artifact
-# seal digest. Offset integrity is enforced STRUCTURALLY by the #209 neighbour-bounds check (a
-# tampered ``log_offset``/``log_end_offset`` fails closed to an empty diagnostic tail); keeping
-# offsets OUT of the seal lets a legitimate #209 offset-tamper still flow to the ``nonzero_exit``
-# branch (where bounds catch it) instead of being reclassified as an ``artifact_seal_mismatch``.
-# Offsets never affect pass/fail (``exit_code``, which the seal DOES cover, does) — so excluding
-# them loses no forgery protection.
-_SEAL_EXCLUDED_STAGE_FIELDS = frozenset({"log_offset", "log_end_offset"})
-
-
-def _strip_seal_excluded_offsets(stage: Any) -> Any:
-    """Return a copy of a stage mapping with the per-stage byte-offset fields dropped (see
-    ``_SEAL_EXCLUDED_STAGE_FIELDS``). Non-mapping / ``None`` stages pass through unchanged."""
-    if not isinstance(stage, Mapping):
-        return stage
-    return {key: value for key, value in stage.items() if key not in _SEAL_EXCLUDED_STAGE_FIELDS}
-
-
+# agent-harness#243 (CR round 4, codex + Fable): a prior round (3) EXCLUDED the per-stage
+# byte-offset fields (``log_offset``/``log_end_offset``) from the whole-artifact seal digest,
+# reasoning that the #209 neighbour-bounds check already enforced offset integrity structurally.
+# That was wrong: it let a COORDINATED offset tamper across two stages -- e.g. extend a failing
+# stage's ``log_end_offset`` to N and simultaneously move its passing sibling's ``log_offset`` to
+# the SAME N -- pass the neighbour-bounds check (the tampered pair is internally consistent with
+# each other, just not with the truth) while the seal digest stayed UNCHANGED (offsets excluded),
+# so the forged range was accepted and BOTH stages' output leaked into the failing diagnostic's
+# tail. It also directly contradicted the contract text ("all fields except ``log_sha256``").
+# Fixed: the seal now covers every field, offsets included, per the contract. The #209
+# neighbour-bounds check (``_stage_bounds`` / ``_stage_raw_tail``) is UNCHANGED and remains the
+# offset-integrity guard for an UNSEALED legacy artifact (no valid seal trailer -> the seal check
+# is skipped entirely, back-compat). For a SEALED artifact, any offset tamper now trips the seal
+# check FIRST (it runs before the pass/fail branch — see ``validate_verification_artifact``) and
+# returns ``artifact_seal_mismatch``, a strictly stronger verdict than falling through to
+# neighbour-bounds: it flags the tamper as an INTEGRITY failure instead of silently reclassifying
+# it as an ordinary (bounded-empty-tail) stage failure.
 def _canonical_artifact_digest(payload: Mapping[str, Any]) -> str:
     """agent-harness#243: SHA-256 over the artifact payload MINUS the derived ``log_sha256``
-    field AND the per-stage byte-offset fields (``log_offset``/``log_end_offset`` on
-    ``commands[]`` / ``suite`` / ``env_refresh``), canonically serialized (sorted keys, tight
-    separators). ``log_sha256`` is excluded to break the seal<->log circular reference (the seal
-    lives inside the log that ``log_sha256`` covers). The byte offsets are excluded so a #209
-    offset tamper is caught by the neighbour-bounds check (fail-closed empty tail on the
-    ``nonzero_exit`` branch) rather than reclassified as a seal mismatch — see
-    ``_SEAL_EXCLUDED_STAGE_FIELDS``. Deterministic, so the writer and the validator agree
-    byte-for-byte over a JSON round-trip."""
-    material: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == "log_sha256":
-            continue
-        if key == "commands" and isinstance(value, list):
-            material[key] = [_strip_seal_excluded_offsets(item) for item in value]
-        elif key in ("suite", "env_refresh"):
-            material[key] = _strip_seal_excluded_offsets(value)
-        else:
-            material[key] = value
+    field, canonically serialized (sorted keys, tight separators). ``log_sha256`` is the ONLY
+    excluded field — excluded to break the seal<->log circular reference (the seal lives inside
+    the log that ``log_sha256`` covers). Every other field, including the per-stage
+    ``log_offset``/``log_end_offset`` byte-offset fields on ``commands[]`` / ``suite`` /
+    ``env_refresh``, is covered (see the module-level comment above for why offsets were folded
+    back in at CR round 4). Deterministic, so the writer and the validator agree byte-for-byte
+    over a JSON round-trip."""
+    material = {key: value for key, value in payload.items() if key != "log_sha256"}
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

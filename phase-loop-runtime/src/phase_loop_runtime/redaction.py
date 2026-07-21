@@ -42,7 +42,18 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # ``key=value``/``key: value`` shape) OR one-or-more spaces (the argv-adjacency shape),
     # as ONE shared pattern (SSOT) so both the redaction path and the fatal closeout gate stay
     # in sync.
-    ("secret_like_value", re.compile(r"(?:api[_-]?key|secret|token|password)\s*(?:[:=]\s*|\s+)['\"]?[A-Za-z0-9_\-]{12,}", re.I)),
+    #
+    # agent-harness#243 CR round 4 (codex + Fable): an ORDINARY JSON-formatted secret --
+    # e.g. a failing command that ``print(json.dumps({"api_key": "SECRET"}))``s, captured
+    # verbatim as a diagnostic's ``raw_tail`` -- was still a blind spot. The rendered text is
+    # ``..."api_key":"SECRET"...``: the KEY's own closing quote sits directly between the
+    # keyword and the ``:`` separator, so the (pre-existing) ``\s*`` before the separator
+    # alternation never advances past that quote character and the match fails. The optional
+    # ``['\"]?`` inserted here between the keyword and the separator absorbs that closing quote
+    # (a no-op for every previously-matched shape -- ``key=value``, ``key: value``,
+    # space-joined argv -- since none of those have a quote in that position), closing the gap
+    # for literal JSON text without forking a second pattern.
+    ("secret_like_value", re.compile(r"(?:api[_-]?key|secret|token|password)['\"]?\s*(?:[:=]\s*|\s+)['\"]?[A-Za-z0-9_\-]{12,}", re.I)),
     ("absolute_private_path", re.compile(r"/(?:home|users|mnt/(?:private|evidence|secure|raw|HC_Volume_[^/\s]+))/(?:[^\"'\s]+)", re.I)),
     ("provider_payload", re.compile(r"raw provider payload|provider payload|anthropic[_-]?payload|openai[_-]?payload", re.I)),
     ("credential_payload", re.compile(r"credential payload|private key|-----begin [a-z ]*private key-----", re.I)),
@@ -230,10 +241,30 @@ def _iter_leaf_strings(value: Any) -> Iterator[str]:
        string a keyword+separator+value pattern can match (the separator alternation on
        ``secret_like_value`` accepts plain whitespace, not just ``[:=]``, to match this joined
        form).
+
+    A cross-vendor CR round (codex + Fable, agent-harness#243) found the dict-key fix above
+    was still not a true superset: an ORDINARY JSON-shaped secret, e.g. a Mapping entry
+    ``{"api_key": "SECRETVALUE12"}``, yields the key leaf (``"api_key"``) and the value leaf
+    (``"SECRETVALUE12"``) SEPARATELY — the same interruption problem as the split-argv case,
+    just via dict structure instead of list adjacency. Neither leaf alone carries the other's
+    context, so ``secret_like_value`` (which requires keyword+separator+value CONTIGUOUS in one
+    leaf) never matches, even though the mapping is exactly the shape a matched keyword should
+    catch. Fixed: for every Mapping entry whose value is a scalar (``_scalar_text`` -- string,
+    int, float, bool), ALSO synthesize a composite ``key="value"`` (and bare ``key=value``) leaf
+    that restores keyword→separator→value adjacency for the shared pattern to match. This is
+    additive (the bare key and bare value leaves are still yielded too, preserving all prior
+    coverage) and stays single-pattern SSOT: only the STRINGS fed to
+    ``_FORBIDDEN_METADATA_PATTERNS`` change, not the patterns' semantics. A nested structure
+    (``{"outer": {"token": "SECRET"}}``) is caught by the same mechanism one level down, via the
+    recursion below.
     """
     if isinstance(value, Mapping):
         for key, item in value.items():
             yield str(key)
+            scalar = _scalar_text(item)
+            if scalar is not None:
+                yield f'{key}="{scalar}"'
+                yield f"{key}={scalar}"
             yield from _iter_leaf_strings(item)
         return
     if isinstance(value, (list, tuple)):
