@@ -275,6 +275,31 @@ class RotationState:
             self.cursor = (self.cursor + 1) % len(self.executors)
 
 
+_MISSING = object()
+
+
+def _delegated_child_produced_if_gates(child_automation: dict[str, object]) -> object:
+    """agent-harness#245 produced-gates parity: recover the delegated child's
+    ``produced_if_gates`` list the same way ``_ratification_audit_payload`` does
+    — prefer the raw ``native_closeout_payload`` (the BAML-validated
+    ``EmitPhaseCloseout`` doc, where ``produced_if_gates`` is a REQUIRED list
+    field, always present even when empty), then fall back to the flattened
+    top-level key ``_parse_native_closeout_status`` copies onto
+    ``child_automation`` itself. Returns the sentinel ``_MISSING`` (not
+    ``None``) when neither is present, so callers can tell "no key at all"
+    (a genuine legacy/plain-text automation block with no native closeout —
+    the documented NATIVE-compat graceful fallback) apart from "key present
+    but empty list" (a real closeout that produced zero gates, which must
+    still reach ``validate_produced_gates`` for evaluation).
+    """
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict) and "produced_if_gates" in payload:
+        return payload.get("produced_if_gates")
+    if "produced_if_gates" in child_automation:
+        return child_automation.get("produced_if_gates")
+    return _MISSING
+
+
 def _delegated_child_closeout_result(
     *,
     decision: DelegationDecision,
@@ -300,6 +325,18 @@ def _delegated_child_closeout_result(
         result["blocker_class"] = child_automation.get("automation_blocker_class")
         result["blocker_summary"] = child_automation.get("automation_blocker_summary")
         result["next_command"] = child_automation.get("automation_next_command")
+        # agent-harness#245 produced-gates parity: carry the child's own
+        # produced_if_gates declaration through so the delegated-completion
+        # recheck (_closeout_gate_recheck -> validate_produced_gates, called
+        # from the "delegated" branch below) evaluates the REAL gate list
+        # instead of silently degrading to the missing-key NATIVE-compat
+        # warn-pass. Only add the key when the child actually supplied one —
+        # a genuine legacy/plain-text child closeout has no native payload
+        # and no flattened key here either, so it keeps the documented
+        # graceful fallback for that case.
+        produced_if_gates = _delegated_child_produced_if_gates(child_automation)
+        if produced_if_gates is not _MISSING:
+            result["produced_if_gates"] = produced_if_gates
         return {key: value for key, value in result.items() if value is not None}
     if terminal_summary:
         result["status"] = terminal_summary.get("terminal_status")
@@ -3844,11 +3881,13 @@ def run_loop(
                                         # parity between the direct and delegated paths. ``closeout`` is
                                         # normalized with an explicit terminal status (its native
                                         # "status" key doesn't match what validate_produced_gates()
-                                        # expects); it does not carry produced_if_gates today (the
-                                        # delegated-child closeout payload doesn't propagate that field),
-                                        # so the produced-gates half degrades to the existing
-                                        # NATIVE-compatibility warn-pass — a pre-existing, separate
-                                        # propagation gap, not a new hole introduced here.
+                                        # expects); _delegated_child_closeout_result() also carries the
+                                        # child's real produced_if_gates onto ``closeout`` (see
+                                        # _delegated_child_produced_if_gates()) whenever the child emitted a
+                                        # native BAML closeout, so validate_produced_gates() evaluates the
+                                        # actual gate list here rather than the NATIVE-compatibility
+                                        # warn-pass. That warn-pass still applies only to a genuine
+                                        # legacy/plain-text child closeout with no native payload at all.
                                         closeout["automation_status"] = status_after_launch
                                         _delegated_gate_plan = post_launch_plan or plan
                                         _delegated_gate_outcome = _closeout_gate_recheck(

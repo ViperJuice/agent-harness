@@ -25,12 +25,32 @@ direct and delegated paths funnel through the SAME closeout helper.
 
 Deliberately UNMARKED (no ``dotfiles_integration``): every scenario here
 returns from its dispatch branch BEFORE ``build_prompt`` resolves a skill
-bundle (the preflight gates fire ahead of it; the closeout scenarios patch
+bundle (the preflight gates fire ahead of it; most closeout scenarios patch
 ``build_prompt``/``launch_with_spec``/``launch_delegated_child`` directly), so
 none of it depends on a dotfiles fleet tree.
+
+Post-merge codex CR follow-up (still #245): the original
+``test_delegated_completion_recheck_blocks_missing_produced_gates`` mocked
+``launch_delegated_child`` wholesale and handed it a hand-fabricated
+``child_closeout_result`` dict carrying ``produced_if_gates`` directly. That
+dict never passed through the production serializer
+(``_delegated_child_closeout_result``, runner.py) or the child's own parsed
+automation (``_parsed_child_automation``), so the test kept passing even
+though the real delegated path dropped ``produced_if_gates`` entirely (the
+recheck degraded to the NATIVE-compat warn-pass on every real run). The
+rewritten test (and its negative-control companion) call
+``launch_delegated_child`` directly (unmocked) via
+``DelegatedChildCloseoutGateParityTest._launch_delegated_child_real`` and only
+patch the executor-facing I/O boundary (``build_prompt``,
+``run_auth_preflight``, ``launch_with_spec``, which returns a REAL
+native-BAML-closeout JSON string for the child), so
+``_parsed_child_automation`` and ``_delegated_child_closeout_result`` run for
+real and the test proves ``produced_if_gates`` survives the actual serializer
+before asserting the recheck blocks identically to the direct path.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -40,7 +60,12 @@ from unittest.mock import patch
 
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.models import PromptBundle
-from phase_loop_runtime.runner import run_loop
+from phase_loop_runtime.runner import (
+    _closeout_gate_recheck,
+    _delegated_child_status_and_blocker,
+    launch_delegated_child,
+    run_loop,
+)
 from phase_loop_test_utils import (
     build_fake_delegation_request,
     commit_fixture_paths,
@@ -70,6 +95,50 @@ def _goal_coverage_roadmap(repo: Path) -> Path:
         encoding="utf-8",
     )
     return roadmap
+
+
+def _owned_and_produces_plan(
+    repo: Path, roadmap: Path, *, produces: str = "IF-0-TEST-1", owned_files: tuple[str, ...] = ("notes.md",)
+) -> Path:
+    """A plan with BOTH an owned-files lane (required for
+    ``validate_delegation_request`` to approve a real delegation) and a
+    ``**Produces**`` declaration (required for ``validate_produced_gates`` to
+    have an expected gate to check against, instead of the no-expected-gates
+    always-ok branch)."""
+    owned = ", ".join(f"`{item}`" for item in owned_files)
+    body = (
+        "# RUNNER\n\n"
+        "## Lanes\n\n"
+        "### SL-0 - RUNNER\n"
+        f"- **Owned files**: {owned}\n\n"
+        f"**Produces**: {produces}\n\n"
+        "## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n"
+    )
+    plan = write_phase_plan(repo, "RUNNER", roadmap, body=body)
+    commit_fixture_paths(repo, "add plan", roadmap, plan)
+    return plan
+
+
+def _native_closeout_output(
+    produced_if_gates: list[str], *, terminal_status: str = "complete", verification_status: str = "passed"
+) -> str:
+    """A REAL native BAML closeout JSON payload (the exact shape
+    ``_parse_native_closeout_status``/``PhaseLoopCloseoutV1`` expects), used as
+    the fake executor's raw output text so ``_parsed_child_automation`` parses
+    it for real rather than a hand-fabricated dict standing in for its
+    output."""
+    closeout = {
+        "terminal_status": terminal_status,
+        "verification_status": verification_status,
+        "dirty_paths": [],
+        "produced_if_gates": list(produced_if_gates),
+        "next_action": None,
+        "blocker_class": None,
+        "blocker_summary": None,
+        "human_required": None,
+        "required_human_inputs": [],
+    }
+    return json.dumps(closeout)
 
 
 class DispatchPreflightGateParityTest(unittest.TestCase):
@@ -261,22 +330,124 @@ class DelegatedChildCloseoutGateParityTest(unittest.TestCase):
             self.assertEqual(snapshot.blocker_class, "contract_bug")
             self.assertIn("goal-coverage", (snapshot.blocker_summary or "").lower())
 
+    def _launch_delegated_child_real(
+        self, repo: Path, roadmap: Path, plan: Path, *, produced_if_gates: list[str], target_executor: str = "codex"
+    ) -> dict:
+        """Drives the REAL ``launch_delegated_child`` -- real
+        ``validate_delegation_request``, real ``_parsed_child_automation`` on
+        the child's actual (fake-executor) output text, real
+        ``_delegated_child_closeout_result`` serializer, real
+        ``ParentChildRunMetadata.to_json``/``merge_launch_metadata``. Only the
+        executor-facing I/O boundary is patched: ``build_prompt`` (skill-pack
+        resolution, irrelevant to gate logic and dotfiles-fleet-dependent),
+        ``run_auth_preflight`` (no real credentials in a test repo), and
+        ``launch_with_spec`` (no real subprocess), which returns a REAL native
+        BAML closeout JSON payload for the child to parse."""
+        request = build_fake_delegation_request(
+            request_id="req-produced-gates",
+            target_executor=target_executor,
+            product_action="execute",
+            owned_files=("notes.md",),
+            expected_output="Delegated child work",
+        )
+        output = _native_closeout_output(produced_if_gates)
+
+        def _fake_build_prompt(*args, **kwargs) -> PromptBundle:
+            return PromptBundle(workflow_command="execute", body="stub", injection_mode="context_file")
+
+        def _fake_launch(spec, dry_run=False, log_path=None, **kwargs) -> LaunchResult:
+            return LaunchResult(command=spec.command, returncode=0, output=output, executor=spec.executor)
+
+        with patch("phase_loop_runtime.runner.build_prompt", side_effect=_fake_build_prompt), \
+             patch(
+                 "phase_loop_runtime.runner.run_auth_preflight",
+                 return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})(),
+             ), \
+             patch("phase_loop_runtime.runner.launch_with_spec", side_effect=_fake_launch):
+            outcome = launch_delegated_child(
+                repo=repo,
+                roadmap=roadmap,
+                parent_phase="RUNNER",
+                parent_action="execute",
+                parent_executor="codex",
+                plan=plan,
+                request=request,
+                dry_run=False,
+            )
+
+        self.assertEqual(outcome["decision"]["status"], "approved", outcome["decision"])
+        closeout = outcome["launch_metadata"]["parent_child"]["child_closeout_result"]
+        self.assertIsInstance(closeout, dict)
+        return closeout
+
     def test_delegated_completion_recheck_blocks_missing_produced_gates(self):
+        """agent-harness#245 (post-merge codex CR follow-up): the original
+        version of this test mocked ``launch_delegated_child`` wholesale and
+        handed it a hand-fabricated ``{"produced_if_gates": []}`` dict that
+        never passed through the real serializer -- masking the actual gap
+        (the delegated closeout serializer dropped ``produced_if_gates``
+        entirely, so the real recheck always degraded to the NATIVE-compat
+        warn-pass). This version drives the REAL
+        ``launch_delegated_child`` -> ``_parsed_child_automation`` ->
+        ``_delegated_child_closeout_result`` chain (see
+        ``_launch_delegated_child_real``) with a child that legitimately
+        declares a produced-gates list MISSING the plan's expected gate, then
+        runs the real ``_closeout_gate_recheck`` and asserts it blocks with
+        the same block ``validate_produced_gates`` produces on the direct
+        path (pinned identical by ``test_direct_and_delegated_paths_share_single_closeout_helper``)."""
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
             roadmap.write_text("# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n", encoding="utf-8")
-            plan = _clean_plan(repo, roadmap, produces="IF-0-TEST-1")
+            plan = _owned_and_produces_plan(repo, roadmap, produces="IF-0-TEST-1")
 
-            snapshot, results, fake_delegated = self._run_delegated(
-                repo, roadmap, plan,
-                closeout_result={"status": "complete", "produced_if_gates": []},
+            # The child legitimately emits a produced-gates declaration, but it
+            # does not include the plan's expected IF-0-TEST-1 gate -- not an
+            # empty list (which the BAML terminal_status=="complete" validator
+            # would reject BEFORE validate_produced_gates ever ran), but a real
+            # mismatch validate_produced_gates must catch.
+            closeout = self._launch_delegated_child_real(
+                repo, roadmap, plan, produced_if_gates=["IF-0-OTHER-9"],
             )
 
-            self.assertTrue(fake_delegated.called, "the delegated-child launch must actually run")
-            self.assertEqual(snapshot.phases["RUNNER"], "blocked")
-            self.assertEqual(snapshot.blocker_class, "contract_bug")
-            self.assertIn("produced_if_gates", snapshot.blocker_summary or "")
+            # Proof the REAL serializer (not a fabricated dict) carried the
+            # child's produced_if_gates through _delegated_child_closeout_result
+            # -> ParentChildRunMetadata.to_json -> merge_launch_metadata intact.
+            self.assertEqual(closeout.get("produced_if_gates"), ["IF-0-OTHER-9"])
+
+            status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
+            closeout["automation_status"] = status_after_launch
+            gate_outcome = _closeout_gate_recheck(repo, roadmap, plan, closeout, status_after_launch, event_blocker)
+
+            self.assertEqual(gate_outcome.blocked_reason, "gate_validation_failed")
+            self.assertEqual(gate_outcome.event_blocker["blocker_class"], "contract_bug")
+            self.assertEqual(
+                gate_outcome.event_blocker["blocker_summary"],
+                "completed closeout produced_if_gates did not match the active phase plan",
+            )
+
+    def test_delegated_completion_recheck_produced_gates_satisfied_real_path_not_blocked(self):
+        """Companion negative control (real path): a delegated child whose
+        REAL, serializer-propagated ``produced_if_gates`` legitimately
+        satisfies the plan's declared gate must NOT be blocked -- proves the
+        fix does not introduce a false positive on the happy path."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text("# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n", encoding="utf-8")
+            plan = _owned_and_produces_plan(repo, roadmap, produces="IF-0-TEST-1")
+
+            closeout = self._launch_delegated_child_real(
+                repo, roadmap, plan, produced_if_gates=["IF-0-TEST-1"],
+            )
+            self.assertEqual(closeout.get("produced_if_gates"), ["IF-0-TEST-1"])
+
+            status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
+            closeout["automation_status"] = status_after_launch
+            gate_outcome = _closeout_gate_recheck(repo, roadmap, plan, closeout, status_after_launch, event_blocker)
+
+            self.assertIsNone(gate_outcome.blocked_reason)
+            self.assertEqual(gate_outcome.automation_status, "complete")
 
     def test_delegated_completion_with_satisfied_gates_is_not_blocked(self):
         """Negative control: a delegated child that legitimately satisfies both
