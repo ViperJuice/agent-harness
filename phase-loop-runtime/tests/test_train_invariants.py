@@ -180,7 +180,7 @@ def _setup_p3_done(
 
 def _make_merge_pr_stub(merge_log: List[str], merged_sha_map: Optional[Dict[str, str]] = None):
     """Merge stub that records workspace names and returns deterministic merged SHAs."""
-    def _merge_pr(workspace: Path, branch: str) -> str:
+    def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
         merge_log.append(workspace.name)
         if merged_sha_map and workspace.name in merged_sha_map:
             return merged_sha_map[workspace.name]
@@ -219,7 +219,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert merge_log == [], (
@@ -246,7 +246,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=False,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert merge_log == [], (
@@ -275,7 +275,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _reverify_fn=lambda ws, rp, rm: ws.name != "repo-b",
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # repo-a merged (upstream, root — no dependency, no reverify needed before merge)
@@ -331,7 +331,7 @@ class TestInvariant2FalseGreenKiller:
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # The P4 set_upstream_ref call for repo-b (the downstream) must carry
@@ -385,7 +385,7 @@ class TestInvariant2FalseGreenKiller:
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=_reverify_logging,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # Locate the P4 set_upstream_ref call for repo-b (downstream re-injection).
@@ -451,7 +451,7 @@ class TestInvariant2FalseGreenKiller:
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert captured_refs, "set_upstream_ref must be called for repo-b"
@@ -492,7 +492,7 @@ class TestInvariant3PreflightZeroPRs:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "preflight_failed", (
@@ -522,7 +522,7 @@ class TestInvariant3PreflightZeroPRs:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # Ledger may not exist at all, or may be empty.
@@ -561,7 +561,7 @@ class TestInvariant4NoPhaseLoopState:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=lambda ws, rp, rm: True,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged"
@@ -589,7 +589,7 @@ class TestInvariant4NoPhaseLoopState:
                 _live_pr_head_sha_fn=lambda ws, br: None,
                 _merge_phase_enabled=True,
                 _merge_pr_fn=_make_merge_pr_stub([]),
-                _pr_merged_sha_fn=lambda ws, br: None,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
             )
 
 
@@ -624,7 +624,7 @@ class TestInvariant5AutonomyBoundary:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "drafts_open", (
@@ -655,7 +655,7 @@ class TestInvariant5AutonomyBoundary:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         blocker = result.get("terminal_blocker") or {}
@@ -683,7 +683,7 @@ class TestInvariant5AutonomyBoundary:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # The result must NOT have human_required=True anywhere.

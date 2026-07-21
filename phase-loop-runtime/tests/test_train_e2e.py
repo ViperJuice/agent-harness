@@ -113,7 +113,7 @@ def _reverify_pass(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
 
 def _make_merge_pr_stub(merge_log: List[str]):
     """Records each merge call and returns a deterministic merged SHA."""
-    def _merge_pr(workspace: Path, branch: str) -> str:
+    def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
         merge_log.append(workspace.name)
         return f"sha-merged-{workspace.name}"
     return _merge_pr
@@ -166,7 +166,7 @@ class TestE2EFullHappyPath:
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged", (
@@ -205,7 +205,7 @@ class TestE2EFullHappyPath:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # repo-a (root) must be published before repo-b, which before repo-c.
@@ -236,7 +236,7 @@ class TestE2EFullHappyPath:
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert merge_log == ["repo-a", "repo-b", "repo-c"], (
@@ -265,7 +265,7 @@ class TestE2EFullHappyPath:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -320,7 +320,7 @@ class TestE2ENonApprovalTerminal:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "review_halted", (
@@ -350,7 +350,7 @@ class TestE2ENonApprovalTerminal:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         blocker = result.get("terminal_blocker") or {}
@@ -379,7 +379,7 @@ class TestE2ENonApprovalTerminal:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -437,7 +437,7 @@ class TestE2EResumableFailure:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "blocked", (
@@ -468,7 +468,7 @@ class TestE2EResumableFailure:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -511,7 +511,7 @@ class TestE2EResumableFailure:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # --- Resume run: run_loop passes for all; repo-a PR already open (skipped) ---
@@ -538,7 +538,7 @@ class TestE2EResumableFailure:
             _merge_pr_fn=_make_merge_pr_stub(merge_log_resume),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged", (
@@ -577,7 +577,7 @@ class TestE2EResumableFailure:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         def _pr_is_open_resume(workspace: Path, branch: str) -> bool:
@@ -611,7 +611,7 @@ class TestE2EResumableFailure:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # repo-a already had an open PR; resume must NOT re-publish it.

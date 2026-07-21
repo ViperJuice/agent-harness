@@ -412,6 +412,163 @@ class TestPrebuiltPreflightRealGit:
         paths = _prebuilt_owned_paths(repo, "main")
         assert sorted(paths) == ["a.py", "b.py"]
 
+    # --- agent-harness#250 (N1/N4): `-z --no-renames` against a REAL git repo, proving
+    # the rename source is surfaced (not hidden behind the destination) and a legit
+    # within-scope rename still lists both endpoints identically to the broker's own
+    # `_branch_diff_paths` re-derivation (the two MUST agree byte-for-byte).
+    def test_rename_of_a_file_surfaces_both_source_and_destination(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        (repo / "unowned").mkdir()
+        (repo / "unowned" / "x.py").write_text("x\n")
+        _git(repo, "add", "unowned/x.py")
+        _git(repo, "commit", "-q", "-m", "add unowned file")
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "fetch", "-q", "origin")
+
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        (repo / "owned").mkdir()
+        _git(repo, "mv", "unowned/x.py", "owned/x.py")
+        _git(repo, "commit", "-q", "-m", "move unowned file into owned/")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # Both the destination AND the source must be present — a plain `--name-only`
+        # (rename-detecting) diff would report ONLY "owned/x.py", hiding the unowned
+        # source from any downstream coverage check.
+        assert sorted(paths) == ["owned/x.py", "unowned/x.py"]
+
+    def test_rename_within_the_same_owned_directory_lists_both_endpoints(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        (repo / "owned").mkdir()
+        (repo / "owned" / "old.py").write_text("x\n")
+        _git(repo, "add", "owned/old.py")
+        _git(repo, "commit", "-q", "-m", "add owned file")
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "fetch", "-q", "origin")
+
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        _git(repo, "mv", "owned/old.py", "owned/new.py")
+        _git(repo, "commit", "-q", "-m", "rename within owned/")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # A within-scope rename lists BOTH endpoints (delete + add), not just the dest —
+        # matching the broker side so a directory-owned entry covers both and the
+        # coordinator never derives a scope the broker would then false-reject.
+        assert sorted(paths) == ["owned/new.py", "owned/old.py"]
+
+    # --- agent-harness#250 (IF-0-BRK-1 sharpening): "identical parsing" is not a strong
+    # enough freeze if both sides identically .strip() a path — that still approves the
+    # WRONG path when the real filename and an owned entry differ only by
+    # whitespace/newlines. Prove against a REAL git repo that a leading/trailing-
+    # whitespace filename and a filename with an embedded newline survive the `-z`
+    # NUL-split byte-for-byte (no trimming), which is what the coverage check needs to
+    # never collapse two distinct filenames into one.
+    def test_owned_paths_preserve_whitespace_and_embedded_newline_filenames_verbatim(self, tmp_path: Path):
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        padded = "  padded.py  "
+        newline_name = "has\nnewline.py"
+        (repo / padded).write_text("x\n")
+        (repo / newline_name).write_text("y\n")
+        _git(repo, "add", "--", padded, newline_name)
+        _git(repo, "commit", "-q", "-m", "weird filenames")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        assert set(paths) == {padded, newline_name}
+        # A stripped/trimmed variant must be ABSENT — proving neither side trims.
+        assert "padded.py" not in paths
+        assert "has" not in paths and "newline.py" not in paths
+
+    # --- agent-harness#250 (IF-0-BRK-1 byte-identity hole, cross-vendor CR): the previous
+    # `text=True` capture applied universal-newline decoding, which translates the raw
+    # bytes `\r` AND `\r\n` into `\n` at decode time — AFTER which the NUL-split can no
+    # longer tell `a\r.py`, `a\r\n.py`, and `a\n.py` apart, so three DISTINCT valid git
+    # paths collapsed onto the SAME Python string. Prove against a REAL git repo that all
+    # three survive as distinct entries with the bytes-capture + os.fsdecode fix.
+    def test_owned_paths_distinguish_cr_crlf_and_lf_filenames(self, tmp_path: Path):
+        import os as _os
+
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        cr_name = _os.fsdecode(b"a\rcr.py")
+        crlf_name = _os.fsdecode(b"a\r\ncrlf.py")
+        lf_name = "a\nlf.py"
+        for name in (cr_name, crlf_name, lf_name):
+            (repo / name).write_text("x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "cr/crlf/lf filenames")
+
+        paths = _prebuilt_owned_paths(repo, "main")
+        # All three must be present AND distinct — a universal-newline collapse would
+        # merge two or more of these onto the same string.
+        assert set(paths) == {cr_name, crlf_name, lf_name}
+        assert len(paths) == 3
+
+    # --- agent-harness#250: a git path is bytes, not guaranteed UTF-8. `text=True` would
+    # raise UnicodeDecodeError on a non-UTF-8 filename byte; the fix (bytes-capture +
+    # os.fsdecode with surrogateescape) must not crash and must round-trip losslessly.
+    def test_owned_paths_do_not_raise_on_invalid_utf8_filename(self, tmp_path: Path):
+        import os as _os
+
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/prebuilt")
+        invalid_bytes = b"invalid-\xffbyte.py"
+        name = _os.fsdecode(invalid_bytes)
+        (repo / name).write_text("x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "invalid utf-8 filename")
+
+        paths = _prebuilt_owned_paths(repo, "main")  # must not raise
+        assert len(paths) == 1
+        assert _os.fsencode(paths[0]) == invalid_bytes
+
+    # --- agent-harness#250 (cross-vendor CR, codex): a DOWNSTREAM consumer of the
+    # surrogate-escaped `_prebuilt_owned_paths` output re-encoded it with a strict
+    # (default utf-8) str.encode() when building the owned-path digest in
+    # `_default_build_admission`, raising UnicodeEncodeError on the very surrogates
+    # os.fsdecode produces for an invalid-UTF-8 filename byte -- so the LIVE publish
+    # path still crashed on an owned path git itself accepted. The fix swaps that
+    # encode() for os.fsencode (same surrogateescape policy as os.fsdecode), so it
+    # must not raise here and must produce a deterministic digest. ---
+    def test_default_build_admission_does_not_raise_on_invalid_utf8_owned_path(self, tmp_path: Path):
+        import os as _os
+        from types import SimpleNamespace
+
+        from phase_loop_runtime.train_runner import _default_build_admission
+
+        invalid_bytes = b"invalid-\xffbyte.py"
+        owned_paths = [_os.fsdecode(invalid_bytes)]
+        runtime = _make_runtime(broker_client=None)
+        node = SimpleNamespace(node_id="repo-a")
+
+        # Must NOT raise UnicodeEncodeError.
+        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
+        assert admission is not None
+        assert admission.approval_digest
+
+        # The digest must be deterministic for the same owned_paths (not a random
+        # per-call artifact of the surrogate handling).
+        admission2 = _default_build_admission(runtime, node, tmp_path, owned_paths)
+        assert admission.approval_digest == admission2.approval_digest
+
+    def test_default_build_admission_digest_unchanged_for_ascii_owned_paths(self, tmp_path: Path):
+        """os.fsencode(s) == s.encode('utf-8') for ordinary ASCII/UTF-8 paths, so this
+        fix must not change the digest (and therefore the approval) for the normal case."""
+        import hashlib
+        import os as _os
+        from types import SimpleNamespace
+
+        from phase_loop_runtime.train_runner import _default_build_admission
+
+        owned_paths = ["a.py", "src/pkg/mod.py"]
+        runtime = _make_runtime(broker_client=None)
+        node = SimpleNamespace(node_id="repo-a")
+
+        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
+
+        expected_owned_digest = hashlib.sha256(_os.fsencode("\0".join(owned_paths))).hexdigest()
+        assert expected_owned_digest == hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+        assert admission.approval_digest
+
 
 # ---------------------------------------------------------------------------
 # 6. Dirty prebuilt workspace fails preflight (via the default preflight path)

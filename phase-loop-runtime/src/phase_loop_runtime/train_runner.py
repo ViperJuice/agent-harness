@@ -56,12 +56,15 @@ module is fully testable without live network access.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
+from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
 from .cross_repo_channel import ChannelDescriptor, set_upstream_ref
 from .train_ledger import LedgerRecord, append_record, read_ledger
 from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
@@ -112,7 +115,15 @@ def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Pat
     factory = FencedAdmissionFactory()
     base = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True)
     base_sha = base.stdout.strip() or ("0" * 40)
-    owned_digest = hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+    # agent-harness#250 (cross-vendor CR, codex): owned_paths are surrogate-escaped
+    # strings from os.fsdecode (see _prebuilt_owned_paths), which can carry lone
+    # surrogates for an invalid-UTF-8 filename byte. A strict str.encode() raises
+    # UnicodeEncodeError on those surrogates, aborting the LIVE publish path on an
+    # owned path that git itself accepted. os.fsencode uses the same surrogateescape
+    # policy as os.fsdecode, so it round-trips losslessly back to the original bytes
+    # instead of raising. For ordinary ASCII/UTF-8 paths os.fsencode(s) == s.encode()
+    # (utf-8), so existing digests for normal paths are byte-for-byte unchanged.
+    owned_digest = hashlib.sha256(os.fsencode("\0".join(owned_paths))).hexdigest()
     approval = factory.approval(
         roadmap_digest=runtime.roadmap_digest,
         effective_code=owned_digest,
@@ -242,22 +253,43 @@ def _prebuilt_owned_paths(
     merge-base) so the published PR's owned-paths reflect exactly the committed
     work.  Stubbable seam: inject ``_prebuilt_owned_paths_fn`` into
     :func:`run_train`.
+
+    agent-harness#250 (N1/N4): ``-z --no-renames``, NOT plain ``--name-only``, and this
+    MUST stay byte-for-byte identical to the broker's own re-derivation in
+    ``GitHubBrokerAdapter._branch_diff_paths`` (``convergence/broker/credsep.py``). ``-z``
+    NUL-delimits output (no ``core.quotepath`` C-quoting, no newline-in-filename
+    ambiguity); ``--no-renames`` reports a rename as an add + a delete instead of hiding
+    the source under the destination, so a branch that renames an UNOWNED file into this
+    node's owned tree still surfaces the unowned source path here (the broker's own
+    coverage check then catches it). Changing this diff command without changing the
+    broker's in lockstep desyncs the two derivations — a false owned-scope-exceeded reject
+    that STICKS (the broker records a per-triple no-effect terminal that replays).
+
+    agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR): capture stdout as BYTES
+    (no ``text=True``). ``text=True`` applies universal-newline decoding, which translates
+    the raw bytes ``\\r`` AND ``\\r\\n`` into ``\\n`` at decode time — after which a NUL-split
+    can no longer tell ``a\\r.py``, ``a\\r\\n.py``, and ``a\\n.py`` apart, collapsing three
+    distinct valid git paths onto the same Python string. ``text=True`` also raises
+    ``UnicodeDecodeError`` on a non-UTF-8 filename byte. Splitting the raw bytes on
+    ``b"\\0"`` and decoding each element with ``os.fsdecode`` (surrogateescape) avoids both,
+    and MUST stay identical to the broker's own ``_branch_diff_paths`` decode policy
+    (``convergence/broker/credsep.py``) so the two sides never desync.
     """
     completed = subprocess.run(
-        ["git", "-C", str(workspace), "diff", "--name-only", f"origin/{base}...HEAD"],
+        ["git", "-C", str(workspace), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...HEAD"],
         capture_output=True,
-        text=True,
         timeout=30,
     )
     if completed.returncode != 0:
         # Fail CLOSED: a diff error must not yield an empty owned-paths scope that the
         # broker admission would approve while the push still publishes the real branch
         # (approved-nothing / published-something scope mismatch).  Raising blocks the node.
+        stderr_text = os.fsdecode(completed.stderr).strip() if completed.stderr else ""
         raise RuntimeError(
             f"could not compute prebuilt owned paths vs 'origin/{base}': "
-            f"{completed.stderr.strip() or 'git diff failed'}"
+            f"{stderr_text or 'git diff failed'}"
         )
-    owned = [p.strip() for p in completed.stdout.splitlines() if p.strip()]
+    owned = [os.fsdecode(p) for p in completed.stdout.split(b"\0") if p]
     if not owned:
         # A prebuilt node that is ahead-of-base yet has no net file changes has nothing
         # to publish — fail closed rather than admit an empty scope.
@@ -310,6 +342,49 @@ def _default_preflight(
 
 
 # ---------------------------------------------------------------------------
+# Repo-identity binding for gh calls (agent-harness#250 CR follow-up, defect 2)
+
+
+def _gh_repo_binding(workspace: Path) -> "tuple[list[str], Optional[dict[str, str]]]":
+    """Resolve how to bind a ``gh`` subprocess call in ``workspace`` to the repo the
+    broker actually validated and pushed to, instead of letting ``gh`` fall back to
+    cwd-based resolution.
+
+    ``GH_REPO`` (if set in the calling environment) overrides ``gh``'s cwd-based repo
+    selection.  The broker's own ``credsep.py`` already neutralizes this for its own
+    calls (``BrokerEnvironmentBoundary`` strips ``GH_REPO`` for the broker role; every
+    broker ``gh`` invocation also carries an explicit host-qualified ``--repo``).  The
+    coordinator's merge/recovery ``gh pr view/ready/merge`` calls (and the
+    ``_live_pr_head_sha``/``_live_pr_merged_sha`` recovery reads) previously relied on
+    ``cwd`` alone — a stray ``GH_REPO`` in the environment could redirect them to a
+    DIFFERENT repository than the one actually pushed to, letting a wrong-repo PR pass
+    base/head checks and get recorded as this train node's merge.
+
+    Returns ``(["--repo", "<host>/<owner>/<repo>"], <env with GH_REPO stripped>)``
+    when the workspace's ``origin`` remote resolves to an allow-listed host — the
+    explicit host-qualified ``--repo`` beats a stray ``GH_REPO``/``GH_HOST``/gh-config,
+    mirroring credsep's own posture on the coordinator's merge side.  ``GH_REPO`` is
+    ALSO stripped from the environment in this case (belt-and-suspenders, matching
+    credsep's ``BrokerEnvironmentBoundary`` doing both at once) rather than relying
+    solely on ``--repo``'s documented precedence.  Falls back to
+    ``([], <env with GH_REPO stripped>)`` when the origin cannot be resolved (fail-closed
+    default: with no explicit ``--repo`` to pin, ``GH_REPO`` is neutralized so cwd's own
+    origin remains the authoritative selector instead of a stray redirect).
+    """
+    env = {k: v for k, v in os.environ.items() if k not in REPO_REDIRECT_KEYS}
+    try:
+        # `run=subprocess.run` is passed EXPLICITLY (not relying on
+        # resolve_broker_repo_identity's own default, which is bound to credsep.py's
+        # `subprocess.run` reference at import time) so a test/production monkeypatch of
+        # THIS module's `subprocess.run` (the same seam every other gh/git call below
+        # goes through) also governs the repo-identity resolution's git call.
+        slug = resolve_broker_repo_identity(workspace, run=subprocess.run)
+        return ["--repo", slug], env
+    except Exception:
+        return [], env
+
+
+# ---------------------------------------------------------------------------
 # Live PR state seams
 
 
@@ -337,11 +412,18 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
     number, not a branch ref).
 
     Stubbable seam: inject ``_live_pr_head_sha_fn`` into :func:`run_train`.
+
+    agent-harness#250 (N7 CR follow-up, defect 2): bound to the broker-validated repo
+    via an explicit ``--repo`` (or ``GH_REPO``-neutralized as a fail-closed fallback) —
+    see :func:`_gh_repo_binding` — so a stray ``GH_REPO`` cannot redirect this recovery
+    read to a different repository than the one actually pushed to.
     """
+    repo_args, env_override = _gh_repo_binding(workspace)
     try:
         completed = subprocess.run(
             [
                 "gh", "pr", "list",
+                *repo_args,
                 "--head", branch,
                 "--state", "open",
                 "--limit", "1",
@@ -352,6 +434,7 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
             text=True,
             timeout=15,
             cwd=str(workspace),
+            env=env_override,
         )
         sha = completed.stdout.strip() if completed.returncode == 0 else ""
         return sha or None
@@ -367,43 +450,216 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
 _TRAIN_REVIEW_NODE_ID: str = "_train_review_"
 
 
-def _live_merge_pr(workspace: Path, branch: str) -> str:
+def _live_merge_pr(
+    workspace: Path,
+    branch: str,
+    base: str = _DEFAULT_BASE,
+    head_sha: Optional[str] = None,
+) -> str:
     """Merge the PR for ``branch`` via the GitHub CLI; return the merge commit SHA.
 
-    Idempotent: checks ``_live_pr_merged_sha`` before issuing the merge command.
-    Already-merged PRs return the existing SHA without error.
+    Idempotent: checks ``_live_pr_merged_sha`` (now base-checked — finding 3
+    below) before issuing the merge command. Already-merged PRs return the
+    existing SHA without error, PROVIDED they merged into the expected
+    ``base``; a PR merged into a different base fails closed instead (see
+    ``_live_pr_merged_sha``).
+
+    Cross-vendor CR follow-up to N6/N7 (agent-harness#250), five findings,
+    all fixed here:
+
+    1. **No bare ``--yes``.**  ``gh pr merge`` (gh >= 2.x) has no ``--yes``
+       flag; supplying one aborted every live merge attempt with
+       ``unknown flag: --yes``.  Supplying a merge method (``--merge``)
+       already makes ``gh pr merge`` non-interactive in a headless context,
+       so the flag is simply dropped.
+
+    2. **Draft PRs are readied before merging.**  The governed publish path
+       always opens DRAFT PRs; GitHub refuses to merge a draft.  Before
+       merging, ``isDraft`` is read (as part of the combined pre-merge
+       ``gh pr view`` below) and, if true, ``gh pr ready <branch>`` is run.
+       A ``gh pr ready`` failure fails CLOSED — no merge is issued.
+
+    3. See ``_live_pr_merged_sha`` — the already-merged short-circuit above
+       is now base-checked AND head-checked (CR recheck symmetry fix), not
+       just base/head-checked at first-time merge time.
+
+    4. **Head pinned to the broker-admitted SHA.**  A push after broker
+       admission could let ``gh pr merge`` land unchecked content (the same
+       TOCTOU class as the base check, applied to the head).  When
+       ``head_sha`` is supplied (the ADMITTED SHA — the ledger record written
+       at ``pr_open`` publish time, threaded from ``completed_nodes`` the same
+       way ``base`` is threaded from ``_DEFAULT_BASE``; NEVER the live-
+       preferring resume value), it is passed to ``gh pr merge`` as
+       ``--match-head-commit`` so GitHub itself refuses the merge —
+       atomically, closing the gap between our own pre-checks and the merge
+       call — if the head has advanced. As defense-in-depth on top of that
+       atomic flag, the CURRENT ``headRefOid`` (read in the same combined
+       pre-merge ``gh pr view`` call as the base check below) is also compared
+       to ``head_sha`` explicitly and fails CLOSED before ``gh pr merge`` is
+       even invoked, for gh versions/edge-cases where ``--match-head-commit``
+       alone might not be trusted. Callers that cannot supply a ``head_sha``
+       degrade safely: no ``--match-head-commit`` flag is passed and no
+       headRefOid comparison is made (unpinned, as before N7); the governed
+       merge-loop call site always supplies the admitted SHA and fails closed
+       itself if it is unexpectedly missing (see ``run_train``'s P4 merge
+       loop) rather than silently degrading to an unpinned merge.
+
+    Base retarget (pre-existing N7 guard): the PR's CURRENT ``baseRefName``
+    is re-read immediately before merging (via the same combined
+    ``gh pr view <branch>`` call used for the draft/head checks — the same
+    branch-to-PR resolution ``gh pr merge`` itself uses) and merging fails
+    CLOSED on a mismatch against the base the broker's owned-scope check
+    validated at publish time.
+
+    The idempotent already-merged guard runs FIRST and short-circuits before
+    any of the draft/base/head checks below — an already-merged PR cannot be
+    un-merged by a later retarget or push.
+
+    Repo identity (agent-harness#250 CR follow-up, defect 2): every ``gh`` call
+    below is bound to the broker-validated repo via an explicit ``--repo``
+    (falling back to a ``GH_REPO``-neutralized environment when that cannot be
+    resolved) — see ``_gh_repo_binding`` — so a stray ``GH_REPO`` cannot
+    redirect the merge to a different repository than the one actually pushed
+    to.
+
+    5. **Precheck->merge TOCTOU on the post-merge SHA read (agent-harness#250
+       CR recheck).** There is a window between the head/base precheck above
+       and the ``gh pr merge`` call itself: an external actor can push a
+       different head B and merge it in that window. ``gh`` CLI (>= 2.96.0)
+       returns SUCCESS from ``gh pr merge`` when its refreshed state finds
+       the PR ALREADY MERGED — it short-circuits BEFORE constructing the
+       merge mutation that carries ``expectedHeadOid``, so
+       ``--match-head-commit`` is NOT enforced in that case. A bare
+       post-merge ``mergeCommit.oid`` read would then silently record B's
+       merge SHA as this run's success. Instead, the post-merge SHA is
+       resolved by RE-RUNNING the already-hardened, head/base-validated
+       ``_live_pr_merged_sha`` (with the same ``base``/``head_sha`` this call
+       was given) — it fails CLOSED (``pr-merged-wrong-base`` /
+       ``pr-merged-wrong-head``) if the PR that actually ended up MERGED does
+       not match what was admitted, instead of recording an
+       externally-merged, unadmitted head as a success. ``--match-head-commit``
+       is kept as defense-in-depth for the ordinary (non-already-merged) path.
 
     Stubbable seam: inject ``_merge_pr_fn`` into :func:`run_train`.
     """
-    # Idempotent guard: if already merged, return the existing SHA.
-    existing = _live_pr_merged_sha(workspace, branch)
+    repo_args, env_override = _gh_repo_binding(workspace)
+
+    # Idempotent guard: if already merged (to the expected base — finding 3
+    # fails this closed on a base mismatch instead of returning; and,
+    # symmetrically, to the expected head — CR recheck fails this closed on a
+    # head mismatch too), return the existing SHA without any further checks
+    # below.
+    existing = _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
     if existing:
         return existing
 
+    # Combined pre-merge read (findings 2 + N7 base-retarget, in one `gh pr
+    # view` call): draft state, current base, current head.
+    pre_merge = subprocess.run(
+        ["gh", "pr", "view", branch, *repo_args, "--json", "isDraft,baseRefName,headRefOid"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_override,
+    )
+    if pre_merge.returncode != 0:
+        raise RuntimeError(
+            f"could not read PR state for branch '{branch}' in '{workspace}' "
+            f"before merge: {pre_merge.stderr.strip() or 'gh pr view failed'}"
+        )
+    try:
+        pre_merge_data = json.loads(pre_merge.stdout or "{}")
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not parse PR state for branch '{branch}' in '{workspace}' "
+            f"before merge: {exc}"
+        ) from exc
+
+    # Finding 2: draft PRs cannot be merged — ready it first; fail closed
+    # (no merge issued) if `gh pr ready` itself fails.
+    if pre_merge_data.get("isDraft"):
+        ready = subprocess.run(
+            ["gh", "pr", "ready", branch, *repo_args],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env_override,
+        )
+        if ready.returncode != 0:
+            raise RuntimeError(
+                f"gh pr ready failed for branch '{branch}' in '{workspace}': "
+                f"{ready.stderr.strip() or 'unknown error'}; refusing to merge "
+                f"a draft PR"
+            )
+
+    # TOCTOU guard (N7): the PR's CURRENT base must still match the base the
+    # broker's owned-scope check validated at publish time. Fail closed on a
+    # mismatch — never merge a PR whose base cannot be confirmed.
+    current_base = pre_merge_data.get("baseRefName")
+    if current_base != base:
+        raise RuntimeError(
+            f"pr-base-retargeted: branch '{branch}' in '{workspace}' currently "
+            f"targets base '{current_base}', but the broker's owned-scope check "
+            f"validated it against '{base}' — the PR's base was retargeted after "
+            f"admission (agent-harness#250 N7 TOCTOU guard); refusing to merge"
+        )
+
+    # N7 CR follow-up (defect 1 hardening): fail closed BEFORE issuing `gh pr
+    # merge` at all if our own read of the CURRENT headRefOid already diverges
+    # from the admitted `head_sha` — defense-in-depth on top of
+    # --match-head-commit below (finding 4), for cases where that flag alone
+    # might not be trusted to reject the merge.
+    current_head = pre_merge_data.get("headRefOid")
+    if head_sha and current_head and current_head != head_sha:
+        raise RuntimeError(
+            f"pr-head-advanced: branch '{branch}' in '{workspace}' currently has "
+            f"head '{current_head}', but the broker admitted '{head_sha}' at "
+            f"publish time — the PR received an out-of-band push after admission "
+            f"(agent-harness#250 N7 CR follow-up, defect 1); refusing to merge "
+            f"unchecked content"
+        )
+
+    # Finding 4: pin the merge to the broker-admitted head SHA, when supplied,
+    # via GitHub's own atomic --match-head-commit check — closes the gap
+    # between any of our own reads above and the merge call itself. `gh pr
+    # merge` exits non-zero (raising CalledProcessError below, via
+    # check=True) if the head has advanced past `head_sha`.
+    merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge", "--delete-branch"]
+    if head_sha:
+        merge_cmd += ["--match-head-commit", head_sha]
+
     subprocess.run(
-        ["gh", "pr", "merge", branch, "--merge", "--delete-branch", "--yes"],
+        merge_cmd,
         cwd=str(workspace),
         check=True,
         capture_output=True,
         text=True,
         timeout=120,
+        env=env_override,
     )
-    result = subprocess.run(
-        [
-            "gh", "pr", "view", branch,
-            "--json", "mergeCommit",
-            "--jq", ".mergeCommit.oid",
-        ],
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    sha = result.stdout.strip()
-    if not sha or sha == "null":
+
+    # Post-merge resolution (agent-harness#250 CR recheck: precheck->merge
+    # TOCTOU close). Do NOT trust a bare `mergeCommit.oid` read here: gh CLI
+    # (>= 2.96.0) returns SUCCESS from `gh pr merge` when its refreshed state
+    # finds the PR is ALREADY MERGED — e.g. an external actor pushed a
+    # different head B and merged it in the window between the head/base
+    # precheck above and this `gh pr merge` invocation. In that short-circuit
+    # path gh returns before ever constructing the merge mutation that
+    # carries `expectedHeadOid`, so `--match-head-commit` is NOT enforced for
+    # it. Re-running the already-hardened, head/base-validated
+    # `_live_pr_merged_sha` here (instead of a bare mergeCommit.oid read)
+    # closes that gap: it fails CLOSED (`pr-merged-wrong-base` /
+    # `pr-merged-wrong-head`) if the PR that actually ended up MERGED does
+    # not match the base/head admitted for this run, instead of recording an
+    # externally-merged, unadmitted head as a success.
+    sha = _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
+    if not sha:
         raise RuntimeError(
             f"could not determine merge commit SHA for branch '{branch}' in "
-            f"'{workspace}'; gh pr view returned no mergeCommit.oid after merge"
+            f"'{workspace}' after gh pr merge reported success — the "
+            f"post-merge state was not resolvable as a validated MERGED PR"
         )
     return sha
 
@@ -621,30 +877,96 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
         return False
 
 
-def _live_pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+def _live_pr_merged_sha(
+    workspace: Path,
+    branch: str,
+    base: Optional[str] = None,
+    head_sha: Optional[str] = None,
+) -> Optional[str]:
     """Return the merge-commit SHA if the PR for ``branch`` is already merged, else None.
 
     Used for idempotent resume: the merge loop skips nodes whose PR has already
     landed on main (covers crash-between-merge-and-ledger-write).
 
+    agent-harness#250 (N7 CR follow-up, finding 3): an "already merged" PR is
+    only a genuine SUCCESS for the base the broker's owned-scope check
+    validated at admission time. GitHub allows the base to be retargeted
+    after admission (the same TOCTOU class ``_live_merge_pr`` already guards
+    at merge time) — if a PR was retargeted and merged into a DIFFERENT base
+    before the coordinator could re-check, silently returning the SHA here
+    would record a false success against ``base``. When ``base`` is supplied,
+    a merged PR whose CURRENT ``baseRefName`` does not match it fails CLOSED
+    (raises) instead of being treated as a landed merge. ``base=None`` (the
+    default) preserves the old base-agnostic lookup for callers that have no
+    expected base to check against.
+
+    agent-harness#250 CR recheck (symmetry fix): the same TOCTOU class applies
+    to the HEAD, and the already-merged recovery path is exactly where the
+    original N7 CR follow-up left a gap — ``_live_merge_pr``'s live MERGE path
+    got a ``--match-head-commit`` pin, but a PR that was *already* MERGED
+    before the coordinator ever reached the merge call (out-of-band push +
+    external merge during a crash window, or plain resume) skipped the head
+    check entirely. When ``head_sha`` is supplied (the broker-ADMITTED SHA —
+    see the callers below and ``_live_merge_pr``'s own docstring for how it is
+    threaded), a merged PR whose CURRENT ``headRefOid`` does not match it fails
+    CLOSED (raises) instead of being treated as a landed merge of the admitted
+    content. ``head_sha=None`` (the default) preserves the old head-agnostic
+    lookup for callers that have no admitted head to check against.
+
     Stubbable seam: inject ``_pr_merged_sha_fn`` into :func:`run_train`.
+
+    agent-harness#250 (N7 CR follow-up, defect 2): bound to the broker-validated
+    repo via an explicit ``--repo`` (or ``GH_REPO``-neutralized as a fail-closed
+    fallback) — see ``_gh_repo_binding`` — so a stray ``GH_REPO`` cannot redirect
+    this recovery read to a different repository than the one actually pushed to.
     """
+    repo_args, env_override = _gh_repo_binding(workspace)
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "view", branch,
-                "--json", "state,mergeCommit",
-                "--jq", 'if .state == "MERGED" then .mergeCommit.oid else null end',
+                "gh", "pr", "view", branch, *repo_args,
+                "--json", "state,mergeCommit,baseRefName,headRefOid",
             ],
             cwd=str(workspace),
             capture_output=True,
             text=True,
             timeout=15,
+            env=env_override,
         )
-        sha = result.stdout.strip()
-        return sha if (result.returncode == 0 and sha and sha not in {"null", ""}) else None
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "{}")
     except Exception:
         return None
+
+    if data.get("state") != "MERGED":
+        return None
+    sha = (data.get("mergeCommit") or {}).get("oid")
+    if not sha:
+        return None
+    if base is not None:
+        current_base = data.get("baseRefName")
+        if current_base != base:
+            raise RuntimeError(
+                f"pr-merged-wrong-base: branch '{branch}' in '{workspace}' is MERGED, "
+                f"but its baseRefName is '{current_base}', not the expected '{base}' — "
+                f"the PR was retargeted after admission and merged elsewhere; refusing "
+                f"to record this as a successful merge to '{base}' (agent-harness#250 "
+                f"N7 follow-up finding 3; the broker dedup cross-base REPLAY class is "
+                f"tracked separately in #261)"
+            )
+    if head_sha is not None:
+        current_head = data.get("headRefOid")
+        if current_head != head_sha:
+            raise RuntimeError(
+                f"pr-merged-wrong-head: branch '{branch}' in '{workspace}' is MERGED, "
+                f"but its headRefOid is '{current_head}', not the broker-admitted "
+                f"'{head_sha}' — an out-of-band push landed unchecked content before "
+                f"the PR merged (already-merged recovery path, symmetric to the "
+                f"pr-merged-wrong-base guard above); refusing to record this as a "
+                f"successful merge of the admitted head (agent-harness#250 CR recheck)"
+            )
+    return sha
 
 
 def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
@@ -766,10 +1088,10 @@ def run_train(
     # The CLI sets this True; run_mode then determines autonomous vs governed.
     _merge_phase_enabled: bool = False,
     # P4 seams — unused when _merge_phase_enabled is False.
-    _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch) → merged_sha
+    _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
     _train_review_fn: Optional[Callable] = None,     # (artifact, run_mode) → LoopResult
-    _pr_merged_sha_fn: Optional[Callable] = None,    # (workspace, branch) → Optional[str]
+    _pr_merged_sha_fn: Optional[Callable] = None,    # (workspace, branch, base, head_sha) → Optional[str]
     _post_merge_hook: Optional[Callable] = None,     # (workspace, node_id) → None; live prune-on-merge
 ) -> Dict:
     """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open [+ merge].
@@ -931,7 +1253,55 @@ def run_train(
                             _pr_merged_sha_fn if _pr_merged_sha_fn is not None
                             else _live_pr_merged_sha
                         )
-                        _recovered_sha = _step3_merged_sha_fn(workspace, rec.branch)
+                        # agent-harness#250 (N7 CR follow-up, finding 3): pass the
+                        # expected base so an already-merged-but-wrong-base PR
+                        # fails closed here too, instead of being silently
+                        # recovered as a successful landed merge.
+                        #
+                        # CR recheck (symmetry fix): pass the broker-ADMITTED
+                        # head_sha too — `rec.head_sha` on a pr_open ledger
+                        # record IS the admitted SHA (written at publish time;
+                        # see the P4 merge loop's identical use of
+                        # `admitted_head_sha`/`rec.head_sha` below). Without
+                        # this, an out-of-band push + external merge during
+                        # the crash window between "gh pr merge" and the
+                        # ledger write would be silently recovered as a
+                        # successful merge of UNADMITTED content. A governed
+                        # pr_open record always carries a head_sha (written by
+                        # publish); if it is ever missing, fail closed rather
+                        # than silently degrade to an unpinned recovery check.
+                        if not rec.head_sha:
+                            append_record(
+                                ledger_path,
+                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
+                            )
+                            return {
+                                "status": "blocked",
+                                "node_id": nid,
+                                "detail": {
+                                    "reason": "missing_admitted_head_sha",
+                                    "message": (
+                                        f"node '{nid}' has a pr_open ledger record with no "
+                                        f"admitted head_sha; refusing to check the "
+                                        f"already-merged recovery path without a head pin "
+                                        f"(agent-harness#250 CR recheck, defect-1 symmetry fix)"
+                                    ),
+                                },
+                            }
+                        try:
+                            _recovered_sha = _step3_merged_sha_fn(
+                                workspace, rec.branch, base=_DEFAULT_BASE, head_sha=rec.head_sha
+                            )
+                        except Exception as _step3_exc:
+                            append_record(
+                                ledger_path,
+                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
+                            )
+                            return {
+                                "status": "blocked",
+                                "node_id": nid,
+                                "detail": {"reason": str(_step3_exc)},
+                            }
                         if _recovered_sha:
                             _recovered_rec = LedgerRecord(
                                 node_id=nid,
@@ -948,12 +1318,21 @@ def run_train(
                             completed_nodes[nid] = {
                                 "branch": rec.branch,
                                 "head_sha": rec.head_sha,
+                                "admitted_head_sha": rec.head_sha,
                                 "pr_url": rec.pr_url,
                             }
                     continue  # not open: recovered-as-merged or dropped
                 # Prefer the live PR head SHA (the branch may have been updated
                 # since the last run); fall back to the ledger-recorded head_sha.
+                # NOTE: `head_sha` (live-preferring) is used ONLY to inject the
+                # upstream ref into downstream builds/re-verification below — it is
+                # NEVER the value threaded to the P4 merge-time --match-head-commit
+                # pin (agent-harness#250 N7 CR follow-up, defect 1). `rec.head_sha`
+                # is the broker-ADMITTED SHA (the ledger record written at pr_open
+                # publish time) and is preserved separately, unmodified by any live
+                # OOB read, specifically for that merge-time pin.
                 live_sha = live_pr_head_sha_fn(workspace, rec.branch)
+                admitted_sha = rec.head_sha
                 head_sha = live_sha or rec.head_sha
                 # Detect out-of-band push: live SHA exists and differs from ledger.
                 if live_sha and rec.head_sha and live_sha != rec.head_sha:
@@ -964,9 +1343,14 @@ def run_train(
                 # so this node can still serve as the injection ref for any P3 nodes
                 # that were not yet processed before the crash — see merged-record write).
                 head_sha = rec.head_sha
+                admitted_sha = rec.head_sha
             completed_nodes[nid] = {
                 "branch": rec.branch,
                 "head_sha": head_sha,
+                # agent-harness#250 (N7 CR follow-up, defect 1): the broker-ADMITTED
+                # head_sha — NEVER overwritten by a live/OOB read — is the ONLY value
+                # the P4 merge loop may pass to --match-head-commit.
+                "admitted_head_sha": admitted_sha,
                 "pr_url": rec.pr_url,
             }
 
@@ -1262,6 +1646,10 @@ def run_train(
         completed_nodes[nid] = {
             "branch": branch,
             "head_sha": head_sha,
+            # agent-harness#250 (N7 CR follow-up, defect 1): the SHA the broker's
+            # admission just confirmed for this branch — the same value the merge
+            # loop's --match-head-commit pin must use.
+            "admitted_head_sha": head_sha,
             "pr_url": pr_url,
         }
         rebuilt_this_run.add(nid)
@@ -1323,6 +1711,19 @@ def run_train(
 
     # Cross-check with live GitHub state: covers crash-between-merge-and-
     # ledger-write (the PR landed on main but the ledger write didn't happen).
+    #
+    # agent-harness#250 (N7 CR follow-up, finding 3): pass the expected base
+    # so a PR that landed MERGED on a retargeted (wrong) base fails closed
+    # here — it must never be silently recorded as a successful merge to the
+    # base the broker's owned-scope check actually validated.
+    #
+    # CR recheck (symmetry fix): also pass the broker-ADMITTED head_sha (the
+    # same `admitted_head_sha` completed_nodes entry the P4 merge loop below
+    # pins --match-head-commit to — set at fresh-publish time or at Step-3
+    # resume, for every node that reaches this loop). Without this, a PR that
+    # merged externally with an UNADMITTED head during the crash window
+    # between "gh pr merge" and the ledger write would be silently recorded
+    # as a successful merge here too.
     for _node_r in topo_order:
         _nid_r = _node_r.node_id
         if _nid_r in merged_shas:
@@ -1330,7 +1731,41 @@ def run_train(
         _pr_branch_r = completed_nodes.get(_nid_r, {}).get("branch")
         if _pr_branch_r:
             _ws_r = resolve_workspace(_node_r)
-            _live_sha_r = pr_merged_sha_fn(_ws_r, _pr_branch_r)
+            _admitted_head_sha_r = completed_nodes.get(_nid_r, {}).get("admitted_head_sha")
+            if not _admitted_head_sha_r:
+                # A node that reaches this loop with a resolved branch always
+                # carries an admitted_head_sha (Step 3 populates it for every
+                # completed_nodes entry). Fail closed instead of silently
+                # degrading to an unpinned already-merged check.
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
+                )
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_r,
+                    "reason": "missing_admitted_head_sha",
+                    "detail": (
+                        f"node '{_nid_r}' has no broker-admitted head_sha recorded; "
+                        f"refusing to check the already-merged recovery path without "
+                        f"a head pin (agent-harness#250 CR recheck, defect-1 symmetry fix)"
+                    ),
+                }
+            try:
+                _live_sha_r = pr_merged_sha_fn(
+                    _ws_r, _pr_branch_r, base=_DEFAULT_BASE, head_sha=_admitted_head_sha_r
+                )
+            except Exception as _merged_check_exc_r:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
+                )
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_r,
+                    "reason": "pr_merged_wrong_base_or_head",
+                    "detail": str(_merged_check_exc_r),
+                }
             if _live_sha_r:
                 merged_shas[_nid_r] = _live_sha_r
 
@@ -1464,8 +1899,48 @@ def run_train(
         # return merge_halted so no uncaught exception escapes run_train and
         # already-merged upstream nodes remain recorded (forward-only).
         _pr_branch_m = completed_nodes[_nid_m]["branch"]
+        # agent-harness#250 (N7 CR follow-up, finding 4; hardened per the defect-1
+        # CR corroboration by codex+grok): thread the broker-ADMITTED head_sha the
+        # same way `base` is already threaded — completed_nodes[...]["admitted_head_sha"]
+        # is the SHA the broker's admission actually confirmed for this node's branch
+        # at publish time (fresh publish: publish_result["head_sha"]; resume: the
+        # ledger record's head_sha, NEVER the live-preferring resume value). Passed
+        # through to _live_merge_pr as --match-head-commit so a post-admission push
+        # cannot land unchecked content (TOCTOU, same class as the base check below).
+        # Deliberately NOT completed_nodes[...]["head_sha"] — on a pr_open resume that
+        # field prefers the LIVE PR head (to represent the current build target for
+        # downstream injection/re-verification) and can legitimately diverge from what
+        # was admitted; pinning --match-head-commit to it would let an out-of-band
+        # push after admission merge unchecked content.
+        _admitted_head_sha_m = completed_nodes[_nid_m].get("admitted_head_sha")
+        if not _admitted_head_sha_m:
+            # A governed node ALWAYS carries an admitted_head_sha — set at publish
+            # time or at Step-3 resume (both above), for every code path that reaches
+            # this P4 merge loop. Missing it here would silently degrade
+            # _live_merge_pr to an UNPINNED merge (no --match-head-commit); fail
+            # closed instead of merging without a head pin.
+            append_record(
+                ledger_path,
+                LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
+            )
+            return {
+                "status": "merge_halted",
+                "node_id": _nid_m,
+                "reason": "missing_admitted_head_sha",
+                "detail": (
+                    f"node '{_nid_m}' has no broker-admitted head_sha recorded; "
+                    f"refusing to merge without a --match-head-commit pin "
+                    f"(agent-harness#250 N7 CR follow-up, defect 1 hardening)"
+                ),
+            }
         try:
-            _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m)
+            # agent-harness#250 (N7): pass the SAME base the broker's owned-scope
+            # check validated at publish time (the module-wide _DEFAULT_BASE; no
+            # per-node base override exists yet) so the merge-time TOCTOU guard
+            # in _live_merge_pr reconciles with what was actually admitted.
+            _merged_sha_m = merge_pr_fn(
+                _ws_m, _pr_branch_m, base=_DEFAULT_BASE, head_sha=_admitted_head_sha_m
+            )
         except Exception as _merge_exc_m:
             append_record(
                 ledger_path,

@@ -44,7 +44,7 @@ def _request(admission_key: str, *, verb: BrokerVerb = BrokerVerb.PUBLISH_COMMIT
     return BrokerRequest(verb, _admission(admission_key), "o/r", _BRANCH, _HEAD, ("plan.md",))
 
 
-def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
+def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD, pr_base: str = "main"):
     """Return a fake ``run`` dispatching the adapter's git/gh calls."""
 
     def fake_run(cmd, **kwargs):
@@ -54,8 +54,8 @@ def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
                 return CompletedProcess(cmd, 0, stdout=_BRANCH + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=_HEAD + "\n", stderr="")
-            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
-                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
+            if sub[0] == "diff":  # #202/#250 server-authoritative scope diff (owns plan.md), -z NUL-delimited
+                return CompletedProcess(cmd, 0, stdout=b"plan.md\0", stderr=b"")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout="commit subject line\n", stderr="")
             if sub[0] == "push":
@@ -68,7 +68,7 @@ def _fake_git_gh(*, remote_sha: str = _HEAD, pr_head: str = _HEAD):
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                body = json.dumps([{"headRefOid": pr_head, "url": _URL}])
+                body = json.dumps([{"headRefOid": pr_head, "url": _URL, "baseRefName": pr_base}])
                 return CompletedProcess(cmd, 0, stdout=body, stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -186,8 +186,8 @@ def _routing_fake(repos, seen_paths):
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=meta["head"] + "\n", stderr="")
-            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
-                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
+            if sub[0] == "diff":  # #202/#250 server-authoritative scope diff (owns plan.md), -z NUL-delimited
+                return CompletedProcess(cmd, 0, stdout=b"plan.md\0", stderr=b"")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout=f"{meta['branch']} subject\n", stderr="")
             if sub[0] == "push":
@@ -201,7 +201,7 @@ def _routing_fake(repos, seen_paths):
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"]}]), stderr="")
+                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
     return fake_run
@@ -209,7 +209,7 @@ def _routing_fake(repos, seen_paths):
 
 def _routing_request(repo_path, meta, key):
     admission = AdmissionRequest("attempt", 1, "fence", "digest", "head == committed", "scope", key)
-    return BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, repo_path, meta["branch"], meta["head"], ("plan.md",))
+    return BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, repo_path, meta["branch"], meta["head"], ("plan.md",), base=meta.get("base", "main"))
 
 
 def test_routing_broker_binds_each_request_to_its_own_repo(tmp_path):
@@ -278,8 +278,8 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path):
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
                 return CompletedProcess(cmd, 0, stdout=meta["head"] + "\n", stderr="")
-            if sub[0] == "diff":  # #202 server-authoritative scope diff (owns plan.md)
-                return CompletedProcess(cmd, 0, stdout="plan.md\n", stderr="")
+            if sub[0] == "diff":  # #202/#250 server-authoritative scope diff (owns plan.md), -z NUL-delimited
+                return CompletedProcess(cmd, 0, stdout=b"plan.md\0", stderr=b"")
             if sub[0] == "log":
                 return CompletedProcess(cmd, 0, stdout="subject\n", stderr="")
             if sub[0] == "push":
@@ -295,7 +295,7 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path):
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"]}]), stderr="")
+                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
     broker = build_routing_broker_client(broker_root=tmp_path / "coord", run=fake_run)

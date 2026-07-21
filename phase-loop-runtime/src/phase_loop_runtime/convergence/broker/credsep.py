@@ -33,57 +33,91 @@ def build_non_force_branch_ref(branch: str) -> str:
 # twin instance).  Default is github.com-only; a self-hosted/GHE fleet passes its own
 # allow-list explicitly.  This retires the whole host-parse edge class at the boundary.
 ALLOWED_ORIGIN_HOSTS = frozenset({"github.com"})
+# agent-harness#250 (N7 CR follow-up, defect 2): the URL->slug resolution used to be a
+# GitHubBrokerAdapter-only method. Extracted to module-level functions (taking `run`
+# explicitly, never defaulted at import time so test/production monkeypatching of a
+# module's own `subprocess.run` reaches it) so non-broker callers — specifically
+# train_runner.py's merge/recovery `gh` calls — can bind to the IDENTICAL
+# host-qualified repo identity the broker already validated and pushed to, instead of
+# duplicating/re-implementing this parsing (which would risk silent drift between the
+# two copies). GitHubBrokerAdapter's own methods below now delegate to these.
+def resolve_git_origin_url(repo_path: Path, run=subprocess.run) -> str:
+    """Read `repo_path`'s `origin` remote FETCH url via `git remote get-url origin`.
+
+    The single canonical origin URL the broker validates AND operates through
+    explicitly (push + ls-remote), so the mutation can never be redirected by the
+    `origin` alias (remote.origin.pushurl / url.*.pushInsteadOf) to an unvalidated
+    target.
+    """
+    return run(["git", "-C", str(repo_path), "remote", "get-url", "origin"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def resolve_host_qualified_repo_slug(url: str, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> str:
+    # Resolve a git URL to a HOST-QUALIFIED `host/owner/repo` slug so `gh` is bound
+    # with `--repo host/owner/repo` (highest precedence — beats a stray
+    # GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND repo the
+    # push targets.  Fail-closed if the URL cannot be resolved or is not allow-listed.
+    if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
+        scheme = url.split("://", 1)[0].lower()
+        rest = url.split("://", 1)[1].split("@", 1)[-1]
+        authority, _, path = rest.partition("/")
+        # Fail-closed on authorities --repo cannot faithfully pin: an IPv6 literal
+        # (mis-split below) or a non-default http(s) API port (silently dropped →
+        # gh would hit the default-port host, a twin-host risk).  ssh transport
+        # ports are irrelevant to the gh API host, so they are allowed.
+        if authority.startswith("[") or authority.count(":") > 1:
+            raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
+        host, _, port = authority.partition(":")
+        default_port = {"https": "443", "http": "80"}.get(scheme)
+        if scheme in ("http", "https") and port and port != default_port:
+            raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
+    else:  # scp-like: [user@]host:owner/repo(.git)
+        hostpart, sep, path = url.partition(":")
+        host = hostpart.split("@", 1)[-1]
+        if not sep:
+            raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+    if path.endswith(".git"):
+        path = path[:-4]
+    path = path.strip("/")
+    parts = path.split("/")
+    if not host or len(parts) != 2 or not all(parts):
+        raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+    if host not in allowed_hosts:
+        # Origin-host invariant: refuse to publish to a host outside the allow-list.
+        # This is the class-closing gate — no URL-text edge (port/IPv6/alias/twin)
+        # can mis-bind a gh call to a look-alike host, because a non-allow-listed
+        # host fails closed here (-> outcome_ambiguous_blocked), never a live PR.
+        raise ValueError(f"origin host {host!r} not in allowed broker hosts {sorted(allowed_hosts)}")
+    return f"{host}/{path}"
+
+
+def resolve_broker_repo_identity(repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> str:
+    """Resolve `repo_path`'s origin to the SAME host-qualified `host/owner/repo` slug
+    `GitHubBrokerAdapter` binds its own `gh` calls to (`--repo host/owner/repo`).
+
+    For non-broker callers that need to bind subsequent `gh` calls to the identical
+    repository the broker already validated and pushed to (agent-harness#250 CR
+    follow-up, defect 2: `GH_REPO`, if set in the environment, overrides `gh`'s cwd-based
+    repo selection — a stray `GH_REPO` could redirect train_runner.py's merge/recovery
+    `gh pr view/ready/merge` calls to a DIFFERENT repository than the one actually
+    pushed to, letting a wrong-repo PR pass base/head checks and get recorded as this
+    train node's merge). Fail-closed: raises on an unresolvable, garbled, or
+    non-allow-listed origin — same posture as `GitHubBrokerAdapter._origin_repo()`.
+    """
+    return resolve_host_qualified_repo_slug(resolve_git_origin_url(repo_path, run=run), allowed_hosts=allowed_hosts)
+
+
 class GitHubBrokerAdapter:
     def __init__(self, repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> None:
         self.repo_path, self.run, self.allowed_hosts = repo_path, run, allowed_hosts
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
     def _origin_url(self) -> str:
-        # The single canonical origin URL the broker validates AND operates through
-        # explicitly (push + ls-remote), so the mutation can never be redirected by the
-        # `origin` alias (remote.origin.pushurl / url.*.pushInsteadOf) to an unvalidated
-        # target.  This is git's FETCH url; the broker deliberately publishes to the
-        # canonical repo it validated, not a local triangular pushurl.
-        return self._output("remote", "get-url", "origin")
+        return resolve_git_origin_url(self.repo_path, run=self.run)
     def _origin_repo(self) -> str:
         return self._slug_for(self._origin_url())
     def _slug_for(self, url: str) -> str:
-        # Resolve a git URL to a HOST-QUALIFIED `host/owner/repo` slug so `gh` is bound
-        # with `--repo host/owner/repo` (highest precedence — beats a stray
-        # GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND repo the
-        # push targets.  Fail-closed if the URL cannot be resolved or is not allow-listed.
-        if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
-            scheme = url.split("://", 1)[0].lower()
-            rest = url.split("://", 1)[1].split("@", 1)[-1]
-            authority, _, path = rest.partition("/")
-            # Fail-closed on authorities --repo cannot faithfully pin: an IPv6 literal
-            # (mis-split below) or a non-default http(s) API port (silently dropped →
-            # gh would hit the default-port host, a twin-host risk).  ssh transport
-            # ports are irrelevant to the gh API host, so they are allowed.
-            if authority.startswith("[") or authority.count(":") > 1:
-                raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
-            host, _, port = authority.partition(":")
-            default_port = {"https": "443", "http": "80"}.get(scheme)
-            if scheme in ("http", "https") and port and port != default_port:
-                raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
-        else:  # scp-like: [user@]host:owner/repo(.git)
-            hostpart, sep, path = url.partition(":")
-            host = hostpart.split("@", 1)[-1]
-            if not sep:
-                raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
-        if path.endswith(".git"):
-            path = path[:-4]
-        path = path.strip("/")
-        parts = path.split("/")
-        if not host or len(parts) != 2 or not all(parts):
-            raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
-        if host not in self.allowed_hosts:
-            # Origin-host invariant: refuse to publish to a host outside the allow-list.
-            # This is the class-closing gate — no URL-text edge (port/IPv6/alias/twin)
-            # can mis-bind a gh call to a look-alike host, because a non-allow-listed
-            # host fails closed here (-> outcome_ambiguous_blocked), never a live PR.
-            raise ValueError(f"origin host {host!r} not in allowed broker hosts {sorted(self.allowed_hosts)}")
-        return f"{host}/{path}"
+        return resolve_host_qualified_repo_slug(url, allowed_hosts=self.allowed_hosts)
     def _ambiguous(self, request: BrokerRequest, reference: str):
         # v5 rule: a failed/empty remote read is NEVER inferred as no_effect and
         # NEVER fabricated as success — it is a permanent ambiguous block.
@@ -107,28 +141,68 @@ class GitHubBrokerAdapter:
         # file paths, or None on any git failure (caller fails closed). check=False so a
         # diff error is a controlled fail-closed, not a raise.
         #
-        # Path-format contract: this and the #201 coordinator BOTH use `git diff
-        # --name-only`, so paths are quoted identically on both sides (a non-ASCII path is
-        # C-quoted the same way in `owned_paths` and here) and compare equal. A `-z`
-        # NUL-split on BOTH sides would be more robust to quoting/newlines-in-names (a
-        # broker-hardening follow-up). NOTE: a definitive OR transient diff failure records a
-        # per-triple no-effect terminal that later replays (see execute), so recovering from
-        # a transient failure needs a new head_sha — a liveness cost, never an epoch brick.
+        # agent-harness#250 (N1/N4): `-z --no-renames`, NOT plain `--name-only`. `-z`
+        # NUL-delimits output (no `core.quotepath` C-quoting of non-ASCII paths, no
+        # newline-in-filename ambiguity) — this and the #201 coordinator's
+        # `_prebuilt_owned_paths` MUST use the identical `-z --no-renames` command and
+        # NUL-split so the two sides never desync (a desync false-rejects/under-rejects and
+        # the reject is STICKY: it records a per-triple no-effect terminal that replays).
+        # `--no-renames` closes the rename-escape: plain `--name-only` reports only a
+        # rename's DESTINATION, so `git mv unowned/x owned/y` shows only `owned/y` — the
+        # deleted `unowned/x` source is hidden and the coverage check never sees it. With
+        # `--no-renames` both endpoints are reported as an add + a delete, so the unowned
+        # source is caught by the coverage check below.
+        #
+        # agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR): capture stdout as
+        # BYTES (no `text=True`). `text=True` applies universal-newline decoding, which
+        # translates the raw bytes `\r` AND `\r\n` into `\n` at decode time — AFTER which a
+        # NUL-split can no longer tell `a\r.py`, `a\r\n.py`, and `a\n.py` apart, so three
+        # DISTINCT valid git paths collapse onto the SAME Python string (a false-approve:
+        # the broker could admit a changed path different from the one actually covered).
+        # `text=True` also raises `UnicodeDecodeError` on a non-UTF-8 filename byte (a git
+        # path is bytes, not guaranteed UTF-8). Splitting the raw bytes on `b"\0"` and
+        # decoding each element with `os.fsdecode` (surrogateescape) avoids both: no
+        # newline translation, and no crash on invalid UTF-8. The coordinator's
+        # `_prebuilt_owned_paths` (train_runner.py) MUST use this identical bytes-capture +
+        # `os.fsdecode` policy so the two derivations stay byte-identical.
         completed = self.run(
-            ["git", "-C", str(self.repo_path), "diff", "--name-only", f"origin/{base}...{head_sha}"],
-            capture_output=True, text=True,
+            ["git", "-C", str(self.repo_path), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...{head_sha}"],
+            capture_output=True,
         )
         if completed.returncode:
             return None
-        return frozenset(p.strip() for p in completed.stdout.splitlines() if p.strip())
+        return frozenset(os.fsdecode(p) for p in completed.stdout.split(b"\0") if p)
+
+    # agent-harness#250 (N2): `base` is interpolated into `origin/{base}...{head_sha}` with
+    # no validation. Not shell injection (argv, not shell), but git REVISION syntax is
+    # accepted unchecked: `base="main~5"` widens the diff (still fails closed via
+    # uncovered-paths, so at worst a spurious reject) and `base == request.branch` shrinks
+    # the checked set to nothing (the empty-diff reject below now catches that case too,
+    # but reject it explicitly and early rather than lean on that side effect). Reject any
+    # revision-syntax token or a base identical to the branch being published.
+    _BASE_REVISION_SYNTAX_TOKENS = ("~", "^", "@{", "..")
+
+    @classmethod
+    def _base_invalid(cls, base: str, branch: str) -> bool:
+        return base == branch or any(tok in base for tok in cls._BASE_REVISION_SYNTAX_TOKENS)
 
     @staticmethod
     def _covered_by_owned(path: str, owned_paths) -> bool:
         # A changed path is within the admitted scope if it equals an owned entry or sits
         # under an owned directory entry. Directory ownership (owned entry is a parent
         # dir) is honored so an over-specified owned scope never false-rejects.
+        #
+        # agent-harness#250 (IF-0-BRK-1 byte-identity, cross-vendor CR sharpening): only
+        # `.rstrip("/")` a trailing directory separator — never `.strip()` general
+        # whitespace off an owned entry. `path` is now the byte-exact `-z`-derived diff
+        # path (never trimmed); trimming `owned` here would break that symmetry in BOTH
+        # directions: an owned entry with incidental trailing whitespace ("a.py ") would
+        # wrongly cover a DIFFERENT actually-changed file ("a.py") — approving the wrong
+        # path — and a legitimate whitespace/newline filename that IS byte-identical
+        # between the diff and the owned scope would be false-rejected by an asymmetric
+        # trim on only one side.
         for owned in owned_paths:
-            owned = owned.strip().rstrip("/")
+            owned = owned.rstrip("/")
             if owned and (path == owned or path.startswith(owned + "/")):
                 return True
         return False
@@ -159,36 +233,53 @@ class GitHubBrokerAdapter:
         # permanent AND poison the repo's broker epoch (evidence.epoch_blocked); a purely-
         # local read-only git-diff failure must not permanently brick a repo's publishing.
         # They differ only by the detail string:
+        #   * base is revision-syntax/self-referential -> no_effect_terminal_proven (invalid-base)
         #   * diff error                       -> no_effect_terminal_proven (diff-failed)
         #   * branch changed uncovered paths   -> no_effect_terminal_proven (scope exceeded)
-        #   * owned claims changes the branch  -> no_effect_terminal_proven (empty-diff
-        #     doesn't have vs base (drift/game)   mismatch), catching base==head gaming.
+        #   * branch has NO diff vs base       -> no_effect_terminal_proven (empty-diff);
+        #     (whether or not owned_paths is empty) catches drift/base==head gaming AND
+        #     an empty-owned+empty-diff request that would otherwise fall through every
+        #     reject and reach push with nothing meaningful admitted (agent-harness#250 N3).
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            # agent-harness#250 (N2): reject git revision syntax (`~ ^ @{ ..`) or a base
+            # identical to the branch BEFORE diffing — a widened/collapsed diff is never
+            # computed against an ungoverned base.
+            if self._base_invalid(request.base, request.branch):
+                return self._scope_rejected(request, "owned-scope-invalid-base")
             branch_diff = self._branch_diff_paths(request.base, request.head_sha)
             if branch_diff is None:
                 return self._scope_rejected(request, "owned-scope-diff-failed")
             uncovered = sorted(p for p in branch_diff if not self._covered_by_owned(p, request.owned_paths))
             if uncovered:
                 return self._scope_rejected(request, "owned-scope-exceeded:" + ",".join(uncovered[:20]))
-            if not branch_diff and request.owned_paths:
-                # The admitted scope claims owned changes, but the branch has NO diff vs
-                # base — the admission does not match the mutation (drift, or a gamed
-                # base ref such as base==head). Fail closed.
+            if not branch_diff:
+                # Nothing to publish vs base — whether or not owned_paths claims changes,
+                # an empty diff must never reach push/PR-create. Fail closed.
                 return self._scope_rejected(request, "owned-scope-empty-diff")
         origin_url = self._origin_url()          # ONE canonical url, used explicitly everywhere
         origin_repo = self._slug_for(origin_url) # validate allow-list + derive the gh slug from the SAME url
         ref = build_non_force_branch_ref(request.branch)
         # Push + ls-remote target the EXPLICIT validated url, never the `origin` alias,
         # so remote.origin.pushurl / url.*.pushInsteadOf cannot redirect the mutation.
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, ref], capture_output=True, text=True)
+        # agent-harness#250 (N5): push the EXACT validated head_sha to the branch ref
+        # (`<head_sha>:refs/heads/<branch>`), not the mutable `refs/heads/<branch>` — the
+        # local branch ref could advance between the line-154 HEAD==head_sha check and this
+        # push (concurrent writer in the same workspace); pinning the source side means the
+        # push can only ever publish the validated commit, never whatever the ref points to
+        # by the time this runs.
+        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
         # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
         # Derive a deterministic title from the branch HEAD's commit subject and pass
         # the request's pr_body verbatim (empty body is valid once --title is present).
-        # --head pins the branch explicitly so gh never infers a wrong head.
+        # --head pins the branch explicitly so gh never infers a wrong head. agent-harness#250
+        # (N6): --base pins the PR's base explicitly too — without it `gh` opens the PR
+        # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
+        # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
+        # diff this adapter scope-checked (vs request.base).
         title = self._output("log", "-1", "--format=%s") or request.branch
-        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--title", title, "--body", request.pr_body or title]
+        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
         if created.returncode: return self._ambiguous(request, "pr-unconfirmed")
@@ -200,12 +291,26 @@ class GitHubBrokerAdapter:
         remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
         if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
         if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid"], cwd=self.repo_path, capture_output=True, text=True)
+        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid,baseRefName"], cwd=self.repo_path, capture_output=True, text=True)
         if listed.returncode: return self._ambiguous(request, "pr-read-failed")
         try:
             prs = json.loads(listed.stdout or "[]")
         except json.JSONDecodeError:
             return self._ambiguous(request, "pr-read-unparsable")
-        match = next((p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")), None)
-        if match is None: return self._ambiguous(request, "pr-head-unconfirmed")
+        # Head-only matching is not enough (agent-harness#250, cross-vendor CR, codex):
+        # GitHub allows a PR's base to be retargeted after creation, and a same-head PR
+        # could simply target a different base than the one scope-checked above. A PR
+        # matched on headRefOid alone could therefore be recorded as the successful
+        # effect of THIS request even though it no longer targets (or never targeted)
+        # request.base — silently bypassing the #202 owned-scope check, since a later
+        # branch-based merge would use whatever base the PR actually carries. Require
+        # BOTH headRefOid AND baseRefName to equal the request's before accepting the
+        # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
+        # genuinely exists at that head, so this is not a provable no-effect).
+        head_matches = [p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")]
+        match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
+        if match is None:
+            if head_matches:
+                return self._ambiguous(request, "pr-base-unconfirmed")
+            return self._ambiguous(request, "pr-head-unconfirmed")
         return PublishCommittedBranchResult(request.branch, request.head_sha, match["url"]), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", match["url"])
