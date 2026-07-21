@@ -899,7 +899,19 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         if not str(payload.get("operator_reason") or "").strip():
             continue
         event_plan = payload.get("plan_path")
-        if event_plan and plan_path is not None:
+        # ah#238 (codex CR residual-bypass follow-up): the RAW-string is_absolute()
+        # rejection below must run whenever the EVENT carries a plan_path value, fully
+        # INDEPENDENT of whether the CALLER discovered a current plan (`plan_path is not
+        # None`, i.e. `find_plan_artifact` found something for this phase). The previous
+        # `if event_plan and plan_path is not None:` gated the absoluteness check on the
+        # current-plan branch, so when reconcile ran with NO discovered current plan (the
+        # production recovery caller has no plan-existence precondition), a relative or
+        # tilde EVENT plan_path skipped validation entirely and fell through to
+        # `return True` below — a forged event could grant BREAKGLASS SL-2 just by
+        # omitting a real plan artifact. Split the check: absoluteness is unconditional;
+        # the resolved-path MATCH against the current plan only applies when a current
+        # plan actually exists to compare against.
+        if event_plan:
             try:
                 # ah#238 (codex CR follow-up): apply the SAME raw-string is_absolute() check
                 # used for repo/roadmap above to plan_path — a relative plan_path (e.g.
@@ -916,9 +928,10 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
                 # TypeError is included in case a malformed event ever smuggles a non-str/
                 # non-PathLike JSON value (list/dict/etc.) into this field. Any of these must
                 # SKIP the event (fail closed), never crash reconciliation.
-                if Path(str(event_plan)).expanduser().resolve() != plan_path:
-                    continue
+                resolved_event_plan = Path(str(event_plan)).expanduser().resolve()
             except (OSError, ValueError, RuntimeError, TypeError):
+                continue
+            if plan_path is not None and resolved_event_plan != plan_path:
                 continue
         return True
     return False

@@ -945,6 +945,118 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    # ah#238 (codex CR: residual breakglass fail-open, no-current-plan bypass): the
+    # relative/tilde absoluteness check on the EVENT's plan_path was only reachable inside
+    # the branch gated on the CALLER's discovered current plan (`plan_path is not None` /
+    # `plan` arg). When reconcile() runs with NO discovered current plan for this phase —
+    # exactly the shape of the production recovery caller around reconcile.py:1032, which
+    # has no plan-existence precondition — a relative or tilde EVENT plan_path bypassed the
+    # check entirely and fell through to `return True` / non-empty override kinds. These
+    # tests intentionally do NOT call `write_phase_plan`, so `find_plan_artifact` returns
+    # None and the gate is exercised with no current plan to compare against. They FAIL at
+    # HEAD b7e3b56 (assertTrue / non-empty tuple instead of assertFalse / `()`).
+
+    def test_closeout_allow_unowned_relative_plan_path_fails_closed_with_no_current_plan(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # No write_phase_plan(...) call: no plan artifact exists under plans/, so
+            # find_plan_artifact(repo, "RUNNER", roadmap=roadmap) returns None inside
+            # _closeout_allow_unowned_attested.
+            payload = self._raw_attestation_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path="plans/phase-plan-v1-RUNNER.md",
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_tilde_plan_path_fails_closed_with_no_current_plan(self):
+        with tempfile.TemporaryDirectory() as home_td:
+            home_dir = Path(home_td)
+            repo = make_repo(home_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # No write_phase_plan(...) call: no discovered current plan.
+            tilde_plan = "~/" + str((repo / "plans" / "phase-plan-v1-RUNNER.md").relative_to(home_dir))
+            payload = self._raw_attestation_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path=tilde_plan,
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                with mock.patch.dict(os.environ, {"HOME": str(home_dir)}):
+                    self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_relative_plan_path_fails_closed_with_no_current_plan(self):
+        # _lane_ir_override's `plan` argument is a required Path (never None from its one
+        # production caller, which guards `if not plan: return {}` first). This test pins
+        # that the event-plan_path absoluteness check is unconditional here too, so the
+        # gate stays fail-closed even if a future/alternate caller invoked it with a `plan`
+        # Path that does not correspond to a real, discovered plan artifact.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"  # not written to disk
+            payload = self._raw_lane_ir_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path="plans/phase-plan-v1-RUNNER.md",
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_tilde_plan_path_fails_closed_with_no_current_plan(self):
+        with tempfile.TemporaryDirectory() as home_td:
+            home_dir = Path(home_td)
+            repo = make_repo(home_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"  # not written to disk
+            tilde_plan = "~/" + str(plan.relative_to(home_dir))
+            payload = self._raw_lane_ir_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path=tilde_plan,
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                with mock.patch.dict(os.environ, {"HOME": str(home_dir)}):
+                    self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
 
 class RoadmapPathsMatchNullByteTest(unittest.TestCase):
     """ah#238 (comprehensive hardening follow-up): ``roadmap_paths_match`` is called from the
