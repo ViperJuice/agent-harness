@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from phase_loop_runtime.closeout import build_phase_loop_closeout
+from phase_loop_runtime.closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from phase_loop_runtime.verification_evidence import run_verification
 
 
@@ -336,6 +336,48 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             self.assertTrue(diag["redacted"])
             self.assertNotIn("raw_tail", diag)
             self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
+    def test_closeout_with_benign_prose_blocker_summary_is_not_malformed(self):
+        # agent-harness#243 CR (cross-vendor codex, REGRESSION): the round that widened
+        # secret_like_value's separator to accept bare whitespace made the FATAL
+        # metadata_redaction_diagnostic gate (invoked here via phase_loop_closeout_diagnostic)
+        # reject a legitimate human-authored blocker_summary that happens to contain a secret
+        # keyword followed by whitespace and 12+ alnum chars -- e.g. "review the token
+        # configuration" or "the password authentication documentation" -- turning an
+        # ordinary blocked closeout into malformed_closeout and preventing
+        # persistence/reconciliation. MUST FAIL at HEAD bec790f (diagnostic is non-None) and
+        # pass once the separator is strict again.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+
+            closeout = build_phase_loop_closeout(
+                phase_alias="RG",
+                plan_path=plan,
+                terminal_summary={
+                    "terminal_status": "blocked",
+                    "verification_status": "passed",
+                    "artifact_paths": {"root": str(run_dir)},
+                },
+                automation={
+                    "status": "blocked",
+                    "verification_status": "passed",
+                    "human_required": True,
+                    "blocker_class": "admin_approval",
+                    "blocker_summary": (
+                        "Next action: review the token configuration and the password "
+                        "authentication documentation before re-running the suite; see the "
+                        "secret management guide for the rotation policy."
+                    ),
+                },
+            )
+
+            self.assertEqual(closeout["terminal_status"], "human_required")
+            self.assertIn("token configuration", closeout["blocker"]["blocker_summary"])
+            diagnostic = phase_loop_closeout_diagnostic(closeout)
+            self.assertIsNone(diagnostic, diagnostic)
 
     def test_closeout_force_all_redaction_suppresses_benign_tail(self):
         with tempfile.TemporaryDirectory() as td:

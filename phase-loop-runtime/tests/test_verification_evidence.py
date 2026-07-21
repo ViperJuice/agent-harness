@@ -1458,6 +1458,100 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         assert gate is not None
         self.assertEqual(gate["kind"], "malformed_closeout")
 
+    def test_forbidden_metadata_kind_does_not_match_benign_prose_regression_guard(self):
+        # agent-harness#243 CR (cross-vendor codex, REGRESSION): the round that fixed the
+        # split-argv miss (defect 3, see the split-argv test above) widened
+        # ``secret_like_value``'s separator to accept BARE WHITESPACE standing in for
+        # ``[:=]``, so ordinary prose -- keyword + whitespace + 12+ alnum chars, with no
+        # secret anywhere -- started matching too: "token configuration", "password
+        # authentication documentation". Because ``_forbidden_metadata_kind`` backs the
+        # FATAL ``metadata_redaction_diagnostic`` closeout gate, this turned legitimate
+        # closeout text into a false-positive ``malformed_closeout`` block. MUST FAIL at
+        # HEAD bec790f (returns "secret_like_value" for the first two) and pass once the
+        # separator is strict again.
+        from phase_loop_runtime.redaction import _forbidden_metadata_kind
+
+        benign_phrases = [
+            "token configuration",
+            "password authentication documentation",
+            "review the secret management guide before rotating credentials",
+            "token authentication and authorization flow documentation",
+            "the api key rotation policy is documented separately",
+        ]
+        for phrase in benign_phrases:
+            self.assertIsNone(
+                _forbidden_metadata_kind(phrase),
+                f"benign prose false-positived as forbidden metadata: {phrase!r}",
+            )
+
+    def test_redact_diagnostics_metadata_only_does_not_redact_benign_prose_tail(self):
+        # Companion to the regression guard above, exercised through the actual redaction
+        # entrypoint: a diagnostic whose raw_tail is ordinary prose containing a secret
+        # keyword followed by whitespace (not `:`/`=`) must pass through UNREDACTED, not be
+        # coerced to metadata-only.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "failed while validating token configuration; see docs\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertNotIn("redacted", out[0])
+        self.assertEqual(out[0]["raw_tail"], "failed while validating token configuration; see docs\n")
+        self.assertIn("argv", out[0])
+
+    def test_secret_like_value_requires_explicit_separator_but_still_matches_prior_shapes(self):
+        # agent-harness#243 CR (regression fix, explicit coverage): reverting the separator to
+        # a REQUIRED ``[:=]`` must not lose any previously-closed escaping/shape gap. Positive
+        # and negative cases side by side so a future edit that re-loosens (or over-tightens)
+        # the pattern breaks visibly here.
+        from phase_loop_runtime.redaction import _forbidden_metadata_kind
+
+        positive_cases = [
+            "api_key=AKIAIOSFODNN7EXAMPLEKEY",  # plain key=value
+            "api_key: AKIAIOSFODNN7EXAMPLEKEY",  # colon + space
+            "api_key='AKIAIOSFODNN7EXAMPLEKEY'",  # single-quoted
+            'api_key="AKIAIOSFODNN7EXAMPLEKEY"',  # double-quoted
+            'api_key: \\"AKIAIOSFODNN7EXAMPLEKEY\\"',  # backslash-escaped quote
+            '{"api_key":"AKIAIOSFODNN7EXAMPLEKEY"}',  # JSON-formatted
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _forbidden_metadata_kind(case), "secret_like_value", f"expected match: {case!r}"
+            )
+
+        # Split argv (flag element, then adjacent value element) — structural composite path.
+        self.assertEqual(
+            _forbidden_metadata_kind({"argv": ["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]}),
+            "secret_like_value",
+        )
+        self.assertEqual(
+            _forbidden_metadata_kind({"argv": ["tool", "--token", 123456789012345]}),
+            "secret_like_value",
+        )
+
+        negative_cases = [
+            "token configuration",
+            "password authentication documentation",
+        ]
+        for case in negative_cases:
+            self.assertIsNone(_forbidden_metadata_kind(case), f"expected no match: {case!r}")
+
+        # The list-structural composite (above) must not reopen the same prose false positive
+        # via an UNDASHED bare-word flag element: `_SECRET_FLAG_RE` requires a leading dash, so
+        # `["token", "configuration"]` must NOT synthesize a `token=configuration` composite.
+        self.assertIsNone(_forbidden_metadata_kind(["token", "configuration"]))
+        self.assertIsNone(_forbidden_metadata_kind(["password", "authentication"]))
+        # A genuinely dash-prefixed flag element still forms the composite and matches.
+        self.assertEqual(
+            _forbidden_metadata_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]),
+            "secret_like_value",
+        )
+
     def test_run_execute_verification_redacts_secret_at_source_and_closes_launch_json_state_json_egress(self):
         # agent-harness#266 (source redaction, CR recheck of #243): a prior round redacted
         # ONLY the rebuilt closeout record, leaving ``runner_verification`` -- and everything

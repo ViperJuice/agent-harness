@@ -36,13 +36,29 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("raw_diff", re.compile(r"diff --git|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@")),
     ("raw_spec_body", re.compile(r"raw spec bod(?:y|ies)|spec body bytes|verbatim spec", re.I)),
     ("raw_transcript", re.compile(r"raw transcript|transcript bytes|verbatim transcript", re.I)),
-    # agent-harness#243 CR (defect 3): a split argv flag/value pair (e.g.
+    # agent-harness#243 CR (defect 3, ORIGINAL): a split argv flag/value pair (e.g.
     # ``["--token", "ABCDEFGHIJKL"]``) has no ``[:=]`` between the keyword and the value --
     # only whitespace, once the elements are joined back into a contiguous string by the
-    # traversal below. The separator alternation accepts EITHER ``[:=]`` (the original
-    # ``key=value``/``key: value`` shape) OR one-or-more spaces (the argv-adjacency shape),
-    # as ONE shared pattern (SSOT) so both the redaction path and the fatal closeout gate stay
-    # in sync.
+    # traversal below. That round widened the separator alternation to accept EITHER ``[:=]``
+    # (the ``key=value``/``key: value`` shape) OR bare one-or-more whitespace (the
+    # argv-adjacency shape).
+    #
+    # agent-harness#243 CR (REGRESSION, cross-vendor codex): accepting bare whitespace AS the
+    # separator made the pattern match ordinary prose -- ``token configuration``, ``password
+    # authentication documentation``, ``secret management guide`` (keyword + whitespace + 12+
+    # alnum chars) -- with no secret anywhere. Because ``metadata_redaction_diagnostic`` runs
+    # this matcher over every closeout leaf as a FATAL gate, a legitimate blocker_summary /
+    # next_action / finding sentence containing such a phrase was rejected as
+    # ``malformed_closeout``, blocking persistence -- a false-positive regression worse than the
+    # split-argv miss it fixed. The separator alternation is reverted: a literal ``[:=]`` is
+    # REQUIRED between the keyword and the value (whitespace/quote/backslash noise is still
+    # tolerated on either side of that required separator -- see the escaped-quote paragraph
+    # below -- but never STANDS IN for it). Split-argv adjacency is instead handled
+    # STRUCTURALLY in ``_iter_leaf_strings``: when walking a list, an adjacent
+    # flag-shaped-element -> value-shaped-element pair is joined into a synthesized
+    # ``flag=value`` composite leaf (mirroring the existing dict key/value composite below) and
+    # fed through this same strict pattern, rather than loosening the pattern itself. Single
+    # shared pattern (SSOT): both the redaction path and the fatal closeout gate stay in sync.
     #
     # agent-harness#243 CR round 4 (codex + Fable): an ORDINARY JSON-formatted secret --
     # e.g. a failing command that ``print(json.dumps({"api_key": "SECRET"}))``s, captured
@@ -69,17 +85,18 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # and again AFTER it. This closes the WHOLE quoting/escaping class in one shared pattern:
     # plain (``key=value``), single/double-quoted (``key='value'`` / ``key="value"``),
     # backslash-escaped (``key: \"value\"``, any depth of shell/JSON re-quoting), and JSON
-    # (``"key":"value"``) all reduce to "some run of separator-ish noise, then the value". The
-    # required separator itself is unchanged in kind (``[:=]`` OR one-or-more of the same noise
-    # class, so a keyword glued directly to an unrelated word with zero separator still does
-    # NOT match) -- only the noise TOLERATED on each side of it grew from "one optional quote"
-    # to "any run of whitespace/quote/backslash", which is a superset that keeps every
-    # previously-matched shape matching while adding escaped-quote coverage. Single shared
-    # pattern (SSOT): both the redaction path and the fatal closeout gate stay in sync.
+    # (``"key":"value"``) all reduce to "some run of separator-ish noise, then a REQUIRED
+    # ``[:=]``, then more noise, then the value". (The separator itself was briefly widened to
+    # ALSO accept bare whitespace standing in for ``[:=]`` -- see the regression paragraph
+    # above -- and then reverted: the noise TOLERATED on each side of the required separator
+    # grew from "one optional quote" to "any run of whitespace/quote/backslash", but the
+    # separator itself stays a REQUIRED literal ``[:=]``, so a keyword glued to an unrelated
+    # word with no ``:``/``=`` anywhere -- ordinary prose -- still does NOT match.) Single
+    # shared pattern (SSOT): both the redaction path and the fatal closeout gate stay in sync.
     (
         "secret_like_value",
         re.compile(
-            r"(?:api[_-]?key|secret|token|password)[\s'\"\\]*(?:[:=][\s'\"\\]*|[\s'\"\\]+)[A-Za-z0-9_\-]{12,}",
+            r"(?:api[_-]?key|secret|token|password)[\s'\"\\]*[:=][\s'\"\\]*[A-Za-z0-9_\-]{12,}",
             re.I,
         ),
     ),
@@ -89,6 +106,22 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("local_env_value", re.compile(r"local env value|\.env(?:\.local)? value|process\.env\[[^\]]+\]\s*=", re.I)),
     ("private_evidence", re.compile(r"private evidence|evidence bytes|raw evidence", re.I)),
 )
+
+# agent-harness#243 CR (structural split-argv re-fix): matches a list element that IS a secret
+# keyword by itself, DASH-PREFIXED like a CLI flag (``--token``, ``-api-key``, ``--password``)
+# -- i.e. the WHOLE element (after stripping whitespace), not merely an element CONTAINING one
+# of these words. Used only to decide whether the NEXT list element should be joined into a
+# ``flag=value`` composite for ``secret_like_value`` matching (see ``_iter_leaf_strings``); it
+# does not itself gate redaction.
+#
+# The leading dash is REQUIRED (``-{1,2}``, not ``-{0,2}``): a bare undashed keyword element
+# (e.g. ``["token", "configuration"]``) would otherwise synthesize the composite
+# ``"token=configuration"`` -- reopening, via list structure, the exact ordinary-prose
+# false-positive this whole CR round exists to close for plain strings (``"token
+# configuration"`` must not match either; see the regression paragraph on the pattern above).
+# Every real split-argv shape this composite needs to catch (``--token``, ``-t`` style flags)
+# is dash-prefixed in practice, so requiring the dash costs no genuine coverage.
+_SECRET_FLAG_RE = re.compile(r"^-{1,2}(?:api[_-]?key|secret|token|password)$", re.I)
 
 
 def classify_changed_path(path: str, protected_source_roles: Mapping[str, str] | None = None) -> str:
@@ -351,12 +384,23 @@ def _iter_leaf_strings(value: Any) -> Iterator[str]:
        blob matcher either — ``json.dumps`` puts a closing quote, comma, and space between
        ``"--token"`` and ``"ABCDEFGHIJKL"`` in the serialized array, breaking the immediate
        keyword-then-separator adjacency ``secret_like_value`` requires — so this is new
-       coverage, not a restored regression. Fixed: for every list/tuple, in addition to
-       recursing into each element, also match the SPACE-JOINED concatenation of the
-       stringified scalar elements, so an adjacent flag→value pair becomes one contiguous
-       string a keyword+separator+value pattern can match (the separator alternation on
-       ``secret_like_value`` accepts plain whitespace, not just ``[:=]``, to match this joined
-       form).
+       coverage, not a restored regression. Originally fixed by widening ``secret_like_value``'s
+       separator to also accept bare whitespace, matched against the SPACE-JOINED concatenation
+       of the list's stringified scalar elements -- but that widening let the pattern match
+       ordinary prose too (``token configuration``), a false-positive regression (see the CR
+       note on the pattern itself). Re-fixed STRUCTURALLY instead of by loosening the pattern:
+       for every list/tuple, when one element is a DASH-PREFIXED flag-shaped secret keyword
+       (``--token``, ``-api-key``, …, matched via ``_SECRET_FLAG_RE`` — i.e. the element IS one
+       of the keywords with a leading dash, not merely CONTAINING one) and the next element is
+       a scalar, synthesize a ``flag=value`` composite leaf (mirroring the Mapping composite
+       below) and feed THAT through the still-strict ``[:=]``-required pattern. The dash is
+       REQUIRED, not optional: an undashed bare-word element (``["token", "configuration"]``)
+       would otherwise reopen, via list structure, the exact ordinary-prose false positive this
+       CR round exists to close for plain strings — every real split-argv shape this needs to
+       catch is dash-prefixed in practice, so requiring the dash costs no genuine coverage. The
+       space-joined whole-list leaf is still yielded too (for the other, non-secret_like_value
+       patterns that scan free text), but no longer carries the separator-widening risk since
+       ``secret_like_value`` itself requires a literal ``[:=]``.
 
     A cross-vendor CR round (codex + Fable, agent-harness#243) found the dict-key fix above
     was still not a true superset: an ORDINARY JSON-shaped secret, e.g. a Mapping entry
@@ -384,12 +428,22 @@ def _iter_leaf_strings(value: Any) -> Iterator[str]:
             yield from _iter_leaf_strings(item)
         return
     if isinstance(value, (list, tuple)):
+        items = list(value)
         parts: list[str] = []
-        for item in value:
+        for idx, item in enumerate(items):
             yield from _iter_leaf_strings(item)
             scalar = _scalar_text(item)
             if scalar is not None:
                 parts.append(scalar)
+            # agent-harness#243 CR (structural split-argv re-fix, see docstring point 3): a
+            # flag-shaped element immediately followed by a scalar value element is joined into
+            # a synthesized ``flag=value`` composite so the still-strict ``secret_like_value``
+            # pattern (which requires a literal ``[:=]``) can see keyword+separator+value
+            # contiguously, without loosening the pattern itself to accept bare whitespace.
+            if isinstance(item, str) and _SECRET_FLAG_RE.match(item.strip()) and idx + 1 < len(items):
+                next_scalar = _scalar_text(items[idx + 1])
+                if next_scalar is not None:
+                    yield f"{item}={next_scalar}"
         if parts:
             yield " ".join(parts)
         return
