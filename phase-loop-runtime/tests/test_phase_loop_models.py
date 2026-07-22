@@ -227,6 +227,8 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "visual_evidence_path",
                 "visual_evidence_observed",
                 "visual_evidence_opt_out",
+                # FAV #272: the DECLARED trigger the block decision reads.
+                "visual_render_declared",
             ),
         )
         self.assertEqual(

@@ -1872,6 +1872,14 @@ contract the closeout validator inspects, so they must not be silently dropped:
 - `visual_evidence_observed`
 - `visual_evidence_opt_out`
 
+`visual_render_declared` (FAV, issue #272) is likewise OPTIONAL and emitted
+only when carried by the native closeout. It is the DECLARED signal: the
+visual-evidence gate's BLOCK decision reads this bool (plus evidence
+validity once declared) and NOTHING else -- an owned avatar/browser-media
+surface or an explicit visible-render claim in the plan text never blocks on
+their own; they only raise a non-blocking `visual_render_undeclared_surface`
+advisory when the phase never declared.
+
 ## Monitor Payloads
 
 `build_notification_payload(...)` must emit exactly these top-level fields:

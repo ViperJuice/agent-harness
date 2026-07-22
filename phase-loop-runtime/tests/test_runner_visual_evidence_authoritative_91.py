@@ -56,6 +56,7 @@ class VisualEvidenceSurvivesWhitelistTest(unittest.TestCase):
                 "visual_evidence_non_black_pixels": 19200,
                 "visual_evidence_pixel_min": 0,
                 "visual_evidence_pixel_max": 255,
+                "visual_render_declared": True,
             },
         )
         self.assertEqual(summary["visual_evidence_path"], "shots/frame.png")
@@ -63,6 +64,14 @@ class VisualEvidenceSurvivesWhitelistTest(unittest.TestCase):
             summary["visual_evidence_observed"],
             {"non_black_pixels": 19200, "pixel_min": 0, "pixel_max": 255},
         )
+        # FAV #272: the DECLARED trigger must survive the SAME real production
+        # write path (apply_child_terminal_summary_overlay's
+        # visual_evidence_terminal_fields lift -> TERMINAL_SUMMARY_FIELDS
+        # projection) as the evidence fields above -- this is the exact seam
+        # Fix 1 (issue #91) had to fix once already (the whitelist silently
+        # discarding the field), and both the validator's live ctx.terminal
+        # and reconcile's persisted-event reader depend on it.
+        self.assertIs(summary["visual_render_declared"], True)
 
     def test_ordinary_summary_omits_visual_fields(self):
         summary = build_terminal_summary(
@@ -73,6 +82,7 @@ class VisualEvidenceSurvivesWhitelistTest(unittest.TestCase):
         )
         self.assertNotIn("visual_evidence_path", summary)
         self.assertNotIn("visual_evidence_observed", summary)
+        self.assertNotIn("visual_render_declared", summary)
 
 
 class VisualGateAuthoritativeBlockTest(unittest.TestCase):
@@ -114,6 +124,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
         })
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             outcome = self._recheck(child)
@@ -129,6 +140,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
         })
         outcome = self._recheck(child)  # PHASE_LOOP_REVIEW unset -> warn
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
@@ -145,6 +157,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_path": "shots/frame.png",
             "visual_evidence_non_black_pixels": 19200,
             "visual_evidence_pixel_min": 0,
@@ -167,6 +180,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_path": "shots/frame.png",
             "visual_evidence_non_black_pixels": 19200,
             "visual_evidence_pixel_min": 0,
@@ -195,6 +209,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_path": "shots/frame.png",
             "visual_evidence_non_black_pixels": 19200,
             "visual_evidence_pixel_min": 0,
@@ -223,6 +238,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_path": "shots/frame.png",
             "visual_evidence_non_black_pixels": 19200,
             "visual_evidence_pixel_min": 0,
@@ -242,6 +258,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_path": "/etc/hostname",  # absolute out-of-repo escape
             "visual_evidence_non_black_pixels": 19200,
             "visual_evidence_pixel_min": 0,
@@ -251,12 +268,33 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
             outcome = self._recheck(child)
         self.assertEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
 
+    def test_undeclared_missing_evidence_never_blocks_on_opt_in(self):
+        # FAV #272 discriminating case: the trigger is DECLARED-only. A phase
+        # that never declared visual_render_declared -- even with the SAME
+        # missing-evidence shape as test_missing_evidence_blocks_
+        # authoritatively_on_opt_in -- must never block, even under opt-in
+        # `block`. This is the case that used to be gated by
+        # avatar_visual_evidence_required(changed_paths, plan_text); it is
+        # not read here at all anymore.
+        child = self._child({
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "produced_if_gates": [],
+            "dirty_paths": [],
+            "visual_render_declared": False,
+        })
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = self._recheck(child)
+        self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+        self.assertNotEqual(outcome.automation_status, "blocked")
+
     def test_typed_opt_out_does_not_block_on_opt_in(self):
         child = self._child({
             "terminal_status": "complete",
             "verification_status": "passed",
             "produced_if_gates": [],
             "dirty_paths": [],
+            "visual_render_declared": True,
             "visual_evidence_opt_out": "no_visible_media_surface",
         })
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):

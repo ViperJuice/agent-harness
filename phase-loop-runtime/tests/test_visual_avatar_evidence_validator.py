@@ -52,11 +52,19 @@ INCIDENTAL_VIDEO_PLAN = (
 LEGACY_PLAN = "# LEGACY\n\nA generic backend refactor phase, no media surface at all.\n"
 
 
-def _ctx(plan, changed_paths=(), phase="FAV", terminal=None, automation=None, repo_root=None):
+def _ctx(plan, changed_paths=(), phase="FAV", terminal=None, automation=None, repo_root=None, declared=True):
+    """FAV #272: ``declared`` defaults True so the many pre-existing evidence-
+    validation tests below (which only care about the evidence-schema/decode
+    behavior once the gate is triggered) don't each need to spell out
+    ``visual_render_declared`` explicitly. The false-positive-boundary tests
+    (and anything exercising the new advisory) pass ``declared=False``
+    explicitly."""
+    terminal_dict = dict(terminal) if terminal is not None else {"verification_status": "passed"}
+    terminal_dict.setdefault("visual_render_declared", declared)
     return CloseoutContext(
         phase_alias=phase,
         plan_path=str(plan),
-        terminal=terminal or {"verification_status": "passed"},
+        terminal=terminal_dict,
         automation=automation or {"verification_status": "passed"},
         changed_paths=tuple(changed_paths),
         repo_root=repo_root,
@@ -78,8 +86,9 @@ def _write_plan(td: str, text: str) -> Path:
     return plan
 
 
-def _closeout(plan, changed_paths, terminal_extra=None):
+def _closeout(plan, changed_paths, terminal_extra=None, declared=False):
     terminal = {"terminal_status": "complete", "verification_status": "passed"}
+    terminal["visual_render_declared"] = declared
     terminal.update(terminal_extra or {})
     return build_phase_loop_closeout(
         phase_alias="FAV",
@@ -123,30 +132,53 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
 
     def test_incidental_browser_mention_without_owned_media_file_is_silent(self):
         plan = _write_plan(self._td.name, INCIDENTAL_BROWSER_PLAN)
-        ctx = _ctx(plan, changed_paths=["src/tests/playwright_runner.py"])
+        ctx = _ctx(plan, changed_paths=["src/tests/playwright_runner.py"], declared=False)
         self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
     def test_incidental_video_mention_without_owned_media_file_is_silent(self):
         plan = _write_plan(self._td.name, INCIDENTAL_VIDEO_PLAN)
-        ctx = _ctx(plan, changed_paths=["src/ingest/video_parser.py"])
+        ctx = _ctx(plan, changed_paths=["src/ingest/video_parser.py"], declared=False)
         self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
     def test_legacy_non_media_phase_is_silent(self):
         plan = _write_plan(self._td.name, LEGACY_PLAN)
-        ctx = _ctx(plan, changed_paths=["src/runner.py", "src/models.py"])
+        ctx = _ctx(plan, changed_paths=["src/runner.py", "src/models.py"], declared=False)
         self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
-    def test_owned_media_file_without_explicit_claim_is_silent(self):
-        # Structural signal present (an .html fixture) but the plan makes no
-        # explicit visible-render deliverable claim -- still silent.
+    # --- FAV #272: the heuristic (either axis alone) never blocks -- it only
+    # raises the non-blocking visual_render_undeclared_surface advisory when
+    # the phase never declared. These next two used to assert the CONTRACT
+    # (structural AND claim) never blocked on a single axis; now that block
+    # is declared-only, a single axis firing is exactly what the advisory
+    # exists to flag. ---
+
+    def test_owned_media_file_without_explicit_claim_raises_advisory_only(self):
+        # Structural signal present (an .html fixture), no declaration --
+        # raises the advisory (never a block) even though the plan makes no
+        # explicit visible-render deliverable claim.
         plan = _write_plan(self._td.name, INCIDENTAL_VIDEO_PLAN)
-        ctx = _ctx(plan, changed_paths=["tests/fixtures/some_page.html"])
-        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+        ctx = _ctx(plan, changed_paths=["tests/fixtures/some_page.html"], declared=False)
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_render_undeclared_surface")
+        self.assertEqual(findings[0].severity, "warn")
+        self.assertIsNone(findings[0].blocker_class)
 
-    def test_explicit_claim_without_owned_media_file_is_silent(self):
-        # Explicit claim language present but no owned/changed media-surface file.
+    def test_explicit_claim_without_owned_media_file_raises_advisory_only(self):
+        # Explicit claim language present, no owned/changed media-surface
+        # file, no declaration -- raises the advisory only.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
-        ctx = _ctx(plan, changed_paths=["src/runner.py"])
+        ctx = _ctx(plan, changed_paths=["src/runner.py"], declared=False)
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_render_undeclared_surface")
+        self.assertEqual(findings[0].severity, "warn")
+
+    def test_neither_axis_and_not_declared_is_fully_silent(self):
+        # Neither the structural surface nor the explicit claim fires --
+        # genuinely nothing to advise on either.
+        plan = _write_plan(self._td.name, LEGACY_PLAN)
+        ctx = _ctx(plan, changed_paths=["src/runner.py"], declared=False)
         self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
     # --- pixel-evidence schema: rejects black/blank/uniform frames ---
@@ -349,18 +381,27 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
 
     # --- Fix 5: negation / Non-goals must NOT match (no false-positive block) ---
 
-    def test_non_goal_negated_claim_is_silent(self):
+    def test_non_goal_negated_claim_never_blocks(self):
         # "must not render a visible avatar" under a Non-goals section, with an
-        # owned .html surface, must produce NO finding (contract: the claim must
-        # be an AFFIRMATIVE deliverable, not a forbidden non-goal).
+        # owned .html surface, must NEVER produce a BLOCK finding -- the claim
+        # detector correctly reads this as NOT an affirmative deliverable, but
+        # under #272 that nuance no longer matters for blocking anyway (block
+        # is declared-only). The owned .html surface still raises the
+        # non-blocking advisory (the OR axis fires on structure alone).
         plan = _write_plan(self._td.name, NON_GOAL_AVATAR_PLAN)
-        ctx = _ctx(plan, changed_paths=["tests/fixtures/avatar_call.html"])
-        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+        ctx = _ctx(plan, changed_paths=["tests/fixtures/avatar_call.html"], declared=False)
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_render_undeclared_surface")
+        self.assertEqual(findings[0].severity, "warn")
 
     def test_non_goal_negated_claim_is_silent_end_to_end(self):
         plan = _write_plan(self._td.name, NON_GOAL_AVATAR_PLAN)
-        c = _closeout(plan, ["tests/fixtures/avatar_call.html"])
-        self.assertFalse(c["verification"]["results"])
+        c = _closeout(plan, ["tests/fixtures/avatar_call.html"], declared=False)
+        # Never blocks -- the sole result is the non-blocking advisory.
+        codes = [r.get("code") for r in c["verification"]["results"]]
+        self.assertEqual(codes, ["visual_render_undeclared_surface"])
+        self.assertEqual(c["verification"]["results"][0]["severity"], "warn")
         self.assertEqual(c["terminal_status"], "complete")
 
     # --- round-5 CR (codex): detector false-NEGATIVE -- title / IF-gate /
@@ -900,7 +941,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
 
     def test_matching_phase_warns_but_completes_by_default(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
-        c = _closeout(plan, ["tests/fixtures/avatar_call.html"])
+        c = _closeout(plan, ["tests/fixtures/avatar_call.html"], declared=True)
         self.assertEqual(c["terminal_status"], "complete")  # warn default never stalls
         codes = [r.get("code") for r in c["verification"]["results"]]
         self.assertIn("visual_evidence_missing_or_blank", codes)
@@ -908,14 +949,28 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     def test_matching_phase_blocks_on_opt_in(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
-            c = _closeout(plan, ["tests/fixtures/avatar_call.html"])
+            c = _closeout(plan, ["tests/fixtures/avatar_call.html"], declared=True)
         self.assertEqual(c["terminal_status"], "blocked")
         self.assertEqual(c["blocker"]["blocker_class"], "review_gate_block")
         self.assertFalse(c["blocker"].get("human_required", True))  # never human_required
 
+    def test_undeclared_phase_never_blocks_even_on_opt_in(self):
+        # FAV #272 discriminating case: the SAME structural surface + explicit
+        # claim that used to trigger a block under the retired heuristic
+        # contract must NEVER block now, even under opt-in `block` -- the
+        # heuristic only ever reaches the non-blocking advisory. This is the
+        # explicit posture-independence proof the redesign requires.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            c = _closeout(plan, ["tests/fixtures/avatar_call.html"], declared=False)
+        self.assertEqual(c["terminal_status"], "complete")
+        codes = [r.get("code") for r in c["verification"]["results"]]
+        self.assertEqual(codes, ["visual_render_undeclared_surface"])
+        self.assertEqual(c["verification"]["results"][0]["severity"], "warn")
+
     def test_legacy_phase_no_finding_end_to_end(self):
         plan = _write_plan(self._td.name, LEGACY_PLAN)
-        c = _closeout(plan, ["src/runner.py"])
+        c = _closeout(plan, ["src/runner.py"], declared=False)
         self.assertFalse(c["verification"]["results"])
         self.assertEqual(c["terminal_status"], "complete")
 

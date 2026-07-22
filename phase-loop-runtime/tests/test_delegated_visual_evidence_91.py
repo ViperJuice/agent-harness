@@ -128,6 +128,7 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
         # magic-header-only fake no longer suffices.
         write_varied_png(artifact)
         native_json = _native_closeout_json(
+            visual_render_declared=True,
             visual_evidence_path="shots/frame.png",
             visual_evidence_non_black_pixels=19200,
             visual_evidence_pixel_min=0,
@@ -139,7 +140,7 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
         self.assertEqual(outcome.automation_status, "complete")
 
     def test_delegated_missing_evidence_blocks_on_opt_in(self):
-        native_json = _native_closeout_json()  # no visual_evidence_* fields at all
+        native_json = _native_closeout_json(visual_render_declared=True)  # declared, no evidence attached
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             outcome = self._delegated_recheck(native_json)
         self.assertEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
@@ -147,17 +148,44 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
         self.assertFalse(outcome.event_blocker.get("human_required", True))
 
     def test_delegated_missing_evidence_does_not_block_under_warn_default(self):
-        native_json = _native_closeout_json()
+        native_json = _native_closeout_json(visual_render_declared=True)
         outcome = self._delegated_recheck(native_json)  # PHASE_LOOP_REVIEW unset -> warn
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
         self.assertEqual(outcome.automation_status, "complete")
 
-    def test_delegated_typed_opt_out_survives_serializer_and_is_clean(self):
-        native_json = _native_closeout_json(visual_evidence_opt_out="no_visible_media_surface")
+    def test_delegated_undeclared_missing_evidence_never_blocks_on_opt_in(self):
+        # FAV #272 discriminating case: the SAME missing-evidence shape as
+        # test_delegated_missing_evidence_blocks_on_opt_in above, but WITHOUT
+        # a declaration, must NEVER block, even under opt-in `block`. Proves
+        # the delegated path's trigger is declared-only too, not merely the
+        # evidence-validation logic once triggered.
+        native_json = _native_closeout_json()  # no visual_render_declared, no evidence fields at all
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             outcome = self._delegated_recheck(native_json)
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
         self.assertEqual(outcome.automation_status, "complete")
+
+    def test_delegated_typed_opt_out_survives_serializer_and_is_clean(self):
+        native_json = _native_closeout_json(
+            visual_render_declared=True, visual_evidence_opt_out="no_visible_media_surface"
+        )
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = self._delegated_recheck(native_json)
+        self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+        self.assertEqual(outcome.automation_status, "complete")
+
+    def test_delegated_declared_field_survives_serializer(self):
+        # agent-harness#245/#272-recurrence-class regression: the DECLARED
+        # bool itself (not just the evidence fields) must survive
+        # ``_delegated_child_closeout_result`` -- without the propagation fix
+        # in ``_delegated_child_visual_evidence_fields`` /
+        # ``models.visual_evidence_terminal_fields``, this silently drops to
+        # ``None`` and the authoritative gate goes permanently inert for
+        # every delegated phase.
+        native_json = _native_closeout_json(visual_render_declared=True)
+        child_automation = _parse_native_closeout_status(native_json)
+        closeout = _delegated_child_closeout_result(decision=self.decision, child_automation=child_automation)
+        self.assertIs(closeout.get("visual_render_declared"), True)
 
 
 class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
@@ -235,6 +263,7 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
         # magic-header-only fake no longer suffices.
         write_varied_png(artifact)
         native_json = _native_closeout_json(
+            visual_render_declared=True,
             visual_evidence_path="shots/frame.png",
             visual_evidence_non_black_pixels=19200,
             visual_evidence_pixel_min=0,
@@ -248,6 +277,7 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
         self.assertEqual(closeout.get("visual_evidence_observed"), {
             "non_black_pixels": 19200, "pixel_min": 0, "pixel_max": 255,
         })
+        self.assertIs(closeout.get("visual_render_declared"), True)
 
         status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
         closeout["automation_status"] = status_after_launch
@@ -259,7 +289,9 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
         self.assertEqual(outcome.automation_status, "complete")
 
     def test_typed_opt_out_survives_real_launch_metadata_round_trip(self):
-        native_json = _native_closeout_json(visual_evidence_opt_out="no_visible_media_surface")
+        native_json = _native_closeout_json(
+            visual_render_declared=True, visual_evidence_opt_out="no_visible_media_surface"
+        )
         closeout = self._launch_real(native_json)
         self.assertEqual(closeout.get("visual_evidence_opt_out"), "no_visible_media_surface")
 
@@ -271,6 +303,28 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
             )
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
         self.assertEqual(outcome.automation_status, "complete")
+
+    def test_declared_true_missing_evidence_blocks_via_real_launch_metadata_round_trip(self):
+        # #272 recurrence-class stash-proof: drives the REAL unmocked
+        # delegated chain (launch_delegated_child -> ParentChildRunMetadata.
+        # to_json()/merge_launch_metadata() JSON round-trip -> the runner's
+        # actual read site) end to end. FAILS WITHOUT THE PROPAGATION FIX --
+        # if visual_render_declared is dropped anywhere between the child's
+        # native closeout payload and _closeout_gate_recheck's read of
+        # child_automation, this phase silently completes instead of
+        # blocking, exactly like the historical #245 produced_if_gates drop.
+        native_json = _native_closeout_json(visual_render_declared=True)  # declared, no evidence attached
+        closeout = self._launch_real(native_json)
+        self.assertIs(closeout.get("visual_render_declared"), True)
+
+        status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
+        closeout["automation_status"] = status_after_launch
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = _closeout_gate_recheck(
+                self.repo, self.roadmap, self.plan, closeout, status_after_launch, event_blocker,
+            )
+        self.assertEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+        self.assertEqual(outcome.automation_status, "blocked")
 
 
 if __name__ == "__main__":

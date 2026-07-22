@@ -30,7 +30,8 @@ from phase_loop_test_utils import (
     write_varied_png,
 )
 from phase_loop_runtime.cli import main
-from phase_loop_runtime.events import read_events
+from phase_loop_runtime.events import append_event, read_events
+from phase_loop_runtime.models import LoopEvent, utc_now
 
 VISIBLE_AVATAR_BODY = (
     "# RUNNER\n\n"
@@ -80,6 +81,29 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def _args(self, repo: Path, roadmap: Path, phase: str, *extra: str) -> list[str]:
         return ["reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", phase, *extra]
 
+    def _declare(self, repo: Path, roadmap: Path, phase: str, declared: bool) -> None:
+        # FAV #272: reconcile reads visual_render_declared from the phase's
+        # own PERSISTED event history (metadata.terminal_summary), not from a
+        # CLI flag and not re-derived from the git diff -- so tests simulate
+        # "the executor declared this at closeout time" by appending a real
+        # event carrying the field, exactly the shape the live runner writes
+        # via observability.build_terminal_summary.
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase=phase,
+                action="execute",
+                status="blocked",
+                model="test",
+                reasoning_effort="test",
+                source="test",
+                metadata={"terminal_summary": {"terminal_status": "blocked", "visual_render_declared": declared}},
+            ),
+        )
+
     def _setup(self, body: str, owned_files: tuple[str, ...] = ("tests/fixtures/avatar_call.html",)):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
@@ -123,6 +147,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_matching_phase_missing_evidence_promotes_under_warn_default(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         code, _, stderr = _run(
             self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
         )
@@ -134,6 +159,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_matching_phase_missing_evidence_blocks_on_opt_in(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
@@ -144,6 +170,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def test_matching_phase_valid_evidence_promotes_on_opt_in(self):
         pytest.importorskip("PIL")  # _write_committed_artifact decodes a real PNG
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         # Fix 4: the artifact must actually EXIST inside the repo.
         artifact = self._write_committed_artifact(repo, "shots/frame.png")
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
@@ -164,6 +191,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def test_matching_phase_blank_evidence_blocks_on_opt_in(self):
         pytest.importorskip("PIL")
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         # uniform gray frame -- a REAL, DECODABLE, but genuinely blank image.
         write_blank_png(artifact)
@@ -187,6 +215,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # still BLOCK -- the derived observation is authoritative and the
         # self-report can never override it.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         write_blank_png(artifact)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
@@ -208,6 +237,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # self-reported numbers, must fail CLOSED -- never silently pass on
         # the self-report because derivation itself could not run.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
@@ -231,6 +261,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # succeed and then fail on the corrupt body.
         pytest.importorskip("PIL")
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
@@ -261,6 +292,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # below: Pillow import itself raises, before ever touching the
         # artifact's bytes, so a plain placeholder file is enough.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
@@ -289,6 +321,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # write_varied_png, which needs a real Pillow install) is enough and
         # no importorskip("PIL") guard belongs here.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         artifact = repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
@@ -311,6 +344,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # Fix 4: an ASSERTED path that does not exist in the repo is rejected --
         # valid observations alone cannot promote it.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
@@ -327,6 +361,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def test_matching_phase_out_of_repo_artifact_blocks_on_opt_in(self):
         # Fix 4: an absolute out-of-repo escape path is rejected.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
@@ -346,6 +381,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # Omitting --verification-status must NOT bypass the gate: reconcile
         # always promotes to complete, so a matching phase is still guarded.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(repo, roadmap, "RUNNER", "--allow-dirty")
@@ -356,10 +392,11 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     # --- Fix 3: owned GLOB resolves to a real media file at the commit ---
 
     def test_owned_glob_resolves_to_real_media_file_and_guards(self):
-        # `src/**` owns a real `src/avatar_renderer.py`; reconcile must resolve
-        # the glob to that real path (the media-render filename heuristic) and
-        # guard the same way the closeout validator would on the real file.
+        # `src/**` owns a real `src/avatar_renderer.py`; the phase DECLARED a
+        # visible render, so reconcile guards on missing evidence the same
+        # way the closeout validator would.
         repo, roadmap = self._setup(GLOB_AVATAR_BODY, owned_files=("src/avatar_renderer.py",))
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
@@ -367,8 +404,24 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("visual-avatar evidence", stderr)
 
+    def test_owned_glob_real_media_file_without_declaration_raises_advisory_only(self):
+        # FAV #272 discriminating case: the SAME owned-glob-resolved real
+        # media file that used to trigger a block under the retired
+        # heuristic contract must NEVER block without a declaration, even
+        # under opt-in `block` -- it only raises the non-blocking advisory.
+        repo, roadmap = self._setup(GLOB_AVATAR_BODY, owned_files=("src/avatar_renderer.py",))
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+
     def test_matching_phase_typed_opt_out_promotes_on_opt_in(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
@@ -388,9 +441,14 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_owning_but_not_changing_media_file_is_not_blocked(self):
         # `src/**` owns `src/avatar_renderer.py`, committed in an EARLIER commit.
-        # The closeout commit (HEAD, defaulted) only changes a non-media file --
-        # reconcile must evaluate THAT commit's actual changed paths, not the
-        # whole owned tree, so this must NOT be blocked (matches the runner).
+        # The closeout commit (HEAD, defaulted) only changes a non-media file.
+        # FAV #272: the BLOCK decision no longer depends on changed paths at
+        # all (declared-only), so this is never blocked regardless of which
+        # files this commit touched -- there is no declaration here, so it
+        # promotes cleanly (GLOB_AVATAR_BODY's plan text still carries an
+        # explicit claim, which independently raises the non-blocking
+        # advisory via the OR's claim axis -- that is expected and does not
+        # affect the block decision, which is what this test guards).
         repo, roadmap = self._setup(GLOB_AVATAR_BODY, owned_files=("src/avatar_renderer.py",))
         util = repo / "src" / "utils.py"
         util.write_text("def helper():\n    return 1\n", encoding="utf-8")
@@ -408,6 +466,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_invalid_closeout_commit_fails_closed(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
         before = len(read_events(repo))
         code, _, stderr = _run(
             self._args(
@@ -422,23 +481,25 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # No manual_repair event was recorded -- the phase was NOT promoted.
         self.assertEqual(len(read_events(repo)), before)
 
-    def test_unreadable_plan_fails_closed_unconditionally(self):
+    def test_unreadable_plan_is_advisory_only_never_fails_closed(self):
+        # FAV #272: plan text now feeds ONLY the non-blocking advisory (the
+        # BLOCK decision is declared-only and never reads plan text at all).
         # A plan path that RESOLVES but fails to read (here: it resolves to a
-        # directory) is a resolution FAILURE distinct from "no plan artifact
-        # exists at all" -- it must fail closed, not silently read as "no
-        # explicit claim" (which would be the same fail-open class as an
-        # invalid --closeout-commit). Deliberately run under the DEFAULT
-        # (warn) posture, unset here, to prove this is NOT posture-gated the
-        # way a genuinely-detected missing-evidence shortfall is -- a
-        # resolution failure can't evaluate the contract at all, so it always
-        # refuses, warn or block.
+        # directory) therefore just means no CLAIM signal can be computed for
+        # the advisory -- it must NOT fail closed the way it used to when
+        # plan text fed the block contract directly. The owned .html surface
+        # in VISIBLE_AVATAR_BODY still makes the STRUCTURAL half of the
+        # advisory's OR fire independent of the plan read failure, so the
+        # advisory is still recorded -- just never a block/refusal.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         fake_plan_dir = repo / "plans" / "phase-plan-v1-RUNNER.md"
         with patch("phase_loop_runtime.cli.find_plan_artifact", return_value=fake_plan_dir.parent):
             code, _, stderr = _run(
                 self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
             )
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
 
     # --- Fix 2 (agent-harness#91 round-6 CR): a MERGE closeout commit must
     # still be evaluated -- a bare `git diff-tree --root <merge>` (no
@@ -519,6 +580,10 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertIn("tests/fixtures/avatar_call.html", resolved_paths)
         self.assertNotIn("UNRELATED.md", resolved_paths)
 
+        # FAV #272: the block decision is declared-only -- declare the phase
+        # so this still exercises the missing-evidence block, on top of the
+        # merge-commit diff-tree-resolution fix proven above.
+        self._declare(repo, roadmap, "RUNNER", True)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
@@ -530,6 +595,33 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
             )
         self.assertEqual(code, 2)
         self.assertIn("visual-avatar evidence", stderr)
+
+    # --- FAV #272: the persisted declared bool is the ONLY block trigger ---
+
+    def test_persisted_declared_true_missing_evidence_blocks_on_opt_in(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_persisted_declared_false_never_blocks_even_with_matching_paths(self):
+        # Same phase/changed-paths shape (owned .html + explicit claim) as
+        # the test above -- the ONLY difference is the persisted declaration
+        # is explicitly False. Must never block, even under opt-in `block`.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", False)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
 
     # --- non-matching phase: guard is inert ---
 

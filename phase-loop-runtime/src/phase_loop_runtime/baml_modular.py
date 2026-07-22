@@ -36,6 +36,7 @@ class PhaseLoopCloseoutV1(BaseModel):
     visual_evidence_pixel_min: int | None = None
     visual_evidence_pixel_max: int | None = None
     visual_evidence_opt_out: str | None = None
+    visual_render_declared: bool | None = None
 
     @field_validator("terminal_status")
     @classmethod

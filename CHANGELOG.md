@@ -172,6 +172,47 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   (`manual_repair_fields=None`); decoder-absent + opt-in-block still refuses with
   `visual_evidence_cannot_verify`; a genuinely missing/blank evidence artifact with a working
   decoder still records under warn exactly as before.
+- **Declared-only trigger redesign (Consiliency/agent-harness#272) — the BLOCK decision is now
+  decidable by construction.** Round 7 CR flagged two more NL-claim-parser edges (a negation
+  clause-scoping fail-open, an affirmative-heading-under-`## Non-goals` false-positive) —
+  the same heuristic-bottomless class every prior round already worked around. Rather than
+  another regex round, the trigger itself is replaced: a new closeout field,
+  `visual_render_declared: bool` (added to `emit_phase_closeout.baml`, the `PhaseLoopCloseoutV1`
+  pydantic mirror, and `TERMINAL_SUMMARY_FIELDS`), is the executor's explicit assertion "this
+  phase delivers a visible avatar/media render backed by an attached image artifact." The BLOCK
+  decision in all three enforcement points (`visual_avatar_evidence_validator`, the runner's
+  authoritative `_visual_evidence_closeout_outcome`, and the reconcile guard
+  `_reconcile_visual_evidence_guard`) now reads ONLY `visual_render_declared` + evidence
+  validity — the structural (`avatar_media_surface_touched`) and NL-claim
+  (`avatar_visible_render_claimed`) heuristics no longer feed the block path anywhere, so their
+  two known edges can no longer gate a merge. The evidence-validation machinery itself (derived
+  pixels, alpha-compositing, coverage floor, fail-closed decode, decoder-absent silence) is
+  unchanged — only the trigger moved.
+  - The heuristic is demoted to a HARD non-blocking advisory (`visual_render_undeclared_surface`,
+    severity `warn`, via the shared `models.avatar_visual_evidence_advisory_applies` predicate —
+    an OR of the two heuristics, evaluated only when `visual_render_declared` is false/absent):
+    "phase touched an avatar media surface / prose claims a visible render but did not declare
+    visual_render_declared=true; the visual-evidence gate did not enforce. Declare it to
+    enforce." This is posture-INDEPENDENT: `run_closeout_validators` forces every finding to
+    `warn` under the default `PHASE_LOOP_REVIEW=warn`, and under `PHASE_LOOP_REVIEW=block` a
+    finding's severity passes through unchanged — a finding that is always emitted at `warn`
+    severity can therefore never escalate to a block under either posture.
+  - **Delegated-child propagation** (the #245 recurrence class): `visual_render_declared`
+    threads through `_delegated_child_visual_evidence_fields` /
+    `models.visual_evidence_terminal_fields` the same way the evidence fields already did, so a
+    delegated child's declaration survives to the authoritative gate instead of going silently
+    inert on the delegated completion path.
+  - **Reconcile reads the PERSISTED declaration, never a CLI flag or the git diff.** A new
+    `cli._persisted_visual_render_declared` helper reads `visual_render_declared` from the
+    phase's own event ledger (`metadata.terminal_summary`, the same shape the live runner
+    writes via `observability.build_terminal_summary`) — reconcile cannot re-derive a declared
+    bool from a git diff, and letting an operator assert one via a flag would reopen the exact
+    self-assertion hole this issue closes. The heuristic still computes the non-blocking
+    advisory in reconcile (it has the changed paths from `_resolve_changed_paths_at_commit`),
+    but never blocks.
+  - Out of scope (tracked separately, #211-style planner-skill follow-up): grounding the
+    declaration in the PLAN (a frozen visual-evidence marker in acceptance criteria). This
+    change is closeout-surface only.
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

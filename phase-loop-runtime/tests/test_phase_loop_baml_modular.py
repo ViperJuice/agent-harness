@@ -39,6 +39,8 @@ class PhaseLoopBamlModularTest(unittest.TestCase):
         parsed = parse_baml_response("EmitPhaseCloseout", json.dumps(payload))
         # FAV (issue #91): the closeout schema gained optional visual-evidence
         # fields (additive). The typed payload dumps them as None when absent.
+        # FAV #272: visual_render_declared is the same kind of additive
+        # optional field.
         expected = {
             **payload,
             "visual_evidence_path": None,
@@ -46,6 +48,7 @@ class PhaseLoopBamlModularTest(unittest.TestCase):
             "visual_evidence_pixel_min": None,
             "visual_evidence_pixel_max": None,
             "visual_evidence_opt_out": None,
+            "visual_render_declared": None,
         }
         self.assertEqual(parsed.payload, expected)
         self.assertEqual(parsed.value.terminal_status, "complete")

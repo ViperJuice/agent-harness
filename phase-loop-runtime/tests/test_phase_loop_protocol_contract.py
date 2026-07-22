@@ -652,7 +652,12 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         # FAV (issue #91): the visual-evidence fields are OPTIONAL -- emitted
         # only when the native closeout carried them -- so an ordinary summary
         # omits them. The always-on fields stay frozen in order.
-        _OPTIONAL_VISUAL = ("visual_evidence_path", "visual_evidence_observed", "visual_evidence_opt_out")
+        _OPTIONAL_VISUAL = (
+            "visual_evidence_path",
+            "visual_evidence_observed",
+            "visual_evidence_opt_out",
+            "visual_render_declared",
+        )
         self.assertEqual(
             tuple(summary.keys()),
             tuple(f for f in TERMINAL_SUMMARY_FIELDS if f not in _OPTIONAL_VISUAL),

@@ -364,6 +364,11 @@ TERMINAL_SUMMARY_FIELDS = (
     "visual_evidence_path",
     "visual_evidence_observed",
     "visual_evidence_opt_out",
+    # FAV #272: the DECLARED trigger the visual-evidence gate's BLOCK decision
+    # reads -- must survive the same whitelist projection or the gate goes
+    # inert (see visual_evidence_terminal_fields / avatar_visual_evidence_
+    # advisory_applies below).
+    "visual_render_declared",
 )
 
 from .baml_modular import export_function_schema
@@ -1437,6 +1442,14 @@ def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
     opt_out = payload.get("visual_evidence_opt_out")
     if opt_out:
         fields["visual_evidence_opt_out"] = opt_out
+    # FAV #272: lift the executor's DECLARED visual-render signal the same
+    # tolerant way -- only when the raw payload actually carries a truthy
+    # value, so a payload that never mentions the field (a legacy/plain-text
+    # closeout, or one that simply didn't declare) leaves it absent rather
+    # than clobbering with an explicit False; absent already means "not
+    # declared" == no-block downstream, so there is nothing to preserve.
+    if payload.get("visual_render_declared"):
+        fields["visual_render_declared"] = True
     return fields
 
 
@@ -1689,6 +1702,15 @@ def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str
     """Full FAV detection contract: STRUCTURAL (``changed_paths``) AND
     EXPLICIT CLAIM (``plan_text``).
 
+    HISTORICAL NOTE (agent-harness#272): this AND-contract was the gate's
+    original BLOCK trigger. It is retained, callable, and unit-testable, but
+    since #272 it no longer feeds ANY block-class decision anywhere in the
+    runtime -- the closeout validator, the runner's authoritative reduction,
+    and the reconcile guard all gate the BLOCK decision on the executor's
+    DECLARED ``visual_render_declared`` bool alone (plus evidence validity).
+    See ``avatar_visual_evidence_advisory_applies`` below for the (OR, not
+    AND) heuristic that now feeds only the non-blocking advisory.
+
     Deliberately the SINGLE implementation of the contract -- both the
     closeout validator (``changed_paths`` = the run's actual dirty paths) and
     the ``reconcile`` CLI guard (``changed_paths`` = the files the phase's
@@ -1698,6 +1720,31 @@ def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str
     filtering on either side -- so the two enforcement points can never
     structurally diverge."""
     return avatar_media_surface_touched(changed_paths) and avatar_visible_render_claimed(plan_text)
+
+
+def avatar_visual_evidence_advisory_applies(
+    changed_paths: Iterable[str], plan_text: str, declared: bool
+) -> bool:
+    """FAV #272: True iff the visual-evidence HEURISTIC fires -- an owned
+    avatar/browser-media surface was touched (``avatar_media_surface_
+    touched``) OR the plan text makes an explicit visible-render claim
+    (``avatar_visible_render_claimed``), evaluated as an OR (not the retired
+    AND contract in ``avatar_visual_evidence_required``) -- while the
+    executor did NOT declare ``visual_render_declared``. This is the sole
+    remaining purpose of the heuristic: feeding the non-blocking
+    ``visual_render_undeclared_surface`` advisory finding. It is
+    deliberately shared by the closeout validator
+    (``visual_avatar_evidence_validator``) and the ``reconcile`` CLI guard
+    (``cli._reconcile_visual_evidence_guard``) so the two can never diverge
+    on when the advisory fires -- the same pattern
+    ``avatar_visual_evidence_required`` and
+    ``visual_evidence_decoder_absent_is_silent`` already use for their own
+    shared predicates. Once ``declared`` is true this always returns
+    False -- the advisory only exists to catch an UNDECLARED surface; a
+    declared phase is evaluated purely on evidence validity instead."""
+    if declared:
+        return False
+    return avatar_media_surface_touched(changed_paths) or avatar_visible_render_claimed(plan_text)
 
 
 @dataclass(frozen=True)

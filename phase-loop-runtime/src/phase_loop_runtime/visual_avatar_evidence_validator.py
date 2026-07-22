@@ -6,23 +6,24 @@ today self-report ``verification_status=passed`` with nothing proving the
 rendered surface is not a black or blank frame. This validator raises a
 finding for exactly those phases.
 
-Detection contract (see ``models.avatar_visual_evidence_required`` for the
-implementation both this validator and the ``reconcile`` CLI reuse): a phase
-requires blocking visual evidence only when BOTH hold --
-
-1. STRUCTURAL -- the phase owns/touches a visible-media-rendering surface
-   (a browser HTML fixture, or a file whose name indicates media rendering:
-   ``getUserMedia``, ``MediaStreamTrack``, ``getDisplayMedia``, a
-   canvas/video/camera/session/track renderer, an avatar renderer).
-2. EXPLICIT CLAIM -- the phase's plan text makes an explicit user-visible
-   rendering claim as a deliverable (e.g. "visible avatar", "renders in the
-   browser/meeting UI", "browser call-in", "synthetic media"/"MediaStream
-   target", "getUserMedia target").
-
-A bare keyword hit on only one axis (e.g. a phase that "tests video parsing"
-with no owned media file, or "runs in a browser" with no owned media file and
-no explicit render claim) produces NO finding -- legacy phases and non-media
-phases stay silent.
+Trigger contract (agent-harness#272, DECIDABLE BY CONSTRUCTION): the BLOCK
+decision reads ONLY the executor's DECLARED ``visual_render_declared`` bool
+(plus evidence validity once declared) -- nothing else. The two structural/
+NL heuristics this validator used to gate the block on directly --
+``models.avatar_media_surface_touched`` (an owned browser HTML fixture, or a
+file whose name indicates media rendering: ``getUserMedia``,
+``MediaStreamTrack``, ``getDisplayMedia``, a canvas/video/camera/session/
+track renderer, an avatar renderer) and ``models.avatar_visible_render_
+claimed`` (an explicit user-visible rendering claim in the plan text, e.g.
+"visible avatar", "renders in the browser/meeting UI", "browser call-in",
+"synthetic media"/"MediaStream target", "getUserMedia target") -- now feed
+ONLY a non-blocking advisory (``VISUAL_RENDER_UNDECLARED_SURFACE_CODE``,
+warn/info, posture-independent) via the shared
+``models.avatar_visual_evidence_advisory_applies`` predicate, when either
+fires but the phase never declared. Neither heuristic, alone or combined, can
+ever produce a block-class finding -- that closes the two known NL-parser
+edges (negation clause-scoping fail-open, Non-goals-nesting FP; see #272's
+design comment) below the block line, where they can no longer gate a merge.
 
 When the contract is satisfied and the phase reports ``verification_status=
 passed``, it must attach a runner-owned visual artifact: an IMAGE path
@@ -56,10 +57,16 @@ from .closeout_validators import (
 )
 from .models import (
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
-    avatar_visual_evidence_required,
+    avatar_visual_evidence_advisory_applies,
     derive_visual_observation_or_error,
     resolve_visual_evidence_artifact,
 )
+
+#: FAV (agent-harness#272): the non-blocking advisory code emitted when the
+#: heuristic (structural surface touched OR an explicit visible-render claim)
+#: fires but the executor never declared ``visual_render_declared``. NEVER
+#: block-severity, under any posture -- see ``visual_avatar_evidence_validator``.
+VISUAL_RENDER_UNDECLARED_SURFACE_CODE = "visual_render_undeclared_surface"
 
 
 def _plan_text(plan_path: str) -> str:
@@ -125,8 +132,31 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
     reported = str(ctx.terminal.get("verification_status") or ctx.automation.get("verification_status") or "")
     if reported != "passed":
         return []
-    if not avatar_visual_evidence_required(ctx.changed_paths, _plan_text(ctx.plan_path)):
-        return []  # no owned avatar/browser-media surface + explicit visible-render claim
+    declared = bool(ctx.terminal.get("visual_render_declared"))
+    if not declared:
+        # FAV #272: the heuristic (structural surface touched OR an explicit
+        # visible-render claim) NEVER blocks -- it only raises a hard
+        # non-blocking advisory when it fires without a declaration. This is
+        # posture-independent: run_closeout_validators forces every finding
+        # to "warn" under PHASE_LOOP_REVIEW=warn, and under "block" a
+        # finding's severity passes through UNCHANGED -- so a severity that
+        # is always "warn" here can never become "block" under either
+        # posture (see closeout_validators.run_closeout_validators).
+        if avatar_visual_evidence_advisory_applies(
+            ctx.changed_paths, _plan_text(ctx.plan_path), declared
+        ):
+            return [
+                ReviewFinding(
+                    code=VISUAL_RENDER_UNDECLARED_SURFACE_CODE,
+                    reason=(
+                        "phase touched an avatar media surface / prose claims a visible render "
+                        "but did not declare visual_render_declared=true; the visual-evidence "
+                        "gate did not enforce. Declare it to enforce."
+                    ),
+                    severity="warn",
+                )
+            ]
+        return []  # no owned avatar/browser-media surface, no explicit visible-render claim
     is_valid, derivation_error = _visual_evidence_status(ctx.terminal, ctx.repo_root)
     if is_valid:
         return []  # a validated, non-blank, DECODED runner-owned visual artifact is attached
@@ -155,9 +185,9 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
             ReviewFinding(
                 code=derivation_error,
                 reason=(
-                    "phase owns an avatar/browser-media surface and claims a visible rendering "
-                    "deliverable, reported verification_status=passed, and attached a "
-                    "visual_evidence_path, but the referenced artifact could not be "
+                    "phase declared visual_render_declared=true and reported "
+                    "verification_status=passed with a visual_evidence_path attached, but the "
+                    "referenced artifact could not be "
                     "authoritatively verified ("
                     + (
                         "no image decoder (Pillow) is available in this environment"
@@ -176,8 +206,8 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
         ReviewFinding(
             code="visual_evidence_missing_or_blank",
             reason=(
-                "phase owns an avatar/browser-media surface and claims a visible rendering "
-                "deliverable, reported verification_status=passed, but attached no valid "
+                "phase declared visual_render_declared=true and reported "
+                "verification_status=passed, but attached no valid "
                 "visual_evidence_path + a DECODED image whose derived pixel stats show "
                 "real, sufficiently-covered content (non_black_pixels a meaningful fraction "
                 "of the frame and pixel_min!=pixel_max); attach a runner-owned "

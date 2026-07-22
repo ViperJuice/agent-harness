@@ -23,7 +23,7 @@ from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, avatar_media_surface_touched, avatar_visual_evidence_required, derive_visual_observation_or_error, resolve_visual_evidence_artifact, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, avatar_visual_evidence_advisory_applies, derive_visual_observation_or_error, resolve_visual_evidence_artifact, utc_now
 from .closeout_validators import resolve_review_mode, visual_evidence_decoder_absent_is_silent
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -2694,10 +2694,12 @@ def _resolve_changed_paths_at_commit(repo: Path, commit: str | None) -> tuple[st
     returned every tracked file the phase's owned globs matched, i.e. every
     ``src/**`` file the phase has EVER owned, not the files this run touched).
 
-    This matches the live runner's structural input to the SAME detection
-    contract: the runner's own visual-evidence check
-    (``_visual_evidence_closeout_outcome`` in ``runner.py``) feeds
-    ``avatar_visual_evidence_required`` the run's actual dirty paths
+    Historically this matched the live runner's structural input to the
+    shared detection contract; since #272 the block decision no longer reads
+    changed paths at all (see ``_reconcile_visual_evidence_guard`` /
+    ``_persisted_visual_render_declared``) -- they now feed only the
+    non-blocking advisory via ``models.avatar_visual_evidence_advisory_
+    applies``, still matching the run's actual dirty paths
     (``_dirty_paths``), with no owned-glob filtering at all. A phase that only
     changed a non-media file (``src/utils.py``) but happens to OWN a
     pre-existing media file (``src/avatar_renderer.py``) it never touched is
@@ -2747,6 +2749,35 @@ def _resolve_changed_paths_at_commit(repo: Path, commit: str | None) -> tuple[st
     return tuple(sorted({line.strip() for line in diff.stdout.splitlines() if line.strip()}))
 
 
+def _persisted_visual_render_declared(repo: Path, phase: str) -> bool:
+    """FAV #272: read the executor's DECLARED ``visual_render_declared`` bool
+    from ``phase``'s own PERSISTED event history -- ``metadata.
+    terminal_summary`` on each of its events, populated by the runner
+    (``observability.build_terminal_summary``, from the executor's native
+    closeout payload via ``models.visual_evidence_terminal_fields``) -- NOT
+    re-derived from a git diff, and not something a reconcile caller can
+    assert via a flag. This is the same trust model the live runner and the
+    closeout validator use: the declaration is whatever the executor
+    committed to at its own closeout time; reconcile only ever READS it.
+
+    Returns the LAST explicitly-recorded value across this phase's event
+    history (a later run can re-declare), or ``False`` when no persisted
+    event for this phase ever carried the field at all -- consistent with
+    the field's own runtime default (absent == not declared == never
+    blocks)."""
+    declared = False
+    for event in read_events(repo):
+        if str(event.get("phase") or "") != phase:
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        terminal = metadata.get("terminal_summary")
+        if isinstance(terminal, dict) and "visual_render_declared" in terminal:
+            declared = bool(terminal.get("visual_render_declared"))
+    return declared
+
+
 def _reconcile_visual_evidence_guard(
     *,
     repo: Path,
@@ -2757,15 +2788,19 @@ def _reconcile_visual_evidence_guard(
     visual_evidence_observed_raw: str | None,
     visual_evidence_opt_out: str | None,
 ) -> tuple[bool, dict[str, object] | None]:
-    """FAV (issue #91) reconcile/manual-repair guard.
+    """FAV (issue #91 / #272) reconcile/manual-repair guard.
 
-    A phase blocked by the visual-avatar-evidence closeout gate
-    (``visual_avatar_evidence_validator``) must not be promoted to
-    ``complete`` by reconcile/manual-repair unless the SAME detection
-    contract and evidence contract are satisfied. This re-applies the
-    detection contract via the exact SAME function the closeout validator
-    uses -- ``models.avatar_visual_evidence_required(changed_paths,
-    plan_text)``.
+    #272 (decidable by construction): the BLOCK decision reads ONLY the
+    executor's PERSISTED ``visual_render_declared`` bool
+    (``_persisted_visual_render_declared``) plus evidence validity -- never
+    re-derived from the git diff, and never something an operator can assert
+    via a reconcile flag (that would reopen the exact self-assertion hole
+    #272 closes). ``models.avatar_media_surface_touched`` /
+    ``avatar_visible_render_claimed`` (the retired heuristic) no longer gate
+    the block at all -- via the shared
+    ``models.avatar_visual_evidence_advisory_applies`` predicate they only
+    ever populate a non-blocking ``visual_render_undeclared_surface`` audit
+    field, exactly mirroring the closeout validator's advisory.
 
     Fix 2: the guard runs INDEPENDENT of the optional ``--verification-status``
     flag. Reconcile always promotes to ``complete`` (the manual_repair event
@@ -2773,27 +2808,17 @@ def _reconcile_visual_evidence_guard(
     must satisfy the visual contract regardless of whether that flag was passed
     -- omitting an optional flag must never bypass the gate.
 
-    Fix 2 (round 2, codex fail-open + gemini over-block): the structural
-    signal is the phase's ACTUAL CHANGED paths at the blocked commit
-    (``_resolve_changed_paths_at_commit``, a ``git diff-tree`` of that one
-    commit) -- NOT its declared owned-file globs resolved against the whole
-    tree. That matches the live runner's own structural input exactly (the
-    runner feeds ``avatar_visual_evidence_required`` its run's dirty paths,
-    with no ownership filtering at all): a phase that only changed a
-    non-media file but happens to OWN a pre-existing, untouched media file is
-    correctly NOT flagged (closes gemini's over-block, where reconcile was
-    more aggressive than the runner it mirrors). Resolution FAILURE --
-    ``closeout_commit`` doesn't resolve to a real commit in this repo, or the
-    ``diff-tree``/``rev-parse`` invocation itself errors -- is a distinct,
-    unconditional fail-CLOSED path (``visual_evidence_resolution_failed``),
-    never silently read as "gate does not apply" the way an empty/no-match
-    result legitimately is (closes codex's fail-open).
-
-    Fix 2 also fail-closes when the plan resolves to a real path but reading
-    it raises ``OSError`` (a resolution failure, distinct from a phase
-    genuinely having no plan artifact at all, which is a legitimate "no
-    explicit claim" -- consistent with the closeout validator's own
-    plan-text handling).
+    Fix 2 (round 2, codex fail-open): resolving the phase's ACTUAL CHANGED
+    paths at the blocked commit (``_resolve_changed_paths_at_commit``, a
+    ``git diff-tree`` of that one commit) can fail -- ``closeout_commit``
+    doesn't resolve to a real commit in this repo, or the ``diff-tree``/
+    ``rev-parse`` invocation itself errors. That is a distinct, unconditional
+    fail-CLOSED path (``visual_evidence_resolution_failed``), never silently
+    read as "gate does not apply". The resolved paths themselves now feed
+    ONLY the advisory (see above) -- the block decision no longer depends on
+    them, but a resolution FAILURE still refuses unconditionally as
+    belt-and-suspenders (this reconcile call could not evaluate the
+    phase's actual commit at all).
 
     Fix 4: the referenced ``--visual-evidence-path`` is VALIDATED
     (``resolve_visual_evidence_artifact``) -- it must EXIST inside the repo and
@@ -2805,9 +2830,7 @@ def _reconcile_visual_evidence_guard(
     that case when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=block``)
     is active; under ``warn``/``off`` the shortfall is recorded on the
     manual_repair audit trail but the promotion proceeds, no human_required
-    gate is ever set. A resolution FAILURE is different in kind -- an
-    inability to even EVALUATE the contract, not a detected-and-exempted
-    shortfall -- so it refuses unconditionally, regardless of posture.
+    gate is ever set.
 
     Fix (round-7 CR): a decoder-ABSENT derivation failure
     (``visual_evidence_cannot_verify`` -- no image decoder/Pillow installed)
@@ -2821,30 +2844,29 @@ def _reconcile_visual_evidence_guard(
     failed) is unaffected and still recorded under warn as before.
 
     Returns ``(ok, manual_repair_fields)``. ``manual_repair_fields`` is
-    ``None`` when the FAV contract doesn't apply to this phase at all, or
-    when the sole finding is the silenced decoder-absent case above.
+    ``None`` when neither the declared contract nor the advisory apply to
+    this phase at all, or when the sole finding is the silenced
+    decoder-absent case above.
     """
     changed_paths = _resolve_changed_paths_at_commit(repo, closeout_commit)
     if changed_paths is _CHANGED_PATHS_RESOLUTION_FAILED:
         return False, {"visual_evidence_resolution_failed": True, "visual_evidence_missing_or_blank": True}
 
-    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
-    plan_text = ""
-    plan_read_failed = False
-    if plan is not None:
-        try:
-            plan_text = plan.read_text(encoding="utf-8")
-        except OSError:
-            plan_read_failed = True
-
-    if not avatar_media_surface_touched(changed_paths):
-        # No changed avatar/browser-media surface at all -- the contract's
-        # STRUCTURAL half can't be satisfied regardless of the plan text, so a
-        # plan-read failure is moot (nothing this phase's commit could gate on).
-        return True, None
-    if plan_read_failed:
-        return False, {"visual_evidence_resolution_failed": True, "visual_evidence_missing_or_blank": True}
-    if not avatar_visual_evidence_required(changed_paths, plan_text):
+    declared = _persisted_visual_render_declared(repo, phase)
+    if not declared:
+        # Heuristic (structural surface touched OR an explicit visible-render
+        # claim) never blocks -- it only records a non-blocking advisory audit
+        # field, regardless of posture, mirroring the closeout validator's
+        # visual_render_undeclared_surface finding.
+        plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+        plan_text = ""
+        if plan is not None:
+            try:
+                plan_text = plan.read_text(encoding="utf-8")
+            except OSError:
+                plan_text = ""  # advisory-only: a plan-read failure just means no advisory signal
+        if avatar_visual_evidence_advisory_applies(changed_paths, plan_text, declared):
+            return True, {"visual_render_undeclared_surface": True}
         return True, None
 
     if visual_evidence_opt_out:

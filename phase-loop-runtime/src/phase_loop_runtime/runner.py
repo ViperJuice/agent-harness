@@ -142,7 +142,6 @@ from .models import (
     PRODUCT_LOOP_ACTIONS,
     StateSnapshot,
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
-    avatar_visual_evidence_required,
     derive_visual_observation_or_error,
     resolve_visual_evidence_artifact,
     visual_evidence_terminal_fields,
@@ -6349,7 +6348,8 @@ def _visual_evidence_closeout_outcome(
     child_automation: Mapping[str, object],
     automation_status: object,
 ) -> dict[str, object] | None:
-    """FAV (issue #91) Fix 1: the AUTHORITATIVE visual-avatar-evidence gate.
+    """FAV (issue #91 Fix 1 / #272): the AUTHORITATIVE visual-avatar-evidence
+    gate.
 
     Mirrors the produced-gates / #243 verification-evidence pattern -- it runs
     at the SAME reduction site (``_closeout_gate_recheck``) so a visual-gate
@@ -6358,12 +6358,20 @@ def _visual_evidence_closeout_outcome(
     instead of only nesting a ``blocked`` closeout under an outer ``complete``
     status the reducer still honors.
 
+    #272 (decidable by construction): the trigger is the executor's DECLARED
+    ``visual_render_declared`` bool alone -- read from the native closeout
+    payload via ``visual_evidence_terminal_fields`` (the same lift the
+    closeout validator and delegated-child propagation use), never
+    re-derived from ``changed_paths``/plan-text heuristics. Those heuristics
+    no longer feed this function at all; they only feed the non-blocking
+    advisory in ``visual_avatar_evidence_validator``.
+
     Returns a non-human event blocker when a would-complete phase reported
-    ``verification_status=passed`` but owns an avatar/browser-media surface with
-    an explicit visible-render claim and attached no valid runner-owned visual
-    artifact (and no typed opt-out). Warn/off posture -> ``None`` (autonomy-first:
-    the shortfall is still recorded in the nested closeout, the loop continues).
-    Never sets ``human_required`` (agent-recoverable)."""
+    ``verification_status=passed``, DECLARED a visible render, and attached no
+    valid runner-owned visual artifact (and no typed opt-out). Warn/off
+    posture -> ``None`` (autonomy-first: the shortfall is still recorded in
+    the nested closeout, the loop continues). Never sets ``human_required``
+    (agent-recoverable)."""
     if plan is None:
         return None
     if _phase_status_literal(automation_status) != "complete":
@@ -6377,16 +6385,11 @@ def _visual_evidence_closeout_outcome(
         return None
     if resolve_review_mode() != "block":
         return None
-    changed_paths = _dirty_paths(repo)
-    try:
-        plan_text = Path(plan).read_text(encoding="utf-8")
-    except OSError:
-        plan_text = ""
-    if not avatar_visual_evidence_required(changed_paths, plan_text):
-        return None
     payload = child_automation.get("native_closeout_payload")
     source = payload if isinstance(payload, Mapping) else child_automation
     terminal_view = visual_evidence_terminal_fields(source)
+    if not bool(terminal_view.get("visual_render_declared")):
+        return None
     opt_out = str(terminal_view.get("visual_evidence_opt_out") or "").strip()
     if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
         return None
