@@ -1552,42 +1552,45 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             "secret_like_value",
         )
 
-    def test_forbidden_metadata_kind_matches_dash_anchored_string_cli_flag(self):
-        # agent-harness#243 CR (cross-vendor codex, follow-up): the structural split-argv
-        # composite above only fires for LIST/tuple elements. Operational verification
-        # commands are frequently stored as a single raw STRING (e.g.
-        # ``{"command": "curl --token AKIA..."}``, per ``discovery.py``), not a pre-split argv
-        # list. A space-separated ``--token VALUE`` inside such a string matched neither the
-        # strict ``[:=]``-required pattern (no separator) nor the list-only composite (no list
-        # to walk) -- MUST FAIL at HEAD 27eddc5 (returns None for every case below) and pass
-        # once the dash-anchored CLI-flag pattern is added.
+    def test_forbidden_metadata_kind_does_not_match_free_text_string_cli_flag(self):
+        # agent-harness#243 CR (cross-vendor codex, REVERT of a since-removed dash-anchored
+        # pattern): a space-separated ``--token VALUE`` inside a free-text command STRING
+        # (e.g. ``{"command": "curl --token AKIA..."}``, per ``discovery.py``) matches neither
+        # the strict ``[:=]``-required pattern (no separator) nor the structural split-argv
+        # composite (there is no list to walk) -- and a follow-up round proved it CANNOT
+        # safely be made to: ``--token AKIAIOSFODNN7EXAMPLEKEY`` (a real secret) and ``--token
+        # configuration`` (ordinary prose, e.g. "Document the --token configuration
+        # behavior.") are BOTH exactly ``-{1,2}keyword`` + whitespace + a 12+ char alnum run,
+        # so a pattern cannot distinguish a high-entropy secret from a benign following word.
+        # A dash-anchored pattern attempting to close this WAS added and then reverted for
+        # exactly that reason (it reintroduced the ordinary-prose false positive on the fatal
+        # ``metadata_redaction_diagnostic`` closeout gate). This is now a documented
+        # best-effort limit (see the contract doc), not a bug: assert the free-text
+        # space-separated shape stays UNMATCHED, and that the structural split-argv LIST
+        # composite (a genuinely safe, unambiguous shape -- flag and value are separate
+        # structured elements, not words in a sentence) still matches.
         from phase_loop_runtime.redaction import _forbidden_metadata_kind
 
-        space_separated_cases = [
+        free_text_cases = [
             "curl --token AKIAIOSFODNN7EXAMPLEKEY",
             "curl -token AKIAIOSFODNN7EXAMPLEKEY",
             "some-tool --api-key AKIAIOSFODNN7EXAMPLEKEY --verbose",
             "some-tool --secret AKIAIOSFODNN7EXAMPLEKEY",
             "some-tool --password AKIAIOSFODNN7EXAMPLEKEY",
+            "curl --token=AKIAIOSFODNN7EXAMPLEKEY".replace("=", " "),
         ]
-        for case in space_separated_cases:
-            self.assertEqual(
-                _forbidden_metadata_kind(case), "secret_like_value", f"expected match: {case!r}"
+        for case in free_text_cases:
+            self.assertIsNone(
+                _forbidden_metadata_kind(case),
+                f"free-text space-separated CLI flag unexpectedly matched (documented limit): {case!r}",
             )
 
-        # The dash-anchored pattern also covers the `=`-joined CLI form for free (whitespace
-        # OR `=` as separator), overlapping with (but not replacing) the strict pattern above.
-        self.assertEqual(
-            _forbidden_metadata_kind("curl --token=AKIAIOSFODNN7EXAMPLEKEY"),
-            "secret_like_value",
-        )
-
-        # Critical regression guard: the dash requirement is what distinguishes a CLI flag
-        # from ordinary prose containing the same keyword followed by whitespace. Without a
-        # leading dash, these must NOT match -- re-verifies the prior round's regression guard
-        # still holds now that whitespace is accepted as a separator (gated behind the dash).
+        # Regression guard this revert restores: the prose false-positive a dash-anchored
+        # pattern reintroduced. Must NOT match, and must not trip the fatal closeout gate.
         for phrase in [
+            "Document the --token configuration behavior.",
             "token configuration",
+            "the --secret handling documentation",
             "password authentication documentation",
             "review the secret management guide before rotating credentials",
             "token authentication and authorization flow documentation",
@@ -1600,41 +1603,34 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertIsNone(_forbidden_metadata_kind(["token", "configuration"]))
         self.assertIsNone(_forbidden_metadata_kind(["password", "authentication"]))
 
-    def test_apply_diagnostics_redaction_scrubs_string_command_field_with_space_separated_flag(self):
-        # Reproduce-and-close (codex CR): a persisted validation payload whose `command` field
-        # is a raw STRING (not a list) containing a space-separated `--token VALUE` -- MUST
-        # FAIL at HEAD 27eddc5 (command left verbatim) and pass once the dash-anchored pattern
-        # closes the string-command gap.
-        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+        # Safe coverage kept: the structural split-argv LIST composite still matches, because
+        # there the flag and value are already separate structured elements, not prose.
+        self.assertEqual(
+            _forbidden_metadata_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]),
+            "secret_like_value",
+        )
+        # And the strict `[:=]`-separator assignment form still matches.
+        self.assertEqual(
+            _forbidden_metadata_kind("curl --token=AKIAIOSFODNN7EXAMPLEKEY"),
+            "secret_like_value",
+        )
 
-        payload = {"command": "curl --token AKIAIOSFODNN7EXAMPLEKEY"}
-        out = apply_diagnostics_redaction(payload)
-        self.assertEqual(out["command"], "<redacted:command>")
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+    def test_metadata_redaction_diagnostic_does_not_block_closeout_on_flag_prose(self):
+        # End-to-end regression guard: the fatal closeout gate (`metadata_redaction_diagnostic`,
+        # via `_forbidden_metadata_kind`) must not reject a legitimate closeout text field
+        # (blocker_summary/next_action/finding) merely because it mentions a CLI flag name in
+        # prose. This is the exact class of false positive the dash-anchored pattern
+        # reintroduced and this revert closes.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic
 
-    def test_apply_diagnostics_redaction_scrubs_raw_tail_string_with_space_separated_flag(self):
-        # Reproduce-and-close (codex CR): a diagnostic's `raw_tail` excerpt containing a
-        # space-separated `--token VALUE` (the operational-command-string shape, not a
-        # pre-split argv list) -- MUST FAIL at HEAD 27eddc5 (raw_tail left verbatim, diagnostic
-        # not redacted) and pass once the dash-anchored pattern closes the gap.
-        from phase_loop_runtime.redaction import apply_diagnostics_redaction
-
-        payload = {
-            "diagnostics": [
-                {
-                    "role": "command", "index": 0, "argv": [sys.executable],
-                    "exit_code": 1, "failure_kind": "nonzero_exit",
-                    "raw_tail": "curl --token AKIAIOSFODNN7EXAMPLEKEY\n",
-                    "truncated": False, "diagnostic_status": "present",
-                },
-            ],
-        }
-        out = apply_diagnostics_redaction(payload)
-        diag = out["diagnostics"][0]
-        self.assertTrue(diag["redacted"])
-        self.assertEqual(diag["redaction_reason"], "secret_like_value")
-        self.assertNotIn("raw_tail", diag)
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        for text in [
+            "Document the --token configuration behavior.",
+            "the --secret handling documentation",
+        ]:
+            self.assertIsNone(
+                metadata_redaction_diagnostic({"blocker_summary": text}),
+                f"benign closeout prose incorrectly flagged malformed_closeout: {text!r}",
+            )
 
     def test_run_execute_verification_redacts_secret_at_source_and_closes_launch_json_state_json_egress(self):
         # agent-harness#266 (source redaction, CR recheck of #243): a prior round redacted
@@ -1989,22 +1985,26 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             summary = inspect_state(repo, roadmap=None)
             self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
-    def test_run_execute_verification_redacts_space_separated_flag_operational_command_end_to_end(self):
-        # agent-harness#243 CR (cross-vendor, codex, follow-up): the SAME early-return
-        # (malformed suite_command) egress path as the two tests above, but with a PLAIN
-        # space-separated CLI flag -- ``curl --token SECRET`` -- and no ``:``/``=`` anywhere in
-        # the command at all. discovery.py stores ``operational_exemptions[].command`` as a raw
-        # STRING (not a pre-split argv list), so this is the exact enumerated shape the
-        # structural split-argv composite (list-only) missed and the strict ``[:=]``-required
-        # pattern also missed. MUST FAIL at HEAD 27eddc5 (command left verbatim, secret reaches
-        # launch.json / `state --json`) and pass once the dash-anchored CLI-flag pattern closes
-        # the string-command gap.
+    def test_run_execute_verification_does_not_redact_free_text_space_separated_flag_operational_command(self):
+        # agent-harness#243 CR (cross-vendor, codex): documents a real, accepted best-effort
+        # limit rather than asserting coverage that was proven unsafe. A prior round added a
+        # dash-anchored pattern to catch a space-separated CLI flag (``curl --token SECRET``,
+        # no ``:``/``=`` anywhere) embedded in a free-text ``operational_exemptions[].command``
+        # STRING (as ``discovery.py`` stores it) -- closing the SAME early-return
+        # (malformed suite_command) egress path exercised by the two tests above. That pattern
+        # was reverted (see ``test_forbidden_metadata_kind_does_not_match_free_text_string_cli_flag``):
+        # it could not distinguish a real secret from ordinary prose using the same
+        # ``flag + whitespace + 12+ alnum chars`` shape, and reintroduced a fatal false
+        # positive on legitimate closeout text. This test now asserts the (unfortunate but
+        # honest) consequence: a free-text space-separated flag command is left UNREDACTED
+        # through this egress path -- operators must not embed secrets in free-text command
+        # strings surfaced to diagnostics (see the contract doc's best-effort section);
+        # ``verification.log`` (local, full) remains the debugging source of truth.
         import os
         from unittest.mock import patch
 
         from phase_loop_runtime import runner
         from phase_loop_runtime.observability import merge_launch_metadata
-        from phase_loop_runtime.state_ops import inspect_state
         from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
         secret = "AKIAIOSFODNN7EXAMPLEKEY"
@@ -2041,18 +2041,17 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
 
             exemptions = result.get("operational_exemptions")
             self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
-            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
-            self.assertNotIn(secret, json.dumps(result))
+            # Documented limit: NOT redacted -- a free-text space-separated flag command
+            # cannot safely be pattern-matched (see the reverted-pattern test above).
+            self.assertEqual(exemptions[0]["command"], secret_command)
+            self.assertIn(secret, json.dumps(result))
 
             launch_path = run_dir / "launch.json"
             launch_path.write_text("{}", encoding="utf-8")
             merge_launch_metadata(launch_path, {"runner_verification": result})
 
             on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
-            self.assertNotIn(secret, json.dumps(on_disk_launch))
-
-            summary = inspect_state(repo, roadmap=None)
-            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+            self.assertIn(secret, json.dumps(on_disk_launch))
 
 
 if __name__ == "__main__":
