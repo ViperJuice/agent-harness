@@ -4,8 +4,9 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
+import re
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Iterable
+from typing import Any, Callable, ClassVar, Iterable, Mapping
 
 
 PHASE_STATUSES = (
@@ -329,6 +330,17 @@ UI_GLOBS = (
     "**/*.css",
     "**/*.scss",
     "**/components/**",
+)
+
+# FAV (issue #91): visual-avatar/browser-media closeout evidence. OFF by
+# default (warn-only) to preserve autonomy, opt-in promotes a missing/blank
+# visual-evidence finding to `block`. Declining evidence when opted in
+# records one of these typed reason codes -- mirrors
+# VERIFICATION_EVIDENCE_OPT_OUT_REASONS above.
+VISUAL_EVIDENCE_OPT_OUT_REASONS = (
+    "no_visible_media_surface",
+    "visual_deferred_to_later_phase",
+    "operator_attested_manual",
 )
 
 TERMINAL_SUMMARY_FIELDS = (
@@ -1021,6 +1033,63 @@ class SpecDeltaCloseout:
         return clean_dict(asdict(self))
 
 
+VISUAL_EVIDENCE_OBSERVED_SCHEMA = "visual_evidence_observed.v1"
+
+
+@dataclass(frozen=True)
+class VisualEvidenceObservation:
+    """``visual_evidence_observed.v1`` (FAV, issue #91) -- automated pixel-level
+    observations attached to a runner-owned visual artifact (screenshot/video
+    path, recorded separately as ``visual_evidence_path``) for an
+    avatar/browser-media phase. Strong enough to reject a black or
+    uniform-gray frame masquerading as passing visual evidence: a genuine
+    frame has at least one non-black pixel AND some pixel variance (min !=
+    max). An all-black frame (``non_black_pixels == 0``) or a uniform frame
+    (``pixel_min == pixel_max``, e.g. a solid ``#f3f3f3`` gray with
+    ``pixelMin == pixelMax == 243``) both FAIL ``is_valid()``.
+    """
+
+    non_black_pixels: int
+    pixel_min: int
+    pixel_max: int
+    schema: str = VISUAL_EVIDENCE_OBSERVED_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != VISUAL_EVIDENCE_OBSERVED_SCHEMA:
+            raise ValueError(f"invalid visual evidence observation schema: {self.schema}")
+
+    def is_valid(self) -> bool:
+        """True iff the frame shows real, non-uniform content (not black/blank)."""
+        if self.non_black_pixels is None or self.non_black_pixels <= 0:
+            return False
+        if self.pixel_min == self.pixel_max:
+            return False
+        return True
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+    @classmethod
+    def from_mapping(cls, data: Any) -> "VisualEvidenceObservation | None":
+        """Tolerant parse: accepts either the runtime's snake_case keys
+        (``non_black_pixels``/``pixel_min``/``pixel_max``) or the camelCase
+        keys a browser-automation tool naturally emits
+        (``nonBlackPixels``/``pixelMin``/``pixelMax``). Returns ``None`` (never
+        raises) on anything malformed or absent -- the caller treats that
+        identically to "no evidence attached"."""
+        if not isinstance(data, Mapping):
+            return None
+        non_black = data.get("non_black_pixels", data.get("nonBlackPixels"))
+        pixel_min = data.get("pixel_min", data.get("pixelMin"))
+        pixel_max = data.get("pixel_max", data.get("pixelMax"))
+        if non_black is None or pixel_min is None or pixel_max is None:
+            return None
+        try:
+            return cls(non_black_pixels=int(non_black), pixel_min=int(pixel_min), pixel_max=int(pixel_max))
+        except (TypeError, ValueError):
+            return None
+
+
 def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
     """True if any path matches any glob (POSIX, case-sensitive)."""
     pats = tuple(globs)
@@ -1045,6 +1114,104 @@ def public_surface_touched(changed_paths: Iterable[str]) -> bool:
 def ui_change_detected(changed_paths: Iterable[str]) -> bool:
     """True if a changed path is a UI/visual surface (rigor-v1 P1/P6)."""
     return _glob_touched(changed_paths, UI_GLOBS)
+
+
+# --- FAV (issue #91): visual-avatar/browser-media detection contract ------
+#
+# A phase requires BLOCKING visual evidence only when BOTH hold (mirrored in
+# ``visual_avatar_evidence_validator.py``'s module docstring; a bare keyword
+# hit on only ONE axis is NOT enough -- exactly like #243's command-context
+# scoping avoids prose false positives):
+#
+#   1. STRUCTURAL -- the phase owns/touches a visible-media-rendering
+#      surface: a browser HTML fixture (e.g. ``tests/fixtures/*.html``), or a
+#      file whose name indicates media rendering (``getUserMedia``,
+#      ``MediaStreamTrack``, ``getDisplayMedia``, a
+#      canvas/video/camera/session/track renderer, an avatar renderer).
+#   2. EXPLICIT CLAIM -- the phase's plan text (title, objective, exit
+#      criteria, IF-gate, lane scope, acceptance criteria) makes an explicit
+#      USER-VISIBLE rendering claim as a DELIVERABLE, not an incidental
+#      mention -- e.g. "visible avatar", "renders in the browser/meeting UI",
+#      "browser call-in", "synthetic media"/"MediaStream target",
+#      "getUserMedia target", "avatar/browser media".
+#
+# A phase with NO owned media surface, or that only mentions these words in
+# passing with no visible-render deliverable claim, gets NO finding: e.g. a
+# plan that merely says "tests video parsing" (no owned media file) or "runs
+# in a browser" (no explicit render claim) is silent, and so is any legacy
+# phase with no avatar/browser-media surface at all.
+
+AVATAR_MEDIA_SURFACE_GLOBS = ("**/*.html",)
+
+_AVATAR_MEDIA_SEP = r"[\s_\-]?"
+_AVATAR_MEDIA_SURFACE_MARKERS = (
+    r"getusermedia",
+    r"mediastreamtrack",
+    r"getdisplaymedia",
+    rf"avatar{_AVATAR_MEDIA_SEP}renderer",
+    rf"canvas{_AVATAR_MEDIA_SEP}renderer",
+    rf"video{_AVATAR_MEDIA_SEP}renderer",
+    rf"camera{_AVATAR_MEDIA_SEP}renderer",
+    rf"media{_AVATAR_MEDIA_SEP}session",
+    rf"media{_AVATAR_MEDIA_SEP}track",
+    rf"avatar{_AVATAR_MEDIA_SEP}session",
+    rf"session{_AVATAR_MEDIA_SEP}track",
+)
+_AVATAR_MEDIA_SURFACE_MARKER_RE = re.compile("|".join(_AVATAR_MEDIA_SURFACE_MARKERS), re.IGNORECASE)
+
+_AVATAR_VISIBLE_CLAIM_PATTERNS = (
+    r"visible\s+avatar",
+    rf"avatar{_AVATAR_MEDIA_SEP}render(?:er|ing|s)?",
+    r"renders?\s+(?:in|to|within)\s+(?:the\s+)?(?:browser|meeting)",
+    r"browser\s+call-?in",
+    r"synthetic\s+media",
+    r"mediastream\s+target",
+    r"getusermedia\s+target",
+    r"avatar[/\s]+browser[\s-]+media",
+    r"visual-avatar",
+    r"user-visible\s+rendering",
+)
+_AVATAR_VISIBLE_CLAIM_RE = re.compile("|".join(_AVATAR_VISIBLE_CLAIM_PATTERNS), re.IGNORECASE)
+
+
+def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
+    """STRUCTURAL signal (detection contract #1): an owned/changed path is a
+    browser HTML fixture, or its filename indicates media rendering."""
+    paths = tuple(changed_paths or ())
+    if _glob_touched(paths, AVATAR_MEDIA_SURFACE_GLOBS):
+        return True
+    return any(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(str(p)) for p in paths)
+
+
+def avatar_media_surface_referenced(text: str) -> bool:
+    """STRUCTURAL signal (detection contract #1), text-based proxy used where
+    no ``changed_paths`` list is available (the reconcile CLI only has the
+    plan's prose). True when the plan text names a browser HTML fixture or an
+    avatar/media-rendering file."""
+    lowered = (text or "").lower()
+    if ".html" in lowered and ("fixture" in lowered or "browser" in lowered):
+        return True
+    return bool(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(lowered))
+
+
+def avatar_visible_render_claimed(text: str) -> bool:
+    """EXPLICIT CLAIM signal (detection contract #2): the plan text makes an
+    explicit user-visible rendering claim as a deliverable."""
+    return bool(_AVATAR_VISIBLE_CLAIM_RE.search(text or ""))
+
+
+def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str) -> bool:
+    """Full FAV detection contract for the closeout validator (has
+    ``changed_paths``): STRUCTURAL (changed_paths) AND EXPLICIT CLAIM
+    (plan_text)."""
+    return avatar_media_surface_touched(changed_paths) and avatar_visible_render_claimed(plan_text)
+
+
+def avatar_visual_evidence_required_for_plan(plan_text: str) -> bool:
+    """Full FAV detection contract for the reconcile CLI (no ``changed_paths``
+    available; reuses the SAME claim regex plus a text-based structural proxy
+    so the two call sites can never diverge)."""
+    return avatar_media_surface_referenced(plan_text) and avatar_visible_render_claimed(plan_text)
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,8 @@ from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required_for_plan, utc_now
+from .closeout_validators import resolve_review_mode
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
@@ -565,6 +566,29 @@ def build_parser() -> argparse.ArgumentParser:
                     "must exist at that commit. Recovery evidence, NOT a fresh runner pass. Mutually "
                     "exclusive with --verification-log."
                 ),
+            )
+            sub.add_argument(
+                "--visual-evidence-path",
+                help=(
+                    "FAV (issue #91): path to a runner-owned screenshot/video artifact for a phase "
+                    "whose plan claims a visible avatar/browser-media rendering deliverable. Required "
+                    "(with --visual-evidence-observed) to promote such a phase to complete under the "
+                    "opt-in-to-block posture; ignored for phases that don't match the FAV detection "
+                    "contract."
+                ),
+            )
+            sub.add_argument(
+                "--visual-evidence-observed",
+                help=(
+                    "FAV (issue #91): JSON object of pixel observations for --visual-evidence-path, "
+                    "e.g. '{\"nonBlackPixels\": 19200, \"pixelMin\": 0, \"pixelMax\": 255}'. Must show "
+                    "non_black_pixels>0 and pixel_min!=pixel_max (rejects black/blank/uniform frames)."
+                ),
+            )
+            sub.add_argument(
+                "--visual-evidence-opt-out",
+                choices=VISUAL_EVIDENCE_OPT_OUT_REASONS,
+                help="FAV (issue #91): typed reason to decline visual evidence for a matching phase.",
             )
             sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
@@ -2554,6 +2578,26 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         print(f"phase-loop reconcile: phase {phase!r} not found in roadmap {roadmap}", file=sys.stderr)
         return 2
 
+    visual_ok, visual_fields = _reconcile_visual_evidence_guard(
+        repo=repo,
+        roadmap=roadmap,
+        phase=phase,
+        verification_status=getattr(args, "verification_status", None),
+        visual_evidence_path=getattr(args, "visual_evidence_path", None),
+        visual_evidence_observed_raw=getattr(args, "visual_evidence_observed", None),
+        visual_evidence_opt_out=getattr(args, "visual_evidence_opt_out", None),
+    )
+    if not visual_ok:
+        print(
+            "phase-loop reconcile: this phase requires blocking visual-avatar evidence "
+            "(FAV/issue #91: owned avatar/browser-media surface + explicit visible-render claim) "
+            "under PHASE_LOOP_REVIEW=block -- pass --visual-evidence-path with "
+            "--visual-evidence-observed (non_black_pixels>0, pixel_min!=pixel_max), or "
+            f"--visual-evidence-opt-out ({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)}).",
+            file=sys.stderr,
+        )
+        return 2
+
     manual_repair = {
         "clears_blocker": True,
         "closeout_commit": closeout_commit,
@@ -2577,6 +2621,11 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             manual_repair["evidence_provenance"] = verification_evidence["provenance"]
     if recovery_mode:
         manual_repair["recovery_mode"] = True
+    if visual_fields:
+        # FAV (issue #91): fold the visual-evidence audit fields (path + pixel
+        # observations, or the missing/blank shortfall, or a typed opt-out) into
+        # the manual_repair record so the promotion is auditable either way.
+        manual_repair.update(visual_fields)
 
     event = LoopEvent(
         timestamp=utc_now(),
@@ -2599,6 +2648,69 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     write_tui_handoff(repo, roadmap, snapshot, action="reconcile")
     print(render_status(snapshot, as_json=as_json))
     return 0
+
+
+def _reconcile_visual_evidence_guard(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    verification_status: str | None,
+    visual_evidence_path: str | None,
+    visual_evidence_observed_raw: str | None,
+    visual_evidence_opt_out: str | None,
+) -> tuple[bool, dict[str, object] | None]:
+    """FAV (issue #91) reconcile/manual-repair guard.
+
+    A phase blocked by the visual-avatar-evidence closeout gate
+    (``visual_avatar_evidence_validator``) must not be promoted to
+    ``complete`` by reconcile/manual-repair unless the SAME detection
+    contract and evidence contract are satisfied -- this re-applies both,
+    reusing ``models.avatar_visual_evidence_required_for_plan`` (the same
+    function the closeout validator's structural+claim check is built from,
+    so the two call sites can never diverge) and
+    ``models.VisualEvidenceObservation`` (the same pixel-validity check).
+
+    Warn-default still applies (autonomy-first): this only REFUSES
+    (``ok=False``) when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=
+    block``) is active -- mirroring how the closeout validator's ``block``
+    finding is force-downgraded to ``warn`` under the default posture. Under
+    ``warn``/``off`` the shortfall is recorded on the manual_repair audit
+    trail but the promotion proceeds; no human_required gate is ever set.
+
+    Returns ``(ok, manual_repair_fields)``. ``manual_repair_fields`` is
+    ``None`` when the FAV contract doesn't apply to this phase at all.
+    """
+    if verification_status != "passed":
+        return True, None
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    try:
+        plan_text = plan.read_text(encoding="utf-8") if plan else ""
+    except OSError:
+        plan_text = ""
+    if not avatar_visual_evidence_required_for_plan(plan_text):
+        return True, None
+
+    if visual_evidence_opt_out:
+        return True, {"visual_evidence_opt_out": visual_evidence_opt_out}
+
+    observation = None
+    if visual_evidence_observed_raw:
+        try:
+            observation = VisualEvidenceObservation.from_mapping(json.loads(visual_evidence_observed_raw))
+        except (ValueError, TypeError):
+            observation = None
+    if visual_evidence_path and observation is not None and observation.is_valid():
+        return True, {
+            "visual_evidence_path": visual_evidence_path,
+            "visual_evidence_observed": observation.to_json(),
+        }
+
+    # Missing or blank visual evidence for a phase that requires it.
+    fields = {"visual_evidence_missing_or_blank": True}
+    if resolve_review_mode() != "block":
+        return True, fields
+    return False, fields
 
 
 def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[str, object]:

@@ -6,6 +6,42 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
+
+New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
+`verification_evidence_validator` pattern: registered via `@register_closeout_validator`,
+`block`-severity, force-downgraded to `warn` (recorded, non-blocking) under the default
+`PHASE_LOOP_REVIEW=warn` posture, blocking only when opted in.
+
+- **Detection contract** (`models.avatar_visual_evidence_required` /
+  `avatar_visual_evidence_required_for_plan`): a phase requires blocking visual evidence only
+  when BOTH a STRUCTURAL signal (the phase owns/touches a browser HTML fixture or a file
+  named for media rendering — `getUserMedia`, `MediaStreamTrack`, `getDisplayMedia`, a
+  canvas/video/camera/session/track renderer, an avatar renderer) AND an EXPLICIT CLAIM
+  signal (the plan text makes an explicit user-visible rendering claim as a deliverable, e.g.
+  "visible avatar", "renders in the browser/meeting UI", "browser call-in", "synthetic
+  media"/"MediaStream target", "getUserMedia target") hold. A bare keyword hit on only one
+  axis — e.g. a plan that just "tests video parsing" or "runs in a browser" — stays silent,
+  same false-positive scoping discipline as #243. Legacy phases with no media surface get no
+  finding.
+- **Visual-evidence schema** (`models.VisualEvidenceObservation`, schema
+  `visual_evidence_observed.v1`): pixel-level observations (`non_black_pixels`, `pixel_min`,
+  `pixel_max`, tolerant of the camelCase `nonBlackPixels`/`pixelMin`/`pixelMax` a browser tool
+  emits) attached alongside a `visual_evidence_path` screenshot/video artifact. `is_valid()`
+  rejects an all-black frame (`non_black_pixels == 0`) and a uniform/blank frame
+  (`pixel_min == pixel_max`, e.g. a solid `#f3f3f3` gray).
+- **Typed opt-out**: a `visual_evidence_opt_out` reason (`no_visible_media_surface`,
+  `visual_deferred_to_later_phase`, `operator_attested_manual`) suppresses the finding,
+  mirroring `verification_evidence_opt_out`.
+- **Reconcile/manual-repair guard**: `phase-loop reconcile` now re-applies the same
+  detection + evidence contract before promoting a matching phase to `complete`
+  (`--visual-evidence-path` / `--visual-evidence-observed` / `--visual-evidence-opt-out`),
+  reusing the SAME contract functions and pixel-validity check as the closeout validator so
+  the two call sites cannot diverge. Warn-default still applies: under
+  `PHASE_LOOP_REVIEW=warn` (default) a missing/blank shortfall is recorded on the
+  `manual_repair` audit trail but the promotion proceeds; only `PHASE_LOOP_REVIEW=block`
+  refuses it. Never sets `human_required`.
+
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 
 Follow-up to #242 (#209), which preserved per-failing-stage raw diagnostics via a
