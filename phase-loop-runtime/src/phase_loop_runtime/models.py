@@ -1442,14 +1442,33 @@ def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
     opt_out = payload.get("visual_evidence_opt_out")
     if opt_out:
         fields["visual_evidence_opt_out"] = opt_out
-    # FAV #272: lift the executor's DECLARED visual-render signal the same
-    # tolerant way -- only when the raw payload actually carries a truthy
-    # value, so a payload that never mentions the field (a legacy/plain-text
-    # closeout, or one that simply didn't declare) leaves it absent rather
-    # than clobbering with an explicit False; absent already means "not
-    # declared" == no-block downstream, so there is nothing to preserve.
-    if payload.get("visual_render_declared"):
-        fields["visual_render_declared"] = True
+    # FAV #272: lift the executor's DECLARED visual-render signal.
+    #
+    # Fix (round-8 CR, codex+gemini Finding 3b -- "sticky-True trap"): this
+    # USED to persist truthy-only (``if payload.get(...): fields[...] =
+    # True``), which meant an explicit ``False`` was indistinguishable from
+    # the key being absent -- BOTH were dropped from the returned dict. That
+    # silently discarded a real re-declaration: an executor that
+    # legitimately RETRACTS an earlier ``true`` declaration with an explicit
+    # ``false`` at a later closeout had that ``false`` vanish before it ever
+    # reached the event ledger, so the reconcile reducer
+    # (``cli._persisted_visual_render_declared``, which takes the LAST
+    # explicitly-recorded value) could only ever latch to ``True`` -- once
+    # declared, a phase was permanently stuck, un-retractable.
+    #
+    # Now: persist the REAL bool whenever the raw payload actually carries
+    # the key with a non-null value (``True`` or ``False`` both survive),
+    # and leave the field OUT of ``fields`` only when the payload never
+    # mentions it at all (key absent, or explicitly ``null`` -- a legacy/
+    # plain-text closeout, or one that simply never populated the field).
+    # That "absent" case is unchanged: every caller reads it via
+    # ``bool(terminal_view.get("visual_render_declared"))`` (validator,
+    # runner, delegated-child overlay), where a missing key already
+    # defaults to ``False`` == not declared == never blocks -- so omitting
+    # the key for a genuinely silent payload is still the correct
+    # "no signal" representation, not a regression.
+    if "visual_render_declared" in payload and payload.get("visual_render_declared") is not None:
+        fields["visual_render_declared"] = bool(payload.get("visual_render_declared"))
     return fields
 
 

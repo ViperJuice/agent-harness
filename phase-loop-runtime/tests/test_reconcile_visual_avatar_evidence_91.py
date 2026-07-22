@@ -29,9 +29,10 @@ from phase_loop_test_utils import (
     write_phase_plan,
     write_varied_png,
 )
-from phase_loop_runtime.cli import main
+from phase_loop_runtime.cli import _reconcile_visual_evidence_guard, main
 from phase_loop_runtime.events import append_event, read_events
 from phase_loop_runtime.models import LoopEvent, utc_now
+from phase_loop_runtime.observability import build_terminal_summary
 
 VISIBLE_AVATAR_BODY = (
     "# RUNNER\n\n"
@@ -86,8 +87,27 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # own PERSISTED event history (metadata.terminal_summary), not from a
         # CLI flag and not re-derived from the git diff -- so tests simulate
         # "the executor declared this at closeout time" by appending a real
-        # event carrying the field, exactly the shape the live runner writes
-        # via observability.build_terminal_summary.
+        # event carrying the field.
+        #
+        # round-8 CR (codex+gemini Finding 3b): this MUST drive the
+        # declaration through the REAL production serializer chain
+        # (observability.build_terminal_summary -> apply_child_terminal_
+        # summary_overlay -> models.visual_evidence_terminal_fields), the
+        # exact path the live runner uses to build metadata.terminal_summary
+        # -- NOT a hand-injected ledger dict that bypasses it. The prior
+        # version of this helper injected {"visual_render_declared": declared}
+        # directly into the event, which happened to make an explicit
+        # ``False`` "work" even while the real serializer was silently
+        # STRIPPING every explicit False (truthy-only persistence) -- a
+        # hand-injected dict can never catch that class of bug because it
+        # never exercises the code path that has it.
+        terminal_summary = build_terminal_summary(
+            terminal_status="blocked",
+            terminal_blocker=None,
+            verification_status="blocked",
+            next_action="",
+            child_baml_closeout={"visual_render_declared": declared},
+        )
         append_event(
             repo,
             LoopEvent(
@@ -100,7 +120,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
                 model="test",
                 reasoning_effort="test",
                 source="test",
-                metadata={"terminal_summary": {"terminal_status": "blocked", "visual_render_declared": declared}},
+                metadata={"terminal_summary": terminal_summary},
             ),
         )
 
@@ -635,6 +655,78 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
         self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
         self.assertNotIn("visual_evidence_path", manual_repair)
+
+    # --- Finding 2 (round-8 CR, codex+gemini): a changed-paths resolution
+    # failure must never block an UNDECLARED phase -- the declared read must
+    # happen FIRST, and changed_paths must never appear on any ok=False
+    # path. cli.py's `main()` pre-validates --closeout-commit before the
+    # guard ever runs (rejects an unresolvable commit at the CLI layer with
+    # its own exit code 2), so the guard's OWN fail-open/closed behavior on
+    # a resolution failure is only reachable by calling it directly. Pre-fix
+    # repro: this exact call returned
+    # ``(False, {"visual_evidence_resolution_failed": True,
+    # "visual_evidence_missing_or_blank": True})`` -- an UNDECLARED phase
+    # was refused purely because ``changed_paths`` (which feeds nothing but
+    # the non-blocking advisory) could not be resolved. ---
+
+    def test_undeclared_phase_changed_paths_resolution_failure_is_not_blocked(self):
+        repo, roadmap = self._setup(GENERIC_BODY, owned_files=("src/runner.py",))
+        # No declaration recorded for this phase at all, and no structural/
+        # claim advisory signal either (GENERIC_BODY), so a clean (True,
+        # None) is the only correct outcome once the resolution failure is
+        # advisory-only.
+        ok, fields = _reconcile_visual_evidence_guard(
+            repo=repo,
+            roadmap=roadmap,
+            phase="RUNNER",
+            closeout_commit="deadbeef" * 5,  # well-formed SHA shape, resolves to nothing
+            visual_evidence_path=None,
+            visual_evidence_observed_raw=None,
+            visual_evidence_opt_out=None,
+        )
+        self.assertEqual((ok, fields), (True, None))
+
+    # --- Finding 3a (round-8 CR, codex): the persisted-declaration ledger
+    # scan is scoped by ROADMAP identity, not just the phase alias string --
+    # a PRIOR roadmap's same-named phase must never supply the current
+    # roadmap's declaration. ---
+
+    def test_prior_roadmap_same_alias_true_does_not_block_current_undeclared_phase(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        prior_roadmap = repo / "specs" / "retired-phase-plans-v0.md"
+        # A DIFFERENT roadmap document (different path/identity) that
+        # happens to share the same phase alias "RUNNER", declared true.
+        self._declare(repo, prior_roadmap, "RUNNER", True)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+        # The structural/claim advisory can still fire independently for
+        # THIS (undeclared, per the current roadmap) phase -- expected and
+        # orthogonal to the block decision this test guards.
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
+
+    # --- Finding 3b (round-8 CR, codex+gemini): a later explicit False
+    # retracts an earlier True -- no "sticky-True" latch. Drives BOTH
+    # declarations through the real production serializer (see _declare),
+    # so this would have caught the truthy-only-strip bug the hand-injected
+    # gemini repro test could not. ---
+
+    def test_declared_true_then_false_sequence_ends_not_blocked(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
+        self._declare(repo, roadmap, "RUNNER", False)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
 
 
 if __name__ == "__main__":

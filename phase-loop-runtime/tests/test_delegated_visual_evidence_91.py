@@ -187,6 +187,26 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
         closeout = _delegated_child_closeout_result(decision=self.decision, child_automation=child_automation)
         self.assertIs(closeout.get("visual_render_declared"), True)
 
+    def test_delegated_explicit_false_declared_field_survives_serializer(self):
+        # round-8 CR (codex+gemini Finding 3b, "sticky-True trap"): an
+        # explicit False must survive the delegated serializer too, not just
+        # True -- models.visual_evidence_terminal_fields used to strip a
+        # truthy-only value, so an explicit False was indistinguishable from
+        # the field being absent everywhere it flowed, including here. This
+        # is the delegated-path counterpart to the reconcile-ledger
+        # true-then-false regression test.
+        native_json = _native_closeout_json(visual_render_declared=False)
+        child_automation = _parse_native_closeout_status(native_json)
+        closeout = _delegated_child_closeout_result(decision=self.decision, child_automation=child_automation)
+        self.assertIs(closeout.get("visual_render_declared"), False)
+        # No regression: an explicit False must never block, exactly like
+        # absent (single-run authoritative gate reads bool(...), so False
+        # and absent are behaviorally identical downstream).
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = self._delegated_recheck(native_json)
+        self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+        self.assertEqual(outcome.automation_status, "complete")
+
 
 class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
     """Strongest-fidelity variant: drives the REAL ``launch_delegated_child``

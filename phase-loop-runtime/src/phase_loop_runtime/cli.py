@@ -36,6 +36,7 @@ from .redaction import apply_diagnostics_redaction
 from . import repo_validation
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
+from .runtime_paths import roadmap_paths_match
 from .skill_install import actions_to_json, install_skills
 # DECOUPLE SL-1: the dotfiles-domain modules (adoption_bundle, build_bundle,
 # maintenance) and runtime_projection are NOT imported at module level. The
@@ -2613,6 +2614,10 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             # visual-avatar evidence contract at all (unresolvable --closeout-commit,
             # a git failure, or an unreadable plan) -- fail closed unconditionally,
             # never silently promote as though the gate does not apply.
+            # (round-8 CR: the guard itself no longer emits this key -- a
+            # changed-paths resolution failure is now advisory-only, never
+            # ok=False -- kept here as defense-in-depth dead code in case a
+            # future caller variant resurrects the field.)
             print(
                 "phase-loop reconcile: could not resolve inputs for the visual-avatar evidence "
                 "contract (FAV/issue #91) -- unresolvable --closeout-commit or an unreadable "
@@ -2622,7 +2627,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             return 2
         print(
             "phase-loop reconcile: this phase requires blocking visual-avatar evidence "
-            "(FAV/issue #91: owned avatar/browser-media surface + explicit visible-render claim) "
+            "(FAV/issue #272: the phase DECLARED visual_render_declared=true) "
             "under PHASE_LOOP_REVIEW=block -- pass --visual-evidence-path to a genuinely decodable, "
             "non-blank screenshot/frame image (pixel stats are DERIVED from the decoded image, "
             "round-3 CR -- a self-reported --visual-evidence-observed can never substitute for one), or "
@@ -2749,7 +2754,7 @@ def _resolve_changed_paths_at_commit(repo: Path, commit: str | None) -> tuple[st
     return tuple(sorted({line.strip() for line in diff.stdout.splitlines() if line.strip()}))
 
 
-def _persisted_visual_render_declared(repo: Path, phase: str) -> bool:
+def _persisted_visual_render_declared(repo: Path, roadmap: Path, phase: str) -> bool:
     """FAV #272: read the executor's DECLARED ``visual_render_declared`` bool
     from ``phase``'s own PERSISTED event history -- ``metadata.
     terminal_summary`` on each of its events, populated by the runner
@@ -2760,14 +2765,41 @@ def _persisted_visual_render_declared(repo: Path, phase: str) -> bool:
     closeout validator use: the declaration is whatever the executor
     committed to at its own closeout time; reconcile only ever READS it.
 
-    Returns the LAST explicitly-recorded value across this phase's event
-    history (a later run can re-declare), or ``False`` when no persisted
-    event for this phase ever carried the field at all -- consistent with
-    the field's own runtime default (absent == not declared == never
-    blocks)."""
+    Fix (round-8 CR, codex Finding 3a): scoped by ROADMAP identity, not just
+    the ``phase`` alias string. ``read_events`` returns every event this
+    REPO has ever recorded, across every roadmap ever reconciled in it -- a
+    prior roadmap's unrelated phase that happens to share the SAME alias
+    (e.g. every roadmap has a "RUNNER" phase) would otherwise silently
+    supply this phase's declaration. Reuses the same
+    ``roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo,
+    roadmap)`` idiom ``reconcile.py`` already uses for exactly this kind of
+    ledger scan (tolerates a relocated repo root, agent-harness#85 sub-fix
+    C) so this can never diverge from the rest of the ledger-scoping
+    machinery. Deliberately NOT also scoped by ``roadmap_sha256``/
+    ``phase_sha256`` (content fingerprints) -- that would risk the gate
+    going silently INERT (declared=False) the moment a roadmap is edited
+    after a legitimate declaration, which is the same class of fail-open
+    this gate exists to prevent; path+phase identity is the correct
+    granularity for "the same phase across this roadmap's history".
+
+    Fix (round-8 CR, codex+gemini Finding 3b): the serializer
+    (``models.visual_evidence_terminal_fields``) now persists an EXPLICIT
+    bool for both ``True`` and ``False`` (not truthy-only), so a later
+    ``False`` re-declaration is visible in the ledger and can retract an
+    earlier ``True`` -- see that function's docstring. This reducer already
+    took the LAST explicitly-recorded value in event order; it needed no
+    change once the serializer stopped stripping ``False``.
+
+    Returns the LAST explicitly-recorded value across this (roadmap, phase)
+    pair's event history (a later run can re-declare, including retracting
+    an earlier declaration), or ``False`` when no persisted event for this
+    roadmap+phase ever carried the field at all -- consistent with the
+    field's own runtime default (absent == not declared == never blocks)."""
     declared = False
     for event in read_events(repo):
         if str(event.get("phase") or "") != phase:
+            continue
+        if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
             continue
         metadata = event.get("metadata")
         if not isinstance(metadata, dict):
@@ -2808,17 +2840,24 @@ def _reconcile_visual_evidence_guard(
     must satisfy the visual contract regardless of whether that flag was passed
     -- omitting an optional flag must never bypass the gate.
 
-    Fix 2 (round 2, codex fail-open): resolving the phase's ACTUAL CHANGED
-    paths at the blocked commit (``_resolve_changed_paths_at_commit``, a
-    ``git diff-tree`` of that one commit) can fail -- ``closeout_commit``
-    doesn't resolve to a real commit in this repo, or the ``diff-tree``/
-    ``rev-parse`` invocation itself errors. That is a distinct, unconditional
-    fail-CLOSED path (``visual_evidence_resolution_failed``), never silently
-    read as "gate does not apply". The resolved paths themselves now feed
-    ONLY the advisory (see above) -- the block decision no longer depends on
-    them, but a resolution FAILURE still refuses unconditionally as
-    belt-and-suspenders (this reconcile call could not evaluate the
-    phase's actual commit at all).
+    Fix 2 (round 2, codex fail-open; SUPERSEDED round-8 CR, see below):
+    resolving the phase's ACTUAL CHANGED paths at the blocked commit
+    (``_resolve_changed_paths_at_commit``, a ``git diff-tree`` of that one
+    commit) can fail -- ``closeout_commit`` doesn't resolve to a real commit
+    in this repo, or the ``diff-tree``/``rev-parse`` invocation itself
+    errors. The resolved paths feed ONLY the advisory (see above) -- the
+    block decision never depends on them.
+
+    Fix (round-8 CR, codex + gemini): ``changed_paths`` is now resolved
+    LAZILY, only inside the not-declared branch, AFTER the declared read.
+    A resolution failure there means "no advisory signal" -- it now returns
+    ``(True, None)``-eligible (subject to the plan-text axis), exactly like
+    a plan-read failure, NEVER ``ok=False``. The prior "unconditional
+    fail-CLOSED / belt-and-suspenders refuse" behavior was itself the bug:
+    since the block decision is declared-only, an UNDECLARED phase must
+    never be refused just because the structural advisory signal couldn't
+    be computed -- ``changed_paths`` must not appear on any path that
+    returns ``ok=False``.
 
     Fix 4: the referenced ``--visual-evidence-path`` is VALIDATED
     (``resolve_visual_evidence_artifact``) -- it must EXIST inside the repo and
@@ -2848,16 +2887,27 @@ def _reconcile_visual_evidence_guard(
     this phase at all, or when the sole finding is the silenced
     decoder-absent case above.
     """
-    changed_paths = _resolve_changed_paths_at_commit(repo, closeout_commit)
-    if changed_paths is _CHANGED_PATHS_RESOLUTION_FAILED:
-        return False, {"visual_evidence_resolution_failed": True, "visual_evidence_missing_or_blank": True}
-
-    declared = _persisted_visual_render_declared(repo, phase)
+    # Finding 2 (round-8 CR, codex + gemini): read the DECLARED bool FIRST.
+    # ``changed_paths`` now feeds ONLY the non-blocking advisory (the
+    # not-declared branch below) -- it must never be resolved before, or
+    # gate, the declared read itself. Resolving it unconditionally up front
+    # meant an UNDECLARED phase (which never blocks on evidence) could still
+    # be refused here purely because ``--closeout-commit`` didn't resolve /
+    # the ``diff-tree`` invocation errored -- violating the declared-only
+    # invariant this whole guard exists to enforce. ``changed_paths`` must
+    # never appear on any path that returns ``ok=False``.
+    declared = _persisted_visual_render_declared(repo, roadmap, phase)
     if not declared:
         # Heuristic (structural surface touched OR an explicit visible-render
         # claim) never blocks -- it only records a non-blocking advisory audit
         # field, regardless of posture, mirroring the closeout validator's
-        # visual_render_undeclared_surface finding.
+        # visual_render_undeclared_surface finding. Resolve ``changed_paths``
+        # LAZILY here, only for the advisory: a resolution failure means "no
+        # structural advisory signal" (just like a plan-read failure below),
+        # not a refusal -- an undeclared phase is never blocked either way.
+        changed_paths = _resolve_changed_paths_at_commit(repo, closeout_commit)
+        if changed_paths is _CHANGED_PATHS_RESOLUTION_FAILED:
+            changed_paths = ()
         plan = find_plan_artifact(repo, phase, roadmap=roadmap)
         plan_text = ""
         if plan is not None:

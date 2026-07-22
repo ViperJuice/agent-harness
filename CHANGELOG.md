@@ -179,7 +179,8 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   another regex round, the trigger itself is replaced: a new closeout field,
   `visual_render_declared: bool` (added to `emit_phase_closeout.baml`, the `PhaseLoopCloseoutV1`
   pydantic mirror, and `TERMINAL_SUMMARY_FIELDS`), is the executor's explicit assertion "this
-  phase delivers a visible avatar/media render backed by an attached image artifact." The BLOCK
+  phase's deliverable is a visible avatar/media render" — a statement about intent/deliverable,
+  independent of whether evidence is attached yet (see the round-8 CR fix below). The BLOCK
   decision in all three enforcement points (`visual_avatar_evidence_validator`, the runner's
   authoritative `_visual_evidence_closeout_outcome`, and the reconcile guard
   `_reconcile_visual_evidence_guard`) now reads ONLY `visual_render_declared` + evidence
@@ -213,6 +214,45 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   - Out of scope (tracked separately, #211-style planner-skill follow-up): grounding the
     declaration in the PLAN (a frozen visual-evidence marker in acceptance criteria). This
     change is closeout-surface only.
+  - **Round-8 CR fixes (three confirmed cross-vendor findings against the declared-only
+    design above; codex disagreed with all three, gemini corroborated the third — all three
+    verified reachable against source and fixed):**
+    - **Prompt-semantics crux (fail-open):** the BAML prompt instructed the executor to set
+      `visual_render_declared=true` "only when ... backed by an attached image artifact" —
+      coupling the declaration to evidence *already existing*, which defined away the exact
+      failure the gate exists to catch (a compliant executor that renders a visible avatar but
+      fails/forgets to attach evidence was instructed to leave the field false, so the block
+      never fired). `emit_phase_closeout.baml` now decouples the declaration from
+      evidence-attachment: set it whenever the phase's *deliverable* is a visible render,
+      regardless of whether evidence is attached yet; when true, a valid
+      `visual_evidence_path` or a typed `visual_evidence_opt_out` is required or the closeout
+      BLOCKS. Image-only wording (no video) preserved.
+    - **Reconcile ordering (advisory input could block before the declared read):**
+      `cli._reconcile_visual_evidence_guard` resolved `changed_paths` (which feeds only the
+      non-blocking advisory) *before* reading the persisted `visual_render_declared` bool, and
+      refused (`ok=False`) unconditionally on a `_CHANGED_PATHS_RESOLUTION_FAILED` — so an
+      *undeclared* phase could be blocked purely because `--closeout-commit` didn't resolve,
+      violating the declared-only-blocks invariant. The guard now reads the declared bool
+      FIRST; `changed_paths` is resolved lazily, only inside the not-declared branch, and a
+      resolution failure there means "no advisory signal" (same as a plan-read failure) —
+      never a refusal. `changed_paths` no longer appears on any path that returns `ok=False`.
+    - **Ledger-reduction bugs in `cli._persisted_visual_render_declared`:** (a) the scan
+      filtered by phase-alias string only, so a *prior roadmap's* same-named phase could
+      supply the current closeout's declaration — now also scoped by roadmap identity via the
+      existing `runtime_paths.roadmap_paths_match` idiom (tolerates a relocated repo root,
+      #85 sub-fix C), matching how `reconcile.py` already scopes ledger scans. (b) the
+      serializer (`models.visual_evidence_terminal_fields`) persisted the declared bool
+      truthy-only, so an explicit `false` was stripped and indistinguishable from the field
+      being absent — a later `false` correction could never overwrite an earlier `true` in the
+      ledger ("sticky-True": once wrongly declared, a phase was permanently un-retractable).
+      The serializer now persists the real bool for both `true` and `false` whenever the
+      payload actually carries the key; the reducer already took the last explicitly-recorded
+      value, so a `true`-then-`false` sequence now correctly ends not-declared. Single-run
+      validator/runner/delegated-child paths are unaffected (`absent == False` unchanged there).
+    - **Wording nit:** the runner's block-path `blocker_summary` text and the reconcile CLI's
+      block message still described the retired "owns an avatar/browser-media surface and
+      claims a visible-render deliverable" heuristic contract; both now describe the actual
+      declared-only trigger (`visual_render_declared=true`).
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

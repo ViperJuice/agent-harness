@@ -6410,8 +6410,9 @@ def _visual_evidence_closeout_outcome(
             "human_required": False,
             "blocker_class": "review_gate_block",
             "blocker_summary": (
-                f"Review gate blocked closeout: {derivation_error} -- phase owns an "
-                "avatar/browser-media surface and claims a visible-render deliverable, "
+                f"Review gate blocked closeout: {derivation_error} -- phase DECLARED "
+                "visual_render_declared=true (issue #272: the declaration is the sole "
+                "block trigger, independent of any owned surface or plan-text claim), "
                 f"reported verification_status=passed, but {detail}; self-reported pixel "
                 "observations are never accepted as a substitute for a decoded artifact."
             ),
@@ -6422,8 +6423,9 @@ def _visual_evidence_closeout_outcome(
         "human_required": False,
         "blocker_class": "review_gate_block",
         "blocker_summary": (
-            "Review gate blocked closeout: visual_evidence_missing_or_blank -- phase owns "
-            "an avatar/browser-media surface and claims a visible-render deliverable, "
+            "Review gate blocked closeout: visual_evidence_missing_or_blank -- phase "
+            "DECLARED visual_render_declared=true (issue #272: the declaration is the "
+            "sole block trigger, independent of any owned surface or plan-text claim), "
             "reported verification_status=passed, but attached no valid runner-owned "
             "visual_evidence_path + a DECODED image whose derived pixel stats show real "
             "content (non_black_pixels>0, pixel_min!=pixel_max) and no typed "
