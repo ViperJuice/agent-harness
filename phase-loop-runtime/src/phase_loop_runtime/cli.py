@@ -17,13 +17,13 @@ from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
-from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_python_pin, resolve_repo, resolve_suite_command, select_roadmap
+from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_owned_files, phase_source_bundle_diagnostic, resolve_python_pin, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required_for_plan, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required, utc_now
 from .closeout_validators import resolve_review_mode
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -2665,11 +2665,16 @@ def _reconcile_visual_evidence_guard(
     A phase blocked by the visual-avatar-evidence closeout gate
     (``visual_avatar_evidence_validator``) must not be promoted to
     ``complete`` by reconcile/manual-repair unless the SAME detection
-    contract and evidence contract are satisfied -- this re-applies both,
-    reusing ``models.avatar_visual_evidence_required_for_plan`` (the same
-    function the closeout validator's structural+claim check is built from,
-    so the two call sites can never diverge) and
-    ``models.VisualEvidenceObservation`` (the same pixel-validity check).
+    contract and evidence contract are satisfied. This re-applies the
+    detection contract via the exact SAME function the closeout validator
+    uses -- ``models.avatar_visual_evidence_required(changed_paths,
+    plan_text)`` -- fed with the phase's declared ``**Owned files**`` lane
+    patterns (``discovery.phase_owned_files``, the same ownership resolution
+    the rest of the runtime uses) standing in for the closeout's actual
+    dirty ``changed_paths``, so the structural signal can never diverge
+    between the two enforcement points the way a re-implemented parser
+    could. Evidence validity reuses ``models.VisualEvidenceObservation``
+    (the same pixel-validity check) as well.
 
     Warn-default still applies (autonomy-first): this only REFUSES
     (``ok=False``) when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=
@@ -2688,7 +2693,8 @@ def _reconcile_visual_evidence_guard(
         plan_text = plan.read_text(encoding="utf-8") if plan else ""
     except OSError:
         plan_text = ""
-    if not avatar_visual_evidence_required_for_plan(plan_text):
+    owned_files = phase_owned_files(repo, roadmap, phase)
+    if not avatar_visual_evidence_required(owned_files, plan_text):
         return True, None
 
     if visual_evidence_opt_out:

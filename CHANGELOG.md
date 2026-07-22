@@ -36,8 +36,11 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
 - **Reconcile/manual-repair guard**: `phase-loop reconcile` now re-applies the same
   detection + evidence contract before promoting a matching phase to `complete`
   (`--visual-evidence-path` / `--visual-evidence-observed` / `--visual-evidence-opt-out`),
-  reusing the SAME contract functions and pixel-validity check as the closeout validator so
-  the two call sites cannot diverge. Warn-default still applies: under
+  feeding the phase's declared `**Owned files**` lane patterns
+  (`discovery.phase_owned_files`) into the exact SAME `avatar_visual_evidence_required`
+  function and pixel-validity check the closeout validator uses, so the structural signal
+  and evidence check can never diverge between the two enforcement points. Warn-default
+  still applies: under
   `PHASE_LOOP_REVIEW=warn` (default) a missing/blank shortfall is recorded on the
   `manual_repair` audit trail but the promotion proceeds; only `PHASE_LOOP_REVIEW=block`
   refuses it. Never sets `human_required`.

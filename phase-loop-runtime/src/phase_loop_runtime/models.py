@@ -1183,17 +1183,6 @@ def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
     return any(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(str(p)) for p in paths)
 
 
-def avatar_media_surface_referenced(text: str) -> bool:
-    """STRUCTURAL signal (detection contract #1), text-based proxy used where
-    no ``changed_paths`` list is available (the reconcile CLI only has the
-    plan's prose). True when the plan text names a browser HTML fixture or an
-    avatar/media-rendering file."""
-    lowered = (text or "").lower()
-    if ".html" in lowered and ("fixture" in lowered or "browser" in lowered):
-        return True
-    return bool(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(lowered))
-
-
 def avatar_visible_render_claimed(text: str) -> bool:
     """EXPLICIT CLAIM signal (detection contract #2): the plan text makes an
     explicit user-visible rendering claim as a deliverable."""
@@ -1201,17 +1190,16 @@ def avatar_visible_render_claimed(text: str) -> bool:
 
 
 def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str) -> bool:
-    """Full FAV detection contract for the closeout validator (has
-    ``changed_paths``): STRUCTURAL (changed_paths) AND EXPLICIT CLAIM
-    (plan_text)."""
+    """Full FAV detection contract: STRUCTURAL (``changed_paths``) AND
+    EXPLICIT CLAIM (``plan_text``).
+
+    Deliberately the SINGLE implementation of the contract -- both the
+    closeout validator (``changed_paths`` = the run's actual dirty paths) and
+    the ``reconcile`` CLI guard (``changed_paths`` = the phase's declared
+    ``**Owned files**`` lane patterns, via ``discovery.phase_owned_files``)
+    call this same function, so the two enforcement points can never
+    structurally diverge."""
     return avatar_media_surface_touched(changed_paths) and avatar_visible_render_claimed(plan_text)
-
-
-def avatar_visual_evidence_required_for_plan(plan_text: str) -> bool:
-    """Full FAV detection contract for the reconcile CLI (no ``changed_paths``
-    available; reuses the SAME claim regex plus a text-based structural proxy
-    so the two call sites can never diverge)."""
-    return avatar_media_surface_referenced(plan_text) and avatar_visible_render_claimed(plan_text)
 
 
 @dataclass(frozen=True)
