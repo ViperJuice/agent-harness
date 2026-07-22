@@ -43,8 +43,11 @@ PY="$VENV/bin/python"
 env -u PYTHONPATH "$PY" -m pip install --quiet --upgrade pip >/dev/null
 # Install the wheel plus its declared runtime deps from the ambient environment
 # cache. The clean-room invariant is enforced by env at *run* time, not by a
-# locked-down index here.
-env -u PYTHONPATH "$PY" -m pip install --quiet "$WHEEL" >/dev/null
+# locked-down index here. Pull in the `visual` extra (Pillow) too -- the full
+# standalone suite run below (step 4) includes the FAV visual-evidence gate's
+# decode-requiring tests, which need Pillow installed in THIS venv or they'd
+# error at test time (agent-harness#91 round-4 CR).
+env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[visual]" >/dev/null
 
 # The non-empty profile_commands group must now actually ship in the installed
 # dist-info (empty groups were dropped by setuptools before Option A).

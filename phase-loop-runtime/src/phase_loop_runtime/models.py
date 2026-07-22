@@ -1279,7 +1279,25 @@ def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
     try:
         with Image.open(path) as img:
             img.load()  # force full decode now (Image.open is lazy) so a truncated/corrupt body raises here
-            grayscale = img.convert("L")
+            # Fix (agent-harness#91 round-4 CR / codex): converting straight to
+            # grayscale IGNORES alpha, so a fully-transparent RGBA/LA/P-with-
+            # transparency image with varied *hidden* RGB decodes as if those
+            # hidden colors were visible -- non_black_pixels>0 and pixel_min !=
+            # pixel_max, so is_valid() wrongly PASSES a visually blank frame
+            # (fail-open). Composite onto a DETERMINISTIC opaque black RGBA
+            # canvas first so the derived stats reflect what a viewer actually
+            # SEES: fully-transparent pixels become black (matching the
+            # existing "black == blank" rejection), partially-transparent
+            # pixels blend toward black, and fully-opaque pixels are
+            # unaffected. Modes with no alpha channel (RGB/L/...) are
+            # unaffected -- convert("RGBA") on those is already fully opaque.
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                rgba = img.convert("RGBA")
+                black_background = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                composited = Image.alpha_composite(black_background, rgba)
+                grayscale = composited.convert("L")
+            else:
+                grayscale = img.convert("L")
             width, height = grayscale.size
             if width <= 0 or height <= 0:
                 raise VisualEvidenceUndecodable(f"decoded image has zero dimensions: {path}")

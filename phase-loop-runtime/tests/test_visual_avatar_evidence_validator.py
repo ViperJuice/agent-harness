@@ -14,15 +14,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from phase_loop_runtime.closeout import build_phase_loop_closeout
 from phase_loop_runtime.closeout_validators import (
     CloseoutContext,
     clear_closeout_validators,
     register_closeout_validator,
 )
-from phase_loop_runtime.models import VisualEvidenceObservation
+from phase_loop_runtime.models import VisualEvidenceObservation, derive_visual_observation
 from phase_loop_runtime.visual_avatar_evidence_validator import visual_avatar_evidence_validator
-from phase_loop_test_utils import write_blank_png, write_varied_png
+from phase_loop_test_utils import write_blank_png, write_transparent_varied_png, write_varied_png
 
 VISIBLE_AVATAR_PLAN = (
     "# FAV\n\n"
@@ -195,6 +197,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_varied_frame_evidence_is_clean(self):
+        pytest.importorskip("PIL")
         # round-3 (codex CR): a repo_root=None caller can prove neither
         # containment nor decode the artifact, so it now fails closed (see
         # test_missing_repo_root_still_finds_even_with_good_self_report below)
@@ -232,6 +235,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_nested_artifact_paths_is_clean(self):
+        pytest.importorskip("PIL")
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "runs" / "x" / "frame.png"
         write_varied_png(artifact)
@@ -288,6 +292,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     # --- Fix 4: artifact must EXIST inside the repo when a repo root is known ---
 
     def test_repo_root_valid_artifact_is_clean(self):
+        pytest.importorskip("PIL")
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         # agent-harness#91 round-3 (codex CR): the gate now DERIVES pixel stats
@@ -335,6 +340,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_flat_baml_encoded_observation_valid_artifact_is_clean(self):
+        pytest.importorskip("PIL")
         # Fix 1: the flat BAML encoding (visual_evidence_non_black_pixels/...)
         # folded onto the terminal summary is accepted equivalently.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
@@ -395,6 +401,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_valid_png_header_artifact_is_clean(self):
+        pytest.importorskip("PIL")
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         write_varied_png(artifact)
@@ -442,6 +449,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     # result, and derivation itself must fail CLOSED when it cannot run. ---
 
     def test_blank_decoded_image_still_finds_despite_fabricated_self_report(self):
+        pytest.importorskip("PIL")
         # Core round-3 repro: a REAL, DECODABLE, but genuinely BLANK (uniform)
         # image, paired with FABRICATED "good" self-reported numbers, must
         # still find -- the derived observation is authoritative.
@@ -463,6 +471,12 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
 
     def test_undecodable_artifact_finds_with_undecodable_code(self):
+        # Requires a REAL Pillow install: distinguishing "undecodable" (Pillow
+        # present, decode failed on corrupt bytes) from "cannot_verify"
+        # (Pillow itself absent) needs the real import to succeed and then
+        # fail on the corrupt body -- with no Pillow at all, this artifact
+        # would report "cannot_verify" instead (asserted separately below).
+        pytest.importorskip("PIL")
         # Core round-3 repro: a valid-header but UNDECODABLE (corrupt/
         # truncated) artifact, paired with fabricated "good" self-reported
         # numbers, must find with a distinct undecodable code -- self-reported
@@ -489,9 +503,17 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     def test_decoder_unavailable_finds_with_cannot_verify_code(self):
         # A decoder-unavailable environment (Pillow import raises) must fail
         # CLOSED -- never fabricate a pass because derivation could not run.
+        # This is the CORE-ONLY fail-closed smoke (agent-harness#91 round-4
+        # CR): it must PASS even when Pillow is genuinely absent, so it
+        # deliberately does NOT use write_varied_png (which needs a real
+        # Pillow install to construct the fixture) -- derive_visual_observation
+        # raises on the `from PIL import Image` import itself, before ever
+        # touching the artifact's bytes, so a plain placeholder file is
+        # sufficient and no `pytest.importorskip("PIL")` guard belongs here.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
-        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -509,7 +531,69 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(findings[0].severity, "block")
 
     def test_varied_real_image_is_clean(self):
+        pytest.importorskip("PIL")
         # A real VARIED decoded image genuinely passes.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_varied_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    # --- round-4 (codex CR): a fully-transparent image with varied HIDDEN
+    # RGB must not fail-open. `derive_visual_observation` previously
+    # converted straight to grayscale, ignoring alpha, so the invisible RGB
+    # variance leaked through as if it were on-screen. ---
+
+    def test_transparent_varied_image_is_undecodable_as_blank(self):
+        pytest.importorskip("PIL")
+        # Direct repro at the derivation layer (codex probe): a fully
+        # transparent RGBA PNG with varied hidden RGB must now decode as
+        # uniformly black (non_black_pixels==0) and fail is_valid() --
+        # NOT the pre-fix non_black_pixels=2/pixel_min=0/pixel_max=255/
+        # is_valid()==True fail-open.
+        artifact = Path(self._td.name) / "shots" / "transparent.png"
+        write_transparent_varied_png(artifact)
+        obs = derive_visual_observation(artifact)
+        self.assertEqual(obs.non_black_pixels, 0)
+        self.assertEqual(obs.pixel_min, 0)
+        self.assertEqual(obs.pixel_max, 0)
+        self.assertFalse(obs.is_valid())
+
+    def test_transparent_varied_evidence_still_finds_despite_fabricated_self_report(self):
+        pytest.importorskip("PIL")
+        # End-to-end through the validator: a genuinely-transparent (visually
+        # blank) artifact, paired with fabricated "good" self-reported
+        # numbers, must still find -- the derived observation (post-alpha-
+        # composite) is authoritative, exactly like the blank/uniform case.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_transparent_varied_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_opaque_varied_image_still_valid_after_alpha_fix(self):
+        pytest.importorskip("PIL")
+        # Keep the genuinely-visible (opaque, varied) path passing -- the
+        # alpha-composite fix must not regress a real non-transparent frame.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         write_varied_png(artifact)

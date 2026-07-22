@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_test_utils import (
@@ -139,6 +141,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertIn("visual-avatar evidence", stderr)
 
     def test_matching_phase_valid_evidence_promotes_on_opt_in(self):
+        pytest.importorskip("PIL")  # _write_committed_artifact decodes a real PNG
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         # Fix 4: the artifact must actually EXIST inside the repo.
         artifact = self._write_committed_artifact(repo, "shots/frame.png")
@@ -158,6 +161,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertTrue(manual_repair["visual_evidence_observed"])
 
     def test_matching_phase_blank_evidence_blocks_on_opt_in(self):
+        pytest.importorskip("PIL")
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         artifact = repo / "shots" / "frame.png"
         # uniform gray frame -- a REAL, DECODABLE, but genuinely blank image.
@@ -176,6 +180,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertIn("visual-avatar evidence", stderr)
 
     def test_matching_phase_blank_evidence_blocks_despite_fabricated_self_report_on_opt_in(self):
+        pytest.importorskip("PIL")
         # round-3 (codex CR) core repro: a genuinely blank/uniform DECODED
         # image, paired with FABRICATED "good" self-reported numbers, must
         # still BLOCK -- the derived observation is authoritative and the
@@ -219,6 +224,11 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertIn("visual-avatar evidence", stderr)
 
     def test_matching_phase_undecodable_artifact_promotes_with_recorded_finding_under_warn_default(self):
+        # Requires a REAL Pillow install: distinguishing "undecodable"
+        # (Pillow present, decode failed on corrupt bytes) from
+        # "cannot_verify" (Pillow itself absent) needs the real import to
+        # succeed and then fail on the corrupt body.
+        pytest.importorskip("PIL")
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         artifact = repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -242,9 +252,16 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def test_matching_phase_decoder_unavailable_fails_closed_on_opt_in(self):
         # A decoder-unavailable environment (Pillow import raises) must fail
         # CLOSED -- never fabricate a pass because derivation could not run.
+        # CORE-ONLY fail-closed smoke (agent-harness#91 round-4 CR): must
+        # PASS even when Pillow is genuinely absent -- derive_visual_
+        # observation raises on `from PIL import Image` itself, before ever
+        # touching the artifact's bytes, so a plain placeholder file (not
+        # write_varied_png, which needs a real Pillow install) is enough and
+        # no importorskip("PIL") guard belongs here.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         artifact = repo / "shots" / "frame.png"
-        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}), patch.dict(
             sys.modules, {"PIL": None, "PIL.Image": None}
         ):

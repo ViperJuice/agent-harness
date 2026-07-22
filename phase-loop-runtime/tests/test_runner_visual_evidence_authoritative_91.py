@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_blank_png, write_phase_plan, write_varied_png
@@ -132,6 +134,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
 
     def test_valid_evidence_does_not_visual_block_on_opt_in(self):
+        pytest.importorskip("PIL")
         artifact = self.repo / "shots" / "frame.png"
         # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
         # image -- a magic-header-only fake no longer suffices, the artifact
@@ -152,6 +155,7 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
 
     def test_blank_decoded_image_blocks_despite_fabricated_self_report_on_opt_in(self):
+        pytest.importorskip("PIL")
         # round-3 (codex CR) core repro: a valid-header, REAL, but genuinely
         # BLANK (uniform) decoded image, paired with FABRICATED "good"
         # self-reported numbers, must still BLOCK -- the derived observation
@@ -174,6 +178,11 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
         self.assertEqual(outcome.automation_status, "blocked")
 
     def test_undecodable_artifact_fails_closed_on_opt_in(self):
+        # Requires a REAL Pillow install: distinguishing "undecodable"
+        # (Pillow present, decode failed on corrupt bytes) from
+        # "cannot_verify" (Pillow itself absent) needs the real import to
+        # succeed and then fail on the corrupt body.
+        pytest.importorskip("PIL")
         # round-3 (codex CR) core repro: a valid-header but UNDECODABLE
         # (corrupt/truncated) artifact, paired with fabricated "good"
         # self-reported numbers, must BLOCK -- never silently pass on the
@@ -200,8 +209,15 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
     def test_decoder_unavailable_fails_closed_on_opt_in(self):
         # A decoder-unavailable environment (Pillow import raises) must fail
         # CLOSED -- never fabricate a pass because derivation could not run.
+        # CORE-ONLY fail-closed smoke (agent-harness#91 round-4 CR): must
+        # PASS even when Pillow is genuinely absent -- derive_visual_
+        # observation raises on `from PIL import Image` itself, before ever
+        # touching the artifact's bytes, so a plain placeholder file (not
+        # write_varied_png, which needs a real Pillow install) is enough and
+        # no importorskip("PIL") guard belongs here.
         artifact = self.repo / "shots" / "frame.png"
-        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
         child = self._child({
             "terminal_status": "complete",
             "verification_status": "passed",

@@ -29,6 +29,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.models import DelegationDecision, PromptBundle
 from phase_loop_runtime.runner import (
@@ -119,6 +121,7 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
         return _closeout_gate_recheck(self.repo, self.roadmap, self.plan, closeout, status_after_launch, event_blocker)
 
     def test_delegated_valid_evidence_survives_serializer_and_is_clean(self):
+        pytest.importorskip("PIL")
         artifact = self.repo / "shots" / "frame.png"
         # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
         # image, so the artifact must be a REAL, varied (non-blank) PNG -- a
@@ -225,6 +228,7 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
         return closeout
 
     def test_valid_evidence_survives_real_launch_metadata_round_trip(self):
+        pytest.importorskip("PIL")
         artifact = self.repo / "shots" / "frame.png"
         # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
         # image, so the artifact must be a REAL, varied (non-blank) PNG -- a

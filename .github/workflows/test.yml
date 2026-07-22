@@ -27,7 +27,11 @@ jobs:
 
       - name: Install phase-loop-runtime + pytest
         # No test extra is defined in pyproject; install the package + pytest.
-        run: python -m pip install ./phase-loop-runtime pytest
+        # The `visual` extra (Pillow) is required so the FAV visual-evidence
+        # gate's decode-requiring tests (tests/phase_loop_test_utils.py
+        # write_varied_png/write_blank_png/write_transparent_varied_png) run
+        # instead of erroring at test time (agent-harness#91 round-4 CR).
+        run: python -m pip install "./phase-loop-runtime[visual]" pytest
 
       - name: Guard — no scattered/duplicated hardcoded model IDs
         # Enforces the "reference the central constant, don't inline the model ID"

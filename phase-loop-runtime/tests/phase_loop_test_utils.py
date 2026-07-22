@@ -349,6 +349,28 @@ def write_varied_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
     return path
 
 
+def write_transparent_varied_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+    """FAV (agent-harness#91 round-4 CR / codex): write a REAL, DECODABLE,
+    fully TRANSPARENT RGBA image (alpha=0 for every pixel) whose HIDDEN RGB
+    channels vary from pixel to pixel. Reproduces the alpha-blind fail-open:
+    converting straight to grayscale ignores alpha, so the hidden RGB
+    variance leaks through as if it were visible, and a visually-blank
+    (fully transparent) frame wrongly passes the pixel-evidence gate. After
+    the fix, `derive_visual_observation` composites onto an opaque black
+    background first, so this decodes as uniformly black
+    (non_black_pixels==0) and fails `is_valid()`."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    for x in range(width):
+        for y in range(height):
+            img.putpixel((x, y), ((x * 50) % 256, (y * 70 + 30) % 256, 128, 0))
+    img.save(path, format="PNG")
+    return path
+
+
 def write_blank_png(path: Path, size: tuple[int, int] = (2, 2), color: tuple[int, int, int] = (0, 0, 0)) -> Path:
     """FAV (agent-harness#91 round-3 CR): write a REAL, DECODABLE, but
     genuinely UNIFORM image (every pixel the same color) at `path`. Used to
