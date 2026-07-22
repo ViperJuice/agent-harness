@@ -22,9 +22,16 @@ from phase_loop_runtime.closeout_validators import (
     clear_closeout_validators,
     register_closeout_validator,
 )
-from phase_loop_runtime.models import VisualEvidenceObservation, derive_visual_observation
+from phase_loop_runtime.models import VisualEvidenceObservation, avatar_visible_render_claimed, derive_visual_observation
 from phase_loop_runtime.visual_avatar_evidence_validator import visual_avatar_evidence_validator
-from phase_loop_test_utils import write_blank_png, write_transparent_varied_png, write_varied_png
+from phase_loop_test_utils import (
+    write_blank_png,
+    write_l_trns_transparent_png,
+    write_rgb_trns_partial_transparency_png,
+    write_rgb_trns_transparent_png,
+    write_transparent_varied_png,
+    write_varied_png,
+)
 
 VISIBLE_AVATAR_PLAN = (
     "# FAV\n\n"
@@ -288,6 +295,68 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         c = _closeout(plan, ["tests/fixtures/avatar_call.html"])
         self.assertFalse(c["verification"]["results"])
         self.assertEqual(c["terminal_status"], "complete")
+
+    # --- round-5 CR (codex): detector false-NEGATIVE -- title / IF-gate /
+    # exit-gate headings must be evaluated, and "without" must not suppress
+    # an otherwise-affirmative claim (negation is claim-local). ---
+
+    def test_title_heading_claim_is_detected(self):
+        # The phase TITLE ("# " heading) itself carries the claim -- was
+        # previously invisible to the scan (headings were only used to
+        # toggle scope, never evaluated for a claim themselves).
+        self.assertTrue(avatar_visible_render_claimed("# AV-1 — Visible Avatar\n\nSome body text here.\n"))
+
+    def test_if_gate_heading_body_claim_is_detected(self):
+        # An IF-gate heading ("## IF-AV-1-1") doesn't match the affirmative-
+        # keyword regex, so it previously turned scanning OFF for its body --
+        # silently hiding a real claim underneath it.
+        self.assertTrue(
+            avatar_visible_render_claimed("## IF-AV-1-1\n\nThe avatar renders visibly in the browser.\n")
+        )
+
+    def test_exit_gate_heading_body_claim_is_detected(self):
+        # Same shape as the IF-gate case for an "Exit gate" heading (does not
+        # match "exit\s+criteria").
+        self.assertTrue(
+            avatar_visible_render_claimed("## Exit gate\n\nRenders a visible avatar in the meeting UI.\n")
+        )
+
+    def test_without_qualified_affirmative_claim_is_detected(self):
+        # Negation must be CLAIM-LOCAL: a "without <X>" qualifier on an
+        # affirmative claim is not a negation of the claim itself.
+        self.assertTrue(
+            avatar_visible_render_claimed(
+                "## Objective\n\nRenders a visible avatar without operator intervention.\n"
+            )
+        )
+
+    def test_title_heading_claim_end_to_end(self):
+        plan = _write_plan(
+            self._td.name,
+            "# AV-1 — Visible Avatar\n\nThis phase adds the visible-avatar render path.\n",
+        )
+        ctx = _ctx(plan, changed_paths=["tests/fixtures/avatar_call.html"])
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_exit_gate_heading_claim_end_to_end(self):
+        plan = _write_plan(
+            self._td.name,
+            "# FAV\n\n## Exit gate\n\nRenders a visible avatar in the meeting UI.\n",
+        )
+        ctx = _ctx(plan, changed_paths=["tests/fixtures/avatar_call.html"])
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_unrecognized_heading_still_respects_fp_boundary(self):
+        # An unrecognized heading is now affirmative-eligible, but that alone
+        # must not manufacture a claim where none exists -- no claim pattern,
+        # no finding, even under an unnamed heading.
+        self.assertFalse(
+            avatar_visible_render_claimed("## Some Unnamed Section\n\nThis integration test runs in a browser.\n")
+        )
 
     # --- Fix 4: artifact must EXIST inside the repo when a repo root is known ---
 
@@ -589,6 +658,71 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         findings = visual_avatar_evidence_validator(ctx)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_rgb_trns_transparent_image_is_undecodable_as_blank(self):
+        pytest.importorskip("PIL")
+        # Round-5 CR (codex): a mode-RGB PNG with a `tRNS` chunk decodes with
+        # NO alpha channel at all -- the round-4 fix only checked
+        # RGBA/LA/P-with-transparency, so this bypassed compositing entirely
+        # and read the bright transparent-marked pixel as non-black. After
+        # the fix, this composites to uniformly black and fails is_valid().
+        artifact = Path(self._td.name) / "shots" / "rgb_trns.png"
+        write_rgb_trns_transparent_png(artifact)
+        obs = derive_visual_observation(artifact)
+        self.assertEqual(obs.non_black_pixels, 0)
+        self.assertEqual(obs.pixel_min, 0)
+        self.assertEqual(obs.pixel_max, 0)
+        self.assertFalse(obs.is_valid())
+
+    def test_l_trns_transparent_image_is_undecodable_as_blank(self):
+        pytest.importorskip("PIL")
+        # Round-5 CR (codex): same fail-open shape as the RGB-tRNS case, for
+        # the grayscale (mode L) decode path.
+        artifact = Path(self._td.name) / "shots" / "l_trns.png"
+        write_l_trns_transparent_png(artifact)
+        obs = derive_visual_observation(artifact)
+        self.assertEqual(obs.non_black_pixels, 0)
+        self.assertEqual(obs.pixel_min, 0)
+        self.assertEqual(obs.pixel_max, 0)
+        self.assertFalse(obs.is_valid())
+
+    def test_rgb_trns_transparent_evidence_still_finds_despite_fabricated_self_report(self):
+        pytest.importorskip("PIL")
+        # End-to-end through the validator: a tRNS-transparent (visually
+        # blank) mode-RGB artifact, paired with fabricated "good"
+        # self-reported numbers, must still find -- the derived observation
+        # (post-alpha-composite) is authoritative.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_rgb_trns_transparent_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_rgb_trns_partial_transparency_reflects_only_visible_pixels(self):
+        pytest.importorskip("PIL")
+        # Round-5 CR (codex): a mode-RGB tRNS image where ONE pixel is
+        # transparent-marked and the rest are genuinely visible/varied must
+        # reflect ONLY the opaque visible pixels -- the transparent pixel
+        # composites to black (folded into the existing black==blank
+        # semantics) without swallowing or inflating the real variance.
+        artifact = Path(self._td.name) / "shots" / "rgb_trns_partial.png"
+        write_rgb_trns_partial_transparency_png(artifact)
+        obs = derive_visual_observation(artifact)
+        self.assertEqual(obs.non_black_pixels, 2)  # the visible white + gray pixels
+        self.assertEqual(obs.pixel_min, 0)  # transparent pixel + visible black pixel
+        self.assertEqual(obs.pixel_max, 255)  # visible white pixel
+        self.assertTrue(obs.is_valid())
 
     def test_opaque_varied_image_still_valid_after_alpha_fix(self):
         pytest.importorskip("PIL")

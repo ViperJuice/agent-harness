@@ -1289,9 +1289,25 @@ def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
             # SEES: fully-transparent pixels become black (matching the
             # existing "black == blank" rejection), partially-transparent
             # pixels blend toward black, and fully-opaque pixels are
-            # unaffected. Modes with no alpha channel (RGB/L/...) are
-            # unaffected -- convert("RGBA") on those is already fully opaque.
-            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            # unaffected.
+            #
+            # Fix (agent-harness#91 round-5 CR / codex): the round-4 check only
+            # covered modes that carry an explicit alpha CHANNEL (RGBA/LA) or
+            # palette transparency on mode P. Pillow also decodes a grayscale
+            # or RGB PNG that carries a ``tRNS`` chunk as plain mode L/RGB,
+            # surfacing the transparency purely via ``img.info["transparency"]``
+            # -- no alpha channel at all. That bypassed compositing entirely: a
+            # 1x1-visible / 1x1-"transparent-but-decoded-white" L/RGB tRNS image
+            # read non_black_pixels>0 and passed is_valid() even though a viewer
+            # sees only the opaque (black) pixels. Treat ANY mode carrying
+            # ``img.info["transparency"]`` (L, RGB, or P) the SAME as an
+            # explicit alpha channel: ``img.convert("RGBA")`` applies
+            # palette/tRNS transparency into a real alpha channel for every one
+            # of these modes, so routing them through the same composite path
+            # is correct and uniform. Modes with neither an alpha channel NOR
+            # transparency info (opaque RGB/L/...) are unaffected --
+            # convert("RGBA") on those is already fully opaque.
+            if img.mode in ("RGBA", "LA", "PA") or img.info.get("transparency") is not None:
                 rgba = img.convert("RGBA")
                 black_background = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
                 composited = Image.alpha_composite(black_background, rgba)
@@ -1494,7 +1510,7 @@ _NONGOAL_SECTION_RE = re.compile(
 _CLAIM_NEGATION_RE = re.compile(
     r"\b(?:must\s+not|must\s+never|shall\s+not|should\s+not|shouldn'?t|"
     r"does\s+not|doesn'?t|do\s+not|don'?t|cannot|can'?t|won'?t|will\s+not|"
-    r"never|no\s+longer|without|non[-\s]?goal|not\s+render|no\s+visible)\b",
+    r"never|no\s+longer|non[-\s]?goal|not\s+render|no\s+visible)\b",
     re.IGNORECASE,
 )
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
@@ -1519,7 +1535,32 @@ def avatar_visible_render_claimed(text: str) -> bool:
     and a line carrying a negation cue ("must not", "does not", "non-goal",
     "no visible", ...) never counts -- so "must not render a visible avatar"
     yields NO claim. A plan with no markdown headings at all is scanned whole
-    (back-compat), still with the per-line negation filter."""
+    (back-compat), still with the per-line negation filter.
+
+    Fix (agent-harness#91 round-5 CR / codex): round-5 closes two
+    false-NEGATIVE gaps in the fix-5 scoping and one over-negation bug:
+
+    1. The phase TITLE (the ``# `` heading) and IF-gate / exit-gate headings
+       (e.g. ``## IF-AV-1-1``, ``## Exit gate``) were never evaluated for a
+       claim -- a title like ``# AV-1 -- Visible Avatar`` was invisible to
+       the scan entirely. A heading's own title text is now scanned for a
+       claim the same way a body line is (subject to the same claim-local
+       negation check), so the claim can live IN the heading itself.
+    2. An unrecognized heading previously turned scanning OFF (``in_scope =
+       False`` in the ``else`` branch), silently swallowing body content
+       under any heading that isn't a known affirmative keyword -- exactly
+       what hides an IF-gate/exit-gate heading's body ("## IF-AV-1-1" /
+       "## Exit gate" don't match the affirmative-keyword regex). Unknown
+       headings are now NEUTRAL/affirmative-eligible (``in_scope = True``):
+       only an explicit Non-goals/out-of-scope heading disables scanning.
+    3. Negation is CLAIM-LOCAL, not qualifier-blind: ``without`` was removed
+       from ``_CLAIM_NEGATION_RE`` because a "without <X>" qualifier on an
+       otherwise-affirmative claim ("renders a visible avatar without
+       operator intervention") is NOT a negation of the claim -- only an
+       actual negation cue on the claim itself (Non-goals bullet, "must
+       not render", "does not render", "no visible avatar", ...) suppresses
+       it.
+    """
     body = text or ""
     in_scope = True  # preamble before the first heading is in scope
     for raw in body.splitlines():
@@ -1531,12 +1572,20 @@ def avatar_visible_render_claimed(text: str) -> bool:
             title = heading.group("title")
             if _NONGOAL_SECTION_RE.search(title):
                 in_scope = False
-            elif _AFFIRMATIVE_SECTION_RE.search(title):
+                continue
+            if _AFFIRMATIVE_SECTION_RE.search(title):
                 in_scope = True
             else:
-                # An unrelated/unknown top-level section is out of scope: the
-                # contract wants the claim in a named deliverable section.
-                in_scope = False
+                # An unrecognized heading (phase title, IF-gate, exit-gate,
+                # or any other unnamed section) is NEUTRAL/affirmative-
+                # eligible -- only a Non-goals/out-of-scope heading (handled
+                # above) disables scanning.
+                in_scope = True
+            # The heading's own title text can itself carry the claim (e.g.
+            # the phase TITLE "# AV-1 -- Visible Avatar", or a claim written
+            # directly into a gate heading) -- scan it like a body line.
+            if _AVATAR_VISIBLE_CLAIM_RE.search(title) and not _CLAIM_NEGATION_RE.search(title):
+                return True
             continue
         if not in_scope:
             continue

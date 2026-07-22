@@ -371,6 +371,73 @@ def write_transparent_varied_png(path: Path, size: tuple[int, int] = (2, 2)) -> 
     return path
 
 
+def write_rgb_trns_transparent_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+    """FAV (agent-harness#91 round-5 CR / codex): write a REAL, DECODABLE
+    mode-RGB PNG carrying a ``tRNS`` chunk (single-color-keyed transparency,
+    NOT an alpha channel) where the transparent-marked pixel decodes to a
+    bright, visually-loud color and every other pixel is genuinely visible
+    black. Pillow decodes this as plain mode ``RGB`` -- no alpha channel at
+    all -- with the transparency carried purely in ``img.info["transparency"]``.
+    Reproduces the tRNS fail-open: a raw grayscale conversion (no alpha
+    handling) reads the bright transparent-marked pixel as non-black even
+    though a viewer never sees it (mode-RGB tRNS bypassed the RGBA/LA/P
+    alpha-composite check entirely). After the fix, this composites to a
+    uniformly black frame and fails `is_valid()`."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
+    transparent_color = (255, 255, 255)
+    img = Image.new("RGB", (width, height), (0, 0, 0))
+    img.putpixel((0, 0), transparent_color)
+    img.save(path, format="PNG", transparency=transparent_color)
+    return path
+
+
+def write_l_trns_transparent_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+    """FAV (agent-harness#91 round-5 CR / codex): write a REAL, DECODABLE
+    mode-L (grayscale) PNG carrying a ``tRNS`` chunk where the transparent-
+    marked pixel decodes to bright white and every other pixel is genuinely
+    visible black. Pillow decodes this as plain mode ``L`` -- no alpha
+    channel -- with the transparency carried purely in
+    ``img.info["transparency"]``. Same fail-open shape as the RGB-tRNS case,
+    for the grayscale decode path. After the fix, this composites to a
+    uniformly black frame and fails `is_valid()`."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
+    transparent_value = 255
+    img = Image.new("L", (width, height), 0)
+    img.putpixel((0, 0), transparent_value)
+    img.save(path, format="PNG", transparency=transparent_value)
+    return path
+
+
+def write_rgb_trns_partial_transparency_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+    """FAV (agent-harness#91 round-5 CR / codex): write a REAL, DECODABLE
+    mode-RGB PNG carrying a ``tRNS`` chunk where ONE pixel is the
+    transparent-marked magic color and the remaining pixels are genuinely
+    VISIBLE and VARIED (white/black/gray). Proves the round-5 fix reflects
+    only the OPAQUE visible pixels: the transparent-marked pixel composites
+    to black (like the existing "black == blank" rejection) while the real
+    opaque variance (the visible white/gray pixels) still drives
+    non_black_pixels/pixel_min/pixel_max -- neither swallowed nor inflated by
+    the transparent pixel."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    transparent_color = (123, 45, 67)
+    img = Image.new("RGB", size, (0, 0, 0))
+    img.putpixel((0, 0), transparent_color)  # marked transparent -> composites to black
+    img.putpixel((0, 1), (255, 255, 255))  # visible white
+    img.putpixel((1, 0), (0, 0, 0))  # visible black
+    if size[0] > 1 and size[1] > 1:
+        img.putpixel((1, 1), (128, 128, 128))  # visible gray
+    img.save(path, format="PNG", transparency=transparent_color)
+    return path
+
+
 def write_blank_png(path: Path, size: tuple[int, int] = (2, 2), color: tuple[int, int, int] = (0, 0, 0)) -> Path:
     """FAV (agent-harness#91 round-3 CR): write a REAL, DECODABLE, but
     genuinely UNIFORM image (every pixel the same color) at `path`. Used to
