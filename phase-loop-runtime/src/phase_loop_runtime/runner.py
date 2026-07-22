@@ -193,6 +193,7 @@ from .governed_premerge import (
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
+from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
 from .route_log import build_route_log, with_route_log
 from .release_guard import (
@@ -6348,6 +6349,36 @@ def _run_execute_verification(
     artifacts: dict[str, Path],
     phase_alias: str | None = None,
 ) -> dict[str, object]:
+    """Thin redaction-guaranteeing wrapper around :func:`_run_execute_verification_impl`.
+
+    agent-harness#243 CR recheck (codex, verified by grok): the prior source-redaction round
+    (agent-harness#266 / #243) applied ``apply_diagnostics_redaction`` only on the impl's MAIN
+    return path, right before the final ``return summary``. That left every EARLY return --
+    e.g. the malformed-``suite_command`` branch, which still carries the full, unparsed
+    ``operational_exemptions[].command`` string discovery.py stores verbatim -- exiting the
+    function unredacted. Branch-by-branch redaction is exactly the failure mode that keeps
+    recurring here (a future early return would trivially reintroduce the same gap), so this
+    wrapper makes it structurally impossible: EVERY return value of the impl, regardless of
+    which internal branch produced it, is routed through ``apply_diagnostics_redaction`` here,
+    at the single point callers actually observe. ``apply_diagnostics_redaction`` mutates and
+    returns its argument in place and is idempotent, so redacting an already-redacted summary
+    (the impl's main-path branch, which still redacts internally for clarity/tests) is a no-op.
+    """
+    return apply_diagnostics_redaction(
+        _run_execute_verification_impl(
+            repo=repo, roadmap=roadmap, plan=plan, artifacts=artifacts, phase_alias=phase_alias,
+        )
+    )
+
+
+def _run_execute_verification_impl(
+    *,
+    repo: Path,
+    roadmap: Path,
+    plan: Path,
+    artifacts: dict[str, Path],
+    phase_alias: str | None = None,
+) -> dict[str, object]:
     run_dir = artifacts.get("root")
     if run_dir is None:
         return {
@@ -6398,6 +6429,21 @@ def _run_execute_verification(
         "validation": validation_json,
         "run_id": result.run_id,
     }
+    # agent-harness#266 (source redaction) / agent-harness#243 CR recheck (whole-summary
+    # redaction): this ``summary`` becomes ``runner_verification`` below, which is then merged
+    # verbatim into ``launch.json`` (``merge_launch_metadata`` at the launch-action call site)
+    # and copied into ``child_automation`` -- both of which are read back RAW by
+    # ``inspect_state()`` / ``phase-loop state --json`` and by the run ledger event a repair
+    # prompt directs an agent to inspect. Redact any secret/PII-shaped value to metadata-only
+    # (or a ``<redacted:field>`` placeholder) HERE, at the single point this whole persisted
+    # summary is first assembled, so every derived copy (launch.json, child_automation, the
+    # ledger event) inherits the redacted form instead of each downstream call site needing its
+    # own redaction pass (or forgetting one). This covers BOTH the nested
+    # ``validation["diagnostics"]`` list AND sibling command/argv-shaped fields -- most notably
+    # ``suite_command``, which a prior round left unredacted right beside the redacted
+    # diagnostic even though, for a failing suite, it carries the IDENTICAL secret argv. The
+    # on-disk ``verification.log`` is untouched -- only this egress copy is narrowed.
+    summary = apply_diagnostics_redaction(summary)
     if not validation.ok:
         summary["blocker_summary"] = f"Runner-owned verification failed: {validation.code}"
     return summary

@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
+
+Follow-up to #242 (#209), which preserved per-failing-stage raw diagnostics via a
+per-stage byte-offset scheme but explicitly scoped out two hardenings. Both now land:
+
+- **Whole-artifact integrity.** `log_sha256` sealed `verification.log` but not
+  `verification.json`, so a multi-field / structural edit — e.g. deleting a failed
+  `commands[]` entry to forge a pass — was undetected. `run_verification` now embeds a
+  canonical digest of the artifact (all fields except the derived `log_sha256`) as a
+  `verification-artifact-sha256:<hex>` trailer line in `verification.log` before computing
+  `log_sha256`, so the log's SHA also seals the artifact digest. On the would-be-PASS path
+  `validate_verification_artifact` recomputes and compares the digest, returning
+  `artifact_seal_mismatch` (fail closed) on any mismatch. An oversized artifact is rejected
+  `oversized_artifact` before parsing. Additive + backward-compatible: an artifact whose log
+  carries no seal trailer (v1/older, or an externally-built log) still validates.
+- **Closeout-diagnostic redaction.** A failure diagnostic's bounded `raw_tail` excerpt of
+  `verification.log` bytes is redacted to metadata-only before it enters the persisted
+  closeout record when it (or an `argv` token) carries a secret/PII-shaped value — detected
+  with the same `_FORBIDDEN_METADATA_PATTERNS` the closeout malformed-metadata gate enforces
+  (this also removes a latent false `malformed_closeout` block). The on-disk
+  `verification.log` is left full; `PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all` forces full
+  `raw_tail` suppression. (Consiliency/agent-harness#243)
+
 ## [0.7.10] - 2026-07-21
 
 ### `verification.json` records the phase alias on the train re-verify path (#236)

@@ -31,6 +31,7 @@ from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock
 from .profiles import DEFAULT_PROFILES
 from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
+from .redaction import apply_diagnostics_redaction
 from . import repo_validation
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
@@ -2084,6 +2085,14 @@ def _hotfix_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> i
     )
     validation = validate_verification_artifact(artifacts["verification_artifact"])
     validation_json = validation.to_json()
+    # agent-harness#266 (source redaction): this ``validation_json`` is persisted verbatim into
+    # both the hotfix ledger event (``hotfix_closeout.artifact_validation``) and the printed CLI
+    # payload (``artifact_validation``) below -- the same egress class as ``runner_verification``
+    # (a repair prompt directs an agent to inspect the ledger; ``state --json`` surfaces launch
+    # metadata). Redact any secret/PII-shaped diagnostic to metadata-only at this single source
+    # point using the shared SSOT helper, mirroring the ``_run_execute_verification`` source
+    # point in runner.py. ``verification.log`` on disk stays FULL.
+    validation_json = apply_diagnostics_redaction(validation_json)
     status = "complete" if validation.ok else "blocked"
     verification_status = "passed" if validation.ok else "blocked"
     blocker = None if validation.ok else {"blocker_class": "verification_evidence_missing", "blocker_summary": f"Hotfix verification failed: {validation.code}"}
@@ -2611,7 +2620,11 @@ def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[
     if not (inside_repo or inside_runs):
         return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
     validation = validate_verification_artifact(artifact_path).to_json()
-    return validation
+    # agent-harness#266 (source redaction): this payload is persisted verbatim into the
+    # ``manual_repair.verification_evidence`` field of the reconcile ledger event (see the
+    # ``manual_repair`` call site below) -- the same class of egress as ``runner_verification``.
+    # Redact at this source point using the shared SSOT helper.
+    return apply_diagnostics_redaction(validation)
 
 
 _GIT_LOCATION_ENV = (

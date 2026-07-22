@@ -454,29 +454,43 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             return validate_verification_artifact(artifact)
 
     def test_tampered_end_offset_fails_closed_no_leak(self):
-        # CR codex#1: a lying log_end_offset (> the next stage's start) is an invalid
-        # recorded range -> fail closed to an empty tail, never the following stage's bytes.
+        # CR codex#1 (round 1-3): a lying log_end_offset (> the next stage's start) was an
+        # invalid recorded range that the #209 neighbour-bounds check failed closed to an
+        # empty tail. agent-harness#243 CR round 4: the artifacts these tests build via
+        # ``run_verification`` are SEALED, and the seal digest now covers the per-stage
+        # offset fields too (a prior round's exclusion was itself the #243 CR round-4
+        # defect being fixed). A sealed artifact's offset tamper now trips the STRONGER
+        # ``artifact_seal_mismatch`` verdict before ever reaching the nonzero_exit /
+        # neighbour-bounds branch -- still zero leak, just a different (and more
+        # correct) verdict code. See ``test_unsealed_legacy_offset_tamper_still_bounded_by_neighbor_checks``
+        # below for the neighbour-bounds check's continuing role on an UNSEALED artifact.
         v = self._tamper_end_and_validate(
             [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_MARK\\n'); sys.exit(1)"]
         )
-        d0 = v.diagnostics[0]
-        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
-        self.assertEqual(d0["raw_tail"], "")
-        self.assertEqual(d0["diagnostic_status"], "missing_output")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.code, "artifact_seal_mismatch")
+        self.assertEqual(v.diagnostics, ())
+        self.assertNotIn("CMD1_SECRET", " ".join(v.findings))
 
     def test_tampered_end_on_zero_output_stage_cannot_leak_shared_start(self):
-        # CR codex#1 + gemini round 2: a zero-output failing stage shares its start offset
-        # with the next stage; the execution-order upper bound must still confine it so a
-        # tampered end cannot steal the next stage's bytes.
+        # CR codex#1 + gemini round 2 (updated agent-harness#243 CR round 4): a zero-output
+        # failing stage shares its start offset with the next stage. On the SEALED artifacts
+        # these tests build, the seal now covers offsets, so this tamper trips
+        # artifact_seal_mismatch before the neighbour-bounds check is even reached -- no
+        # leak either way.
         v = self._tamper_end_and_validate([sys.executable, "-c", "import sys; sys.exit(1)"])
-        d0 = v.diagnostics[0]
-        self.assertNotIn("CMD1_SECRET", d0["raw_tail"])
-        self.assertEqual(d0["raw_tail"], "")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.code, "artifact_seal_mismatch")
+        self.assertEqual(v.diagnostics, ())
+        self.assertNotIn("CMD1_SECRET", " ".join(v.findings))
 
     def test_tampered_backward_start_cannot_leak_preceding_stage_bytes(self):
-        # CR Fable round 3 (dual of the round-2 END leak): cmd0 PASSES printing a secret,
-        # cmd1 fails zero-output; tampering cmd1's log_offset BACKWARD must not surface
-        # cmd0's bytes as cmd1's diagnostic (lower-bound validation).
+        # CR Fable round 3 (dual of the round-2 END leak, updated agent-harness#243 CR
+        # round 4): cmd0 PASSES printing a secret, cmd1 fails zero-output; tampering cmd1's
+        # log_offset BACKWARD used to be caught by the neighbour-bounds lower-bound check on
+        # the nonzero_exit branch. The SEALED artifact this test builds now has offsets
+        # covered by the seal, so the tamper trips artifact_seal_mismatch first -- still no
+        # leak, just caught one layer earlier.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             run_dir = repo / ".phase-loop/runs/test-run"
@@ -496,9 +510,104 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             payload["commands"][1]["log_offset"] = 0  # lie: reach back into cmd0
             artifact.write_text(json.dumps(payload), encoding="utf-8")
             v = validate_verification_artifact(artifact)
-            d = v.diagnostics[0]
-            self.assertNotIn("EARLIER_STAGE_SECRET", d["raw_tail"])
-            self.assertEqual(d["raw_tail"], "")
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+            self.assertEqual(v.diagnostics, ())
+            self.assertNotIn("EARLIER_STAGE_SECRET", " ".join(v.findings))
+
+    def test_unsealed_legacy_offset_tamper_still_bounded_by_neighbor_checks(self):
+        # agent-harness#243 CR round 4: on an UNSEALED legacy artifact (no valid seal
+        # trailer in the log), the whole-artifact seal check is skipped entirely (back-compat)
+        # -- so the #209 neighbour-bounds check (``_stage_bounds`` / ``_stage_raw_tail``)
+        # remains the sole offset-integrity guard, exactly as it did before #243 existed.
+        # This is the dual of the sealed-artifact tests above: same tamper shape, but on a
+        # hand-built log with NO seal trailer, and the assertion is that it still fails
+        # closed via nonzero_exit / bounded-empty-tail, not via a seal mismatch it can no
+        # longer detect (there is nothing to seal-check).
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = b"CMD0_MARK\nCMD1_SECRET_OUTPUT " * 5 + b"\n"
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 2,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [
+                    {
+                        "argv": ["x"], "cwd": ".", "exit_code": 1, "duration_s": 0.1,
+                        "log_offset": 0, "log_end_offset": 10, "failure_kind": "nonzero_exit",
+                    },
+                    {
+                        "argv": ["y"], "cwd": ".", "exit_code": 0, "duration_s": 0.1,
+                        "log_offset": 10, "log_end_offset": len(log_bytes),
+                    },
+                ],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            # tamper: extend cmd0's end offset to reach into cmd1's (secret-bearing) region.
+            payload["commands"][0]["log_end_offset"] = len(log_bytes)
+            artifact = run_dir / "verification.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # no seal trailer -> neighbour-bounds guards
+            self.assertEqual(v.diagnostics[0]["raw_tail"], "")
+            self.assertNotIn("CMD1_SECRET", v.diagnostics[0]["raw_tail"])
+
+    def test_unsealed_legacy_backward_start_tamper_still_bounded_by_neighbor_checks(self):
+        # agent-harness#243 CR round 4: dual of the test above, exercising the LOWER edge of
+        # the #209 neighbour-bounds check (Fable round 3's contribution -- a tampered backward
+        # ``log_offset`` must not leak a PRECEDING stage's bytes) on an UNSEALED artifact. All
+        # three sealed tests that used to cover this edge (in ``VerificationFailureDiagnosticsTest``
+        # above) now short-circuit at the whole-artifact seal check before ever reaching
+        # ``_stage_raw_tail`` -- so this unsealed variant is what keeps the lower-edge fail-closed
+        # path itself under live test coverage.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            secret = b"EARLIER_STAGE_SECRET" * 5
+            log_bytes = secret + b"\n"  # cmd0 (passing) prints the secret; cmd1 fails zero-output
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            cmd0_end = len(secret)
+            payload = {
+                "schema_version": 2,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [
+                    {
+                        "argv": ["x"], "cwd": ".", "exit_code": 0, "duration_s": 0.1,
+                        "log_offset": 0, "log_end_offset": cmd0_end,
+                    },
+                    {
+                        "argv": ["y"], "cwd": ".", "exit_code": 1, "duration_s": 0.1,
+                        "log_offset": len(log_bytes), "log_end_offset": len(log_bytes),
+                        "failure_kind": "nonzero_exit",
+                    },
+                ],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            # tamper: pull cmd1's start BACKWARD into cmd0's (secret-bearing) region.
+            payload["commands"][1]["log_offset"] = 0
+            artifact = run_dir / "verification.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # no seal trailer -> neighbour-bounds guards
+            self.assertEqual(v.diagnostics[0]["raw_tail"], "")
+            self.assertNotIn("EARLIER_STAGE_SECRET", v.diagnostics[0]["raw_tail"])
 
     def test_v2_subprocess_env_refresh_missing_failure_kind_is_rejected(self):
         # CR Fable round 3 nit (a): a subprocess-backed v2 env_refresh (int log_offset)
@@ -612,6 +721,1803 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             self.assertEqual(blocker_diag["failure_kind"], "error")
             self.assertIn("interpreter", blocker_diag["raw_tail"].lower())
             self.assertEqual(blocker_diag["diagnostic_status"], "present")
+
+
+class VerificationEvidenceHardening243Test(unittest.TestCase):
+    # agent-harness#243: whole-artifact integrity (seal + size bound) and closeout-diagnostic
+    # redaction. Mirrors the #209 tamper tests in VerificationEvidenceTest above.
+
+    def _run(self, repo, commands, env_refresh=None, suite=None, timeout=30):
+        run_dir = repo / ".phase-loop/runs/test-run"
+        run_verification(repo, run_dir, commands, suite, env_refresh, timeout)
+        return run_dir / "verification.json"
+
+    def test_normal_sealed_artifact_still_passes(self):
+        # Round-trip: a freshly-sealed GREEN artifact validates ok=True (proves the writer
+        # digest and the validator's recomputed digest agree byte-for-byte after JSON).
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            v = validate_verification_artifact(artifact)
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_seal_line_present_in_log_and_after_stage_regions(self):
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            log = (artifact.parent / "verification.log").read_bytes()
+            self.assertIn(b"verification-artifact-sha256:", log)
+            # The seal is the LAST line.
+            self.assertTrue(log.rstrip(b"\n").split(b"\n")[-1].startswith(b"verification-artifact-sha256:"))
+
+    def test_structural_edit_deleting_failed_command_is_caught_fail_closed(self):
+        # THE headline #243 case: a run with a failing cmd0 + passing cmd1; deleting the
+        # failed commands[] entry would forge a PASS under #209 (log_sha256 still matches, no
+        # nonzero remains). The whole-artifact seal detects the mutated payload.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(
+                repo,
+                [
+                    [sys.executable, "-c", "import sys; sys.exit(1)"],
+                    [sys.executable, "-c", "print('cmd1 ok')"],
+                ],
+            )
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            del payload["commands"][0]  # forge: drop the only failing stage
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)  # NOT a forged green pass
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+
+    def test_consistent_field_edit_on_pass_path_is_caught(self):
+        # A single/multi-field internally-consistent edit that does not touch pass/fail (e.g.
+        # rewriting phase_alias) still changes the sealed payload digest -> fail closed.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["phase_alias"] = "FORGED-PHASE"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+
+    def test_unsealed_legacy_artifact_still_validates(self):
+        # Back-compat: an artifact whose log carries NO seal trailer (v1/older, or an
+        # externally-built log) skips the seal check and still passes.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = b"legacy stage output\n"
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_oversized_artifact_rejected_before_parse(self):
+        from unittest.mock import patch
+
+        from phase_loop_runtime import verification_evidence as ve
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            # Patch the bound below the (normal, valid) artifact's size so the size gate fires.
+            with patch.object(ve, "MAX_ARTIFACT_BYTES", 10):
+                v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "oversized_artifact")
+
+    def test_failing_artifact_field_tamper_is_caught_as_seal_mismatch(self):
+        # agent-harness#243 CR round 3 (defect 1): a FAILING artifact whose non-offset field is
+        # tampered (seal stale) was previously UNCAUGHT on the failing path -- the seal was only
+        # checked on the would-be-PASS branch, so the nonzero_exit verdict masked the tamper.
+        # The seal check now runs BEFORE the pass/fail branch, so a failing artifact is
+        # seal-protected too: this is caught as its own integrity verdict.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "import sys; sys.exit(1)"]])
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["phase_alias"] = "FORGED-WHILE-FAILING"  # tamper a sealed field; log untouched
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")  # not masked by nonzero_exit
+
+    def test_last_stage_tail_cannot_swallow_seal_trailer(self):
+        # agent-harness#243 CR round 3 (defect 2), updated CR round 4: extending the LAST
+        # (failing) stage's log_end_offset to len(log) used to make its tail swallow the
+        # appended ``verification-artifact-sha256:`` trailer (persisting the seal bytes as
+        # unredacted stage output). Round 3 fixed the bounding (``_artifact_seal_region_start``
+        # keeps stage regions OUTSIDE the trailer, kept unchanged here) but excluded offsets
+        # from the seal digest, so the tamper flowed to the nonzero_exit branch where bounding
+        # caught it. Round 4 folds offsets INTO the seal digest (this file's actual fix), so
+        # this exact tamper is now caught EARLIER, as its own seal-integrity verdict -- still
+        # zero leak (the trailer never appears anywhere, since diagnostics are never built),
+        # just a stronger, earlier-firing check.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(repo, [[sys.executable, "-c", "import sys; sys.stderr.write('CMD_MARK\\n'); sys.exit(1)"]])
+            log_bytes = (artifact.parent / "verification.log").read_bytes()
+            self.assertIn(b"verification-artifact-sha256:", log_bytes)
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["log_end_offset"] = len(log_bytes)  # lie: reach into the trailer
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")  # offset tamper IS a seal break now
+            self.assertEqual(v.diagnostics, ())
+            self.assertNotIn("verification-artifact-sha256:", " ".join(v.findings))
+
+    def test_correctly_sealed_failing_artifact_reports_failure_normally(self):
+        # agent-harness#243 CR round 3: moving the seal check earlier must NOT reclassify a
+        # LEGITIMATE (correctly-sealed) failing artifact -- it still reports its stage failure via
+        # the normal nonzero_exit path with a preserved diagnostic tail, exactly as before. Only an
+        # actual seal MISMATCH changes the outcome.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(
+                Path(td),
+                [[sys.executable, "-c", "import sys; sys.stderr.write('LEGIT_FAILURE_MARK\\n'); sys.exit(1)"]],
+            )
+            v = validate_verification_artifact(artifact)  # no tampering
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "nonzero_exit")  # NOT artifact_seal_mismatch
+            self.assertEqual(len(v.diagnostics), 1)
+            self.assertIn("LEGIT_FAILURE_MARK", v.diagnostics[0]["raw_tail"])
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "nonzero_exit")
+
+    def test_coordinated_offset_tamper_across_sealed_stages_is_seal_mismatch(self):
+        # agent-harness#243 CR round 4 (codex + Fable, the headline defect this round fixes):
+        # a prior round excluded per-stage offsets from the seal digest so a #209 offset tamper
+        # would still be caught by the neighbour-bounds check on the nonzero_exit branch. But a
+        # COORDINATED two-stage tamper -- extend the failing stage's log_end_offset to N AND
+        # move its passing sibling's log_offset to the SAME N -- is internally CONSISTENT with
+        # the neighbour-bounds check (both edges agree with each other), so it passed that
+        # check while the seal digest stayed unchanged (offsets excluded) -- forging ownership
+        # of the widened range and surfacing both stages' output in the failing diagnostic's
+        # tail. With offsets now covered by the seal, this coordinated tamper changes the
+        # digest and is caught as artifact_seal_mismatch before any diagnostic is built.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(
+                repo,
+                [
+                    [sys.executable, "-c", "import sys; sys.stderr.write('CMD0_FAIL_MARK\\n'); sys.exit(1)"],
+                    [sys.executable, "-c", "print('CMD1_SIBLING_SECRET ' * 20)"],
+                ],
+            )
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            # N must land STRICTLY INSIDE the sibling's own original [log_offset, log_end_offset)
+            # region -- an N beyond the log's total length fails closed for an unrelated reason
+            # (the overall len(log) bound), not because of the coordinated-tamper bypass this
+            # test targets. +100 is comfortably inside the ~400-byte secret-bearing region below.
+            cmd1_start = payload["commands"][1]["log_offset"]
+            self.assertLess(cmd1_start + 100, payload["commands"][1]["log_end_offset"])
+            coordinated_n = cmd1_start + 100
+            payload["commands"][0]["log_end_offset"] = coordinated_n  # extend failing stage's end
+            payload["commands"][1]["log_offset"] = coordinated_n  # move sibling's start to match
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+            self.assertEqual(v.diagnostics, ())  # no diagnostic built at all -- zero leak
+            self.assertNotIn("CMD1_SIBLING_SECRET", " ".join(v.findings))
+            self.assertNotIn("CMD0_FAIL_MARK", " ".join(v.findings))
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_shaped_tail(self):
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "api_key='AKIAIOSFODNN7EXAMPLEKEY'\ntest failed\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+            {
+                "role": "suite", "index": None, "argv": ["pytest"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "3 failed, 1 passed\n",  # no secret
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        # Secret-bearing diagnostic -> metadata-only (no raw_tail / argv).
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("argv", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertGreater(out[0]["raw_tail_bytes"], 0)
+        # Clean diagnostic passes through untouched.
+        self.assertNotIn("redacted", out[1])
+        self.assertEqual(out[1]["raw_tail"], "3 failed, 1 passed\n")
+        # No forbidden token survives in the serialized output.
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+
+    def test_redact_diagnostics_force_all_suppresses_every_tail(self):
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [{
+            "role": "command", "index": 0, "argv": ["x"], "exit_code": 1,
+            "failure_kind": "nonzero_exit", "raw_tail": "totally benign output\n",
+            "truncated": False, "diagnostic_status": "present",
+        }]
+        out = redact_diagnostics_metadata_only(diagnostics, force_all=True)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "operator_forced")
+        self.assertNotIn("raw_tail", out[0])
+
+    def test_apply_diagnostics_redaction_is_idempotent_on_an_already_redacted_payload(self):
+        # agent-harness#266: source redaction now runs at MULTIPLE points that can, in
+        # principle, see the same payload more than once (e.g. an already-redacted
+        # ``runner_verification["validation"]`` copy passed back through the shared helper).
+        # Re-applying it must not corrupt an already-redacted diagnostic: no forbidden pattern
+        # should re-match the safe structural fields + short redaction-reason label, so the
+        # diagnostic passes through unchanged and stays free of the original secret.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "ok": False,
+            "code": "nonzero_exit",
+            "diagnostics": [
+                {
+                    "role": "command", "index": 0,
+                    "argv": [sys.executable, "-c", "x"],
+                    "exit_code": 1, "failure_kind": "nonzero_exit",
+                    "raw_tail": "api_key=AKIAIOSFODNN7EXAMPLEKEY\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        once = apply_diagnostics_redaction(payload)
+        diag_once = once["diagnostics"][0]
+        self.assertTrue(diag_once["redacted"])
+        self.assertEqual(diag_once["redaction_reason"], "secret_like_value")
+        self.assertNotIn("raw_tail", diag_once)
+
+        twice = apply_diagnostics_redaction(once)
+        diag_twice = twice["diagnostics"][0]
+        # A second pass over an already-redacted diagnostic is a no-op: it does not re-match a
+        # forbidden pattern, so it is copied through as-is (same shape, same fields).
+        self.assertEqual(diag_twice, diag_once)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(twice))
+
+    def test_apply_diagnostics_redaction_reads_force_all_env_var(self):
+        # agent-harness#266: the SSOT helper must honor the SAME
+        # PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all override the pre-existing closeout path did,
+        # so every source-redaction call site (runner_verification, hotfix, reconcile
+        # --verification-log, closeout) picks it up uniformly.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "diagnostics": [
+                {
+                    "role": "command", "index": 0, "argv": ["x"], "exit_code": 1,
+                    "failure_kind": "nonzero_exit", "raw_tail": "totally benign output\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        with patch.dict(os.environ, {"PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS": "all"}):
+            out = apply_diagnostics_redaction(payload)
+        self.assertTrue(out["diagnostics"][0]["redacted"])
+        self.assertEqual(out["diagnostics"][0]["redaction_reason"], "operator_forced")
+
+    def test_apply_diagnostics_redaction_passes_through_payload_with_no_diagnostics(self):
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {"ok": True, "code": "ok", "diagnostics": []}
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out, {"ok": True, "code": "ok", "diagnostics": []})
+
+    def test_apply_diagnostics_redaction_scrubs_sibling_suite_command_field(self):
+        # agent-harness#243 CR recheck (codex): a secret-bearing SIBLING command field --
+        # persisted BESIDE (not inside) the ``diagnostics`` list -- must be redacted too, at
+        # this same SSOT call. Unit-level coverage of the ``redaction`` module directly
+        # (test_run_execute_verification_redacts_suite_command_sibling_field_at_source above
+        # covers the full runner.py egress path end to end).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "ok": False,
+            "code": "nonzero_exit",
+            "suite_command": [sys.executable, "-c", "print('token=AKIAIOSFODNN7EXAMPLEKEY')"],
+            "verification_artifact_path": "/home/example/.phase-loop/runs/x/verification.json",
+            "diagnostics": [
+                {
+                    "role": "suite", "index": None,
+                    "argv": [sys.executable, "-c", "print('token=AKIAIOSFODNN7EXAMPLEKEY')"],
+                    "exit_code": 1, "failure_kind": "nonzero_exit",
+                    "raw_tail": "token=AKIAIOSFODNN7EXAMPLEKEY\n",
+                    "truncated": False, "diagnostic_status": "present",
+                },
+            ],
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], "<redacted:suite_command>")
+        self.assertTrue(out["diagnostics"][0]["redacted"])
+        self.assertNotIn("raw_tail", out["diagnostics"][0])
+        self.assertNotIn("argv", out["diagnostics"][0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        # A legitimate absolute path field is NOT touched even though it lives under
+        # ``/home/...`` -- the sibling-field scan is name-scoped to command/argv-shaped
+        # fields, not a blanket scan of every field's leaf strings.
+        self.assertEqual(out["verification_artifact_path"], "/home/example/.phase-loop/runs/x/verification.json")
+
+    def test_apply_diagnostics_redaction_leaves_non_secret_suite_command_unchanged(self):
+        # Non-secret command strings must survive redaction untouched.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {"ok": True, "code": "ok", "suite_command": [sys.executable, "-m", "pytest", "-q"]}
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-q"])
+
+    def test_apply_diagnostics_redaction_does_not_clobber_pytest_dash_k_selector(self):
+        # agent-harness#269 regression guard: the command-context flag-aware matcher's
+        # single-letter short-flag class is deliberately limited to `t` alone (NOT a wider
+        # `[tksp]`-style set) specifically because `-k` is pytest's keyword-selector flag and
+        # `suite_command` in this repo is overwhelmingly a pytest invocation --
+        # `pytest -k <12+ char expr>` is the single most common command shape here. A
+        # `-k`-matching short flag would over-redact it. Cover both the space-joined STRING
+        # form and the structured LIST form (`_iter_leaf_strings` also yields the space-joined
+        # concatenation of a list's elements, so a structured command is equally at risk).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        keyword_expr = "test_verification_evidence_long_enough"
+        string_payload = {"ok": True, "code": "ok", "suite_command": f"pytest -k {keyword_expr}"}
+        out = apply_diagnostics_redaction(dict(string_payload))
+        self.assertEqual(out["suite_command"], f"pytest -k {keyword_expr}")
+
+        list_payload = {
+            "ok": True, "code": "ok",
+            "suite_command": [sys.executable, "-m", "pytest", "-k", keyword_expr],
+        }
+        out = apply_diagnostics_redaction(dict(list_payload))
+        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-k", keyword_expr])
+
+    def test_apply_diagnostics_redaction_scrubs_nested_suite_command_at_any_depth(self):
+        # The whole-summary walk must find a command-shaped sibling field even when it is
+        # nested a level down (e.g. a ``runner_verification`` copy embedded inside a larger
+        # ``child_automation`` dict), not just at the payload's own top level.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        payload = {
+            "automation_status": "complete",
+            "runner_verification": {
+                "ok": False,
+                "suite_command": ["tool", "--password", "SUPERSECRETVALUE123"],
+            },
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["runner_verification"]["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn("SUPERSECRETVALUE123", json.dumps(out))
+
+    def test_redact_diagnostics_metadata_only_scrubs_double_quoted_secret(self):
+        # agent-harness#243 CR (defect 1): the pre-fix matcher tested a json.dumps(...)
+        # serialization of the diagnostic. json.dumps backslash-escapes an embedded double
+        # quote (api_key="X" -> api_key=\"X\" in the serialized blob), which put the escape
+        # backslash between "=" and the quote and broke secret_like_value for a DOUBLE-quoted
+        # secret (single-quoted secrets were unaffected, since JSON doesn't escape '). The fix
+        # walks raw, unescaped leaf strings instead, so a double-quoted secret must now be
+        # caught -- both by the redaction path and by the fatal closeout metadata gate, which
+        # share the corrected matcher.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": 'api_key="AKIAIOSFODNN7EXAMPLEKEY"\ntest failed\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("argv", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        # The fatal closeout metadata gate must independently catch the SAME unredacted
+        # diagnostic (agent-harness#243: both paths reuse the corrected leaf-walk matcher, not
+        # a forked/re-implemented pattern parser).
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_shell_escaped_quoted_secret(self):
+        # agent-harness#243 CR (cross-vendor, codex): a VERBATIM shell-escaped secret -- e.g.
+        # an operational command's ``curl -H "X-Api-Key: \"SECRET\""`` captured character-for-
+        # character into raw_tail/argv, where the backslash sits directly before the quote --
+        # broke the round-4 single-optional-quote fix the same way the round-4 fix broke the
+        # original: the backslash occupies the one slot the pattern expected a bare quote or
+        # nothing, so ``[A-Za-z0-9_\-]{12,}`` never finds a place to start. Must be caught by
+        # BOTH the redaction path and the fatal closeout gate, same as every prior escaping
+        # shape (double-quote, JSON, split-argv, dict-key, nested).
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "x", 'curl -H "X-Api-Key: \\"AKIAIOSFODNN7EXAMPLEKEY\\""'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": 'api_key: \\"AKIAIOSFODNN7EXAMPLEKEY\\"\ntest failed\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("argv", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        # The fatal closeout metadata gate must independently catch the SAME unredacted
+        # diagnostic (shared matcher, not a forked/re-implemented pattern parser).
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+        # Once redacted, the payload clears the gate.
+        redacted_diagnostics = redact_diagnostics_metadata_only(diagnostics)
+        self.assertIsNone(
+            metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": redacted_diagnostics}]}})
+        )
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_in_nested_argv(self):
+        # agent-harness#243 CR: a secret embedded inside a nested argv list ELEMENT (not just
+        # a top-level raw_tail string) must be caught -- the leaf-walk must recurse into lists.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "print(1)", '--token="AKIAIOSFODNN7EXAMPLEKEY"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_short_flag_argv_secret(self):
+        # agent-harness#243 CR (cross-vendor codex, short-flag argv gap, follow-up to
+        # agent-harness#269): a diagnostic's ``argv`` LIST is a STRUCTURED command-context
+        # surface -- unlike ``raw_tail`` free text, there is no prose ambiguity in
+        # ``["curl", "-t", "AKIA..."]``. #269 added a command-context flag matcher covering
+        # long/short/quoted flags, but wired it ONLY into the sibling command-field branch
+        # (``suite_command`` / ``operational_exemptions[].command``) -- the diagnostics path
+        # is explicitly skipped by that recursive routing and instead uses the OLDER, strict
+        # ``_forbidden_metadata_kind``/``_SECRET_FLAG_RE`` matcher, whose structural split-argv
+        # composite only recognizes FULLY-SPELLED flags (``--token``), never the short ``-t``
+        # form. So a diagnostic with a short-flag secret in ``argv`` and an otherwise BENIGN
+        # ``raw_tail`` slipped through unredacted. Must FAIL (secret present, diagnostic NOT
+        # redacted) at agent-harness#243/#269 HEAD (6ad2c79) and PASS once ``argv`` is routed
+        # through the command-context flag matcher too.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", "-t", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",  # benign -- no secret shape here
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_command_flag")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+
+        # Long-flag, structured form must still redact too (pre-existing coverage, not a
+        # regression from routing argv through the command-context matcher).
+        long_flag_diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", "--token", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out_long = redact_diagnostics_metadata_only(long_flag_diagnostics)
+        self.assertTrue(out_long[0]["redacted"])
+        self.assertNotIn("argv", out_long[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out_long))
+
+    def test_redact_diagnostics_metadata_only_scrubs_backslash_escaped_quoted_argv_secret(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): ``_COMMAND_CONTEXT_FLAG_RE``
+        # only allowed a SINGLE optional quote-or-backslash character at each boundary
+        # (``['\"\\]?``), so a backslash-ESCAPED quote -- two characters, ``\`` then ``"`` --
+        # exceeded that allowance and the pattern failed to match. Reproduces the gap with a
+        # diagnostic ``argv`` element that IS the whole backslash-escaped-quoted flag/value
+        # pair as one string (e.g. as produced when a command-context string is itself
+        # JSON/shell-escaped before being embedded in argv). Must FAIL (secret present,
+        # diagnostic NOT redacted) at agent-harness#243 HEAD (37992c5) and PASS once the
+        # boundary classes are widened to a run.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", f'\\"--token\\" \\"{secret}\\"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",  # benign -- no secret shape here
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_command_flag")
+        self.assertNotIn(secret, json.dumps(out))
+
+        # `=`-assignment form with backslash-escaped quotes around the value.
+        assignment_diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", f'--token=\\"{secret}\\"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out_assignment = redact_diagnostics_metadata_only(assignment_diagnostics)
+        self.assertTrue(out_assignment[0]["redacted"])
+        self.assertNotIn("argv", out_assignment[0])
+        self.assertNotIn(secret, json.dumps(out_assignment))
+
+    def test_redact_diagnostics_metadata_only_does_not_over_redact_pytest_dash_k_argv(self):
+        # agent-harness#269 regression guard, extended to the diagnostics ``argv`` LIST path:
+        # the command-context flag matcher's short-flag vocabulary is deliberately narrow
+        # (``-t`` only, never ``-k``/``-s``/``-p``) because ``-k`` is pytest's keyword-selector
+        # flag and a suite diagnostic's ``argv`` is overwhelmingly a pytest invocation in this
+        # repo. Routing ``argv`` through the command-context matcher (this CR round) must NOT
+        # start over-redacting ``pytest -k <expr>`` diagnostics.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "suite", "index": None,
+                "argv": ["pytest", "-k", "some_test_expression_long_enough"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "3 failed, 1 passed\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertNotIn("redacted", out[0])
+        self.assertEqual(out[0]["argv"], ["pytest", "-k", "some_test_expression_long_enough"])
+        self.assertEqual(out[0]["raw_tail"], "3 failed, 1 passed\n")
+
+    def test_metadata_redaction_diagnostic_catches_secret_json_embedded_in_closeout_payload(self):
+        # agent-harness#243 CR: a double-quoted secret buried deep inside the JSON-shaped
+        # closeout payload (as `metadata_redaction_diagnostic` is actually invoked in
+        # closeout.py, over the FULL closeout record, not just one diagnostic) must be caught.
+        # This mirrors how a redacted diagnostic would reach closeout.py's fatal metadata gate
+        # if redaction were ever bypassed.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        closeout_shaped_payload = {
+            "schema": "phase_loop_closeout.v1",
+            "verification": {
+                "status": "blocked",
+                "results": [
+                    {
+                        "code": "nonzero_exit",
+                        "diagnostics": [
+                            {
+                                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                                "exit_code": 1, "failure_kind": "nonzero_exit",
+                                "raw_tail": 'api_key="AKIAIOSFODNN7EXAMPLEKEY"\ntest failed\n',
+                                "truncated": False, "diagnostic_status": "present",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        gate = metadata_redaction_diagnostic(closeout_shaped_payload)
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+        # Once redacted, the same payload must clear the gate.
+        diagnostics = closeout_shaped_payload["verification"]["results"][0]["diagnostics"]
+        closeout_shaped_payload["verification"]["results"][0]["diagnostics"] = redact_diagnostics_metadata_only(diagnostics)
+        self.assertIsNone(metadata_redaction_diagnostic(closeout_shaped_payload))
+
+    def test_redact_diagnostics_metadata_only_scrubs_json_struct_secret_in_raw_tail(self):
+        # agent-harness#243 CR round 4 (codex + Fable): a failing command that PRINTS ordinary
+        # JSON credentials, e.g. ``print(json.dumps({"api_key": "SECRET"}))``, is captured
+        # verbatim into ``raw_tail`` as the literal text ``{"api_key":"SECRET"}``. The
+        # closing quote on the JSON KEY sits directly between the keyword and the ``:``
+        # separator, breaking the (then-)required keyword->separator->value adjacency, so
+        # neither redaction nor the fatal gate caught it. Must be redacted-to-metadata-only
+        # and independently caught by the fatal closeout gate.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"api_key":"AKIAIOSFODNN7EXAMPLEKEY"}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_nested_json_struct_secret(self):
+        # agent-harness#243 CR round 4: the same JSON-struct blind spot, one level deeper --
+        # the secret key/value pair is nested inside another object
+        # (``{"outer": {"token": "SECRET"}}``), as printed verbatim by a failing command.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"outer":{"token":"AKIAIOSFODNN7EXAMPLEKEY"}}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_json_struct_password(self):
+        # agent-harness#243 CR round 4: same JSON-struct blind spot with the "password" keyword.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": '{"password": "AKIAIOSFODNN7EXAMPLEKEY"}\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_metadata_redaction_diagnostic_catches_json_struct_secret_as_nested_mapping(self):
+        # agent-harness#243 CR round 4: the JSON-struct blind spot also applies when the
+        # secret is a genuine NESTED PYTHON MAPPING inside the closeout payload (not merely
+        # literal JSON text inside a raw_tail string) -- e.g. some other closeout field that
+        # is itself a dict rather than a pre-serialized string. `_iter_leaf_strings` used to
+        # yield a Mapping's key and its scalar value as two SEPARATE leaves, so neither carried
+        # the other's keyword context.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic
+
+        self.assertIsNotNone(metadata_redaction_diagnostic({"api_key": "AKIAIOSFODNN7EXAMPLEKEY"}))
+        self.assertIsNotNone(metadata_redaction_diagnostic({"outer": {"token": "AKIAIOSFODNN7EXAMPLEKEY"}}))
+        self.assertIsNotNone(metadata_redaction_diagnostic({"password": "AKIAIOSFODNN7EXAMPLEKEY"}))
+        # No false positive on an ordinary benign nested mapping.
+        self.assertIsNone(metadata_redaction_diagnostic({"outer": {"status": "ok"}}))
+
+    def test_legacy_lookalike_seal_marker_not_final_line_still_validates(self):
+        # agent-harness#243 CR (defect 2): the seal is written as the FINAL trailer line of
+        # verification.log. An UNSEALED legacy log whose captured command output happens to
+        # contain a marker-shaped line (e.g. a test that echoes a fake seal marker) followed
+        # by MORE output must still be treated as unsealed (skip the seal check, legacy-
+        # compatible) -- not misclassified as sealed from an earlier lookalike line and
+        # rejected with a seal mismatch.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = (
+                b"test output line 1\n"
+                b"verification-artifact-sha256:" + b"d" * 64 + b"\n"
+                b"more ordinary test output printed AFTER the lookalike marker line\n"
+            )
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_whitespace_padded_final_line_seal_lookalike_treated_as_unsealed(self):
+        # agent-harness#243 CR (round 2, cross-vendor): _extract_artifact_seal used to
+        # `.strip()` the final line before the anchored exact-match regex, so a final line with
+        # incidental leading/trailing SPACE around an otherwise well-formed marker was still
+        # accepted as a valid seal. A legacy/externally-built log whose final captured line
+        # happens to have surrounding whitespace around a marker-shaped lookalike must be
+        # treated as UNSEALED (skip the seal check, still validates) -- not seal-matched (which
+        # would then fail closed on a legitimate legacy artifact whose digest was never sealed
+        # in the first place).
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = (
+                b"legacy stage output\n"
+                b" verification-artifact-sha256:" + b"e" * 64 + b" \n"
+            )
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            # Treated as UNSEALED legacy (whitespace-padded lookalike is not an exact seal
+            # match) -> back-compat pass, NOT an artifact_seal_mismatch rejection.
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_in_dict_key(self):
+        # agent-harness#243 CR (round 2, cross-vendor): the leaf-values-only walk dropped dict
+        # KEYS entirely, so a secret embedded in a KEY (not a value) -- e.g. an argv-parsing
+        # bug that folds `--api-key=X` into a single dict key -- silently passed both the
+        # redaction path and the fatal closeout gate. Both must catch it once the walker also
+        # tests `str(key)`.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+                "extra": {"api_key=AKIAIOSFODNN7EXAMPLEKEY": "safe-looking-value"},
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_numeric_scalar_secret(self):
+        # agent-harness#243 CR (round 2, cross-vendor): the leaf-values-only walk yielded only
+        # `isinstance(value, str)` leaves, so a non-string scalar (int/float/bool) was silently
+        # dropped from the matched corpus -- the old json.dumps(...)-blob approach stringified
+        # it in place and could still catch it. Exercise the restored non-string-scalar
+        # coverage via an argv element that is a Python int (not a str) sitting adjacent to a
+        # `--token` flag -- the split-argv adjacency join (defect 3's fix) is what makes this
+        # concretely matchable, and it specifically requires the int leaf to be stringified.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "x", "--token", 123456789012345],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("123456789012345", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_split_argv_flag_value_pair(self):
+        # agent-harness#243 CR (round 2, cross-vendor, defect 3): a SPLIT argv flag/value pair
+        # -- e.g. argv=["tool", "--token", "ABCDEFGHIJKL"] -- puts the keyword and the value in
+        # separate list elements, so examining one leaf at a time never sees them contiguous
+        # and the old (post-fix, pre-CR2) secret_like_value pattern -- which needs the keyword
+        # and value adjacent -- never matched. The traversal now also matches the space-joined
+        # concatenation of a list's stringified elements.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "x", "--token", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_forbidden_metadata_kind_does_not_match_benign_prose_regression_guard(self):
+        # agent-harness#243 CR (cross-vendor codex, REGRESSION): the round that fixed the
+        # split-argv miss (defect 3, see the split-argv test above) widened
+        # ``secret_like_value``'s separator to accept BARE WHITESPACE standing in for
+        # ``[:=]``, so ordinary prose -- keyword + whitespace + 12+ alnum chars, with no
+        # secret anywhere -- started matching too: "token configuration", "password
+        # authentication documentation". Because ``_forbidden_metadata_kind`` backs the
+        # FATAL ``metadata_redaction_diagnostic`` closeout gate, this turned legitimate
+        # closeout text into a false-positive ``malformed_closeout`` block. MUST FAIL at
+        # HEAD bec790f (returns "secret_like_value" for the first two) and pass once the
+        # separator is strict again.
+        from phase_loop_runtime.redaction import _forbidden_metadata_kind
+
+        benign_phrases = [
+            "token configuration",
+            "password authentication documentation",
+            "review the secret management guide before rotating credentials",
+            "token authentication and authorization flow documentation",
+            "the api key rotation policy is documented separately",
+        ]
+        for phrase in benign_phrases:
+            self.assertIsNone(
+                _forbidden_metadata_kind(phrase),
+                f"benign prose false-positived as forbidden metadata: {phrase!r}",
+            )
+
+    def test_redact_diagnostics_metadata_only_does_not_redact_benign_prose_tail(self):
+        # Companion to the regression guard above, exercised through the actual redaction
+        # entrypoint: a diagnostic whose raw_tail is ordinary prose containing a secret
+        # keyword followed by whitespace (not `:`/`=`) must pass through UNREDACTED, not be
+        # coerced to metadata-only.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "failed while validating token configuration; see docs\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertNotIn("redacted", out[0])
+        self.assertEqual(out[0]["raw_tail"], "failed while validating token configuration; see docs\n")
+        self.assertIn("argv", out[0])
+
+    def test_secret_like_value_requires_explicit_separator_but_still_matches_prior_shapes(self):
+        # agent-harness#243 CR (regression fix, explicit coverage): reverting the separator to
+        # a REQUIRED ``[:=]`` must not lose any previously-closed escaping/shape gap. Positive
+        # and negative cases side by side so a future edit that re-loosens (or over-tightens)
+        # the pattern breaks visibly here.
+        from phase_loop_runtime.redaction import _forbidden_metadata_kind
+
+        positive_cases = [
+            "api_key=AKIAIOSFODNN7EXAMPLEKEY",  # plain key=value
+            "api_key: AKIAIOSFODNN7EXAMPLEKEY",  # colon + space
+            "api_key='AKIAIOSFODNN7EXAMPLEKEY'",  # single-quoted
+            'api_key="AKIAIOSFODNN7EXAMPLEKEY"',  # double-quoted
+            'api_key: \\"AKIAIOSFODNN7EXAMPLEKEY\\"',  # backslash-escaped quote
+            '{"api_key":"AKIAIOSFODNN7EXAMPLEKEY"}',  # JSON-formatted
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _forbidden_metadata_kind(case), "secret_like_value", f"expected match: {case!r}"
+            )
+
+        # Split argv (flag element, then adjacent value element) — structural composite path.
+        self.assertEqual(
+            _forbidden_metadata_kind({"argv": ["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]}),
+            "secret_like_value",
+        )
+        self.assertEqual(
+            _forbidden_metadata_kind({"argv": ["tool", "--token", 123456789012345]}),
+            "secret_like_value",
+        )
+
+        negative_cases = [
+            "token configuration",
+            "password authentication documentation",
+        ]
+        for case in negative_cases:
+            self.assertIsNone(_forbidden_metadata_kind(case), f"expected no match: {case!r}")
+
+        # The list-structural composite (above) must not reopen the same prose false positive
+        # via an UNDASHED bare-word flag element: `_SECRET_FLAG_RE` requires a leading dash, so
+        # `["token", "configuration"]` must NOT synthesize a `token=configuration` composite.
+        self.assertIsNone(_forbidden_metadata_kind(["token", "configuration"]))
+        self.assertIsNone(_forbidden_metadata_kind(["password", "authentication"]))
+        # A genuinely dash-prefixed flag element still forms the composite and matches.
+        self.assertEqual(
+            _forbidden_metadata_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]),
+            "secret_like_value",
+        )
+
+    def test_forbidden_metadata_kind_does_not_match_free_text_string_cli_flag(self):
+        # agent-harness#243 CR (cross-vendor codex, REVERT of a since-removed dash-anchored
+        # pattern): a space-separated ``--token VALUE`` inside a free-text command STRING
+        # (e.g. ``{"command": "curl --token AKIA..."}``, per ``discovery.py``) matches neither
+        # the strict ``[:=]``-required pattern (no separator) nor the structural split-argv
+        # composite (there is no list to walk). A dash-anchored pattern attempting to close
+        # this by widening the SHARED ``_forbidden_metadata_kind`` corpus WAS added and then
+        # reverted: run over every leaf including prose, it cannot distinguish
+        # ``--token AKIAIOSFODNN7EXAMPLEKEY`` (a real secret) from ``--token configuration``
+        # (ordinary prose, e.g. "Document the --token configuration behavior.") -- both are
+        # exactly ``-{1,2}keyword`` + whitespace + a 12+ char alnum run -- and reintroduced the
+        # ordinary-prose false positive on the fatal ``metadata_redaction_diagnostic`` closeout
+        # gate. This function (`_forbidden_metadata_kind`, the generic/prose-facing matcher
+        # shared with that fatal gate) therefore stays permanently prose-safe and does NOT
+        # attempt this shape -- assert it stays UNMATCHED here, and that the structural
+        # split-argv LIST composite (a genuinely safe, unambiguous shape -- flag and value are
+        # separate structured elements, not words in a sentence) still matches. agent-harness#269
+        # (follow-up, resolved) closes the underlying free-text-COMMAND-FIELD gap a DIFFERENT
+        # way -- a separate matcher (``_command_context_flag_kind``) scoped ONLY to fields
+        # already identified by name as command-context, never wired into this generic
+        # function -- see the command-context tests further down this file.
+        from phase_loop_runtime.redaction import _forbidden_metadata_kind
+
+        free_text_cases = [
+            "curl --token AKIAIOSFODNN7EXAMPLEKEY",
+            "curl -token AKIAIOSFODNN7EXAMPLEKEY",
+            "some-tool --api-key AKIAIOSFODNN7EXAMPLEKEY --verbose",
+            "some-tool --secret AKIAIOSFODNN7EXAMPLEKEY",
+            "some-tool --password AKIAIOSFODNN7EXAMPLEKEY",
+            "curl --token\tAKIAIOSFODNN7EXAMPLEKEY",
+        ]
+        for case in free_text_cases:
+            self.assertIsNone(
+                _forbidden_metadata_kind(case),
+                f"free-text space-separated CLI flag unexpectedly matched (documented limit): {case!r}",
+            )
+
+        # Regression guard this revert restores: the prose false-positive a dash-anchored
+        # pattern reintroduced. Must NOT match, and must not trip the fatal closeout gate.
+        for phrase in [
+            "Document the --token configuration behavior.",
+            "token configuration",
+            "the --secret handling documentation",
+            "password authentication documentation",
+            "review the secret management guide before rotating credentials",
+            "token authentication and authorization flow documentation",
+            "the api key rotation policy is documented separately",
+        ]:
+            self.assertIsNone(
+                _forbidden_metadata_kind(phrase),
+                f"benign prose false-positived as forbidden metadata: {phrase!r}",
+            )
+        self.assertIsNone(_forbidden_metadata_kind(["token", "configuration"]))
+        self.assertIsNone(_forbidden_metadata_kind(["password", "authentication"]))
+
+        # Safe coverage kept: the structural split-argv LIST composite still matches, because
+        # there the flag and value are already separate structured elements, not prose.
+        self.assertEqual(
+            _forbidden_metadata_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]),
+            "secret_like_value",
+        )
+        # And the strict `[:=]`-separator assignment form still matches.
+        self.assertEqual(
+            _forbidden_metadata_kind("curl --token=AKIAIOSFODNN7EXAMPLEKEY"),
+            "secret_like_value",
+        )
+
+    def test_metadata_redaction_diagnostic_does_not_block_closeout_on_flag_prose(self):
+        # End-to-end regression guard: the fatal closeout gate (`metadata_redaction_diagnostic`,
+        # via `_forbidden_metadata_kind`) must not reject a legitimate closeout text field
+        # (blocker_summary/next_action/finding) merely because it mentions a CLI flag name in
+        # prose. This is the exact class of false positive the dash-anchored pattern
+        # reintroduced and this revert closes.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic
+
+        for text in [
+            "Document the --token configuration behavior.",
+            "the --secret handling documentation",
+        ]:
+            self.assertIsNone(
+                metadata_redaction_diagnostic({"blocker_summary": text}),
+                f"benign closeout prose incorrectly flagged malformed_closeout: {text!r}",
+            )
+
+    def test_run_execute_verification_redacts_secret_at_source_and_closes_launch_json_state_json_egress(self):
+        # agent-harness#266 (source redaction, CR recheck of #243): a prior round redacted
+        # ONLY the rebuilt closeout record, leaving ``runner_verification`` -- and everything
+        # merged/derived from it -- carrying the RAW ``raw_tail``. That raw copy is a
+        # deterministic egress: ``merge_launch_metadata`` writes ``runner_verification`` into
+        # ``launch.json`` (mirroring the ``run_loop`` launch-action call site at runner.py
+        # ~3581); ``inspect_state()`` reads the WHOLE launch file back out as
+        # ``latest_launch_metadata``; and ``phase-loop state --json`` (which the harness SKILL
+        # directs agents to run for exact state) serializes that object verbatim. Reproduce the
+        # full path end to end, then confirm the fix closes it: the secret must be redacted at
+        # the SOURCE (inside ``_run_execute_verification``, before ``launch.json`` is ever
+        # written), so ``state --json`` / ``inspect_state()`` never sees it.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = (
+                f'{sys.executable} -c "import sys; '
+                f"print('api_key={secret}'); sys.exit(1)\""
+            )
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed (not an early-return stub).
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("argv", diag)
+            # Structured fields relied on by reconcile/verification consumers survive redaction.
+            self.assertIn("exit_code", diag)
+            self.assertIn("failure_kind", diag)
+            self.assertIn("role", diag)
+            self.assertIn("index", diag)
+            self.assertIn("truncated", diag)
+            self.assertNotIn(secret, json.dumps(result))
+
+            # verification.log on disk is the intentional local source of truth -- stays FULL.
+            log_text = (run_dir / "verification.log").read_text(encoding="utf-8")
+            self.assertIn(secret, log_text)
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            launch_metadata = summary["latest_launch_metadata"]
+            self.assertIsInstance(launch_metadata, dict)
+            egress_diag = launch_metadata["runner_verification"]["validation"]["diagnostics"][0]
+            self.assertTrue(egress_diag["redacted"])
+            self.assertNotIn("raw_tail", egress_diag)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_force_all_redaction_flows_through_source(self):
+        # agent-harness#266: PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS=all must force-suppress
+        # `raw_tail`/`argv` at the SOURCE too (not only in the closeout record), so the operator
+        # override also covers launch.json / child_automation / the ledger event.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            benign_command = f'{sys.executable} -c "print(\'benign failing output\'); import sys; sys.exit(1)"'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{benign_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {"PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS": "all"}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["redaction_reason"], "operator_forced")
+            self.assertNotIn("raw_tail", diag)
+
+    def test_run_execute_verification_redacts_suite_command_sibling_field_at_source(self):
+        # agent-harness#243 CR recheck (codex): the prior source-redaction round narrowed the
+        # NESTED ``diagnostics`` list but left a SIBLING field -- ``suite_command``, persisted
+        # right BESIDE the redacted diagnostic in the same summary -- carrying the RAW secret
+        # argv. For a FAILING suite, ``suite_command`` is the exact secret-bearing argv used to
+        # produce the diagnostic, so the secret still egressed through launch.json/state --json/
+        # child_automation/events.jsonl despite the nested diagnostic itself being clean. The
+        # prior regression test (test_run_execute_verification_redacts_secret_at_source_...)
+        # missed this because it put the secret in a PLAN command while using a BENIGN suite --
+        # here the secret lives in the suite command itself.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            suite_snippet = f"import sys; print('api_key={secret}'); sys.exit(1)"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, {suite_snippet!r}]\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            benign_command = f"{sys.executable} -c \"print('benign command output')\""
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{benign_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed on the suite stage.
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            suite_diagnostics = [d for d in result["validation"]["diagnostics"] if d.get("role") == "suite"]
+            self.assertEqual(len(suite_diagnostics), 1)
+            suite_diag = suite_diagnostics[0]
+            self.assertTrue(suite_diag["redacted"])
+            self.assertNotIn("raw_tail", suite_diag)
+            self.assertNotIn("argv", suite_diag)
+
+            # The SIBLING suite_command field -- carrying the identical secret argv -- must
+            # ALSO be redacted at the source, not just the nested diagnostic.
+            self.assertNotIn(secret, json.dumps(result.get("suite_command")))
+            self.assertNotIn(secret, json.dumps(result))
+
+            # verification.log on disk is the intentional local source of truth -- stays FULL.
+            log_text = (run_dir / "verification.log").read_text(encoding="utf-8")
+            self.assertIn(secret, log_text)
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_early_return_malformed_suite_command_at_source(self):
+        # agent-harness#243 CR recheck (codex, verified by grok): the prior source-redaction
+        # rounds (agent-harness#266 / #243) applied ``apply_diagnostics_redaction`` only on
+        # ``_run_execute_verification``'s MAIN return path, right before the final
+        # ``return summary``. The malformed-``suite_command`` EARLY return (resolve_suite_command
+        # fails to parse ``automation.suite_command`` -> ``suite_findings`` is non-empty) exits
+        # the function *before* that call, still carrying the RAW, unparsed
+        # ``operational_exemptions[].command`` string discovery.py stores verbatim (a plan
+        # verification line marked ``evidence: operational``). If that command is secret-shaped,
+        # the secret egresses through the same launch.json / child_automation / `state --json`
+        # paths the main-path tests above cover. The fix routes EVERY return of
+        # ``_run_execute_verification`` (regardless of internal branch) through
+        # ``apply_diagnostics_redaction`` via a thin wrapper, closing this branch and any other
+        # early-return path at once instead of patching this one call site.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # Malformed automation.suite_command (unbalanced quote) -> shlex.split raises ->
+            # resolve_suite_command_doc returns a non-empty suite_findings tuple, driving
+            # _run_execute_verification down the EARLY-return branch (before the main-path
+            # redaction call at the end of the function).
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f"curl -H 'X-Api-Key: {secret}' https://example.com --data api_key={secret}"
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # Confirm this genuinely takes the EARLY-return branch, not the main path.
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+            self.assertIsNone(result.get("suite_command"))
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_shell_escaped_quoted_secret_end_to_end(self):
+        # agent-harness#243 CR (cross-vendor, codex): the SAME early-return
+        # (malformed suite_command) egress path as the test above, but with a VERBATIM
+        # shell-escaped operational command -- ``curl -H "X-Api-Key: \"SECRET\""`` -- captured
+        # character-for-character with a literal backslash directly before each inner quote, as
+        # discovery.py stores an ``operational_exemptions[].command`` string. Must be redacted
+        # to ``<redacted:command>`` at the source and stay out of every downstream egress copy
+        # (launch.json, and the `state --json` payload an agent actually reads).
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            # Verbatim shell-escaped quoting: a literal backslash sits directly before each
+            # inner double quote, exactly as a captured `curl -H "X-Api-Key: \"SECRET\""`
+            # invocation would render.
+            secret_command = f'curl -H "X-Api-Key: \\"{secret}\\"" https://example.com'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_free_text_space_separated_flag_operational_command(self):
+        # agent-harness#269 (follow-up to #243, resolved via cross-vendor codex CR): a prior
+        # round added a dash-anchored pattern to catch a space-separated CLI flag (``curl
+        # --token SECRET``, no ``:``/``=`` anywhere) to the SHARED, prose-facing
+        # ``_FORBIDDEN_METADATA_PATTERNS`` corpus, and it was reverted -- run over EVERY leaf
+        # including free-text closeout prose, it could not distinguish a real secret from an
+        # ordinary sentence mentioning a flag name, and reintroduced a fatal false positive
+        # on legitimate closeout text (``metadata_redaction_diagnostic``). The codex CR that
+        # did the reverting also showed the underlying free-text-COMMAND-FIELD gap is NOT
+        # inherent -- it is resolvable by scoping a SEPARATE flag-aware matcher to fields
+        # already identified BY NAME as command-context (``_looks_like_command_field`` --
+        # ``suite_command``, ``operational_exemptions[].command``, ``argv``), where a value
+        # can never legitimately be prose. This test exercises exactly that: the SAME
+        # early-return (malformed suite_command) egress path as the two tests above, with a
+        # free-text ``operational_exemptions[].command`` string carrying a space-separated
+        # ``--token SECRET`` flag. Must FAIL (secret present) at agent-harness#243 HEAD
+        # (68f1b60) and PASS once the command-context-scoped flag matcher lands.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f"curl --token {secret}"
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_backslash_escaped_quoted_flag_operational_command(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): full end-to-end
+        # reproduction of the defect codex found at HEAD 37992c5 -- unlike
+        # ``test_run_execute_verification_redacts_shell_escaped_quoted_secret_end_to_end``
+        # above (which uses a colon-separated ``"X-Api-Key: \"SECRET\""`` value already caught
+        # by the OLDER strict ``[:=]``-assignment matcher), this uses a bare, no-colon/equals
+        # ``--token`` FLAG whose quotes are BACKSLASH-ESCAPED (``\"--token\" \"SECRET\"``,
+        # two-character ``\"`` sequences) -- the shape only ``_COMMAND_CONTEXT_FLAG_RE``
+        # covers, and whose boundary classes previously allowed only a single optional
+        # quote-or-backslash character. Must FAIL (secret reaches launch.json / `state
+        # --json`) at agent-harness#243 HEAD (37992c5) and PASS once the boundary classes are
+        # widened to a run.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f'curl \\"--token\\" \\"{secret}\\"'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_short_flag_operational_command(self):
+        # agent-harness#269: companion to the long-flag test above, covering the short-flag
+        # form (``-t VALUE``) within the same command-context field / egress path.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f"curl -t {secret}"
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_run_execute_verification_redacts_short_flag_argv_secret_and_closes_launch_json_state_json_egress(self):
+        # agent-harness#243 CR (cross-vendor codex, short-flag argv gap): full end-to-end
+        # reproduction of the diagnostics-``argv``-specific short-flag gap (unlike the
+        # operational-exemption / malformed-suite-command early-return path exercised above,
+        # here the command genuinely RUNS and fails, so the diagnostic's ``argv`` field is the
+        # actual argument vector -- not free text). The secret lives ONLY in ``argv`` via a
+        # short ``-t`` flag; ``raw_tail`` is benign (no stdout/stderr). Must FAIL (secret
+        # reaches launch.json / `state --json`) at agent-harness#243/#269 HEAD (6ad2c79) and
+        # PASS once diagnostic ``argv`` is routed through the command-context flag matcher.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            # No stdout/stderr -- raw_tail stays benign. The secret is carried ONLY in argv,
+            # via the short ``-t`` flag (extra positional args after ``-c CODE`` are ignored
+            # by the interpreter, so the process still exits 1 from the code itself).
+            secret_command = f'{sys.executable} -c "import sys; sys.exit(1)" -t {secret}'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed (not an early-return stub).
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"], "diagnostic with a short-flag argv secret must be redacted")
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("argv", diag)
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            launch_metadata = summary["latest_launch_metadata"]
+            self.assertIsInstance(launch_metadata, dict)
+            egress_diag = launch_metadata["runner_verification"]["validation"]["diagnostics"][0]
+            self.assertTrue(egress_diag["redacted"])
+            self.assertNotIn("raw_tail", egress_diag)
+            self.assertNotIn("argv", egress_diag)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_apply_diagnostics_redaction_scrubs_command_context_quoted_flag(self):
+        # agent-harness#269: quoted-flag form (``'--token' 'VALUE'`` / ``"--token" "VALUE"``)
+        # within a command-context field, exercised directly through the redaction entry
+        # point (not the full runner path, to isolate the matcher from suite-command parsing).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        for quote in ("'", '"'):
+            payload = {
+                "ok": False,
+                "code": "malformed_suite_command",
+                "suite_command": f"curl {quote}--token{quote} {quote}{secret}{quote}",
+            }
+            out = apply_diagnostics_redaction(payload)
+            self.assertEqual(out["suite_command"], "<redacted:suite_command>", f"quote={quote!r}")
+            self.assertNotIn(secret, json.dumps(out))
+
+    def test_apply_diagnostics_redaction_scrubs_command_context_backslash_escaped_quoted_flag(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap, follow-up to #269): the
+        # sibling to the quoted-flag test above, but for a BACKSLASH-ESCAPED quote (``\"``,
+        # two characters) rather than a bare quote (``"``, one character) around each of the
+        # flag and the value -- the shape codex reproduced at HEAD 37992c5 in
+        # ``operational_exemptions[].command``. ``_COMMAND_CONTEXT_FLAG_RE``'s boundary classes
+        # previously allowed only ONE optional quote-or-backslash character, which a two-
+        # character escaped quote exceeds. Must FAIL (secret present, field NOT redacted) at
+        # HEAD 37992c5 and PASS once the boundary classes are widened to a run.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        payload = {
+            "ok": False,
+            "code": "malformed_suite_command",
+            "suite_command": f'curl \\"--token\\" \\"{secret}\\"',
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn(secret, json.dumps(out))
+
+        # `--token="VALUE"` with a backslash-escaped quote around the value only.
+        assignment_payload = {
+            "ok": False,
+            "code": "malformed_suite_command",
+            "suite_command": f'curl --token=\\"{secret}\\"',
+        }
+        out_assignment = apply_diagnostics_redaction(assignment_payload)
+        self.assertEqual(out_assignment["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn(secret, json.dumps(out_assignment))
+
+    def test_command_context_flag_kind_matches_long_short_and_quoted_flags(self):
+        # agent-harness#269: unit-level coverage of the command-context-scoped matcher
+        # itself, independent of the runner/egress plumbing above.
+        from phase_loop_runtime.redaction import _command_context_flag_kind
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        positive_cases = [
+            f"curl --token {secret}",
+            f"curl -t {secret}",
+            f"curl '--token' '{secret}'",
+            f'curl "--token" "{secret}"',
+            f"curl --token={secret}",
+            f"some-tool --api-key {secret} --verbose",
+            f"some-tool --secret {secret}",
+            f"some-tool --password {secret}",
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _command_context_flag_kind(case), "secret_like_command_flag", f"expected match: {case!r}"
+            )
+
+    def test_command_context_flag_kind_matches_backslash_escaped_quoted_flags(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): unit-level coverage of
+        # the matcher itself for a BACKSLASH-ESCAPED quote (``\"``, two characters) around the
+        # flag and/or value, distinct from the bare-quote case already covered above (``"``,
+        # one character). The pre-fix boundary classes (``['\"\\]?``, a single optional
+        # quote-or-backslash) could not absorb the two-character ``\"`` sequence. Covers the
+        # command-string shape, the `=`-assignment shape, and an argv-list ELEMENT that is
+        # itself the whole escaped-quoted flag/value pair.
+        from phase_loop_runtime.redaction import _command_context_flag_kind
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        positive_cases = [
+            f'curl \\"--token\\" \\"{secret}\\"',
+            f'curl \\"-t\\" \\"{secret}\\"',
+            f'--token=\\"{secret}\\"',
+            f'curl --token=\\"{secret}\\"',
+            [sys.executable, "-c", "x", f'\\"--token\\" \\"{secret}\\"'],
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _command_context_flag_kind(case), "secret_like_command_flag", f"expected match: {case!r}"
+            )
+
+    def test_command_field_forbidden_kind_still_catches_strict_assignment_forms(self):
+        # agent-harness#269: the union helper wired into the command-field branch must not
+        # regress the pre-existing strict `[:=]`-assignment / structural split-argv coverage
+        # -- it is additive (OR), not a replacement.
+        from phase_loop_runtime.redaction import _command_field_forbidden_kind
+
+        self.assertEqual(
+            _command_field_forbidden_kind("curl --token=AKIAIOSFODNN7EXAMPLEKEY"), "secret_like_value"
+        )
+        self.assertEqual(
+            _command_field_forbidden_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]), "secret_like_value"
+        )
+        self.assertIsNone(_command_field_forbidden_kind([sys.executable, "-m", "pytest", "-q"]))
+
+    def test_prose_fields_stay_unredacted_by_command_context_flag_matcher_regression_guard(self):
+        # agent-harness#269: the CRITICAL invariant this whole follow-up depends on -- the
+        # command-context-scoped flag matcher must NEVER reach a prose field. Exercise this
+        # through the actual field-routing entry point (`apply_diagnostics_redaction`), using
+        # a field NAME that is prose (`blocker_summary`, `next_action`), not command-context,
+        # holding text that WOULD match `_command_context_flag_kind` if it were (wrongly)
+        # applied there.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction, metadata_redaction_diagnostic
+
+        prose_texts = [
+            "Document the --token configuration behavior.",
+            "the --secret handling documentation",
+        ]
+        for text in prose_texts:
+            payload = {"ok": True, "code": "ok", "blocker_summary": text, "next_action": text}
+            out = apply_diagnostics_redaction(dict(payload))
+            self.assertEqual(out["blocker_summary"], text, f"prose field wrongly redacted: {text!r}")
+            self.assertEqual(out["next_action"], text, f"prose field wrongly redacted: {text!r}")
+            # And the fatal closeout gate must still not block on it.
+            self.assertIsNone(metadata_redaction_diagnostic(payload))
 
 
 if __name__ == "__main__":
