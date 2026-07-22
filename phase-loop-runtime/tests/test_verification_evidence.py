@@ -1067,6 +1067,29 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         out = apply_diagnostics_redaction(payload)
         self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-q"])
 
+    def test_apply_diagnostics_redaction_does_not_clobber_pytest_dash_k_selector(self):
+        # agent-harness#269 regression guard: the command-context flag-aware matcher's
+        # single-letter short-flag class is deliberately limited to `t` alone (NOT a wider
+        # `[tksp]`-style set) specifically because `-k` is pytest's keyword-selector flag and
+        # `suite_command` in this repo is overwhelmingly a pytest invocation --
+        # `pytest -k <12+ char expr>` is the single most common command shape here. A
+        # `-k`-matching short flag would over-redact it. Cover both the space-joined STRING
+        # form and the structured LIST form (`_iter_leaf_strings` also yields the space-joined
+        # concatenation of a list's elements, so a structured command is equally at risk).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        keyword_expr = "test_verification_evidence_long_enough"
+        string_payload = {"ok": True, "code": "ok", "suite_command": f"pytest -k {keyword_expr}"}
+        out = apply_diagnostics_redaction(dict(string_payload))
+        self.assertEqual(out["suite_command"], f"pytest -k {keyword_expr}")
+
+        list_payload = {
+            "ok": True, "code": "ok",
+            "suite_command": [sys.executable, "-m", "pytest", "-k", keyword_expr],
+        }
+        out = apply_diagnostics_redaction(dict(list_payload))
+        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-k", keyword_expr])
+
     def test_apply_diagnostics_redaction_scrubs_nested_suite_command_at_any_depth(self):
         # The whole-summary walk must find a command-shaped sibling field even when it is
         # nested a level down (e.g. a ``runner_verification`` copy embedded inside a larger

@@ -175,15 +175,22 @@ _SECRET_FLAG_RE = re.compile(r"^-{1,2}(?:api[_-]?key|secret|token|password)$", r
 # ``_forbidden_metadata_kind`` feeds the fatal ``metadata_redaction_diagnostic`` closeout
 # gate or the free-text redaction path, so a legitimate blocker_summary/next_action/
 # finding sentence mentioning a flag name in prose still cannot trip it. Covers, within
-# that command-context scope: long flags (``--token VALUE``), short flags (``-t VALUE``),
+# that command-context scope: long flags (``--token VALUE``), the short flag (``-t VALUE``),
 # ``=``-separated (``--token=VALUE``), and quoted flags/values (``'--token' 'VALUE'``,
-# ``"--token" "VALUE"``). The single-letter short-flag class is intentionally narrow
-# (``t``/``k``/``s``/``p`` -- the conventional shorthand for token/(api-)key/secret/
-# password) rather than every letter, to keep the command-context scrub itself narrowly
-# targeted even though it never runs over prose.
+# ``"--token" "VALUE"``). The single-letter short-flag class is deliberately limited to
+# ``t`` alone (not a wider ``[tksp]``-style set): even command-context-scoped, a
+# single-letter flag is a real collision surface with ordinary, non-secret CLI flags in
+# THIS repo's own command shapes -- most concretely ``-k`` is pytest's keyword-selector
+# flag, and ``suite_command`` is overwhelmingly a pytest invocation here (e.g. ``pytest -k
+# <12+ char expr>``), so a ``-k``-matching short-flag class would over-redact the single
+# most common command shape in this codebase. ``-t`` is the one the task/CR named
+# explicitly and has far fewer such collisions (pytest has no ``-t``); the residual
+# ``docker build -t <tag>`` shape is an accepted, explicitly-sanctioned trade-off (a
+# 12+-char image tag/reference is redacted as a false positive, which is safe -- it just
+# drops the field -- not a correctness hazard).
 _COMMAND_CONTEXT_FLAG_RE = re.compile(
-    r"['\"]?-{1,2}(?:api[_-]?key|secret|token|password|[tksp])['\"]?"
-    r"(?:\s+['\"]?|=['\"]?)"
+    r"['\"\\]?-{1,2}(?:api[_-]?key|secret|token|password|t)['\"\\]?"
+    r"(?:\s+['\"\\]?|=['\"\\]?)"
     r"[A-Za-z0-9_\-]{12,}",
     re.I,
 )
