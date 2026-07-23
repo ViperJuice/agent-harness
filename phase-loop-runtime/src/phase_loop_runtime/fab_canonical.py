@@ -151,8 +151,12 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
 
 Fail-closed discipline (this is a security trust root, same posture as Lane A):
 unknown status characters, malformed raw-diff/cat-file records, truncated
-streams, nonzero git return codes, missing/malformed `cat-file` responses, and
-gitlink paths under the default policy all raise a typed `PatchDigestInvalid`
+streams, nonzero git return codes (including a `cat-file --batch` process
+that exits nonzero, crashed, or was killed after a timeout — never accepted
+merely because its emitted stream looked complete), missing/malformed
+`cat-file` responses, a non-`blob` object referenced by a non-gitlink mode
+(a crafted type-swap), and gitlink paths under the default policy all raise
+a typed `PatchDigestInvalid`
 (a `fab_provenance.ProvenanceInvalid` subclass) from `patch_digest`; `equivalent()`
 converts these (and its own base-ref/merge-base checks) into a typed
 `EQUIVALENCE_INVALIDATED` result rather than ever silently returning
@@ -377,15 +381,24 @@ def _iter_raw_diff_entries(raw: bytes) -> list[_RawDiffEntry]:
 # --------------------------------------------------------------------------- #
 
 
-def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, str]:
-    """§3.3: for each `oid` in `oids`, stream its blob bytes via
+def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, tuple[str, str]]:
+    """§3.3: for each `oid` in `oids`, stream its bytes via
     `GIT_NO_REPLACE_OBJECTS=1 git cat-file --batch` and return OUR OWN
     `hashlib.sha256` hex digest of the bytes — never the oid itself (T3: git's
-    reported sha1 is used ONLY as the object address to fetch). Streamed in
-    bounded ~1 MiB chunks (never buffers a whole blob). A "missing" or
+    reported sha1 is used ONLY as the object address to fetch) — PAIRED with
+    the git-reported object type (`(content_sha256, obj_type)`), so the
+    caller can enforce the type is `blob` before trusting the hash as file
+    content (a non-blob object — tree/commit/tag — referenced by a non-gitlink
+    mode is a crafted type-swap; see `_build_records`). Streamed in bounded
+    ~1 MiB chunks (never buffers a whole blob/object). A "missing" or
     malformed `cat-file` response line, a truncated content stream, or a
     missing trailing newline all raise `PatchDigestInvalid` (fail-closed,
-    design §3.3 finding 6) — never a silently-empty/partial hash map.
+    design §3.3 finding 6) — never a silently-empty/partial hash map. A
+    nonzero `cat-file --batch` process exit — including the kill-after-timeout
+    path — ALSO raises `PatchDigestInvalid` (fail-closed, matching the
+    `rc==0`-only contract `_git_diff_raw_bytes` already honors): a
+    crashed/killed/fatally-erroring cat-file process is never a valid result,
+    even if the bytes it emitted before dying look complete.
 
     `cat-file --batch` emits responses in the SAME order objects were written
     to its stdin (git's own documented guarantee), so this reads sequentially
@@ -418,7 +431,7 @@ def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, s
     thread = threading.Thread(target=_writer, daemon=True)
     thread.start()
 
-    results: dict[bytes, str] = {}
+    results: dict[bytes, tuple[str, str]] = {}
     assert proc.stdout is not None
     stdout = proc.stdout
     try:
@@ -439,12 +452,19 @@ def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, s
                 raise PatchDigestInvalid(
                     f"malformed cat-file --batch header for {requested_oid!r} (fail-closed): {header_line!r}"
                 )
-            returned_oid, _obj_type, size_field = parts
+            returned_oid, obj_type_b, size_field = parts
             if returned_oid != requested_oid:
                 raise PatchDigestInvalid(
                     f"cat-file --batch response desync (fail-closed): requested {requested_oid!r}, "
                     f"got header for {returned_oid!r}"
                 )
+            try:
+                obj_type = obj_type_b.decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise PatchDigestInvalid(
+                    f"non-ASCII cat-file --batch object-type field for {requested_oid!r} (fail-closed): "
+                    f"{obj_type_b!r}"
+                ) from exc
             try:
                 size = int(size_field)
                 if size < 0:
@@ -468,7 +488,7 @@ def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, s
                 raise PatchDigestInvalid(
                     f"cat-file --batch missing trailing newline for {requested_oid!r} (fail-closed)"
                 )
-            results[requested_oid] = digest.hexdigest()
+            results[requested_oid] = (digest.hexdigest(), obj_type)
     finally:
         try:
             if proc.stdin is not None and not proc.stdin.closed:
@@ -485,6 +505,20 @@ def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, s
         except subprocess.TimeoutExpired:  # pragma: no cover
             proc.kill()
             proc.wait(timeout=_CAT_FILE_TIMEOUT_SECONDS)
+    # Finding 1 (codex + gemini, corroborated): the rc==0-only contract
+    # `_git_diff_raw_bytes` already honors (design §3.2 finding 6) applies
+    # HERE too — a `cat-file --batch` process that exited nonzero (crashed,
+    # hit a fatal internal error, or was force-killed after the timeout
+    # above, which yields a negative/nonzero returncode like -9) is NEVER a
+    # valid result, even when the stream it emitted before dying looked
+    # complete/well-formed. Checked AFTER proc.wait()/kill() above so this
+    # covers every path (clean exit, timeout+kill) with no return-path gap.
+    if proc.returncode != 0:
+        raise PatchDigestInvalid(
+            f"git cat-file --batch exited with rc={proc.returncode} (fail-closed, ONLY rc==0 accepted "
+            "— a crashed/killed cat-file process is never a valid result, design §3.2 finding 6's "
+            "rc-discipline)"
+        )
     if writer_error:
         raise PatchDigestInvalid(f"cat-file --batch stdin writer failed (fail-closed): {writer_error[0]}")
     return results
@@ -495,12 +529,29 @@ def _cat_file_content_hashes(repo: Path, oids: Sequence[bytes]) -> dict[bytes, s
 # --------------------------------------------------------------------------- #
 
 
+_EXPECTED_OBJECT_TYPE = "blob"
+
+
 def _build_records(repo: Path, entries: Sequence[_RawDiffEntry], *, allow_gitlinks: bool) -> list[tuple[bytes, bytes]]:
     """Build the §3.3 per-path binary records. Returns `(path_bytes,
     record_bytes)` pairs, UNSORTED (the caller sorts by raw path bytes —
     design §3.3 "sorted by raw path bytes"). Raises `GitlinkRejected` the
     moment a gitlink mode is seen, BEFORE any cat-file work — a rejected patch
-    never needs its content hashed."""
+    never needs its content hashed.
+
+    Finding 2 (codex): every NON-deletion record's object MUST be a real git
+    `blob` — checked against the `cat-file --batch`-reported type, not merely
+    assumed from the raw-diff mode. Within the stated threat model (attacker
+    controls repo contents), a hand-crafted tree can carry a `100644`/`100755`/
+    `120000` mode entry whose OID actually addresses a non-blob object
+    (tree/commit/tag) whose payload bytes happen to collide with some blob's —
+    producing an identical canonical record with none of that reflected in the
+    digest. `git cat-file --batch` itself does not validate the mode/type
+    pairing (confirmed empirically: a `git update-index --cacheinfo
+    100644,<tree-oid>,path` + commit round-trips through `git diff --raw`
+    reporting mode `100644` for an OID `cat-file` reports as `type=tree`), so
+    this module must enforce it. A `160000` (gitlink) mode is handled above,
+    before this check, and is unaffected."""
     for entry in entries:
         if entry.new_mode == _GITLINK_MODE:
             if not allow_gitlinks:
@@ -524,7 +575,14 @@ def _build_records(repo: Path, entries: Sequence[_RawDiffEntry], *, allow_gitlin
             content_hex = DELETED_CONTENT_SENTINEL
             new_mode = DELETED_NEW_MODE
         else:
-            content_hex = hashes[entry.new_oid]
+            content_hex, obj_type = hashes[entry.new_oid]
+            if obj_type != _EXPECTED_OBJECT_TYPE:
+                raise PatchDigestInvalid(
+                    f"path {entry.path!r} has mode {entry.new_mode!r} (not a gitlink) but its object "
+                    f"{entry.new_oid!r} is git type {obj_type!r}, not {_EXPECTED_OBJECT_TYPE!r} "
+                    "(fail-closed, finding 2: a crafted type-swap must never have its bytes hashed as "
+                    "if they were blob/file content)"
+                )
             new_mode = entry.new_mode
         record = (
             entry.status.encode("ascii")

@@ -165,11 +165,49 @@ re-assertion (§8/§4.4 — Lane D).
   is a degenerate-case convenience for an artifact with an empty
   `delta_chain` (design §6.5's supported exact-head case); it fails closed
   (raises) rather than guessing when a delta chain is present.
+- **`cat-file --batch` rc is now checked (fail-closed)**: cross-vendor CR
+  (codex + gemini, corroborated) found `_cat_file_content_hashes` consumed
+  the whole response stream, called `proc.wait()` (including the
+  kill-after-timeout path), and unconditionally returned the computed hashes
+  with NO check of the process's exit code — a crashed/fatally-erroring/
+  killed `cat-file` process whose stream happened to look complete was
+  silently accepted. Fixed: `proc.returncode != 0` (checked AFTER the
+  existing wait/kill-on-timeout cleanup, so the post-kill code is observed
+  too) now raises `PatchDigestInvalid`, extending the same `rc==0`-only
+  contract `_git_diff_raw_bytes` already enforced (design §3.2 finding 6) to
+  `cat-file` as well.
+- **Non-`blob` objects at a non-gitlink mode are now rejected (fail-closed)**:
+  cross-vendor CR (codex) found the record builder parsed `cat-file --batch`'s
+  object-type header field but never checked it — hashing an object's payload
+  bytes as file content regardless of type. Within the stated threat model
+  (attacker controls repo contents), a hand-crafted tree can carry a
+  `100644`/`100755`/`120000` mode entry whose OID actually addresses a
+  non-blob object (tree/commit/tag) — reproduced via plain `git`
+  plumbing (`update-index --cacheinfo`, no hostile git binary needed) —
+  producing an identical canonical record with the type-swap invisible to
+  the digest. Fixed: every non-deletion record now REQUIRES the `cat-file`-
+  reported type to be exactly `blob`; any other type raises
+  `PatchDigestInvalid` before its bytes are ever hashed as content
+  (gitlink `160000` paths are unaffected — handled earlier via
+  `GitlinkRejected`, before this check runs).
+- **De-vacuous-ified the T8 mode/type-change tests**: CR (codex) found the
+  mode-change and type-change tests compared a real-change digest against an
+  EMPTY-diff digest, which passes even if `new_mode` were dropped from the
+  record entirely — it never actually proved mode/type is hashed. Rewritten
+  to build two sibling heads off the identical base with identical
+  status/path/content, differing ONLY in mode (100644 vs 100755) or type
+  (regular file vs symlink, engineered to share identical blob content
+  bytes), plus a negative control that reconstructs the byte streams with
+  `new_mode` stripped and asserts they collapse to identical digests —
+  genuinely proving today's `assertNotEqual` is driven by mode, not an
+  accidental difference.
 - **Tests** (`tests/test_fab_canonical_b.py`, unmarked — runs under CI's
-  `-m "not dotfiles_integration"`): 38 cases against REAL temporary git repos
+  `-m "not dotfiles_integration"`): 43 cases against REAL temporary git repos
   (no mocked git for the core digest/equivalence paths) covering acceptance
-  criteria 2/3, T3/T8/T11/T17, non-ASCII/CR path round-tripping, and I10/I11
-  pass-through.
+  criteria 2/3, T3/T8/T11/T17, non-ASCII/CR path round-tripping, I10/I11
+  pass-through, cat-file rc discipline (including the kill-after-timeout
+  path), and non-blob type-swap rejection (both real-git-plumbing-crafted
+  and mocked).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 

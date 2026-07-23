@@ -7,6 +7,7 @@ digest/equivalence path — no mocked git for the core canonicalization logic.""
 from __future__ import annotations
 
 import hashlib
+import io
 import shutil
 import subprocess
 import tempfile
@@ -192,7 +193,8 @@ class PatchDigestOidVsBytesTest(GitRepoTestCase):
         self.assertEqual(len(reported_oid), 40)  # git's sha1
 
         hashes = fc._cat_file_content_hashes(self.repo, [entry.new_oid])
-        content_sha256 = hashes[entry.new_oid]
+        content_sha256, obj_type = hashes[entry.new_oid]
+        self.assertEqual(obj_type, "blob")
         self.assertEqual(len(content_sha256), 64)  # our sha256
         self.assertNotEqual(content_sha256, reported_oid)
 
@@ -200,43 +202,135 @@ class PatchDigestOidVsBytesTest(GitRepoTestCase):
         self.assertEqual(content_sha256, expected)
 
 
+def _record_without_mode(record: bytes) -> bytes:
+    """Test-only helper (finding 3 negative control): rebuild a `status \\0
+    new_mode \\0 content_sha256 \\0 path \\0` record with the `new_mode` field
+    DROPPED, simulating what the record would look like if the production
+    code regressed to not hash mode at all. Used ONLY to prove a positive
+    assertion ("digests differ") is actually driven by the mode field, not by
+    some other accidental difference."""
+    status, _mode, content, rest = record.split(b"\x00", 3)
+    return status + b"\x00" + content + b"\x00" + rest
+
+
 class PatchDigestModeTypeTest(GitRepoTestCase):
-    """T8: mode/type swaps with IDENTICAL bytes must still change the digest."""
+    """T8: mode/type swaps with IDENTICAL bytes must still change the digest.
+
+    Finding 3 (codex): the prior version of these tests compared a
+    mode/type-change digest against an EMPTY-diff digest (`self.digest(base,
+    base)`), which passes even if `new_mode` were omitted from the record
+    entirely — any non-empty diff would differ from an empty one regardless
+    of mode. Rewritten below to build TWO SIBLING heads off the identical
+    base, with identical status/path/content, differing ONLY in mode/type —
+    and to include a negative control that reconstructs the byte streams with
+    `new_mode` stripped, proving they'd collapse to IDENTICAL digests if mode
+    weren't hashed (i.e. the test genuinely discriminates on mode today)."""
 
     def test_pure_mode_change_identical_bytes_changes_digest(self):
+        base = self.commit("c1 (base, no file yet)")
+
+        _run(self.repo, "checkout", "-qb", "head-644")
         path = self.write("sub/b.py", "same bytes\n")
         path.chmod(0o644)
-        base = self.commit("c1 644")
+        head_644 = self.commit("c2 add sub/b.py at 644")
+
+        _run(self.repo, "checkout", "-q", base)
+        _run(self.repo, "checkout", "-qb", "head-755")
+        path = self.write("sub/b.py", "same bytes\n")
         path.chmod(0o755)
-        head = self.commit("c2 755, same bytes")
+        head_755 = self.commit("c2 add sub/b.py at 755, IDENTICAL bytes")
 
-        d_before = self.digest(base, base)
-        d_after = self.digest(base, head)
-        self.assertNotEqual(d_before, d_after)
+        entries_644 = fc._iter_raw_diff_entries(fc._git_diff_raw_bytes(self.repo, base, head_644))
+        entries_755 = fc._iter_raw_diff_entries(fc._git_diff_raw_bytes(self.repo, base, head_755))
+        self.assertEqual(len(entries_644), 1)
+        self.assertEqual(len(entries_755), 1)
+        # Isolate mode as the ONLY difference: same status, same path.
+        self.assertEqual(entries_644[0].status, entries_755[0].status)
+        self.assertEqual(entries_644[0].path, entries_755[0].path)
+        self.assertEqual(entries_644[0].new_mode, "100644")
+        self.assertEqual(entries_755[0].new_mode, "100755")
 
-        raw = fc._git_diff_raw_bytes(self.repo, base, head)
-        entries = fc._iter_raw_diff_entries(raw)
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].new_mode, "100755")
-        self.assertEqual(entries[0].status, "M")
+        records_644 = fc._build_records(self.repo, entries_644, allow_gitlinks=False)
+        records_755 = fc._build_records(self.repo, entries_755, allow_gitlinks=False)
+        _, rec_644 = records_644[0]
+        _, rec_755 = records_755[0]
+        status_644, mode_644, content_644, _ = rec_644.split(b"\x00", 3)
+        status_755, mode_755, content_755, _ = rec_755.split(b"\x00", 3)
+        self.assertEqual(status_644, status_755)
+        self.assertEqual(content_644, content_755)  # SAME content bytes -- isolates mode
+        self.assertNotEqual(mode_644, mode_755)
+
+        # Positive assertion: today's code discriminates on mode.
+        d_644 = self.digest(base, head_644)
+        d_755 = self.digest(base, head_755)
+        self.assertNotEqual(d_644, d_755)
+
+        # Negative control: strip `new_mode` from both records -> the two
+        # streams become byte-IDENTICAL (since status/content/path already
+        # match), so a code path that dropped mode from the record would make
+        # this test pass EVEN THOUGH mode is no longer hashed. This proves
+        # today's `assertNotEqual` above is genuinely driven by mode.
+        header = (
+            fc.CANONICAL_BYTES_HEADER_PREFIX + self.REPO_SLUG.encode("utf-8") + b"\x00" + base.encode("ascii") + b"\x00"
+        )
+        stream_644_no_mode = header + _record_without_mode(rec_644)
+        stream_755_no_mode = header + _record_without_mode(rec_755)
+        self.assertEqual(stream_644_no_mode, stream_755_no_mode)
+        self.assertEqual(
+            hashlib.sha256(stream_644_no_mode).hexdigest(),
+            hashlib.sha256(stream_755_no_mode).hexdigest(),
+        )
 
     def test_file_to_symlink_typechange_changes_digest(self):
-        self.write("sub/c.py", "target contents\n")
-        self.write("a.py", "hello\n")
-        base = self.commit("c1")
-        (self.repo / "sub/c.py").unlink()
-        (self.repo / "sub/c.py").symlink_to("a.py")
-        head = self.commit("c2 typechange to symlink")
+        base = self.commit("c1 (base, no file yet)")
+        target = "a.py"  # the symlink's target string == the regular file's exact byte content
 
-        raw = fc._git_diff_raw_bytes(self.repo, base, head)
-        entries = fc._iter_raw_diff_entries(raw)
-        typechange = [e for e in entries if e.status == "T"]
-        self.assertEqual(len(typechange), 1)
-        self.assertEqual(typechange[0].new_mode, "120000")
+        _run(self.repo, "checkout", "-qb", "head-regular")
+        self.write("sub/c.py", target)  # exact bytes b"a.py", no trailing newline
+        head_regular = self.commit("c2 add sub/c.py as a regular file")
 
-        d = self.digest(base, head)
-        d_noop = self.digest(base, base)
-        self.assertNotEqual(d, d_noop)
+        _run(self.repo, "checkout", "-q", base)
+        _run(self.repo, "checkout", "-qb", "head-symlink")
+        (self.repo / "sub").mkdir(parents=True, exist_ok=True)
+        (self.repo / "sub/c.py").symlink_to(target)
+        _run(self.repo, "add", "-A")
+        _run(self.repo, "commit", "-q", "-m", "c2 add sub/c.py as a symlink, IDENTICAL content bytes")
+        head_symlink = _rev_parse(self.repo)
+
+        entries_regular = fc._iter_raw_diff_entries(fc._git_diff_raw_bytes(self.repo, base, head_regular))
+        entries_symlink = fc._iter_raw_diff_entries(fc._git_diff_raw_bytes(self.repo, base, head_symlink))
+        self.assertEqual(len(entries_regular), 1)
+        self.assertEqual(len(entries_symlink), 1)
+        self.assertEqual(entries_regular[0].status, entries_symlink[0].status)
+        self.assertEqual(entries_regular[0].path, entries_symlink[0].path)
+        self.assertEqual(entries_regular[0].new_mode, "100644")
+        self.assertEqual(entries_symlink[0].new_mode, "120000")
+
+        records_regular = fc._build_records(self.repo, entries_regular, allow_gitlinks=False)
+        records_symlink = fc._build_records(self.repo, entries_symlink, allow_gitlinks=False)
+        _, rec_regular = records_regular[0]
+        _, rec_symlink = records_symlink[0]
+        status_r, mode_r, content_r, _ = rec_regular.split(b"\x00", 3)
+        status_s, mode_s, content_s, _ = rec_symlink.split(b"\x00", 3)
+        self.assertEqual(status_r, status_s)
+        self.assertEqual(content_r, content_s)  # a symlink's blob content IS its target bytes
+        self.assertNotEqual(mode_r, mode_s)
+
+        d_regular = self.digest(base, head_regular)
+        d_symlink = self.digest(base, head_symlink)
+        self.assertNotEqual(d_regular, d_symlink)
+
+        # Negative control, same technique as the mode-change test above.
+        header = (
+            fc.CANONICAL_BYTES_HEADER_PREFIX + self.REPO_SLUG.encode("utf-8") + b"\x00" + base.encode("ascii") + b"\x00"
+        )
+        stream_r_no_mode = header + _record_without_mode(rec_regular)
+        stream_s_no_mode = header + _record_without_mode(rec_symlink)
+        self.assertEqual(stream_r_no_mode, stream_s_no_mode)
+        self.assertEqual(
+            hashlib.sha256(stream_r_no_mode).hexdigest(),
+            hashlib.sha256(stream_s_no_mode).hexdigest(),
+        )
 
 
 class PatchDigestDeleteTest(GitRepoTestCase):
@@ -366,6 +460,118 @@ class PatchDigestHostileGitTest(GitRepoTestCase):
             )
             with self.assertRaises(fc.PatchDigestInvalid):
                 fc._git_diff_raw_bytes(self.repo, "a" * 40, "b" * 40)
+
+    def test_cat_file_batch_nonzero_rc_invalidates_even_with_a_complete_response(self):
+        """Finding 1 (codex + gemini, corroborated): a `cat-file --batch`
+        process that EXITS NONZERO must invalidate even when the stream it
+        emitted before exiting looks complete and well-formed — rc is a
+        SEPARATE, independent check from stream well-formedness (this is the
+        same rc==0-only contract `_git_diff_raw_bytes` already honors,
+        design §3.2 finding 6, extended to cat-file). Prior to the fix,
+        `_cat_file_content_hashes` consumed the stream, called `proc.wait()`,
+        and unconditionally returned the computed hashes with no rc check at
+        all."""
+        oid = b"a" * 40
+        content = b"hello\n"
+        stream = f"{oid.decode()} blob {len(content)}\n".encode("ascii") + content + b"\n"
+        with mock.patch.object(subprocess, "Popen") as mocked_popen:
+            proc = mock.MagicMock()
+            proc.stdin = mock.MagicMock()
+            proc.stdout = io.BytesIO(stream)
+            proc.wait.return_value = 9
+            proc.returncode = 9
+            mocked_popen.return_value = proc
+            with self.assertRaises(fc.PatchDigestInvalid):
+                fc._cat_file_content_hashes(self.repo, [oid])
+
+    def test_cat_file_batch_kill_after_timeout_invalidates(self):
+        """Finding 1: the kill-after-timeout path (`proc.wait()` raises
+        `TimeoutExpired` -> `proc.kill()` -> `proc.wait()` again) must ALSO
+        invalidate. A killed process (rc typically negative, e.g. -9 for
+        SIGKILL) is never a valid result, even with a complete-looking
+        stream — the fix's rc check runs AFTER this exact kill sequence, so
+        it must observe the post-kill returncode, not skip it."""
+        oid = b"a" * 40
+        content = b"hello\n"
+        stream = f"{oid.decode()} blob {len(content)}\n".encode("ascii") + content + b"\n"
+        with mock.patch.object(subprocess, "Popen") as mocked_popen:
+            proc = mock.MagicMock()
+            proc.stdin = mock.MagicMock()
+            proc.stdout = io.BytesIO(stream)
+            proc.returncode = None
+
+            def _wait(timeout=None):
+                if proc.wait.call_count == 1:
+                    raise subprocess.TimeoutExpired(cmd="git cat-file --batch", timeout=timeout)
+                proc.returncode = -9
+                return -9
+
+            proc.wait.side_effect = _wait
+            mocked_popen.return_value = proc
+            with self.assertRaises(fc.PatchDigestInvalid):
+                fc._cat_file_content_hashes(self.repo, [oid])
+            self.assertEqual(proc.kill.call_count, 1)
+            self.assertEqual(proc.wait.call_count, 2)
+
+
+class PatchDigestTypeSwapTest(GitRepoTestCase):
+    """Finding 2 (codex): a `100644`/`100755`/`120000` (non-gitlink) mode
+    entry whose OID actually addresses a NON-blob object (tree/commit/tag)
+    is a crafted type-swap and must be rejected fail-closed, never hashed as
+    if its payload bytes were real file content."""
+
+    def test_nonblob_object_at_a_blob_mode_is_rejected(self):
+        base = self.commit("c1 (empty base)")
+
+        # Build a real TREE object to use as the type-swap target -- an
+        # ordinary subdirectory of a normal commit, so this needs NO hostile
+        # git binary: pure repo-content crafting, squarely inside the stated
+        # threat model (attacker controls repo contents).
+        self.write("inner/f.py", "inner content\n")
+        self.commit("c-inner (creates a real tree object)")
+        inner_tree = _run(self.repo, "rev-parse", "HEAD:inner").stdout.strip()
+        self.assertEqual(_run(self.repo, "cat-file", "-t", inner_tree).stdout.strip(), "tree")
+
+        # Reset to base and hand-craft a 100644 (blob-mode) entry pointing at
+        # the TREE oid above, via `update-index --cacheinfo` -- this bypasses
+        # `git mktree`'s type validation (confirmed empirically: `git mktree`
+        # itself refuses a mode/type mismatch with "is a tree but specified
+        # type was (blob)"), exactly like the existing gitlink-crafting
+        # fixture (`_add_gitlink` in `PatchDigestGitlinkTest`) does for mode
+        # 160000. Confirmed empirically to round-trip through `git diff --raw`
+        # reporting mode 100644 for an OID `cat-file` reports as `type=tree`.
+        _run(self.repo, "checkout", "-q", base)
+        _run(self.repo, "update-index", "--add", "--cacheinfo", f"100644,{inner_tree},evil.py")
+        head = self.commit_no_add("c2 type-swap: 100644 mode pointing at a tree oid")
+
+        raw = fc._git_diff_raw_bytes(self.repo, base, head)
+        entries = fc._iter_raw_diff_entries(raw)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].new_mode, "100644")
+        self.assertEqual(entries[0].new_oid, inner_tree.encode("ascii"))
+
+        with self.assertRaises(fc.PatchDigestInvalid):
+            self.digest(base, head)
+
+    def test_mocked_nonblob_type_is_rejected_at_the_build_records_level(self):
+        """Same defect, exercised via a mocked cat-file response reporting
+        `type=tree` for an entry at a non-gitlink mode — isolates the check
+        inside `_build_records` from git-plumbing craftability concerns."""
+        entry = fc._RawDiffEntry(status="A", new_mode="100644", new_oid=b"a" * 40, path=b"evil.py")
+        with mock.patch.object(fc, "_cat_file_content_hashes") as mocked:
+            mocked.return_value = {b"a" * 40: ("d" * 64, "tree")}
+            with self.assertRaises(fc.PatchDigestInvalid):
+                fc._build_records(self.repo, [entry], allow_gitlinks=False)
+
+    def test_blob_type_is_accepted(self):
+        """Negative control: a genuine `blob`-typed object at a blob-family
+        mode is accepted (proves the check discriminates on type, not on
+        merely being present)."""
+        entry = fc._RawDiffEntry(status="A", new_mode="100644", new_oid=b"a" * 40, path=b"ok.py")
+        with mock.patch.object(fc, "_cat_file_content_hashes") as mocked:
+            mocked.return_value = {b"a" * 40: ("d" * 64, "blob")}
+            records = fc._build_records(self.repo, [entry], allow_gitlinks=False)
+        self.assertEqual(len(records), 1)
 
 
 class PatchDigestPathEncodingTest(GitRepoTestCase):
