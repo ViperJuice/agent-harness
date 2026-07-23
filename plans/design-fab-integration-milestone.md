@@ -292,3 +292,47 @@ record + atomic re-admission + single-commit committed-range re-review; crash sa
 re-gate; enforced merge-queue prohibition (#265); complete-review-representation build requirement; and an
 HONEST fallback (status quo, full-range coverage deferred). Multi-commit composition + optional strict mode
 are the named follow-ups.
+
+---
+## v6 — final forge-resistance requirements (v5 panel: codex+grok) + STOP-iteration note
+
+Three deeper forge-resistance requirements. These + the "hard core" note below CLOSE the plan iteration.
+
+1. **Seat-INSTANCE identity, not `seat_key` (codex — seat_key is non-unique).** `seat_key` is explicitly
+   non-unique; identical seats are distinguished POSITIONALLY (advisor_board/schema.py:180). An expected-seat
+   manifest keyed on `set(seat_key)` collapses duplicate required seats → one outcome satisfies several.
+   **REQUIRE:** the manifest + durable outcomes + provenance seats use a UNIQUE per-invocation seat-INSTANCE
+   id; freeze the exact RESOLVED invocation set (the concrete seats actually dispatched) as the completeness
+   denominator.
+2. **Bind finding CONTENT, not just finding_ids (codex+grok — the gate reads severity/status).** The gate
+   evaluates top-level `Finding.severity/status` (fab_gate.py:706), while durable outcomes hold only IDs. So
+   provenance can keep matching IDs but OMIT the `Finding` records or REWRITE them non-blocking/clean.
+   **REQUIRE:** each finding id binds to a HARNESS-AUTHENTICATED canonical finding record (severity+status+
+   body_ref digest) persisted at review time; the cross-check requires an EXACT id→content mapping (a
+   provenance Finding must match the durable canonical finding's severity/status/digest). Matching the id set
+   alone is insufficient.
+3. **Harness-issued ROUND IDENTITY, not a self-asserted epoch (codex+grok — replay/vacuity).** A self-asserted
+   `DeltaReviewRecord.epoch` lets an attacker REPLAY an earlier clean epoch's manifest+outcomes for a different
+   delta, or point at an empty-expected epoch (vacuity). **REQUIRE:** a HARNESS-ISSUED round identity bound to
+   that round's immutable review MATERIAL + reviewed HEAD; the gate verifies the round's manifest/outcome
+   artifact digests against THAT exact round's material+head; an UNKNOWN, EMPTY-expected, or REUSED round
+   identity → BLOCK (no vacuous pass; no cross-round replay).
+
+### STOP-iteration note (honest engineering assessment)
+The plan has been panel-hardened across FIVE rounds (v1→v6), closing ~15 distinct real fail-opens. The core
+that keeps yielding layers is **making a client-supplied `ReviewProvenanceArtifact` non-forgeable against a
+harness-only-written trust root** — a genuine cryptographic-integrity design surface (seat-instance identity →
+verdict binding → completeness → finding-content binding → replay-resistant round identity → …). Abstract
+plan-doc iteration will keep peeling it. The remaining forge-resistance work is best resolved DURING
+IMPLEMENTATION with the actual data structures + a cross-vendor CR in front of you — not in further doc rounds.
+
+**Guiding invariant for implementation (the north star that dissolves this class):** the ONLY thing the gate
+may trust is what the HARNESS wrote to the run store at review time (expected-seat manifest, per-seat outcomes
+w/ verdict + canonical finding content, round identity bound to material+head). The client-supplied provenance
+is verified AGAINST that, field-by-field, fail-closed on any absence/mismatch/vacuity. Anything the gate reads
+from the provenance that is NOT cross-checked against a harness-written durable record is a forge path. Build
+to that invariant + adversarially CR each field.
+
+This plan is a SOUND, deeply-hardened problem statement + design. It is NOT "all fail-opens are eliminated on
+paper" — it is "the architecture is settled, all MAJOR fail-opens are closed, and the residual forge-resistance
+details have a clear guiding invariant to implement + adversarially CR." Execute from a fresh context.
