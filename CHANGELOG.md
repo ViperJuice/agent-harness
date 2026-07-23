@@ -318,11 +318,19 @@ touched.
   just sequence length**: `path_scope=("",)` (or `("  ",)`) is a non-empty
   SEQUENCE containing a blank entry — it passed the old `if not
   f.path_scope` check, but the broker's own `_covered_by_owned`
-  (credsep.py:204-208) treats a blank `owned` entry as falsy and skips it,
-  so such a finding was classified DISJOINT and carried forward without ever
-  actually scoping anything. Any empty/whitespace-only entry now forces the
-  same fail-closed `empty_path_scope` re-review disposition as a wholly
-  empty `path_scope`.
+  (credsep.py:204-208) treats a blank `owned` entry (after its OWN
+  `.rstrip("/")`) as falsy and skips it, so such a finding was classified
+  DISJOINT and carried forward without ever actually scoping anything. The
+  guard now checks `entry.strip().rstrip("/")` — mirroring
+  `_covered_by_owned`'s own emptiness test rather than only `.strip()` —
+  which also closes a residual variant caught on advisor review: an
+  all-slash entry like `path_scope=("/",)`/`("//",)` is non-blank under
+  `.strip()` alone but becomes empty under `_covered_by_owned`'s
+  `.rstrip("/")` and was therefore silently skipped by the SAME
+  matcher-skip mechanism. Blank/whitespace-only/all-slash entries now force
+  the same fail-closed `empty_path_scope` re-review disposition as a wholly
+  empty `path_scope`; a legitimate trailing-slash directory scope (e.g.
+  `"pkg/"`) is unaffected.
 - **`build_delta_round` now requires seat corroboration for every reopened
   finding on a `reviewed-clean` round, not just `resolved_finding_ids`**:
   design §5.3's full rule is "the delta round's seats must return a verdict
@@ -336,14 +344,15 @@ touched.
   (raising `ResolvedClaimUnverified` on any gap); `escalated-whole-patch`/
   `pending`/`invalidated` rounds are unaffected — those are, by definition,
   still going back into review.
-- **Tests** (`tests/test_fab_delta_c.py`): 10 new cases — glob-newline
+- **Tests** (`tests/test_fab_delta_c.py`): 12 new cases — glob-newline
   matching across `**`/trailing-globstar spans, empty-file and comment-only
   manifest dispositions (unit + end-to-end escalate-every-delta), blank/
-  whitespace/mixed `path_scope` entries never carrying forward, and a new
-  `ReopenedFindingCorroborationTest` covering the reviewed-clean-with-
-  uncorroborated-reopened-finding rejection, the corroborated-succeeds case,
-  and confirming an escalated-whole-patch round is unaffected (56 cases
-  total in the module, up from 46).
+  whitespace/mixed/all-slash `path_scope` entries never carrying forward
+  (plus a sanity check that a legitimate trailing-slash directory scope
+  still carries), and a new `ReopenedFindingCorroborationTest` covering the
+  reviewed-clean-with-uncorroborated-reopened-finding rejection, the
+  corroborated-succeeds case, and confirming an escalated-whole-patch round
+  is unaffected (58 cases total in the module, up from 46).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
