@@ -50,6 +50,40 @@ escalation decisions, or gate wiring — those are B/C/D.
   reference at gate time, so a post-review edit of the underlying file is
   detected rather than silently tolerated.
 
+#### Cross-vendor CR hardening (5 confirmed findings, codex-DISAGREE'd, all verified real)
+
+codex DISAGREE'd with all 5 findings on this trust-root module; every one reproduced against
+source and is fixed here. Tightens frozen interface IF-0-FAB-A-1 — B/C/D must code against the
+new shapes, not the pre-CR ones:
+
+- **F1 — strict fail-closed load**: `from_json`/`from_dict` now reject an UNKNOWN top-level or
+  nested field and a DUPLICATE JSON object key (anywhere in the document, via a strict
+  `object_pairs_hook`), both fail-closed as `ProvenanceInvalid`. Previously an unknown field was
+  silently dropped and a duplicate key silently collapsed to its last value — un-audited data
+  could ride outside the digest.
+- **F2 — hash-chain dual-link contiguity is no longer optional**: `verify_chain` previously only
+  checked `parent_digest` when BOTH the prior patch digest and the record's own `parent_digest`
+  were non-null. A `reviewed-clean` delta with a populated prior patch digest but
+  `parent_digest=None` now INVALIDATES (`ChainVerificationError`); a `reviewed-clean` record must
+  unconditionally carry a linking `parent_digest` (design §5.1).
+- **F3 — trust-root path-equality claim replaced with the invariant Lane A can actually
+  enforce**: `reject_client_supplied_provenance` no longer claims path equality proves harness
+  authorship (`.phase-loop/` is excluded only via the local, non-committed
+  `.git/info/exclude` — not a committed `.gitignore`; a file is already tracked under
+  `.phase-loop/` in this repo). It now enforces "run-store path AND not git-tracked" and documents
+  the honest residual (a co-resident writer to the trusted store, deferred to breakglass) in a new
+  design §6.1a trust-model subsection; full authorship enforcement (trusted-run-state read,
+  trusted `run_id` resolution) is now an explicit Lane D requirement (§9).
+- **F4 — `reverify_material` now binds to the claimed reviewed-material digest**: new
+  `aggregate_material_digest(material_digests)` (reuses the existing canonicalization helper) and
+  a new REQUIRED keyword-only `expected_reviewed_material_digest` argument on `reverify_material`
+  — a snapshot whose per-ref digests are internally stable but whose aggregate does not match the
+  artifact's claimed `review_scope.reviewed_material_digest` now fails closed (design §6.4).
+- **F5 — `Finding.body_ref` is now REQUIRED**: decided (not reflexively applied) that every
+  legitimate `Finding` in this design originates from a seat's review output and therefore always
+  has a referenceable body — there is no described bodyless finding type. `body_ref=None` now
+  raises `ProvenanceInvalid` at construction instead of being silently accepted.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the

@@ -297,6 +297,29 @@ field (like #243's `log_sha256`).
 - **Integrity** (recomputable digest) proves *the artifact was not edited after write*; **authenticity**
   (this section) proves *the harness actually produced it and the seats actually ran*.
 
+### 6.1a Trust-model boundary (agent-harness#191 CR / F3 — Lane A cannot prove authorship by path alone)
+
+**TRUSTED**: the CI review-run context — the process that actually invokes the advisor seats and
+calls `write_provenance` — and the run-store bytes AS WRITTEN by that trusted run. **ATTACKER-
+CONTROLLED**: the PR branch's tracked working-tree contents, including anything under
+`.phase-loop/`: that directory is excluded from git only via the per-clone, non-committed
+`.git/info/exclude` (`runtime_paths.EXCLUDE_ENTRIES`), never a committed `.gitignore` — and at
+least one file is already tracked under `.phase-loop/` in this repo, proving the directory is not
+a reliable boundary. **THE ENFORCEABLE BOUNDARY**: the gate MUST resolve `run_id` from the trusted
+review-run's own output (a value the PR author does not control) and read provenance from that
+trusted run-state — **NEVER** from the PR checkout's `.phase-loop/`. `.phase-loop/`'s local-exclude
+status is explicitly **NOT** a security boundary by itself.
+
+Given that, `reject_client_supplied_provenance` (Lane A) enforces only the narrower, honest
+invariant it CAN check locally: the candidate path resolves to the run-store path for the given
+`run_id` **AND** that path is not itself git-tracked (so a PR commit cannot spoof it by literally
+committing a file there). It does **NOT** and cannot prove the bytes were authored by the harness —
+a co-resident process with write access to the trusted store remains a residual, **consciously
+deferred to breakglass** (same class as Consiliency/agent-harness#273). **Full authorship
+enforcement is a Lane D REQUIREMENT** (§9): the gate reads provenance from trusted run-state with
+`run_id` resolved from trusted output, which this storage layer enables but does not itself
+perform.
+
 ### 6.2 Hash chain (finding 2)
 
 `chain_digest` (§5.1) chains each round to `{policy, review_scope, material digests, findings, prior
@@ -451,6 +474,13 @@ adds explicit verification tasks to **Lane D**.
 
 ### Lane D — gate-output + agent-review-gate + authenticity-verify + promotion re-gate  *(dep A, B, C)*
 - Compose `fab.gate-status.v2`; add `verdict_binds_to_equivalent` (**preserve** `reviewed_sha`, §8); wire the single `status` into `closeout_validators` / `governed_premerge` as non-human `review_gate_block`; thread the delta patch via #114 `context_refs`.
+- **Trust-root read boundary** (agent-harness#191 CR / F3, design §6.1a): the gate MUST read
+  provenance from **trusted run-state** (the CI review-run's own output / a location outside the
+  PR-controllable tree), with `run_id` resolved from that trusted output — **never** accepted from
+  PR-supplied input and **never** read from the PR checkout's `.phase-loop/`. This is the
+  enforceable form of "harness-only-written": Lane A's `reject_client_supplied_provenance` narrows
+  to "run-store path AND not git-tracked", but only Lane D's trusted-run_id-resolution + trusted-
+  read actually proves authorship.
 - **Authenticity verify** (finding 2): §6.3 `SeatOutcomeRecord` cross-check; §6.4 snapshot re-verify.
 - **Promotion re-assertion** (§4.4): re-run §4 at merge in the broker/promotion path; recommend the branch-protection/merge-queue operator control in docs.
 - **Acceptance**: criterion 6 (exact-head still supported — degenerate empty-chain case).

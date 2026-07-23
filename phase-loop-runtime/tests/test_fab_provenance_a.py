@@ -287,6 +287,76 @@ class HashChainTest(unittest.TestCase):
         with self.assertRaises(fp.ChainVerificationError):
             fp.verify_chain(tampered)
 
+    def test_reviewed_clean_delta_with_null_parent_digest_invalidates(self):
+        """F2 repro: on the pre-fix module, `verify_chain` only checked
+        `record.parent_digest` when it was non-null (`if ... and record.parent_digest
+        is not None and ...`). A reviewed-clean delta with a POPULATED candidate
+        patch_digest but parent_digest=None PASSED — violating §5.1's required
+        dual-link contiguity. Must now INVALIDATE."""
+        base = _make_base()
+        bm = _make_boundary_manifest()
+        candidate = _make_candidate(patch_digest="f" * 64)  # parent side IS recorded
+        art0 = fp.ReviewProvenanceArtifact.build(
+            repo="github.com/Consiliency/agent-harness", base=base, boundary_manifest=bm, candidate=candidate,
+        )
+        c0 = art0.compute_c0()
+        unlinked = fp.DeltaReviewRecord.build(
+            policy=bm.to_dict(),
+            review_scope=fp.ReviewScope(mode="delta-only"),
+            material_digests=(),
+            parent_digest=None,  # NOT linked, despite candidate.patch_digest being populated
+            parent_chain_digest=c0,
+            delta_head_sha="h1" + "0" * 38,
+            delta_changed_paths=("a/b.py",),
+            delta_commits=("c1" + "0" * 38,),
+            resolved_finding_ids=(),
+            carried_forward_finding_ids=(),
+            reopened_finding_ids=(),
+            resulting_head_digest="p1" + "0" * 62,
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+            escalation=fp.Escalation(required=False),
+        )
+        art = fp.ReviewProvenanceArtifact.build(
+            repo="github.com/Consiliency/agent-harness", base=base, boundary_manifest=bm,
+            candidate=candidate, delta_chain=(unlinked,),
+        )
+        with self.assertRaises(fp.ChainVerificationError):
+            fp.verify_chain(art)
+
+    def test_reviewed_clean_delta_with_null_parent_digest_invalidates_even_without_prior_patch_digest(self):
+        """Design §5.1: "A reviewed-clean delta MUST carry a linking parent_digest"
+        — unconditionally, not only when the prior patch digest happens to be
+        recorded."""
+        base = _make_base()
+        bm = _make_boundary_manifest()
+        candidate = _make_candidate(patch_digest=None)  # parent side NOT recorded
+        art0 = fp.ReviewProvenanceArtifact.build(
+            repo="github.com/Consiliency/agent-harness", base=base, boundary_manifest=bm, candidate=candidate,
+        )
+        c0 = art0.compute_c0()
+        unlinked = fp.DeltaReviewRecord.build(
+            policy=bm.to_dict(),
+            review_scope=fp.ReviewScope(mode="delta-only"),
+            material_digests=(),
+            parent_digest=None,
+            parent_chain_digest=c0,
+            delta_head_sha="h1" + "0" * 38,
+            delta_changed_paths=("a/b.py",),
+            delta_commits=("c1" + "0" * 38,),
+            resolved_finding_ids=(),
+            carried_forward_finding_ids=(),
+            reopened_finding_ids=(),
+            resulting_head_digest="p1" + "0" * 62,
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+            escalation=fp.Escalation(required=False),
+        )
+        art = fp.ReviewProvenanceArtifact.build(
+            repo="github.com/Consiliency/agent-harness", base=base, boundary_manifest=bm,
+            candidate=candidate, delta_chain=(unlinked,),
+        )
+        with self.assertRaises(fp.ChainVerificationError):
+            fp.verify_chain(art)
+
 
 class FailClosedLoadTest(unittest.TestCase):
     def test_oversize_payload_invalidates(self):
@@ -371,6 +441,41 @@ class FailClosedLoadTest(unittest.TestCase):
         with self.assertRaises(fp.ProvenanceInvalid):
             fp.GateStatus(reviewed_sha="e" * 40, status="not-pass-or-block")
 
+    def test_strict_load_rejects_unknown_top_level_field(self):
+        """F1 repro: on the pre-fix module, an artifact JSON with an extra
+        unknown field silently loaded (the field is dropped, not rejected). A
+        trust-root load must reject it fail-closed."""
+        art = _build_artifact()
+        data = json.loads(art.to_json())
+        data["totally_unaudited_field"] = "sneaky payload riding outside the digest"
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.ReviewProvenanceArtifact.from_json(json.dumps(data))
+
+    def test_strict_load_rejects_unknown_nested_field(self):
+        art = _build_artifact()
+        data = json.loads(art.to_json())
+        data["candidate"]["review_scope"]["sneaky"] = "x"
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.ReviewProvenanceArtifact.from_json(json.dumps(data))
+
+    def test_strict_load_rejects_duplicate_top_level_key(self):
+        """F1 repro: plain json.loads silently collapses a duplicate key to its
+        LAST value; a trust-root load must reject the ambiguity outright."""
+        dup_text = (
+            '{"schema": "fab.review-provenance.v2", "schema": "fab.review-provenance.v2", '
+            '"repo": "x", "repo": "y"}'
+        )
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.ReviewProvenanceArtifact.from_json(dup_text)
+
+    def test_strict_load_rejects_duplicate_nested_key(self):
+        dup_text = (
+            '{"schema": "fab.review-provenance.v2", "repo": "x", '
+            '"base": {"ref_identity": "a", "ref_identity": "b", "base_sha": "' + "a" * 40 + '"}}'
+        )
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.ReviewProvenanceArtifact.from_json(dup_text)
+
 
 class TrustRootTest(unittest.TestCase):
     def test_write_then_read_by_run_id_round_trips(self):
@@ -421,6 +526,50 @@ class TrustRootTest(unittest.TestCase):
                 with self.assertRaises(fp.ProvenanceInvalid):
                     fp.provenance_dir_for_run(repo, hostile)
 
+    def test_path_at_authoritative_location_but_git_tracked_is_rejected(self):
+        """F3 repro/fix: path EQUALITY alone does not prove harness authorship —
+        `.phase-loop/` is excluded only via the local, non-committed
+        `.git/info/exclude`, never a committed `.gitignore`. A PR branch COMMIT
+        can place a tracked file at the exact run-store path. Simulate that: git
+        init a repo, commit a file at the authoritative provenance path (as a PR
+        author could), and confirm `reject_client_supplied_provenance` still
+        refuses it even though the location matches exactly."""
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+
+            run_id = "20260723T000000Z-00-test-run"
+            authoritative_path = fp.provenance_path_for_run(repo, run_id)
+            authoritative_path.parent.mkdir(parents=True, exist_ok=True)
+            # A PR-branch-committed file sitting at the EXACT run-store path.
+            rogue_art = _build_artifact(candidate=_make_candidate(patch_digest="9" * 64))
+            authoritative_path.write_text(rogue_art.to_json(), encoding="utf-8")
+            subprocess.run(["git", "add", str(authoritative_path.relative_to(repo))], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "spoof"], cwd=repo, check=True)
+
+            # Path equality holds exactly, but the path is git-tracked -> refuse.
+            with self.assertRaises(fp.ProvenanceInvalid):
+                fp.reject_client_supplied_provenance(authoritative_path, repo, run_id)
+
+    def test_path_at_authoritative_location_untracked_is_accepted(self):
+        """The companion positive case: the same location, written by
+        `write_provenance` (never committed to git) — not blocked by the
+        git-tracked guard."""
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+            run_id = "20260723T000000Z-00-test-run"
+            art = _build_artifact()
+            path = fp.write_provenance(repo, run_id, art)
+            fp.reject_client_supplied_provenance(path, repo, run_id)
+
 
 class ImmutableMaterialTest(unittest.TestCase):
     def test_snapshot_and_rehash_equality(self):
@@ -432,8 +581,10 @@ class ImmutableMaterialTest(unittest.TestCase):
 
             digests = fp.snapshot_material(repo, run_id, [str(source)])
             self.assertEqual(len(digests), 1)
-            # Re-verifying immediately (no edit) must pass.
-            fp.reverify_material(repo, run_id, digests)
+            # Re-verifying immediately (no edit), against the correctly-aggregated
+            # digest, must pass.
+            expected = fp.aggregate_material_digest(digests)
+            fp.reverify_material(repo, run_id, digests, expected_reviewed_material_digest=expected)
 
     def test_editing_underlying_file_after_snapshot_is_detected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -443,10 +594,11 @@ class ImmutableMaterialTest(unittest.TestCase):
             source.write_bytes(b"original reviewed bytes")
 
             digests = fp.snapshot_material(repo, run_id, [str(source)])
+            expected = fp.aggregate_material_digest(digests)
             source.write_bytes(b"an edit made AFTER review")
 
             with self.assertRaises(fp.ProvenanceInvalid):
-                fp.reverify_material(repo, run_id, digests)
+                fp.reverify_material(repo, run_id, digests, expected_reviewed_material_digest=expected)
 
     def test_missing_context_ref_fails_closed_not_silent_empty(self):
         with tempfile.TemporaryDirectory() as td:
@@ -463,7 +615,33 @@ class ImmutableMaterialTest(unittest.TestCase):
             source.write_bytes(b"data")
             fake_entry = fp.MaterialDigest(ref=str(source), sha256="0" * 64)  # never snapshotted
             with self.assertRaises(fp.ProvenanceInvalid):
-                fp.reverify_material(repo, run_id, [fake_entry])
+                fp.reverify_material(repo, run_id, [fake_entry], expected_reviewed_material_digest="1" * 64)
+
+    def test_aggregate_mismatch_against_claimed_reviewed_material_digest_invalidates(self):
+        """F4 repro: a snapshot whose PER-REF digests are stable (pass steps 1+2)
+        but whose AGGREGATE does not equal what the artifact CLAIMS the seats
+        reviewed must invalidate — the binding design §6.4 requires."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_id = "20260723T000000Z-00-test-run"
+            source = repo / "material.txt"
+            source.write_bytes(b"stable, unedited content")
+
+            digests = fp.snapshot_material(repo, run_id, [str(source)])
+            # Per-ref snapshot+live checks would pass on their own; the artifact's
+            # CLAIMED reviewed_material_digest is for an unrelated material set.
+            bogus_claim = "deadbeef" * 8
+            self.assertNotEqual(fp.aggregate_material_digest(digests), bogus_claim)
+            with self.assertRaises(fp.ProvenanceInvalid):
+                fp.reverify_material(repo, run_id, digests, expected_reviewed_material_digest=bogus_claim)
+
+    def test_aggregate_material_digest_is_order_independent(self):
+        a = fp.MaterialDigest(ref="/a", sha256="1" * 64)
+        b = fp.MaterialDigest(ref="/b", sha256="2" * 64)
+        self.assertEqual(
+            fp.aggregate_material_digest([a, b]),
+            fp.aggregate_material_digest([b, a]),
+        )
 
 
 class MetadataOnlyTest(unittest.TestCase):
@@ -476,9 +654,17 @@ class MetadataOnlyTest(unittest.TestCase):
                 body_ref="This finding says the endpoint is missing auth.",  # raw prose
             )
 
-    def test_finding_body_ref_none_is_allowed(self):
-        finding = fp.Finding(id="f1", severity="block", status="clean", body_ref=None)
-        self.assertIsNone(finding.body_ref)
+    def test_finding_body_ref_none_is_rejected(self):
+        """F5 decision: body_ref is REQUIRED, not optional. Every legitimate
+        Finding this design produces originates from a seat's review output
+        (§6.5's schema always shows a populated body_ref) and there is no
+        described finding type that legitimately lacks one — a purely
+        structural/advisory signal (e.g. a boundary-manifest escalation trigger)
+        is carried on Escalation.trigger, never as a bodyless Finding. A finding
+        with body_ref=None is therefore an unaudited gap, and now fails closed at
+        construction instead of being silently accepted."""
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.Finding(id="f1", severity="block", status="clean", body_ref=None)
 
     def test_finding_body_ref_wrong_shape_rejected(self):
         for bad in ("deadbeef", "sha256:tooshort", "sha1:" + "0" * 40, "sha256:" + "g" * 64):

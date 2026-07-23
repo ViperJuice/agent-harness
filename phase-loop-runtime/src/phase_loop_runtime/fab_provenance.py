@@ -8,8 +8,14 @@ the §6.1 trust-root write/read API (harness-only-written, run-store-keyed), and
 §6.4 immutable-material snapshot/reverify primitives. It deliberately does NOT
 implement:
 
-  * the canonical binary `patch_digest` equivalence math or any `git` calls
-    (design §3/§4 — Lane B);
+  * the canonical binary `patch_digest` equivalence math (design §3/§4 — Lane B).
+    The ONE narrow exception (agent-harness#191 CR / F3): `reject_client_supplied_provenance`
+    shells out to `git ls-files` to ask a boundary question — "is this exact path
+    git-tracked in this repo" — because a tracked path is one a PR branch commit
+    can literally place content at. This is NOT the Lane-B patch-digest/equivalence
+    math (no diffing, no blob hashing, no merge-base); it is a single yes/no probe
+    used only to narrow an already-computed run-store path, and it fails safe (see
+    `_is_git_tracked`'s docstring for the exact fail-open/fail-closed split);
   * delta-chain traversal, carry-forward, or escalation DECISION logic (design
     §5.3-§5.5 — Lane C — though the frozen `DeltaReviewRecord` shape and the hash
     chain that binds it are defined here);
@@ -39,6 +45,17 @@ FROZEN INTERFACE (IF-0-FAB-A-1) — B/C/D code against this without renegotiatio
     normalization the design's §3.5 "no normalization" principle forbids), so a
     keyed JSON envelope is the unambiguous realization of "||" (see module-level
     "design ambiguities resolved" note below).
+  * agent-harness#191 CR tightenings (B/C/D must code against these, not the pre-CR
+    shape): (1) `from_json`/`from_dict` are STRICT — an unknown top-level or nested
+    field, or a duplicate JSON object key anywhere in the document, raises
+    `ProvenanceInvalid` (F1); (2) `Finding.body_ref` is REQUIRED (`str`, not
+    `str | None`) — constructing/loading a `Finding` with no body reference raises
+    `ProvenanceInvalid` (F5); (3) `verify_chain` requires a `status=reviewed-clean`
+    delta round to carry a non-null `parent_digest`, and requires `parent_digest`
+    whenever the prior round's patch digest is known, not only when both happen to
+    be present (F2); (4) `reverify_material` takes a new REQUIRED keyword-only
+    `expected_reviewed_material_digest` argument, checked against the new
+    `aggregate_material_digest(material_digests)` primitive (F4).
 
 Design ambiguities resolved in this lane (see also the closing-report to the
 orchestrator):
@@ -81,10 +98,45 @@ orchestrator):
      `verification.json` already live under) and adds a minimal
      `provenance_dir_for_run` helper on top of it. It does not itself allocate run
      ids — callers pass the run id the harness already produced for the run.
+  6. **Trust-root path enforcement is location-narrowing, not authorship-proving
+     (agent-harness#191 CR / F3)**: `reject_client_supplied_provenance` cannot
+     prove a provenance blob was written BY the harness — path location is not
+     authorship. It enforces the narrower, honest, LOCAL invariant Lane A can
+     actually check: the candidate path resolves to the run-store path for the
+     given `run_id` AND that path is not itself git-tracked (so a PR branch commit
+     cannot spoof it by literally committing a file there — `.phase-loop/` is
+     excluded only via the local, non-committed `.git/info/exclude`, not a
+     committed `.gitignore`; see `runtime_paths.EXCLUDE_ENTRIES` and the new §6.1a
+     trust-model note in the design doc). Full authorship enforcement — the gate
+     reading provenance from trusted run-state, with `run_id` resolved from a
+     trusted source rather than PR input — is a Lane D requirement this storage
+     layer enables but does not itself perform.
+  7. **`Finding.body_ref` is REQUIRED, not optional (agent-harness#191 CR / F5)**:
+     every legitimate `Finding` in this design originates from a seat's review
+     output (§6.5's illustrative schema always shows a populated `body_ref`; the
+     module's own "metadata-only" posture is meaningless without a traceable
+     origin). There is no design-described finding type that legitimately lacks
+     one — a bodyless finding is an unaudited gap, not a structural/advisory case
+     — so `body_ref=None` now fails closed at construction rather than being
+     silently accepted.
+  8. **`reverify_material` binds to `review_scope.reviewed_material_digest`
+     (agent-harness#191 CR / F4)**: design §6.4 requires the rehashed snapshot to
+     equal the artifact's CLAIMED `reviewed_material_digest`, not merely to be
+     internally self-consistent. `reverify_material` now takes that expected
+     digest as a REQUIRED keyword argument (an optional/skippable check would
+     recreate the exact "None skips the check" fail-open this finding is about)
+     and aggregates the per-ref digests via the new `aggregate_material_digest`
+     (REUSING `_encode_and_digest` — one canonicalization path, not a second one;
+     mirrors finding 3's "two canonical encodings" lesson).
 
 Fail-closed discipline (this is a security trust root): unknown, ambiguous,
 oversized, malformed, or unrepresentable input NEVER silently passes — every load
-path raises a typed `ProvenanceInvalid` (or a subclass). Additive only: nothing in
+path raises a typed `ProvenanceInvalid` (or a subclass). This now explicitly
+includes an on-disk JSON payload with an UNKNOWN top-level or nested field, or a
+DUPLICATE JSON object key: both are rejected via a strict `object_pairs_hook`
+parse plus a per-`from_dict` known-field check, so a parsed object always
+faithfully represents the audited bytes and nothing un-audited rides along outside
+the digest (agent-harness#191 CR / F1). Additive only: nothing in
 `panel_invoker.py` / `verification_evidence.py` is modified — their helpers are
 imported and reused, never re-implemented.
 """
@@ -96,7 +148,8 @@ import json
 import os
 import re
 import shutil
-from dataclasses import dataclass, field
+import subprocess
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -247,9 +300,50 @@ def _scan_for_surrogates(value: Any, *, _path: str = "$") -> None:
             _scan_for_surrogates(sub, _path=f"{_path}[{i}]")
 
 
+def _strict_object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Trust-root strict parse (agent-harness#191 CR / F1): a DUPLICATE key within
+    the same JSON object is rejected fail-closed. Plain `json.loads` silently keeps
+    only the LAST value for a repeated key — for a security trust root that means
+    a byte-identical file could parse to two different logical objects depending
+    on which key "wins", which is exactly the kind of ambiguity this module's
+    fail-closed posture forbids elsewhere (surrogates, oversize, malformed JSON).
+    `object_pairs_hook` is invoked by `json.loads` for EVERY JSON object in the
+    document (top-level and nested, including array elements), so passing this as
+    the hook makes duplicate-key rejection recursive for free."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProvenanceInvalid(
+                f"duplicate JSON object key {key!r} (fail-closed, strict trust-root parse — "
+                "the on-disk bytes must map to exactly one logical object)"
+            )
+        result[key] = value
+    return result
+
+
+def _reject_unknown_keys(d: Mapping[str, Any], cls: type, *, context: str) -> None:
+    """Trust-root strict parse (agent-harness#191 CR / F1): reject any key in `d`
+    that is not one of `cls`'s own dataclass field names. Every frozen dataclass in
+    this module has a `to_dict()` whose keys are exactly its field names, so this
+    generic check — driven by the dataclass fields themselves, never a
+    hand-maintained duplicate list that could silently drift — is the exact inverse
+    of `to_dict()`: nothing can ride along in the JSON that the schema doesn't know
+    about and that therefore never entered the digest."""
+    known = {f.name for f in fields(cls)}
+    unknown = set(d.keys()) - known
+    if unknown:
+        raise ProvenanceInvalid(
+            f"{context}: unknown field(s) {sorted(unknown)!r} (fail-closed, strict trust-root "
+            "load — an unaudited field must never ride along outside the digest)"
+        )
+
+
 def _load_json_fail_closed(text: str, *, max_bytes: int) -> dict[str, Any]:
-    """Shared fail-closed JSON load: oversize / malformed-JSON / surrogate-in-value
-    all raise `ProvenanceInvalid` (never a silent pass, never fail-open)."""
+    """Shared fail-closed JSON load: oversize / malformed-JSON / duplicate-key /
+    surrogate-in-value all raise `ProvenanceInvalid` (never a silent pass, never
+    fail-open). Unknown TOP-LEVEL/nested fields are rejected separately, by each
+    `from_dict` via `_reject_unknown_keys` (this function only handles what a raw
+    JSON parse itself can catch: shape, size, and duplicate keys)."""
     if not isinstance(text, str):
         raise ProvenanceInvalid("provenance payload must be a JSON text string")
     # Byte length, not char length — a payload can be ASCII-escaped (\\uXXXX) and
@@ -260,7 +354,7 @@ def _load_json_fail_closed(text: str, *, max_bytes: int) -> dict[str, Any]:
     if size > max_bytes:
         raise ProvenanceInvalid(f"payload exceeds max size {max_bytes} bytes (got {size})")
     try:
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=_strict_object_pairs_hook)
     except json.JSONDecodeError as exc:
         raise ProvenanceInvalid(f"malformed JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -343,6 +437,7 @@ class BaseBinding:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "BaseBinding":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(ref_identity=_req_str(d, "ref_identity"), base_sha=_req_str(d, "base_sha"))
 
 
@@ -361,6 +456,7 @@ class BoundaryManifestRef:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "BoundaryManifestRef":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             path=_req_str(d, "path"),
             source_rev=_req_str(d, "source_rev"),
@@ -389,6 +485,7 @@ class ReviewScope:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ReviewScope":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             mode=_req_str(d, "mode"),
             reviewed_material_digest=_opt_str(d, "reviewed_material_digest"),
@@ -415,6 +512,7 @@ class CandidateRecord:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "CandidateRecord":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             head_sha=_req_str(d, "head_sha"),
             patch_digest=_opt_str(d, "patch_digest"),
@@ -460,6 +558,7 @@ class ProvenanceSeat:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ProvenanceSeat":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             seat_key=_req_str(d, "seat_key"),
             vendor_leg=_req_str(d, "vendor_leg"),
@@ -478,15 +577,31 @@ class Finding:
     """design §6.5 `findings[]`. METADATA-ONLY (finding 2's `serialize_seat_outcome`
     posture): `body_ref` is a content-ref DIGEST, never inline review text —
     enforced structurally by `_validate_content_ref` (rejects anything that is not
-    exactly `sha256:<64 hex>`, including `None`-vs-prose confusion)."""
+    exactly `sha256:<64 hex>`, including `None`-vs-prose confusion).
+
+    `body_ref` is REQUIRED (agent-harness#191 CR / F5 — decision, not reflexive
+    compliance): every `Finding` this design produces originates from a seat's
+    review output (§6.5's schema always shows a populated `body_ref`), and there is
+    no described finding type that legitimately lacks a review-body reference — an
+    auto-derived/structural signal (e.g. a boundary-manifest escalation trigger)
+    is carried on `Escalation.trigger`, never as a bodyless `Finding`. A finding
+    with no body reference is therefore an unaudited gap, not a legitimate case:
+    `body_ref=None` fails closed at construction (`ProvenanceInvalid`), tightening
+    frozen interface IF-0-FAB-A-1."""
 
     id: str
     severity: str
     status: str
     path_scope: tuple[str, ...] = ()
-    body_ref: str | None = None
+    body_ref: str
 
     def __post_init__(self) -> None:
+        if self.body_ref is None:
+            raise ProvenanceInvalid(
+                "Finding.body_ref is REQUIRED (fail-closed, F5 decision): every finding must "
+                "reference the review-body content it originated from — a bodyless finding is an "
+                "unauditable trust-root gap, not a legitimate structural/advisory case"
+            )
         _validate_content_ref(self.body_ref, field_name="body_ref")
 
     def to_dict(self) -> dict[str, Any]:
@@ -500,12 +615,13 @@ class Finding:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Finding":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             id=_req_str(d, "id"),
             severity=_req_str(d, "severity"),
             status=_req_str(d, "status"),
             path_scope=_tuple_str(d, "path_scope"),
-            body_ref=_opt_str(d, "body_ref"),
+            body_ref=_req_str(d, "body_ref"),
         )
 
 
@@ -523,6 +639,7 @@ class VerificationEvidenceRef:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "VerificationEvidenceRef":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             kind=_req_str(d, "kind"),
             artifact_seal=_req_str(d, "artifact_seal"),
@@ -542,6 +659,7 @@ class MaterialDigest:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "MaterialDigest":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(ref=_req_str(d, "ref"), sha256=_req_str(d, "sha256"))
 
 
@@ -557,6 +675,7 @@ class Escalation:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Escalation":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(required=_req_bool(d, "required"), trigger=_opt_str(d, "trigger"))
 
 
@@ -588,6 +707,7 @@ class EquivalenceResult:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "EquivalenceResult":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             expected_head_digest=_opt_str(d, "expected_head_digest"),
             observed_head_digest=_opt_str(d, "observed_head_digest"),
@@ -774,6 +894,7 @@ class DeltaReviewRecord:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "DeltaReviewRecord":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             schema=_req_str(d, "schema"),
             policy=d.get("policy"),
@@ -945,6 +1066,7 @@ class ReviewProvenanceArtifact:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ReviewProvenanceArtifact":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         schema = _req_str(d, "schema")
         if schema != SCHEMA_REVIEW_PROVENANCE:
             raise ProvenanceInvalid(f"artifact schema must be {SCHEMA_REVIEW_PROVENANCE!r}, got {schema!r}")
@@ -1007,16 +1129,26 @@ def verify_chain(artifact: ReviewProvenanceArtifact) -> None:
       * `delta_chain[0].parent_chain_digest == C0` (recomputed, not trusted);
       * `delta_chain[i].parent_chain_digest == delta_chain[i-1].chain_digest`;
       * `delta_chain[i].parent_digest == delta_chain[i-1].resulting_head_digest`
-        (or `== candidate.patch_digest` for `i == 0`) whenever both sides are
+        (or `== candidate.patch_digest` for `i == 0`) — REQUIRED (agent-harness#191
+        CR / F2), not merely checked-when-present, whenever the PARENT side is
         recorded (Lane B populates these; Lane A only checks the LINK, not the
-        underlying patch-digest math);
+        underlying patch-digest math): if the prior round's patch digest is known
+        but `record.parent_digest` is `None`, that is a BROKEN link, not an
+        absent-therefore-skipped one — §5.1 requires DUAL-link contiguity
+        (`parent_digest` AND `parent_chain_digest`), not single-link;
+      * a `status = reviewed-clean` record MUST carry a non-null `parent_digest`
+        unconditionally (design §5.1: "A `reviewed-clean` delta MUST carry a
+        linking parent_digest") — even in the degenerate case where the prior
+        patch digest itself is not yet recorded, a round claiming to be
+        carry-forward-eligible clean review cannot be unlinked;
       * `artifact.chain_digest == (delta_chain[-1].chain_digest if delta_chain else C0)`.
 
     Raises `ChainVerificationError` (a `ProvenanceInvalid` subclass) on the FIRST
-    break — a spliced fabricated round, a reordered round, or a broken
-    `parent_digest`/`parent_chain_digest` link all fail this. Never returns a
-    bool; a caller that wants "is it valid" should catch the exception — this
-    mirrors the module's fail-closed-not-silent posture."""
+    break — a spliced fabricated round, a reordered round, an unlinked
+    `reviewed-clean` round, or a broken `parent_digest`/`parent_chain_digest` link
+    all fail this. Never returns a bool; a caller that wants "is it valid" should
+    catch the exception — this mirrors the module's fail-closed-not-silent
+    posture."""
     c0 = artifact.compute_c0()
     prior_chain_digest = c0
     prior_patch_digest = artifact.candidate.patch_digest
@@ -1032,11 +1164,24 @@ def verify_chain(artifact: ReviewProvenanceArtifact) -> None:
                 f"delta_chain[{index}].parent_chain_digest broken "
                 f"(expected={prior_chain_digest!r}, got={record.parent_chain_digest!r}) — reordered/spliced round"
             )
-        if prior_patch_digest is not None and record.parent_digest is not None and record.parent_digest != prior_patch_digest:
+        if record.status == DELTA_STATUS_REVIEWED_CLEAN and record.parent_digest is None:
             raise ChainVerificationError(
-                f"delta_chain[{index}].parent_digest broken "
-                f"(expected={prior_patch_digest!r}, got={record.parent_digest!r}) — reordered/spliced round"
+                f"delta_chain[{index}] is status={DELTA_STATUS_REVIEWED_CLEAN!r} but carries no "
+                "parent_digest (fail-closed, §5.1 dual-link contiguity: a reviewed-clean delta MUST "
+                "carry a linking parent_digest)"
             )
+        if prior_patch_digest is not None:
+            if record.parent_digest is None:
+                raise ChainVerificationError(
+                    f"delta_chain[{index}].parent_digest is null but the prior round's patch digest "
+                    f"is recorded ({prior_patch_digest!r}) — fail-closed, §5.1 dual-link contiguity "
+                    "requires parent_digest whenever the parent side is known, not only when present"
+                )
+            if record.parent_digest != prior_patch_digest:
+                raise ChainVerificationError(
+                    f"delta_chain[{index}].parent_digest broken "
+                    f"(expected={prior_patch_digest!r}, got={record.parent_digest!r}) — reordered/spliced round"
+                )
         prior_chain_digest = record.chain_digest
         prior_patch_digest = record.resulting_head_digest if record.resulting_head_digest is not None else prior_patch_digest
     expected_final = artifact.delta_chain[-1].chain_digest if artifact.delta_chain else c0
@@ -1067,6 +1212,7 @@ class GateDeltaEntry:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "GateDeltaEntry":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             delta_head_sha=_req_str(d, "delta_head_sha"),
             delta_digest=_opt_str(d, "delta_digest"),
@@ -1105,6 +1251,7 @@ class EquivalenceVerified:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "EquivalenceVerified":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             result=_req_str(d, "result"),
             candidate_head_sha=_opt_str(d, "candidate_head_sha"),
@@ -1161,6 +1308,7 @@ class GateStatus:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "GateStatus":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         schema = _req_str(d, "schema")
         if schema != SCHEMA_GATE_STATUS:
             raise ProvenanceInvalid(f"gate-status schema must be {SCHEMA_GATE_STATUS!r}, got {schema!r}")
@@ -1218,12 +1366,17 @@ def provenance_path_for_run(repo: Path, run_id: str) -> Path:
 
 
 def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact) -> Path:
-    """HARNESS-ONLY write path (design §6.1): persists `artifact` to the durable
-    run store keyed by `run_id`. This is the ONLY function in this module that
-    writes the authoritative copy — a caller (e.g. a PR-branch checkout, a
-    client-uploaded blob) has no other way to make provenance authoritative than
-    going through this write, which always targets the run store, never an
-    arbitrary caller-chosen path."""
+    """Intended-harness-only write path (design §6.1): persists `artifact` to the
+    durable run store keyed by `run_id`. This is the ONLY function in this module
+    that writes to the authoritative run-store path — but this is a CODING
+    CONVENTION Lane A follows, not an enforced authorship guarantee: nothing in
+    this module (or process boundary) stops a co-resident process with filesystem
+    write access to the run store from also writing to this exact path. Proving
+    "the harness, and only the harness, wrote this" is NOT this function's job —
+    see the trust-model note at `reject_client_supplied_provenance` and design
+    §6.1a. What this function DOES guarantee: it never accepts an arbitrary
+    caller-chosen destination — the write always targets the run-store path for
+    `run_id`, never a PR-branch checkout or a client-supplied path."""
     path = provenance_path_for_run(repo, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = artifact.to_json()
@@ -1234,12 +1387,17 @@ def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact
 
 
 def read_provenance(repo: Path, run_id: str) -> ReviewProvenanceArtifact:
-    """The gate's sole provenance READ path (design §6.1): reads ONLY from the
-    run store, keyed by `run_id` — there is no parameter through which a caller
-    can substitute a different (e.g. client-supplied / PR-branch) blob as the
-    source of truth. Raises `ProvenanceNotFound` (a `ProvenanceInvalid`
-    subclass) when the run store has nothing for `run_id` — it never falls back
-    to any other candidate location."""
+    """The gate's provenance READ path (design §6.1): reads ONLY from the run
+    store, keyed by `run_id` — there is no parameter through which a caller can
+    substitute a different (e.g. client-supplied / PR-branch) blob as the source
+    of truth. Raises `ProvenanceNotFound` (a `ProvenanceInvalid` subclass) when
+    the run store has nothing for `run_id` — it never falls back to any other
+    candidate location. This proves ONLY that the bytes came from the expected
+    LOCATION and pass integrity (`artifact_digest` recompute in `from_json`); it
+    does NOT prove the bytes were authored by the harness — see the trust-model
+    note at `reject_client_supplied_provenance` and design §6.1a. Whether `run_id`
+    itself is trustworthy (resolved from trusted review-run output vs. accepted
+    from PR-controlled input) is the CALLER's responsibility — Lane D's."""
     path = provenance_path_for_run(repo, run_id)
     # #243 precedent (verification_evidence.load_verification_artifact): stat
     # the oversize bound BEFORE reading, so a tampered/runaway file is rejected
@@ -1261,18 +1419,91 @@ def read_provenance(repo: Path, run_id: str) -> ReviewProvenanceArtifact:
     return ReviewProvenanceArtifact.from_json(text)
 
 
+def _is_git_tracked(repo: Path, path: Path) -> bool:
+    """Boundary probe for `reject_client_supplied_provenance` (agent-harness#191
+    CR / F3) — NOT the Lane-B patch-digest/equivalence machinery (no diffing, no
+    blob hashing, no merge-base math); a single yes/no question: "does git already
+    track a file at this exact path in `repo`'s working tree". A tracked path is
+    one a PR branch COMMIT can place content at — `.phase-loop/` is excluded from
+    git only via the local, per-clone, non-committed `.git/info/exclude`
+    (`runtime_paths.EXCLUDE_ENTRIES`), never a committed `.gitignore`, and at least
+    one file (`'.phase-loop/handoffs/claude-plan-detailed.md'`) is already tracked
+    under it in this very repo — proof the directory is not a reliable boundary by
+    itself.
+
+    Fail behavior, stated explicitly because it differs by cause:
+      * `repo` is not a git working tree at all -> returns `False` (this guard does
+        not apply; the tracked-path spoof only exists inside a real git checkout,
+        and `reject_client_supplied_provenance`'s path-equality check still holds
+        regardless — untested repos, like this module's own tempdir-based tests,
+        are not silently exempted from the OTHER check, only from this one);
+      * `repo` IS a git working tree but the `git` subprocess itself fails/hangs ->
+        returns `True` (fail CLOSED: an undetermined tracked-status inside a real
+        repo is treated as unsafe, never as a silent pass)."""
+    repo = Path(repo)
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return False
+    try:
+        rel = path.resolve().relative_to(repo.resolve())
+    except ValueError:
+        rel = path
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", str(rel)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return result.returncode == 0
+
+
 def reject_client_supplied_provenance(candidate_path: Path, repo: Path, run_id: str) -> None:
-    """Explicit trust-root assertion helper (design §6.1's "refuses client-
-    supplied provenance as sole gate input", made directly testable): raises
-    `ProvenanceInvalid` unless `candidate_path` IS the harness-written run-store
-    path for `run_id` — so a caller that received a provenance-shaped file from
-    anywhere else (a PR branch, a client upload) cannot pass it off as
-    authoritative by construction."""
+    """Trust-root assertion helper (agent-harness#191 CR / F3 — rewritten to stop
+    over-claiming). PATH LOCATION ALONE DOES NOT PROVE HARNESS AUTHORSHIP: the run
+    store lives inside the repo tree at `.phase-loop/runs/`, and that directory is
+    excluded from git only via the LOCAL, per-clone, non-committed
+    `.git/info/exclude` — never a committed `.gitignore` (a file is already
+    tracked under `.phase-loop/` in this repo, proving the boundary is not
+    robust). A prior version of this helper claimed path-equality alone proved
+    authorship; that claim was false and has been removed.
+
+    What this helper actually enforces — the narrower, honest invariant Lane A
+    CAN check locally, purely from the filesystem/git state available here:
+      1. `candidate_path` resolves to EXACTLY the run-store path
+         `provenance_path_for_run(repo, run_id)` for the given `run_id`; AND
+      2. that path is NOT itself a path git already tracks in `repo` (see
+         `_is_git_tracked`) — so a PR branch cannot spoof the run-store artifact
+         by literally committing a file at that exact location.
+
+    This is location-narrowing, not authorship-proving. It does NOT (and, from
+    Lane A alone, cannot) prove the bytes were produced by a trusted harness
+    process rather than some OTHER co-resident process with write access to the
+    run store — that residual is consciously deferred to breakglass (same class
+    as Consiliency/agent-harness#273). Full authorship enforcement requires the
+    gate to read provenance from TRUSTED run-state with `run_id` resolved from a
+    trusted source (never PR-controlled input) — that is a Lane D requirement
+    (design §6.1a / §9) this storage layer enables but does not itself perform."""
     authoritative = provenance_path_for_run(repo, run_id).resolve()
-    if Path(candidate_path).resolve() != authoritative:
+    candidate_resolved = Path(candidate_path).resolve()
+    if candidate_resolved != authoritative:
         raise ProvenanceInvalid(
-            f"refusing client-supplied provenance at {candidate_path} (fail-closed): only the "
-            f"harness-written run-store artifact at {authoritative} is authoritative"
+            f"refusing provenance at {candidate_path} (fail-closed): does not resolve to the "
+            f"run-store path {authoritative} for run_id={run_id!r}"
+        )
+    if _is_git_tracked(repo, candidate_resolved):
+        raise ProvenanceInvalid(
+            f"refusing provenance at {candidate_resolved} (fail-closed): this path is GIT-TRACKED "
+            f"in {repo} — a PR branch commit can place content at this exact path, so run-store "
+            "LOCATION alone cannot distinguish harness-written bytes from PR-controlled bytes here "
+            "(design §6.1a); this helper does not claim to prove authorship, only that the path is "
+            "neither a caller-chosen location nor a git-committable one"
         )
 
 
@@ -1320,7 +1551,34 @@ def snapshot_material(repo: Path, run_id: str, context_refs: Sequence[str]) -> t
     return tuple(digests)
 
 
-def reverify_material(repo: Path, run_id: str, material_digests: Sequence[MaterialDigest]) -> None:
+def aggregate_material_digest(material_digests: Sequence[MaterialDigest]) -> str:
+    """The canonical aggregation of per-ref `MaterialDigest` entries into ONE
+    reviewed-material digest — design §5.5/§6.4's `review_scope.reviewed_material_digest`
+    (agent-harness#191 CR / F4: this function is the frozen definition of "however
+    `reviewed_material_digest` is meant to be computed", since neither v1 nor v2 of
+    the design spelled it out concretely). Deterministic regardless of input order:
+    the `(ref, sha256)` pairs are SORTED before encoding, so appending refs in a
+    different order never changes the result. Hashed via the SAME `_encode_and_digest`
+    helper every other non-path-bearing digest in this module uses — ONE canonical
+    encoding, not a second hand-rolled one (finding 3's "two canonical encodings"
+    lesson). A caller populating `review_scope.reviewed_material_digest` (Lane C/D,
+    when constructing a review round from `snapshot_material`'s output) MUST use
+    this same function so both sides of `reverify_material`'s equality check are
+    computed identically."""
+    ordered = sorted(
+        ({"ref": m.ref, "sha256": m.sha256} for m in material_digests),
+        key=lambda entry: (entry["ref"], entry["sha256"]),
+    )
+    return _encode_and_digest({"material_digests": ordered})
+
+
+def reverify_material(
+    repo: Path,
+    run_id: str,
+    material_digests: Sequence[MaterialDigest],
+    *,
+    expected_reviewed_material_digest: str,
+) -> None:
     """design §6.4/T14 gate-time re-verification. For EACH recorded
     `MaterialDigest`:
 
@@ -1331,7 +1589,16 @@ def reverify_material(repo: Path, run_id: str, material_digests: Sequence[Materi
          the underlying (mutable) original is thereby DETECTED rather than
          silently tolerated (module docstring resolved-ambiguity #4).
 
-    Raises `ProvenanceInvalid` on the first mismatch (snapshot OR live)."""
+    Then (agent-harness#191 CR / F4 — the binding step v1 of this function
+    omitted): the per-ref digests are aggregated via `aggregate_material_digest`
+    and REQUIRED to equal `expected_reviewed_material_digest` — the artifact's
+    claimed `review_scope.reviewed_material_digest`. `expected_reviewed_material_digest`
+    is a REQUIRED keyword-only argument, deliberately NOT optional: an
+    optional/skippable check would recreate the exact fail-open this finding
+    describes (a snapshot whose per-ref digests are internally stable but whose
+    AGGREGATE does not match what the artifact claims the seats reviewed would
+    silently pass). Raises `ProvenanceInvalid` on the first mismatch: per-ref
+    snapshot, per-ref live-drift, or the aggregate binding."""
     snapshot_dir = provenance_dir_for_run(repo, run_id) / MATERIAL_SNAPSHOT_DIRNAME
     for entry in material_digests:
         candidates = sorted(snapshot_dir.glob(f"{entry.sha256}*"))
@@ -1355,3 +1622,11 @@ def reverify_material(repo: Path, run_id: str, material_digests: Sequence[Materi
                 f"material live ref was edited after snapshot (fail-closed, edit detected): {entry.ref} "
                 f"(recorded={entry.sha256!r} live={live_digest!r})"
             )
+    aggregate = aggregate_material_digest(material_digests)
+    if aggregate != expected_reviewed_material_digest:
+        raise ProvenanceInvalid(
+            "reviewed-material aggregate mismatch (fail-closed, design §6.4 binding — agent-harness#191 "
+            f"CR / F4): recomputed aggregate over {len(material_digests)} ref(s) = {aggregate!r}, but the "
+            f"artifact's claimed review_scope.reviewed_material_digest = {expected_reviewed_material_digest!r} "
+            "— the material that was reverified does not match what the seats claim to have reviewed"
+        )
