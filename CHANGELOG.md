@@ -84,6 +84,24 @@ new shapes, not the pre-CR ones:
   has a referenceable body — there is no described bodyless finding type. `body_ref=None` now
   raises `ProvenanceInvalid` at construction instead of being silently accepted.
 
+#### Round-2 CR fix: git-probe fail-open (codex + gemini, independently confirmed)
+
+- **`_is_git_tracked` polarity was backwards on git-probe ERRORS**: the F3 fix's
+  `_is_git_tracked` boundary probe (`reject_client_supplied_provenance`'s git-tracked guard)
+  returned `False` ("not tracked" = safe = ACCEPT) on `git rev-parse --is-inside-work-tree`
+  timeout / `OSError` / any nonzero return code, and on `git ls-files --error-unmatch` nonzero
+  (including fatal errors, e.g. rc 128) — directly contradicting the function's own docstring and
+  the trust-root's fail-closed requirement. Both codex and gemini independently reproduced
+  acceptance of a client-supplied provenance blob via a `rev-parse` timeout and a fatal rc 128.
+  Fixed: the polarity is now uncertainty-REJECTS — a git-probe timeout, `OSError`, or unexpected
+  nonzero return code on EITHER probe now returns `True` (tracked/unsafe, fail closed). The ONE
+  legitimate carve-out — `repo` is genuinely not a git working tree at all — is now recognized
+  ONLY via git's own deterministic, reproducible failure signature (`rev-parse` rc 128 with
+  `"not a git repository"` in stderr), not any nonzero rc. The `ls-files` probe no longer uses
+  `--error-unmatch` (whose nonzero exit conflated "not tracked" with real git errors); it uses
+  plain `git ls-files -- <path>`, where a clean `rc == 0` with empty output is the only signal
+  treated as definitively untracked/safe.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the

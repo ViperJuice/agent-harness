@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess as _subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from phase_loop_runtime import fab_provenance as fp
 
@@ -569,6 +571,121 @@ class TrustRootTest(unittest.TestCase):
             art = _build_artifact()
             path = fp.write_provenance(repo, run_id, art)
             fp.reject_client_supplied_provenance(path, repo, run_id)
+
+    def test_git_probe_rev_parse_timeout_fails_closed(self):
+        """Round-2 CR (codex + gemini, agent-harness#191): a `git rev-parse`
+        TIMEOUT is undetermined tracked-status, not a "safe/not-a-repo" answer
+        — must be treated as tracked/unsafe (`_is_git_tracked` -> True), so
+        `reject_client_supplied_provenance` REJECTS rather than silently
+        accepting a client-supplied provenance blob."""
+        repo = Path("/nonexistent/does-not-matter")
+        with mock.patch(
+            "subprocess.run", side_effect=_subprocess.TimeoutExpired(cmd="git", timeout=10)
+        ):
+            self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_rev_parse_oserror_fails_closed(self):
+        """`git` binary missing/unrunnable during the `rev-parse` probe -> an
+        OSError, which is undetermined tracked-status, not "not a repo"."""
+        repo = Path("/nonexistent/does-not-matter")
+        with mock.patch("subprocess.run", side_effect=OSError("no such file")):
+            self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_rev_parse_fatal_nonrepo_message_stays_untracked(self):
+        """The ONE legitimate carve-out: git's own deterministic, reproducible
+        "not a git repository" fatal message (rc 128) is a clean negative
+        answer, not an ambiguous error — the guard genuinely does not apply,
+        so this must still return False (preserves the tempdir-based
+        test-scaffolding exemption used elsewhere in this file)."""
+        repo = Path("/nonexistent/does-not-matter")
+
+        def fake_run(cmd, **kwargs):
+            result = mock.Mock()
+            result.returncode = 128
+            result.stdout = ""
+            result.stderr = "fatal: not a git repository (or any of the parent directories): .git"
+            return result
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            self.assertFalse(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_rev_parse_other_fatal_error_fails_closed(self):
+        """A DIFFERENT fatal git failure (rc 128, but NOT the "not a git
+        repository" signature — e.g. corruption) is ambiguous: it could be
+        occurring inside a REAL working tree. Must fail closed, not be
+        conflated with the genuine not-a-repo carve-out."""
+        repo = Path("/nonexistent/does-not-matter")
+
+        def fake_run(cmd, **kwargs):
+            result = mock.Mock()
+            result.returncode = 128
+            result.stdout = ""
+            result.stderr = "fatal: index file corrupt"
+            return result
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_ls_files_nonzero_fatal_fails_closed(self):
+        """`git ls-files` returning a nonzero rc (incl. fatal rc 128) after a
+        successful `rev-parse` is an ambiguous git failure, NOT a definitive
+        "not tracked" answer — must fail closed (this was the concrete F3
+        fail-open: the old code used `--error-unmatch` and treated ANY
+        nonzero rc, including fatal errors, as "not tracked")."""
+        repo = Path("/nonexistent/does-not-matter")
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            result = mock.Mock()
+            if calls["n"] == 1:
+                result.returncode = 0
+                result.stdout = "true\n"
+                result.stderr = ""
+            else:
+                result.returncode = 128
+                result.stdout = ""
+                result.stderr = "fatal: unable to read tree object"
+            return result
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_ls_files_timeout_fails_closed(self):
+        """`git ls-files` hanging/timing out after a successful `rev-parse`
+        is undetermined tracked-status -> fail closed."""
+        repo = Path("/nonexistent/does-not-matter")
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = "true\n"
+                result.stderr = ""
+                return result
+            raise _subprocess.TimeoutExpired(cmd="git", timeout=10)
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
+
+    def test_git_probe_error_paths_cause_reject_client_supplied_provenance_to_raise(self):
+        """End-to-end: an ambiguous git-probe failure at the authoritative
+        run-store path must cause `reject_client_supplied_provenance` to
+        RAISE (fail closed), not silently accept — this is the actual trust-
+        root consequence of the `_is_git_tracked` polarity bug."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_id = "20260723T000000Z-00-test-run"
+            art = _build_artifact()
+            path = fp.write_provenance(repo, run_id, art)
+
+            with mock.patch(
+                "subprocess.run", side_effect=_subprocess.TimeoutExpired(cmd="git", timeout=10)
+            ):
+                with self.assertRaises(fp.ProvenanceInvalid):
+                    fp.reject_client_supplied_provenance(path, repo, run_id)
 
 
 class ImmutableMaterialTest(unittest.TestCase):

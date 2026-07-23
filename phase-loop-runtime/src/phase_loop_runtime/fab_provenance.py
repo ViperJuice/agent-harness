@@ -1431,15 +1431,35 @@ def _is_git_tracked(repo: Path, path: Path) -> bool:
     under it in this very repo — proof the directory is not a reliable boundary by
     itself.
 
-    Fail behavior, stated explicitly because it differs by cause:
-      * `repo` is not a git working tree at all -> returns `False` (this guard does
-        not apply; the tracked-path spoof only exists inside a real git checkout,
-        and `reject_client_supplied_provenance`'s path-equality check still holds
-        regardless — untested repos, like this module's own tempdir-based tests,
-        are not silently exempted from the OTHER check, only from this one);
-      * `repo` IS a git working tree but the `git` subprocess itself fails/hangs ->
-        returns `True` (fail CLOSED: an undetermined tracked-status inside a real
-        repo is treated as unsafe, never as a silent pass)."""
+    Fail behavior, stated explicitly because it differs by cause — the polarity
+    is: uncertainty REJECTS, only a DEFINITIVE, successful "not tracked" result
+    is treated as safe (agent-harness#191 CR round 2 / fail-open fix — a prior
+    version of this function inverted this and returned `False` — safe — on
+    git-probe ERRORS, which let a hung/erroring `git` subprocess or a fatal
+    git failure smuggle a client-supplied provenance blob past the trust root):
+      * `repo` is not a git working tree at all -> returns `False` (this guard
+        does not apply; the tracked-path spoof only exists inside a real git
+        checkout, and `reject_client_supplied_provenance`'s path-equality check
+        still holds regardless — untested repos, like this module's own
+        tempdir-based tests, are not silently exempted from the OTHER check,
+        only from this one). This is recognized ONLY by git's own deterministic,
+        well-known `rev-parse` failure signature for "no repository here"
+        (`returncode == 128` and `"not a git repository"` in stderr) — a CLEAN,
+        reproducible negative answer, not an ambiguous one;
+      * ANY OTHER git-probe failure — timeout, `OSError` (missing/unrunnable
+        `git`), an unexpected nonzero return code (including other fatal errors,
+        e.g. corruption, permissions, locked refs — NOT the specific "not a git
+        repository" signature above), or output that isn't the exact expected
+        shape — is undetermined tracked-status and returns `True` (fail CLOSED:
+        never a silent pass). This applies identically to BOTH the
+        `rev-parse --is-inside-work-tree` probe and the `ls-files` probe below;
+      * the `ls-files` probe never uses `--error-unmatch` (whose nonzero exit
+        conflates "not tracked" with real git errors); it uses plain
+        `git ls-files -- <path>`, which — on a clean `returncode == 0` — prints
+        the path iff it is tracked and prints NOTHING iff it is not. Only that
+        clean rc==0-and-empty-output combination is treated as definitively
+        untracked/safe; a nonzero return code (incl. fatal rc 128) is an
+        ambiguous git failure and fails CLOSED, same as above."""
     repo = Path(repo)
     try:
         probe = subprocess.run(
@@ -1447,8 +1467,23 @@ def _is_git_tracked(repo: Path, path: Path) -> bool:
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        # Ambiguous: could be a hung/broken `git` inside a REAL work tree.
+        # Fail CLOSED — never silently treat this as "not a repo".
+        return True
+    if probe.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        if probe.returncode == 128 and "not a git repository" in stderr:
+            # Git's own deterministic, reproducible signal that `repo` is
+            # genuinely not a git working tree at all — the guard does not
+            # apply (see docstring). A CLEAN negative, not an error.
+            return False
+        # Any OTHER nonzero exit is an ambiguous git failure that could be
+        # occurring INSIDE a real working tree (corruption, permissions,
+        # locked refs, ...). Fail CLOSED — never treat as "not a repo".
+        return True
+    if probe.stdout.strip() != "true":
+        # A clean, definitive "false" (e.g. run from inside a bare `.git`
+        # dir) — the guard genuinely does not apply here.
         return False
     try:
         rel = path.resolve().relative_to(repo.resolve())
@@ -1456,12 +1491,20 @@ def _is_git_tracked(repo: Path, path: Path) -> bool:
         rel = path
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", str(rel)],
+            ["git", "-C", str(repo), "ls-files", "--", str(rel)],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
+        # Ambiguous: fail CLOSED.
         return True
-    return result.returncode == 0
+    if result.returncode != 0:
+        # Any git-level failure here (incl. fatal rc 128) is ambiguous, not a
+        # definitive "not tracked" answer. Fail CLOSED.
+        return True
+    # A clean, successful rc==0 result: plain `ls-files` (no --error-unmatch)
+    # prints the path iff it is tracked, nothing iff it is not — definitive,
+    # not merely "no error was raised".
+    return result.stdout.strip() != ""
 
 
 def reject_client_supplied_provenance(candidate_path: Path, repo: Path, run_id: str) -> None:
