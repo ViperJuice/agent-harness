@@ -156,20 +156,35 @@ class GlobSemanticsTest(unittest.TestCase):
             with self.assertRaises(fd.BoundaryManifestInvalid):
                 fd._translate_glob_to_regex(bad)
 
-    def test_semantically_empty_globs_rejected(self):
-        """Round-3 CR (codex, verified by direct execution against 8d68675;
-        grok + gemini AGREE): a glob can be SYNTACTICALLY valid (passes every
-        prior check — non-empty, not `/`-absolute, no `..` component, safe
-        charset) and still compile to a regex that matches ZERO real git
-        paths, because git's `-z` diff paths are always repository-relative
-        and NORMALIZED (never `./`-prefixed, never a `.`/`..` path
-        component, never an empty component, never trailing-slashed). Each
-        of these must now be rejected at manifest-parse time (fail-closed),
-        not silently accepted as a glob that "just doesn't match anything"."""
-        for bad in ("./**", ".", "..", "**/", "a//b", "x/./y", "x/../y", "x/", "/x"):
+    def test_dot_dot_and_absolute_globs_still_rejected(self):
+        """The genuinely unsafe glob shapes remain rejected at translate
+        time, unaffected by round-6: an absolute path, or a literal `..`
+        path-traversal component anywhere in the glob string (checked
+        BEFORE the per-segment dot/empty check that round-6 removed)."""
+        for bad in ("..", "x/../y", "/x"):
             with self.subTest(bad=bad):
                 with self.assertRaises(fd.BoundaryManifestInvalid):
                     fd._translate_glob_to_regex(bad)
+
+    def test_dot_and_empty_component_globs_no_longer_rejected(self):
+        """Round-6 (Consiliency/agent-harness#191, the MATCHING-layer fix for
+        the confirmed boundary-glob evasion): round-3's per-segment
+        `.`/empty-component rejection in `_translate_glob_to_regex` is
+        REMOVED. Round-3 reasoned these globs could "never match a real
+        changed path" because git's `-z` diff paths are always normalized —
+        that premise is FALSE for a hostile tree (`git mktree`/`git
+        commit-tree` accept `.`, `..`, and empty tree-entry names), which is
+        exactly the confirmed evasion this round closes: the fix normalizes
+        the PATH side of every match (`_normalize_path_for_matching`, used
+        by `evaluate_boundary_escalation`/`carry_forward`), not the glob
+        side. A `.`/empty-component glob is therefore no longer a fail-open
+        (it cannot silently narrow a boundary — the paths it's compared
+        against are always normalized too) and must compile without
+        raising; it is now, at worst, INERT against any normalized path (a
+        manifest-authoring lint concern, not a security defect)."""
+        for glob in ("./**", ".", "**/", "a//b", "x/./y", "x/"):
+            with self.subTest(glob=glob):
+                fd._translate_glob_to_regex(glob)  # must not raise
 
     def test_dot_git_component_compiles_and_matches(self):
         """Round-5 CR (codex, self-correcting): round-4 briefly rejected a
@@ -365,19 +380,35 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         self.assertFalse(esc.required)
         self.assertIsNone(esc.trigger)
 
-    def test_semantically_empty_glob_manifest_is_malformed_not_present(self):
-        """Round-3 CR (codex, verified by direct execution against 8d68675;
-        grok + gemini AGREE): the exact repro — `[auth]\\nglobs = ["./**"]`
-        used to give `evaluate_boundary_escalation(load, ("src/live.py",))
-        .required == False`, i.e. `auth` LOOKED protected (PRESENT
-        disposition, a non-empty valid-glob list) while being silently
-        UNPROTECTED, because `./**` compiles but matches no normalized git
-        path. It must now resolve to MALFORMED (same fail-closed disposition
-        as missing/genuinely-malformed) and force escalate-every-delta."""
-        for bad_glob in ("./**", ".", "..", "**/", "a//b", "x/./y", "x/../y", "x/", "/x"):
+    def test_dot_and_empty_component_glob_manifest_is_present_not_malformed(self):
+        """Round-6 (Consiliency/agent-harness#191): these glob shapes are no
+        longer rejected at manifest-parse time (round-3's rejection is
+        REMOVED — see `_translate_glob_to_regex`'s docstring for why: the
+        fix is at the path-normalization matching layer, not the glob
+        syntax layer). A manifest declaring one of these is PRESENT and
+        well-formed; the glob is simply INERT against any normalized path
+        (normalization can never reproduce a `.`/empty component), so it
+        does not spuriously escalate a disjoint delta either — a
+        manifest-authoring lint concern for the operator, not a fail-open
+        this module must reject."""
+        for glob in ("./**", ".", "**/", "a//b", "x/./y", "x/"):
+            with self.subTest(glob=glob):
+                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{glob}"]\n')
+                base = self.commit(f"c1 dot/empty-component glob {glob!r}")
+                load = fd.load_boundary_manifest_at_base(self.repo, base)
+                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+                self.assertIsNotNone(load.manifest)
+                esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
+                self.assertFalse(esc.required, f"{glob!r} must not spuriously escalate a disjoint path")
+
+    def test_traversal_and_absolute_globs_still_malformed(self):
+        """The genuinely unsafe glob shapes (`..`-anywhere, absolute path)
+        remain fail-closed MALFORMED — unaffected by round-6, and still
+        force escalate-every-delta."""
+        for bad_glob in ("..", "x/../y", "/x"):
             with self.subTest(bad_glob=bad_glob):
                 self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{bad_glob}"]\n')
-                base = self.commit(f"c1 semantically-empty glob {bad_glob!r}")
+                base = self.commit(f"c1 unsafe glob {bad_glob!r}")
                 load = fd.load_boundary_manifest_at_base(self.repo, base)
                 self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
                 self.assertIsNone(load.manifest)
@@ -608,6 +639,231 @@ class EscalationDecisionTest(GitRepoTestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Round-6 (Consiliency/agent-harness#191) — `_normalize_path_for_matching`
+# unit coverage, plus the CONFIRMED start-anchored-boundary-glob evasion
+# regression: `enumerate_changed_paths` does NO normalization and
+# `git mktree`/`git commit-tree` accept `.`, `..`, and empty tree-entry
+# names, so a hostile delta can surface a MANGLED changed path
+# (`./X`, `X//Y`, `x/../X`) that a START-ANCHORED glob's literal-string match
+# never saw pre-fix, even though `git checkout` collapses it to the real,
+# protected path `X`. Empirically verified while writing this regression
+# (git 2.34.1): the `./X` and `x/../X` mangled forms are reachable through a
+# REAL crafted commit tree end to end (`git diff --raw` succeeds, rc==0, and
+# reports the literal mangled path) — the `X//Y` (embedded EMPTY tree-entry
+# name) form is accepted by `git mktree` at WRITE time but git's tree reader
+# refuses to WALK it back (`fatal: empty filename in tree entry`, rc==128),
+# so `fab_canonical.enumerate_changed_paths` already fails closed
+# (`PatchDigestInvalid`) for that specific sub-form on this git version
+# before Lane C ever sees it. `_normalize_path_for_matching` still defends
+# against it directly (unit-level below) — dropping empty segments is cheap,
+# git's own hard-fail is an implementation detail of one plumbing path, not a
+# security boundary Lane C should rely on.
+# --------------------------------------------------------------------------- #
+
+
+class PathNormalizationTest(unittest.TestCase):
+    """Direct unit coverage for `_normalize_path_for_matching` — the
+    checkout-equivalent collapse `evaluate_boundary_escalation`/
+    `carry_forward` apply to every path before matching."""
+
+    def test_dot_and_empty_segments_dropped(self):
+        self.assertEqual(fd._normalize_path_for_matching("./.github/workflows/ci.yml"), ".github/workflows/ci.yml")
+        self.assertEqual(fd._normalize_path_for_matching(".github//workflows/ci.yml"), ".github/workflows/ci.yml")
+        self.assertEqual(fd._normalize_path_for_matching("./Dockerfile"), "Dockerfile")
+        self.assertEqual(fd._normalize_path_for_matching("a/./b"), "a/b")
+        self.assertEqual(fd._normalize_path_for_matching("a//b"), "a/b")
+        self.assertEqual(fd._normalize_path_for_matching("a/b/"), "a/b")
+        self.assertEqual(fd._normalize_path_for_matching("/a/b"), "a/b")
+
+    def test_dot_dot_pops_previous_segment(self):
+        self.assertEqual(fd._normalize_path_for_matching("x/../.github/workflows/ci.yml"), ".github/workflows/ci.yml")
+        self.assertEqual(fd._normalize_path_for_matching("x/../Dockerfile"), "Dockerfile")
+        self.assertEqual(fd._normalize_path_for_matching("a/b/../c"), "a/c")
+
+    def test_already_normal_path_is_unchanged(self):
+        for p in (".github/workflows/ci.yml", "Dockerfile", "pkg/a.py", ".git/config"):
+            with self.subTest(p=p):
+                self.assertEqual(fd._normalize_path_for_matching(p), p)
+
+    def test_dot_git_component_preserved_verbatim(self):
+        """A literal `.git` segment is a real, meaningful path component
+        (see `_translate_glob_to_regex`'s docstring) — normalization must
+        NOT drop or transform it, only the true no-op `.`/empty/`..` forms."""
+        self.assertEqual(fd._normalize_path_for_matching(".git/config"), ".git/config")
+        self.assertEqual(fd._normalize_path_for_matching("./.git/config"), ".git/config")
+
+    def test_root_escaping_dot_dot_is_abnormal(self):
+        """A `..` with no previous segment to pop (would escape the repo
+        root) must return None (fail-closed sentinel), never silently drop
+        the `..` or leave it in the result."""
+        for p in ("..", "../x", "x/../../outside", "x/../..", "a/b/../../../c"):
+            with self.subTest(p=p):
+                self.assertIsNone(fd._normalize_path_for_matching(p))
+
+    def test_fully_empty_result_is_abnormal(self):
+        for p in ("", ".", "./", "././.", "/"):
+            with self.subTest(p=p):
+                self.assertIsNone(fd._normalize_path_for_matching(p))
+
+
+class BoundaryGlobEvasionRegressionTest(unittest.TestCase):
+    """Unit-level regression for the CONFIRMED evasion (task brief, verified
+    against `b7491f8`): a START-ANCHORED glob failed to match ANY of the
+    mangled forms of a genuinely in-boundary path. Calls
+    `evaluate_boundary_escalation` directly with hand-built
+    `delta_changed_paths` — no real git required to prove the MATCHING
+    decision itself is fixed (the crafted-tree class below additionally
+    proves the mangled forms are reachable through real git plumbing)."""
+
+    def _load(self, manifest_text: str) -> fd.BoundaryManifestLoad:
+        manifest = fd._parse_boundary_manifest_bytes(manifest_text.encode("utf-8"), path=fd.BOUNDARY_MANIFEST_PATH, source_rev="f" * 40)
+        return fd.BoundaryManifestLoad(disposition=fd.MANIFEST_DISPOSITION_PRESENT, manifest=manifest, ref=manifest.to_ref())
+
+    def test_confirmed_evasions_now_escalate_workflows_glob(self):
+        load = self._load('[deployment]\nglobs = [".github/workflows/**"]\n')
+        for mangled in (
+            "./.github/workflows/ci.yml",
+            ".github//workflows/ci.yml",
+            "x/../.github/workflows/ci.yml",
+        ):
+            with self.subTest(mangled=mangled):
+                esc = fd.evaluate_boundary_escalation(load, (mangled,))
+                self.assertTrue(esc.required, f"{mangled!r} must escalate — pre-fix this EVADED")
+                self.assertEqual(esc.trigger, "deployment")
+
+    def test_confirmed_evasions_now_escalate_dockerfile_glob(self):
+        load = self._load('[deployment]\nglobs = ["Dockerfile*"]\n')
+        for mangled in ("./Dockerfile", "x/../Dockerfile"):
+            with self.subTest(mangled=mangled):
+                esc = fd.evaluate_boundary_escalation(load, (mangled,))
+                self.assertTrue(esc.required, f"{mangled!r} must escalate — pre-fix this EVADED")
+                self.assertEqual(esc.trigger, "deployment")
+
+    def test_unrelated_mangled_path_still_does_not_escalate(self):
+        """Sanity check that normalization does not over-trigger: a mangled
+        path that normalizes to something genuinely OUTSIDE any declared
+        boundary must still not escalate."""
+        load = self._load('[deployment]\nglobs = [".github/workflows/**"]\n')
+        esc = fd.evaluate_boundary_escalation(load, ("./src/unrelated/thing.py",))
+        self.assertFalse(esc.required)
+
+    def test_abnormal_root_escaping_path_forces_escalation(self):
+        load = self._load('[deployment]\nglobs = [".github/workflows/**"]\n')
+        esc = fd.evaluate_boundary_escalation(load, ("x/../../outside",))
+        self.assertTrue(esc.required)
+        self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_ABNORMAL_PATH)
+
+    def test_mangled_manifest_path_itself_still_forces_manifest_modified_trigger(self):
+        """The manifest-touch check (highest priority after manual/abnormal)
+        must also be normalization-aware: a mangled path to the manifest
+        itself must not evade it either."""
+        load = self._load('[deployment]\nglobs = ["**/deploy/**"]\n')
+        mangled_manifest_path = "./" + fd.BOUNDARY_MANIFEST_PATH
+        esc = fd.evaluate_boundary_escalation(load, (mangled_manifest_path, "unrelated.py"))
+        self.assertTrue(esc.required)
+        self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MANIFEST_MODIFIED)
+
+    def test_legitimate_default_globs_still_match_normalized_in_boundary_paths(self):
+        """No-regression check: normalization must not break matching for
+        already-clean, never-mangled paths (the overwhelming common case)."""
+        load = self._load('[auth_security]\nglobs = ["**/auth/**"]\n')
+        esc_in = fd.evaluate_boundary_escalation(load, ("src/auth/login.py",))
+        self.assertTrue(esc_in.required)
+        esc_out = fd.evaluate_boundary_escalation(load, ("src/other.py",))
+        self.assertFalse(esc_out.required)
+
+
+class CraftedTreeGlobEvasionTest(GitRepoTestCase):
+    """End-to-end: crafted commit trees (`git mktree`/`git commit-tree`,
+    bypassing `verify_path`/`git add` entirely — the same hostile-tree
+    technique `HostileGitTreeDotGitTest` uses) that make a mangled path
+    reach `fab_canonical.enumerate_changed_paths` as a LITERAL changed-path
+    string, proving the confirmed evasion's mangled forms are not merely a
+    hypothetical string-matching exercise."""
+
+    def _craft_mangled_path_commit(self, base: str, path_segments: Sequence[str], content: str) -> str:
+        """Build a head commit, parented on `base`, whose tree adds ONE new
+        top-level entry chain reproducing the literal path
+        `'/'.join(path_segments)` — segments may be `.` or `..` (git's raw
+        tree plumbing accepts both as literal entry names; only a literal
+        `/` is ever rejected) — with `content` as the leaf blob's bytes.
+        `path_segments` must have at least 2 elements (>=1 directory
+        component plus a leaf name)."""
+        assert len(path_segments) >= 2, "need at least one directory segment plus a leaf name"
+        leaf_name = path_segments[-1]
+        dir_segments = path_segments[:-1]
+        blob_sha = _git_stdin(self.repo, "hash-object", "-w", "--stdin", input_text=content).strip()
+        tree_sha = _git_stdin(self.repo, "mktree", input_text=f"100644 blob {blob_sha}\t{leaf_name}\n").strip()
+        for seg in reversed(dir_segments[1:]):
+            tree_sha = _git_stdin(self.repo, "mktree", input_text=f"040000 tree {tree_sha}\t{seg}\n").strip()
+        base_tree_sha = _rev_parse(self.repo, f"{base}^{{tree}}")
+        base_entries = _run(self.repo, "ls-tree", base_tree_sha).stdout
+        outer_tree_input = base_entries + f"040000 tree {tree_sha}\t{dir_segments[0]}\n"
+        outer_tree_sha = _git_stdin(self.repo, "mktree", input_text=outer_tree_input).strip()
+        return _git_stdin(
+            self.repo, "commit-tree", outer_tree_sha, "-p", base, "-m", "crafted mangled-path injection", input_text=""
+        ).strip()
+
+    def test_dot_prefixed_workflow_path_reachable_and_escalates(self):
+        """`./.github/workflows/ci.yml` — empirically confirmed reachable
+        via a crafted `.`-named top-level tree entry: `git diff --raw`
+        reports the literal mangled path (rc==0). A `.github/workflows/**`
+        boundary glob must escalate it (pre-fix, it silently did not)."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[deployment]\nglobs = [".github/workflows/**"]\n')
+        self.write("src/live.py", "print('hi')\n")
+        base = self.commit("c1 base with boundary manifest")
+        crafted_head = self._craft_mangled_path_commit(
+            base, (".", ".github", "workflows", "ci.yml"), "name: ci\n"
+        )
+
+        changed = fc.enumerate_changed_paths(self.repo, base, crafted_head)
+        self.assertIn("./.github/workflows/ci.yml", changed)
+
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+        esc = fd.evaluate_boundary_escalation(load, changed)
+        self.assertTrue(esc.required, "the crafted ./.github/workflows/ci.yml delta must escalate")
+        self.assertEqual(esc.trigger, "deployment")
+
+    def test_dot_dot_prefixed_dockerfile_path_reachable_and_escalates(self):
+        """`x/../Dockerfile` — empirically confirmed reachable via a crafted
+        `x` -> `..` tree-entry chain: `git diff --raw` reports the literal
+        mangled path (rc==0). A `Dockerfile*` boundary glob must escalate
+        it."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[deployment]\nglobs = ["Dockerfile*"]\n')
+        self.write("src/live.py", "print('hi')\n")
+        base = self.commit("c1 base with boundary manifest")
+        crafted_head = self._craft_mangled_path_commit(base, ("x", "..", "Dockerfile"), "FROM scratch\n")
+
+        changed = fc.enumerate_changed_paths(self.repo, base, crafted_head)
+        self.assertIn("x/../Dockerfile", changed)
+
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        esc = fd.evaluate_boundary_escalation(load, changed)
+        self.assertTrue(esc.required, "the crafted x/../Dockerfile delta must escalate")
+        self.assertEqual(esc.trigger, "deployment")
+
+    def test_root_escaping_path_reachable_and_forces_abnormal_escalation(self):
+        """`x/../../outside` — empirically confirmed reachable via a crafted
+        `x` -> `..` -> `..` tree-entry chain (rc==0). This normalizes to
+        `None` (would escape the repo root) and must force whole-patch
+        escalation via `ESCALATION_TRIGGER_ABNORMAL_PATH`, independent of
+        any glob content."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[deployment]\nglobs = ["**/deploy/**"]\n')
+        self.write("src/live.py", "print('hi')\n")
+        base = self.commit("c1 base with boundary manifest")
+        crafted_head = self._craft_mangled_path_commit(base, ("x", "..", "..", "outside"), "sneaky\n")
+
+        changed = fc.enumerate_changed_paths(self.repo, base, crafted_head)
+        self.assertIn("x/../../outside", changed)
+
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        esc = fd.evaluate_boundary_escalation(load, changed)
+        self.assertTrue(esc.required)
+        self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_ABNORMAL_PATH)
+
+
+# --------------------------------------------------------------------------- #
 # Carry-forward (design §5.3) — reuses the broker's OWN disjointness test
 # --------------------------------------------------------------------------- #
 
@@ -711,6 +967,66 @@ class CarryForwardTest(unittest.TestCase):
         self.assertEqual(result.carried_forward_finding_ids, ())
         self.assertEqual(sorted(result.reopened_finding_ids), ["f1", "f2"])
         self.assertTrue(all(r == fd.CARRY_FORWARD_REASON_SUPPRESSED for r in result.reasons.values()))
+
+    def test_mangled_delta_path_intersecting_clean_finding_still_reopens(self):
+        """Round-6 (Consiliency/agent-harness#191): a mangled delta path
+        that NORMALIZES to a location inside a clean finding's `path_scope`
+        must still reopen that finding — pre-fix, the un-normalized literal
+        mismatch (`./pkg/a.py` vs `pkg/a.py`) would make the finding look
+        DISJOINT and wrongly carry forward without re-review, even though
+        the delta genuinely touched the file the finding was about."""
+        findings = [_finding("f1", status="clean", path_scope=("pkg/a.py",))]
+        for mangled in ("./pkg/a.py", "pkg//a.py", "x/../pkg/a.py"):
+            with self.subTest(mangled=mangled):
+                result = fd.carry_forward(findings, (mangled,))
+                self.assertEqual(result.carried_forward_finding_ids, ())
+                self.assertEqual(result.reopened_finding_ids, ("f1",))
+                self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_INTERSECTS)
+
+    def test_mangled_path_scope_entry_intersecting_normal_delta_path_still_reopens(self):
+        """The dual direction: a finding's OWN `path_scope` entry can be
+        mangled too (it is client-supplied, per this module's trust
+        boundary) — a mangled `path_scope=("./pkg/a.py",)` must still be
+        recognized as covering a normal, un-mangled `pkg/a.py` changed
+        path, not silently narrowed into looking disjoint."""
+        findings = [_finding("f1", status="clean", path_scope=("./pkg/a.py",))]
+        result = fd.carry_forward(findings, ("pkg/a.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(result.reopened_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_INTERSECTS)
+
+    def test_mangled_delta_path_disjoint_from_scope_still_carries(self):
+        """No over-triggering: a mangled delta path that normalizes to
+        something genuinely OUTSIDE the finding's path_scope must still
+        carry forward."""
+        findings = [_finding("f1", status="clean", path_scope=("pkg/a.py",))]
+        result = fd.carry_forward(findings, ("./other/unrelated.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_DISJOINT)
+
+    def test_root_escaping_delta_path_forces_reopen_of_every_clean_finding(self):
+        """An ABNORMAL (root-escaping) delta path cannot be asserted
+        disjoint from anything — it must force every remaining clean
+        finding to reopen, fail-closed, regardless of `path_scope`."""
+        findings = [
+            _finding("f1", status="clean", path_scope=("pkg/a.py",)),
+            _finding("f2", status="clean", path_scope=("totally/unrelated/dir/",)),
+        ]
+        result = fd.carry_forward(findings, ("x/../../outside",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(sorted(result.reopened_finding_ids), ["f1", "f2"])
+        self.assertTrue(all(r == fd.CARRY_FORWARD_REASON_INTERSECTS for r in result.reasons.values()))
+
+    def test_root_escaping_path_scope_entry_reopens_via_empty_scope_reason(self):
+        """A `path_scope` entry that itself fails to normalize (root-escape)
+        disqualifies the WHOLE path_scope, same as a blank entry — the
+        finding reopens as `empty_path_scope`, not silently narrowed by
+        dropping just the bad entry."""
+        findings = [_finding("f1", status="clean", path_scope=("x/../../outside",))]
+        result = fd.carry_forward(findings, ("totally/unrelated.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(result.reopened_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
 
     def test_reuses_the_actual_broker_matcher_not_a_reimplementation(self):
         """Assert the broker's `_covered_by_owned` (credsep.py:190) is the
