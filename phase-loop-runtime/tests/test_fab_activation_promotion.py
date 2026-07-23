@@ -22,8 +22,19 @@ Coverage:
       ``completed_nodes[node_id]["fab_run_id"]`` yet (piece 2, out of scope).
   P1. Flag ON + ``run_id=None`` -> still inert: merge proceeds,
       ``fab_canonical.equivalent()`` never called.
-  P2. Flag ON + ``run_id`` set + no provenance recorded for it -> inert:
-      merge proceeds.
+  P2. Flag ON + ``run_id`` set + no provenance recorded for it (scoped-
+      missing/unreadable — ``ProvenanceNotFound``) -> fail CLOSED: merge
+      REFUSED (``RuntimeError``), ``gh pr merge`` never invoked. FIX
+      (agent-harness#191 CR): a present ``run_id`` is itself the FAB-scope
+      marker, so ``ProvenanceNotFound`` (missing, deleted, cleaned up, wrong
+      workspace, or a failed write) must NOT be treated as "never scoped to
+      FAB" — that was the fail-open this test now pins closed. Matches
+      ``fab_gate.py``'s own fail-closed contract at ``fab_gate_validator``.
+  P2b. Same scoped-present-run_id posture, but the provenance artifact
+      exists and is UNREADABLE/corrupt (malformed JSON -> raises
+      ``ProvenanceInvalid``, not ``ProvenanceNotFound``) -> also fails
+      CLOSED (``RuntimeError``), never an unhandled exception and never a
+      silent merge.
   P3. Flag ON + ``run_id`` set + provenance exists + live PR unchanged ->
       merge proceeds (``equivalent()`` is called and returns EQUIVALENT).
   P4. Flag ON + ``run_id`` set + provenance exists + live content DRIFTED
@@ -338,7 +349,15 @@ class TestLiveMergePrFabPromotion:
                 )
         assert sha == "sha-realmerge"
 
-    def test_flag_on_run_id_no_provenance_is_inert(self, tmp_path: Path, monkeypatch):
+    def test_flag_on_run_id_scoped_missing_provenance_fails_closed(self, tmp_path: Path, monkeypatch):
+        """FIX (agent-harness#191 CR, REAL fail-open): a trusted `run_id` is
+        present (FAB-scoped) but no provenance was ever recorded for it —
+        `fab_gate.read_provenance` raises `ProvenanceNotFound`. Pre-fix this
+        was treated as inert ("never scoped to FAB") and the merge proceeded;
+        that CONTRADICTS `fab_gate.py`'s own fail-closed contract
+        (`fab_gate_validator` ~line 1014: run_id present + ProvenanceNotFound
+        -> BLOCK). Post-fix this must REFUSE the merge, and `gh pr merge`
+        must never be invoked."""
         _git_available()
         monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
         repo = _make_fab_repo(tmp_path)
@@ -350,13 +369,55 @@ class TestLiveMergePrFabPromotion:
         head = _commit(repo, "c1")
         # Deliberately never persist provenance for this run_id.
 
-        fake = _make_gh_fake(base_ref="main", head=head)
+        calls: list = []
+        fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head,
-                run_id="run-never-persisted", fab_fetch_origin="fetchsrc",
-            )
-        assert sha == "sha-realmerge"
+            with pytest.raises(RuntimeError, match="fab-promotion-reassertion-unresolvable"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head,
+                    run_id="run-never-persisted", fab_fetch_origin="fetchsrc",
+                )
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            "gh pr merge must never be invoked when a trusted run_id's provenance is missing/unreadable"
+        )
+
+    def test_flag_on_run_id_unreadable_provenance_fails_closed(self, tmp_path: Path, monkeypatch):
+        """P2b: the provenance artifact EXISTS on disk but is corrupt/
+        unreadable (malformed JSON -> `fab_provenance.ProvenanceInvalid`, a
+        DIFFERENT exception than `ProvenanceNotFound`). Pre-fix this
+        exception was not caught at all by
+        `_fab_promotion_gate_before_merge` (only `ProvenanceNotFound` was
+        handled) and would propagate as an unhandled crash instead of a
+        controlled fail-closed refusal. Post-fix this must also REFUSE the
+        merge cleanly, and `gh pr merge` must never be invoked."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _write(repo, "a.py", "hello\n")
+        base = _commit(repo, "c0")
+        _push_main(repo)
+        _git(repo, "checkout", "-qb", "pr1")
+        _write(repo, "a.py", "hello world\n")
+        head = _commit(repo, "c1")
+
+        run_id = "run-corrupt-provenance"
+        prov_path = fp.provenance_path_for_run(repo, run_id)
+        prov_path.parent.mkdir(parents=True, exist_ok=True)
+        prov_path.write_text("{not valid json!!", encoding="utf-8")
+
+        calls: list = []
+        fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="fab-promotion-reassertion-unresolvable"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head,
+                    run_id=run_id, fab_fetch_origin="fetchsrc",
+                )
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            "gh pr merge must never be invoked when a trusted run_id's provenance is unreadable/corrupt"
+        )
 
     def test_flag_on_provenance_exists_unchanged_merges(self, tmp_path: Path, monkeypatch):
         _git_available()

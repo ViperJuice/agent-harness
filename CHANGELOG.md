@@ -894,13 +894,51 @@ built here).
 - **Tests** (`tests/test_fab_activation_promotion.py`, new, unmarked): flag-off
   byte-neutrality (`fab_canonical.equivalent` never called; a strict 4-arg
   `_merge_pr_fn` stub proves no `run_id` kwarg leaks through the P4 merge
-  loop); flag-on with no `run_id` / no provenance stays inert; unchanged
-  content merges; post-review content drift refuses (real git repos, no
-  mocked git for the equivalence recompute, matching the Lane B/D
-  convention); unresolvable live head fails closed; flag-off overrides a
-  drifted, provenance-bearing `run_id` back to inert. All pre-existing
-  `governed_premerge`/`fab_gate_d`/`train_runner`/`train_merge`/`runner`
-  tests remain green, unmodified.
+  loop); flag-on with no `run_id` stays inert (no `run_id`/no provenance —
+  see the immediately-following CR follow-up entry: the latter case now
+  fails closed, not inert); unchanged content merges; post-review content
+  drift refuses (real git repos, no mocked git for the equivalence recompute,
+  matching the Lane B/D convention); unresolvable live head fails closed;
+  flag-off overrides a drifted, provenance-bearing `run_id` back to inert.
+  All pre-existing `governed_premerge`/`fab_gate_d`/`train_runner`/
+  `train_merge`/`runner` tests remain green, unmodified.
+
+### FAB activation milestone, piece 1 — CR fail-open fix + documented merge-queue constraint (Consiliency/agent-harness#191)
+
+Cross-vendor CR follow-up to the activation milestone above (codex): one REAL
+fail-open, fixed, plus one pre-existing constraint, documented and deferred.
+
+- **Fix — scoped-missing/unreadable provenance now fails CLOSED.**
+  `train_runner._fab_promotion_gate_before_merge` previously treated
+  `fab_provenance.ProvenanceNotFound` the same as "`run_id` was never
+  supplied" and stayed inert (`return None`, letting the merge proceed).
+  That was wrong: a PRESENT trusted `run_id` is itself the FAB scope marker
+  (design §4.4/F3), so with `PHASE_LOOP_FAB` on and a trusted `run_id`
+  present, `ProvenanceNotFound` (missing, deleted, cleaned up, wrong
+  workspace, or a failed write) now REFUSES the merge instead of silently
+  proceeding — matching `fab_gate.py`'s own fail-closed contract at
+  `fab_gate_validator` (run_id present + `ProvenanceNotFound` -> BLOCK),
+  which this promotion-time re-assertion previously contradicted. The same
+  fail-closed refusal now also covers any other unreadable/corrupt
+  provenance artifact (`ProvenanceInvalid` and subclasses, e.g. malformed
+  JSON or a digest mismatch) — pre-fix this class propagated as an
+  unhandled exception instead of a controlled refusal. `run_id is None`
+  (genuinely non-FAB) remains the only inert branch. New tests cover both
+  the absent-provenance and the corrupt-provenance cases; both now refuse
+  the merge and `gh pr merge` is never invoked.
+- **Documented — FAB + GitHub merge queue is not yet supported
+  (Consiliency/agent-harness#265).** `_live_merge_pr`'s `gh pr merge`
+  always passes `--delete-branch` (pre-existing on `main`, not introduced by
+  FAB), which `gh` rejects when the PR is queued rather than merged
+  directly; and the FAB design recommends running behind a merge queue,
+  under which the actual promotion is deferred/asynchronous, so a
+  re-assertion bound to this synchronous `gh pr merge` call would not bind
+  to the real (later, queued) promotion event. Both are pre-existing
+  constraints, not built here — code comments at the `_fab_promotion_gate_
+  before_merge` call site and the merge command now spell this out
+  explicitly and reference #265, which must make the re-assertion bind to
+  the queued promotion (and handle `--delete-branch`) before FAB and a
+  merge queue can be combined.
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 

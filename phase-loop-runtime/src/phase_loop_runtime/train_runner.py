@@ -473,19 +473,35 @@ def _fab_promotion_gate_before_merge(
     ``None`` — ``run_id`` MUST be sourced by the caller from its own trusted
     runner/train-context bookkeeping (e.g. a future producer's
     ``completed_nodes[node_id]["fab_run_id"]``), never from PR/branch
-    content. Also inert (``None``) when ``run_id`` is supplied but no FAB
-    provenance is recorded for it (``fab_provenance.ProvenanceNotFound``) —
-    mirrors ``run_governed_premerge_loop``'s own ``fab_promotion_check=None``
-    byte-neutral posture rather than ``fab_gate_validator``'s stricter
-    "trusted run_id present but no provenance ⇒ block" doctrine; the two
-    are independent, differently-scoped FAB defenses.
+    content. ``run_id is None`` is the ONLY inert branch — it means this
+    node was never scoped to FAB, mirroring ``fab_gate_validator``'s branch
+    (i) (agent-harness#191 CR, F3's "run_id trust" doctrine).
 
-    Once a ``run_id`` genuinely has recorded provenance, this fails CLOSED:
-    an unresolvable live PR base/head, or a live-recomputed
-    ``fab_canonical.equivalent()`` that is no longer ``EQUIVALENT``, both
-    return a non-``None`` refusal reason string (never raise) — the caller
-    is responsible for turning that into a hard refusal (``_live_merge_pr``
-    raises ``RuntimeError``, matching its existing base/head TOCTOU guards).
+    Once a ``run_id`` IS present, this fails CLOSED, never inert:
+
+    * A present ``run_id`` is itself the FAB-scope marker (F3). If provenance
+      cannot be read for it — ``fab_provenance.ProvenanceNotFound`` (missing,
+      deleted, cleaned up, wrong workspace, or the write path silently
+      failed/was skipped) or any other read/parse failure (oversize,
+      malformed JSON, digest-mismatch/tamper — ``ProvenanceInvalid`` and
+      subclasses, or an unexpected I/O error) — that is a BROKEN/incomplete
+      FAB-scoped gate, not "this is a non-FAB merge", and refuses the merge.
+      This intentionally matches ``fab_gate.py``'s own fail-closed contract
+      at ``fab_gate_validator`` (~line 1014: ``run_id`` present +
+      ``ProvenanceNotFound`` → BLOCK, plus its broader catch-all → BLOCK) —
+      the promotion-time re-assertion and the Lane D closeout gate must agree
+      on this contract; a ``PHASE_LOOP_FAB``-enabled merge that fell through
+      to ``gh pr merge`` despite unreadable provenance for a trusted run_id
+      would be a fail-open that contradicts the very gate it is meant to
+      enforce.
+    * An unresolvable live PR base/head, or a live-recomputed
+      ``fab_canonical.equivalent()`` that is no longer ``EQUIVALENT``, also
+      return a non-``None`` refusal reason string.
+
+    Every fail-closed branch returns a refusal reason string (never raises)
+    — the caller is responsible for turning that into a hard refusal
+    (``_live_merge_pr`` raises ``RuntimeError``, matching its existing
+    base/head TOCTOU guards).
 
     ``fab_fetch_origin`` (default ``"origin"`` — the production value,
     byte-neutral) is the git remote NAME `fab_canonical.equivalent()`
@@ -510,11 +526,34 @@ def _fab_promotion_gate_before_merge(
 
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
-    except ProvenanceNotFound:
-        # A run_id was supplied, but no provenance was ever recorded for it
-        # (e.g. piece 2's producer has not landed yet) — stay inert here,
-        # exactly like `fab_promotion_check=None` (design instruction #2).
-        return None
+    except ProvenanceNotFound as exc:
+        # A trusted run_id is present — that IS the FAB-scope marker (F3).
+        # "no provenance for a run scoped to FAB" means the write path
+        # silently failed, was skipped, the artifact was deleted/cleaned up,
+        # or it was written to the wrong workspace — never "this is a
+        # non-FAB merge" (that is `run_id is None`, handled above). Refuse
+        # the merge fail-closed here, matching `fab_gate.py`'s
+        # `fab_gate_validator` contract at ~line 1014 (run_id present +
+        # `ProvenanceNotFound` -> BLOCK, not inert) so the promotion-time
+        # re-assertion and the Lane D closeout gate agree.
+        return (
+            f"fab-promotion-reassertion-unresolvable: run_id={run_id!r} — no FAB "
+            "provenance could be read for this trusted run_id (fail-closed, "
+            f"design §4.4, matches fab_gate.py's fail-closed contract): {exc}"
+        )
+    except Exception as exc:
+        # Any other read/parse failure for a trusted, present run_id —
+        # oversize, malformed JSON, digest-mismatch/tamper (`ProvenanceInvalid`
+        # and subclasses other than `ProvenanceNotFound`), or an unexpected
+        # I/O error — must fail CLOSED for the same reason as the
+        # `ProvenanceNotFound` branch above: a present run_id is a FAB scope
+        # marker, so a broken/unreadable artifact must never be treated as
+        # "proceed to merge". Mirrors `fab_gate_validator`'s own catch-all
+        # (~line 1030) that blocks on any unexpected composition error.
+        return (
+            f"fab-promotion-reassertion-unresolvable: run_id={run_id!r} — FAB "
+            f"provenance could not be read (fail-closed, design §4.4): {exc}"
+        )
 
     if live_base_ref_name is None or live_head_sha is None:
         # Fail closed: a FAB-scoped node whose live PR identity this function
@@ -727,6 +766,23 @@ def _live_merge_pr(
     # threads one; see this function's docstring). Placed immediately before
     # `gh pr merge` so the re-check is as close to the real merge as
     # possible, after the cheaper base/head guards above already passed.
+    #
+    # MERGE-QUEUE CONSTRAINT (documented, not built here — Consiliency/
+    # agent-harness#265): this re-assertion binds to the DIRECT/synchronous
+    # `gh pr merge` call immediately below — i.e. it re-checks equivalence
+    # and then the very next statement performs the real promotion. FAB's
+    # design recommends running behind a GitHub merge queue, but enabling
+    # `PHASE_LOOP_FAB` together with a merge queue is NOT yet supported:
+    # under a queue, `gh pr merge` only *enqueues* the PR — the actual merge
+    # happens later, asynchronously, once the queue's own checks pass — so a
+    # re-assertion performed here would NOT be bound to the real promotion
+    # event (a TOCTOU window reopens between this check and the eventual
+    # queued merge). Separately, `--delete-branch` below (pre-existing on
+    # main, not new to FAB) is itself rejected by `gh` when the PR merges via
+    # a queue. Both are pre-existing constraints, not introduced by this
+    # milestone; #265 (merge-queue-async) must make the re-assertion bind to
+    # the queued promotion (and handle `--delete-branch`) before FAB +
+    # merge-queue can be combined safely.
     fab_refusal = _fab_promotion_gate_before_merge(
         workspace, run_id, live_base_ref_name=current_base, live_head_sha=current_head,
         fab_fetch_origin=fab_fetch_origin,
@@ -739,6 +795,11 @@ def _live_merge_pr(
     # between any of our own reads above and the merge call itself. `gh pr
     # merge` exits non-zero (raising CalledProcessError below, via
     # check=True) if the head has advanced past `head_sha`.
+    #
+    # `--delete-branch` (pre-existing, unconditional): incompatible with a
+    # GitHub merge queue (`gh` rejects it when the PR is queued rather than
+    # merged directly) — see the FAB merge-queue constraint noted above this
+    # block and Consiliency/agent-harness#265.
     merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge", "--delete-branch"]
     if head_sha:
         merge_cmd += ["--match-head-commit", head_sha]
