@@ -233,6 +233,153 @@ class GitRepoTestCase(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Piece 2 (design v4/v5/v6) — round-authenticity forge tests: every field the
+# gate reads off the client-supplied artifact must be cross-checked against a
+# harness-written durable record, fail-closed on any mismatch / absence.
+# --------------------------------------------------------------------------- #
+
+
+class RoundAuthenticityForgeTest(GitRepoTestCase):
+    def _exact_head_setup(self):
+        self.write("a.py", "hello\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        self.write("a.py", "hello world\n")
+        head = self.commit("c1 reviewed head")
+        return base, head
+
+    def _reason(self, run_id: str, head: str) -> str:
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        return gate.equivalence_verified.reason or ""
+
+    def test_wrong_verdict_seat_blocks(self):
+        """The provenance seat claims AGREE but the durable record the harness
+        wrote at review time says DISAGREE → BLOCK (verdict binding, v4 #2)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE", finding_ids=())
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,))
+        fp.write_provenance(self.repo, "run-wrong-verdict", artifact)
+        # durable record: SAME seat but verdict flipped to DISAGREE.
+        durable = _durable_from_seat(seat)
+        durable = dataclasses.replace(durable, verdict="DISAGREE")
+        fg.append_seat_outcome(self.repo, "run-wrong-verdict", durable)
+        self.write_review_round("run-wrong-verdict", artifact)
+        self.assertIn("verdict", self._reason("run-wrong-verdict", head))
+
+    def test_omitted_required_seat_blocks(self):
+        """The expected-seat manifest demands TWO required instances; the
+        artifact only vouches for one → the omitted required seat cannot be
+        invisible → BLOCK (completeness anchored on the EXPECTED set, v5 #1)."""
+        base, head = self._exact_head_setup()
+        s1 = _seat("codex:x:high", verdict="AGREE")
+        s2 = _seat("gemini:y:high", vendor_leg="gemini", verdict="AGREE")
+        # artifact only carries s1; both durable records + BOTH expected seats
+        # exist (the harness dispatched both).
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(s1,))
+        fp.write_provenance(self.repo, "run-omitted", artifact)
+        fg.append_seat_outcome(self.repo, "run-omitted", _durable_from_seat(s1))
+        fg.append_seat_outcome(self.repo, "run-omitted", _durable_from_seat(s2))
+        # expected manifest lists BOTH (the resolved invocation set).
+        self.write_review_round("run-omitted", artifact, expected_seats=(s1, s2))
+        self.assertIn("NO matching provenance seat", self._reason("run-omitted", head))
+
+    def test_dropped_blocking_finding_record_blocks(self):
+        """A seat logged finding f1 (durable), and f1 is a canonical block
+        finding — but the artifact OMITS the Finding record (to hide it) → BLOCK
+        (finding-CONTENT binding, v6 #2)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE", finding_ids=("f1",))
+        # artifact carries the seat referencing f1 but NO Finding record for f1.
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,), findings=())
+        fp.write_provenance(self.repo, "run-dropped-finding", artifact)
+        fg.append_seat_outcome(self.repo, "run-dropped-finding", _durable_from_seat(seat))
+        # canonical record for f1 exists (harness authenticated it at review time).
+        self.write_review_round(
+            "run-dropped-finding",
+            artifact,
+            canonical_findings=(_finding("f1", severity="block", status="open"),),
+        )
+        self.assertIn("OMITS the Finding record", self._reason("run-dropped-finding", head))
+
+    def test_rewritten_finding_content_blocks(self):
+        """The artifact keeps the id but rewrites the Finding non-blocking/clean
+        vs the harness canonical record → BLOCK (finding-CONTENT binding)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE", finding_ids=("f1",))
+        # artifact's Finding f1 claims status=clean; canonical says status=open.
+        rewritten = _finding("f1", severity="block", status="clean")
+        artifact = self.build_artifact(
+            base_sha=base, candidate=self.candidate(base, head), seats=(seat,), findings=(rewritten,)
+        )
+        fp.write_provenance(self.repo, "run-rewritten-finding", artifact)
+        fg.append_seat_outcome(self.repo, "run-rewritten-finding", _durable_from_seat(seat))
+        self.write_review_round(
+            "run-rewritten-finding",
+            artifact,
+            canonical_findings=(_finding("f1", severity="block", status="open"),),
+        )
+        self.assertIn("does not match the harness canonical record", self._reason("run-rewritten-finding", head))
+
+    def test_empty_expected_manifest_blocks(self):
+        """A round with an empty expected-seat manifest can never pass — no
+        vacuous truth over an empty required set (v6 #3 / design ambiguity #3)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,))
+        fp.write_provenance(self.repo, "run-empty-manifest", artifact)
+        fg.append_seat_outcome(self.repo, "run-empty-manifest", _durable_from_seat(seat))
+        self.write_review_round("run-empty-manifest", artifact, expected_seats=())
+        self.assertIn("empty", self._reason("run-empty-manifest", head))
+
+    def test_round_identity_wrong_head_blocks(self):
+        """The round identity is bound to a DIFFERENT reviewed head than the
+        artifact's candidate head (replay of another round's manifest) → BLOCK
+        (round identity, v6 #3)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,))
+        fp.write_provenance(self.repo, "run-replay", artifact)
+        fg.append_seat_outcome(self.repo, "run-replay", _durable_from_seat(seat))
+        fg.write_expected_seats(
+            self.repo, "run-replay", epoch=1,
+            expected_seats=(fg.ExpectedSeat(seat_instance_id=seat.seat_instance_id, seat_key=seat.seat_key,
+                                            vendor_leg=seat.vendor_leg, required=True),),
+        )
+        # finalize the round bound to base (NOT the reviewed head) — a replayed
+        # identity from a different round.
+        fg.finalize_review_round(
+            self.repo, "run-replay", reviewed_head_sha=base, reviewed_material_digest=None, canonical_findings=()
+        )
+        self.assertIn("replay / wrong head", self._reason("run-replay", head))
+
+    def test_unfinalized_round_blocks(self):
+        """A round record written pre-invocation but never finalized (a crash
+        between provenance write and finalization) → BLOCK, never a silent
+        pass (crash safety)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,))
+        fp.write_provenance(self.repo, "run-unfinalized", artifact)
+        fg.append_seat_outcome(self.repo, "run-unfinalized", _durable_from_seat(seat))
+        self.write_review_round("run-unfinalized", artifact, finalize=False)
+        self.assertIn("not finalized", self._reason("run-unfinalized", head))
+
+    def test_missing_round_record_blocks(self):
+        """A FAB-scoped run whose durable round record is absent BLOCKS (the
+        anchor is read from the run store, never the artifact)."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(seat,))
+        fp.write_provenance(self.repo, "run-no-round", artifact)
+        fg.append_seat_outcome(self.repo, "run-no-round", _durable_from_seat(seat))
+        # no write_review_round at all.
+        self.assertIn("review-round record", self._reason("run-no-round", head))
+
+
+# --------------------------------------------------------------------------- #
 # Acceptance criterion 6 — exact-head degenerate case (empty delta_chain)
 # --------------------------------------------------------------------------- #
 
