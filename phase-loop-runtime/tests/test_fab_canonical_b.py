@@ -138,28 +138,39 @@ class PatchDigestBasicTest(GitRepoTestCase):
         d_other_repo = fc.patch_digest(self.repo, base, head, repo_slug="github.com/other/repo")
         self.assertNotEqual(d_same, d_other_repo)
 
-        self.write("unrelated.py", "x\n")
-        base2 = self.commit("c1.5 unrelated base bump")
-        # Re-diffing the SAME head against a DIFFERENT (but still valid) base
-        # must not coincidentally collide.
-        d_other_base = fc.patch_digest(self.repo, base2, base2, repo_slug=self.REPO_SLUG)
-        self.assertNotEqual(d_same, d_other_base)
+        # Isolate the base_sha binding from record-content differences: reset
+        # to `base`'s tree and make an `--allow-empty` commit there. This
+        # `base_twin` has an IDENTICAL TREE to `base` (so `diff(base_twin,
+        # head)` produces the byte-IDENTICAL record stream as `diff(base,
+        # head)`) but a DIFFERENT commit SHA. If the header did NOT bind
+        # base_sha, these two digests would collide.
+        _run(self.repo, "reset", "-q", "--hard", base)
+        base_twin = self.commit("c1-twin (empty, identical tree to base)")
+        self.assertNotEqual(base, base_twin)
+        d_twin_base = fc.patch_digest(self.repo, base_twin, head, repo_slug=self.REPO_SLUG)
+        self.assertNotEqual(d_same, d_twin_base)
 
     def test_no_normalization_of_whitespace_or_eol(self):
-        """design §3.5: no whitespace/EOL normalization — CRLF vs LF content is
-        a real byte difference and must change the digest."""
-        self.write("a.py", "line1\nline2\n")
+        """design §3.5: no whitespace/EOL normalization — CRLF vs LF content
+        diffed against the SAME base must produce DIFFERENT digests (both
+        sides are real, non-empty diffs, so this isn't a trivial empty-diff
+        comparison)."""
+        self.write("a.py", "line0\n")
         base = self.commit("c1")
-        self.write("a.py", "line1\r\nline2\r\n")
-        head = self.commit("c2 crlf")
-        d = self.digest(base, head)
 
-        self.write("a.py", "line1\nline2\n")
-        head2 = self.commit("c3 back to lf, different content path")
-        # Compare against a fresh base representing the CRLF state to isolate
-        # the whitespace-only delta rather than mixing in unrelated history.
-        d_noop = self.digest(head, head)
-        self.assertNotEqual(d, d_noop)
+        self.write("a.py", "line0\nline1\r\nline2\r\n")
+        head_crlf = self.commit("c2 crlf")
+        d_crlf = self.digest(base, head_crlf)
+
+        # Rewind the working tree to the base state (a sibling commit off the
+        # SAME base, not a descendant of head_crlf) so both digests are
+        # diffed against the identical base_sha.
+        _run(self.repo, "reset", "-q", "--hard", base)
+        self.write("a.py", "line0\nline1\nline2\n")
+        head_lf = self.commit("c3 lf")
+        d_lf = self.digest(base, head_lf)
+
+        self.assertNotEqual(d_crlf, d_lf)
 
 
 class PatchDigestOidVsBytesTest(GitRepoTestCase):
