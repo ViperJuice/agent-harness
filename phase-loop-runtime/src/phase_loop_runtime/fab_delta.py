@@ -611,14 +611,16 @@ def carry_forward(
       * `suppress` is False (a boundary-escalated round is whole-patch —
         carry-forward is SUPPRESSED entirely and every clean finding is
         reopened, design §5.4);
-      * `f.path_scope` is non-empty AND contains NO empty/whitespace-only
-        entry (empty/absent `path_scope`, or a `path_scope` whose only
-        content is blank strings such as `("",)`/`("  ",)`, NEVER carries —
-        fail-closed re-review, design §5.3; a blank entry is checked on
-        CONTENT, not just sequence length, because `_covered_by_owned` below
-        silently skips a blank `owned` entry rather than matching it, which
-        would otherwise let such a `path_scope` look "disjoint" from
-        anything);
+      * `f.path_scope` is non-empty AND contains NO blank entry — blank
+        meaning empty, whitespace-only, OR all-`/` after stripping
+        (`entry.strip().rstrip("/")` is falsy) — so `("",)`, `("  ",)`, AND
+        `("/",)`/`("//",)` all NEVER carry (fail-closed re-review, design
+        §5.3). Checked on CONTENT, not just sequence length: `_covered_by_owned`
+        below applies its OWN `.rstrip("/")` to each owned entry and silently
+        SKIPS one that comes out empty (credsep.py:204-208), so a `""` or
+        `"/"`-only entry would otherwise never match anything and the
+        finding would look "disjoint" from every path without ever actually
+        being scoped;
       * `f.path_scope` is DISJOINT from `delta_changed_paths`, decided by
         the broker's OWN `GitHubBrokerAdapter._covered_by_owned` prefix/dir
         test (credsep.py:190) — REUSED, not re-implemented (goal-id-inc2
@@ -652,10 +654,16 @@ def carry_forward(
         # entry (after its own `.rstrip("/")`) as falsy and SKIPS it
         # (credsep.py:204-208: `if owned and (...)`), so it never matches any
         # changed path — the finding would be classified DISJOINT and carried
-        # forward without ever actually scoping anything. Any blank entry
-        # therefore forces the same fail-closed re-review disposition as a
-        # wholly empty `path_scope`.
-        if not f.path_scope or any(not entry.strip() for entry in f.path_scope):
+        # forward without ever actually scoping anything. The check below
+        # must mirror `_covered_by_owned`'s OWN emptiness test
+        # (`.rstrip("/")`, not `.strip()`) — an all-slash entry such as `"/"`
+        # or `"//"` is non-blank under `.strip()` but becomes `""` under
+        # `.rstrip("/")` and is therefore ALSO silently skipped by the
+        # matcher (a residual bypass a `.strip()`-only guard would miss).
+        # `.strip().rstrip("/")` catches blank, whitespace-only, AND
+        # all-slash entries while leaving legitimate directory scopes like
+        # `"pkg/"` (-> `"pkg"`) untouched.
+        if not f.path_scope or any(not entry.strip().rstrip("/") for entry in f.path_scope):
             reopened.append(f.id)
             reasons[f.id] = CARRY_FORWARD_REASON_EMPTY_SCOPE
             continue

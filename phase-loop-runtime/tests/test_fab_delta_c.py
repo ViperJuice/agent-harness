@@ -374,6 +374,32 @@ class CarryForwardTest(unittest.TestCase):
         self.assertEqual(result.reopened_finding_ids, ("f1",))
         self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
 
+    def test_slash_only_path_scope_entry_never_carries(self):
+        """A residual variant of finding 3: `_covered_by_owned` applies its
+        OWN `.rstrip("/")` to each owned entry before checking truthiness
+        (credsep.py:206), so an ALL-SLASH entry like `"/"` or `"//"` also
+        becomes empty and gets silently skipped by the matcher -- the same
+        bypass class as `("",)`, just reached via a different string. The
+        guard must mirror `_covered_by_owned`'s own emptiness test
+        (`.rstrip("/")`), not merely `.strip()`."""
+        for scope in (("/",), ("//",), (" / ",)):
+            with self.subTest(scope=scope):
+                findings = [_finding("f1", status="clean", path_scope=scope)]
+                result = fd.carry_forward(findings, ("some/changed/path.py",))
+                self.assertEqual(result.carried_forward_finding_ids, ())
+                self.assertEqual(result.reopened_finding_ids, ("f1",))
+                self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
+
+    def test_legitimate_directory_scope_with_trailing_slash_still_carries(self):
+        """Sanity check that the blank-entry guard does not over-trigger: a
+        NORMAL directory-scope entry like `"pkg/"` (trailing slash is a
+        legitimate directory marker, not a blank entry) must still carry
+        forward when disjoint from the delta."""
+        findings = [_finding("f1", status="clean", path_scope=("pkg/",))]
+        result = fd.carry_forward(findings, ("other/unrelated.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_DISJOINT)
+
     def test_mixed_blank_and_real_path_scope_entry_never_carries(self):
         """A path_scope containing ONE blank entry alongside a real one must
         still fail closed -- the blank entry alone is disqualifying."""
