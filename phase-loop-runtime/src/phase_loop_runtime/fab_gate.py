@@ -321,6 +321,11 @@ def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
             "trust-root parse — an unaudited field must never ride along)"
         )
     try:
+        raw_finding_ids = d.get("finding_ids", ())
+        if not isinstance(raw_finding_ids, (list, tuple)) or not all(
+            isinstance(x, str) for x in raw_finding_ids
+        ):
+            raise ValueError("finding_ids must be a list of strings")
         return SeatOutcomeRecord(
             seat_key=str(d["seat_key"]),
             vendor_leg=str(d["vendor_leg"]),
@@ -332,6 +337,11 @@ def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
             completed_at=str(d["completed_at"]),
             evidence_digest=str(d["evidence_digest"]),
             reason=(str(d["reason"]) if d.get("reason") is not None else None),
+            verdict=(str(d["verdict"]) if d.get("verdict") is not None else None),
+            finding_ids=tuple(raw_finding_ids),
+            seat_instance_id=(
+                str(d["seat_instance_id"]) if d.get("seat_instance_id") is not None else None
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProvenanceInvalid(f"malformed seat-outcome record (fail-closed): {exc}") from exc

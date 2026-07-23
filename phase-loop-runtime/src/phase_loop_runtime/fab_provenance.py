@@ -538,6 +538,12 @@ class ProvenanceSeat:
     evidence_digest: str
     verdict: str | None = None
     finding_ids: tuple[str, ...] = ()
+    # FAB activation piece 2 (design v6 #1): a UNIQUE per-invocation seat-INSTANCE
+    # id. `seat_key` is explicitly non-unique (advisor_board.Seat.seat_key,
+    # POSITIONALLY distinguished), so the gate keys completeness/verdict/finding
+    # cross-checks on this instance id — never on `seat_key`. Keyword-defaulted
+    # `None` so every Lane A/B/C/D fixture that predates the id stays valid.
+    seat_instance_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.verdict is not None and self.verdict not in _VALID_VERDICTS:
@@ -554,6 +560,7 @@ class ProvenanceSeat:
             "artifact_digest": self.artifact_digest,
             "evidence_digest": self.evidence_digest,
             "finding_ids": list(self.finding_ids),
+            "seat_instance_id": self.seat_instance_id,
         }
 
     @classmethod
@@ -569,6 +576,7 @@ class ProvenanceSeat:
             artifact_digest=_req_str(d, "artifact_digest"),
             evidence_digest=_req_str(d, "evidence_digest"),
             finding_ids=_tuple_str(d, "finding_ids"),
+            seat_instance_id=_opt_str(d, "seat_instance_id"),
         )
 
 
