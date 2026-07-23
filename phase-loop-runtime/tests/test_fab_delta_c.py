@@ -171,34 +171,37 @@ class GlobSemanticsTest(unittest.TestCase):
                 with self.assertRaises(fd.BoundaryManifestInvalid):
                     fd._translate_glob_to_regex(bad)
 
-    def test_dot_git_component_rejected(self):
-        """Round-4 CR (codex, verified by direct execution against 48d27f3):
-        a `.git` path component is git-SPECIAL-forbidden (git's own pathname
-        verifier rejects a `.git` component anywhere in a tree, case-
-        insensitively — `fsck`/`unpack-trees` reject `.git`, `.GIT`, `.Git`,
-        ... to close the on-disk-`.git`-shadowing attack class), so a glob
-        with a literal `.git` component can never match a real `-z` diff
-        path. `[surface]\\nglobs = [".git/**"]` compiled and gave
-        `evaluate_boundary_escalation(..., ("src/live.py",)).required ==
-        False` before this check existed — the same zero-effective-boundary
-        downgrade as the round-3 structural findings, just via a git-special
-        restriction rather than a path-normalization one."""
-        for bad in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b", ".git", "**/.git/**"):
-            with self.subTest(bad=bad):
-                with self.assertRaises(fd.BoundaryManifestInvalid):
-                    fd._translate_glob_to_regex(bad)
+    def test_dot_git_component_compiles_and_matches(self):
+        """Round-5 CR (codex, self-correcting): round-4 briefly rejected a
+        literal `.git` path component on the premise that git's pathname
+        verifier (`verify_path`) forbids `.git` anywhere in a tree, so such a
+        glob could never match a real diff path. That premise was FALSE for
+        this module's own threat model — `verify_path` governs the
+        index/worktree, not the raw commit-tree diffs
+        `fab_canonical.enumerate_changed_paths` actually enumerates, and Lane
+        B's threat model explicitly includes hand-crafted trees (`git
+        mktree`/`git commit-tree` permit a `.git` entry; `fsck`'s
+        `hasDotgit` is a warning, not a rejection — see
+        `HostileGitTreeDotGitTest` below for the crafted-tree reproduction).
+        `.git/**` is therefore a legitimate, valuable boundary glob and must
+        compile and match like any other literal segment, not raise."""
+        for glob in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b", ".git", "**/.git/**"):
+            with self.subTest(glob=glob):
+                fd._translate_glob_to_regex(glob)  # must not raise
+        self.assertTrue(self._match(".git/**", ".git/config"))
+        self.assertTrue(self._match(".git", ".git"))
+        self.assertTrue(self._match("**/.git/**", "sub/.git/config"))
 
-    def test_dot_git_rejection_does_not_over_reject_wildcards_or_similar_names(self):
-        """The `.git` rejection is bounded to LITERAL segments only — a
-        wildcard segment that could INCIDENTALLY also match `.git` (`**`,
-        `*`, `.*`) is deliberately left alone (its breadth is the fail-SAFE
-        direction), and a legitimately dot-prefixed directory that merely
-        starts with the same three letters (`.github`) is a DIFFERENT
-        component entirely, not `.git`."""
+    def test_dot_git_matching_does_not_over_match_similar_names(self):
+        """A legitimately dot-prefixed directory that merely starts with the
+        same three letters (`.github`) is a DIFFERENT component entirely,
+        not `.git` — a `.git`-specific glob must not spuriously match it, and
+        vice versa."""
         self.assertTrue(self._match("**", ".git/config"))
         self.assertTrue(self._match("*", ".git"))
         self.assertTrue(self._match(".github/workflows/**", ".github/workflows/ci.yml"))
         self.assertFalse(self._match(".github/workflows/**", ".git/workflows/ci.yml"))
+        self.assertFalse(self._match(".git/**", ".github/workflows/ci.yml"))
 
     def test_legitimate_default_glob_set_all_compile_and_match_correctly(self):
         """Regression: the full legitimate default glob set (design §5.4)
@@ -382,26 +385,21 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
                 self.assertTrue(esc.required, f"{bad_glob!r} must escalate (fail-closed), not silently permit carry-forward")
                 self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
 
-    def test_dot_git_component_glob_manifest_is_malformed_not_present(self):
-        """Round-4 CR (codex, verified by direct execution against 48d27f3):
-        the exact repro — `[surface]\\nglobs = [".git/**"]` used to give
-        `evaluate_boundary_escalation(load, ("src/live.py",)).required ==
-        False`, i.e. `surface` LOOKED protected (PRESENT disposition, a
-        non-empty valid-glob list) while being silently UNPROTECTED, because
-        `.git/**` compiles but can never match a real diff path (git forbids
-        a `.git` path component anywhere, case-insensitively). It must now
-        resolve to MALFORMED (same fail-closed disposition as missing/
-        genuinely-malformed) and force escalate-every-delta, end to end."""
-        for bad_glob in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b"):
-            with self.subTest(bad_glob=bad_glob):
-                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[surface]\nglobs = ["{bad_glob}"]\n')
-                base = self.commit(f"c1 dot-git-component glob {bad_glob!r}")
+    def test_dot_git_component_glob_manifest_is_present_not_malformed(self):
+        """Round-5 CR (codex, self-correcting): round-4 treated a `.git`
+        path-component glob as MALFORMED on the (now-reverted) premise that
+        it could never match a real diff path. That premise is false — see
+        `HostileGitTreeDotGitTest` below for the crafted-tree positive
+        coverage — so a manifest declaring a `.git`-component glob is a
+        perfectly legitimate, well-formed manifest (PRESENT disposition),
+        not a malformed one."""
+        for glob in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b"):
+            with self.subTest(glob=glob):
+                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[surface]\nglobs = ["{glob}"]\n')
+                base = self.commit(f"c1 dot-git-component glob {glob!r}")
                 load = fd.load_boundary_manifest_at_base(self.repo, base)
-                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
-                self.assertIsNone(load.manifest)
-                esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
-                self.assertTrue(esc.required, f"{bad_glob!r} must escalate (fail-closed), not silently permit carry-forward")
-                self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
+                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+                self.assertIsNotNone(load.manifest)
 
     def test_empty_file_manifest_is_malformed_not_present(self):
         """agent-harness#191 CR finding 2: a zero-byte
@@ -449,6 +447,101 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         load_at_later = fd.load_boundary_manifest_at_base(self.repo, later)
         self.assertIn("auth_security", load_at_base.manifest.sections)
         self.assertNotIn("auth_security", load_at_later.manifest.sections)
+
+
+# --------------------------------------------------------------------------- #
+# Hostile-tree `.git`-component positive coverage (round-5 CR, codex,
+# self-correcting revert of round-4 — Consiliency/agent-harness#191). Round-4
+# rejected `.git`-component boundary globs as semantic-empty on the premise
+# that git's `verify_path` forbids a `.git` path component anywhere in a
+# tree. `verify_path` governs the INDEX/WORKTREE (`git checkout`, `git add`,
+# ordinary commits) — it is NOT consulted by the raw plumbing
+# (`git mktree`/`git commit-tree`) that builds and diffs commit-tree objects
+# directly, and Lane B's own threat model (`fab_canonical.py`) explicitly
+# includes hand-crafted trees. This class builds exactly such a crafted head
+# commit via plumbing, confirms `fab_canonical.enumerate_changed_paths`
+# reports the resulting `.git/config` changed path (i.e. the path IS
+# reachable through Lane C's actual input, a raw commit-tree diff), and
+# confirms a `.git/**` boundary glob escalates that delta — the corrected
+# understanding that motivated the revert.
+# --------------------------------------------------------------------------- #
+
+
+def _git_stdin(repo: Path, *args: str, input_text: str) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], input=input_text, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise AssertionError(f"git {args} failed: {result.stderr}")
+    return result.stdout
+
+
+class HostileGitTreeDotGitTest(GitRepoTestCase):
+    def _craft_dot_git_injection_commit(self, base: str) -> str:
+        """Build a head commit, parented on `base`, whose tree is IDENTICAL
+        to `base`'s tree except for one added top-level entry: a `.git`
+        subtree containing a `config` blob — the same plumbing sequence the
+        task's empirical repro used (`git hash-object -w --stdin` for the
+        blob, `git mktree` for the inner and outer trees, `git commit-tree`
+        for the commit), entirely bypassing `verify_path`/`git add`."""
+        blob_sha = _git_stdin(
+            self.repo, "hash-object", "-w", "--stdin", input_text="[core]\n\tbare = false\n"
+        ).strip()
+        inner_tree_sha = _git_stdin(
+            self.repo, "mktree", input_text=f"100644 blob {blob_sha}\tconfig\n"
+        ).strip()
+        base_tree_sha = _rev_parse(self.repo, f"{base}^{{tree}}")
+        base_entries = _run(self.repo, "ls-tree", base_tree_sha).stdout
+        outer_tree_input = base_entries + f"040000 tree {inner_tree_sha}\t.git\n"
+        outer_tree_sha = _git_stdin(self.repo, "mktree", input_text=outer_tree_input).strip()
+        crafted_head = _git_stdin(
+            self.repo,
+            "commit-tree",
+            outer_tree_sha,
+            "-p",
+            base,
+            "-m",
+            "crafted .git tree injection",
+            input_text="",
+        ).strip()
+        return crafted_head
+
+    def test_dot_git_path_reachable_via_crafted_tree_raw_diff(self):
+        """The empirical premise underlying the revert: a `.git/...` path IS
+        a reachable CHANGED PATH in `fab_canonical`'s raw commit-tree diff
+        enumeration when the head commit's tree was built via plumbing that
+        bypasses `verify_path` — mirrors the task's `git diff --no-renames -z
+        --raw` repro directly (rc==0, `.git/config` present)."""
+        self.write("src/live.py", "print('hi')\n")
+        base = self.commit("c1 base commit")
+        crafted_head = self._craft_dot_git_injection_commit(base)
+
+        changed = fc.enumerate_changed_paths(self.repo, base, crafted_head)
+        self.assertIn(".git/config", changed)
+
+    def test_dot_git_boundary_glob_escalates_crafted_tree_injection(self):
+        """End to end: a manifest declaring `.git/**` as a protected surface
+        must ESCALATE a delta whose only change is the crafted `.git/config`
+        injection — `.git/**` is a legitimate, valuable boundary glob against
+        exactly this hostile-tree attack, not a semantic-empty one that
+        should invalidate the manifest."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[git_injection]\nglobs = [".git/**"]\n')
+        self.write("src/live.py", "print('hi')\n")
+        base = self.commit("c1 base with boundary manifest")
+        crafted_head = self._craft_dot_git_injection_commit(base)
+
+        changed = fc.enumerate_changed_paths(self.repo, base, crafted_head)
+        self.assertIn(".git/config", changed)
+
+        # The glob must compile without raising (no longer malformed).
+        pattern = fd._translate_glob_to_regex(".git/**")
+        self.assertTrue(pattern.match(".git/config"))
+
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+        self.assertIsNotNone(load.manifest)
+
+        esc = fd.evaluate_boundary_escalation(load, changed)
+        self.assertTrue(esc.required, ".git/** must escalate a delta injecting .git/config via a hostile tree")
+        self.assertEqual(esc.trigger, "git_injection")
 
 
 # --------------------------------------------------------------------------- #

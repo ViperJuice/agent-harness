@@ -89,17 +89,23 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     -componented, doubly-slashed, or trailing-slashed) — a glob requiring one
     of those forms is syntactically valid but matches ZERO real paths, a
     silent downgrade of whatever boundary declared it (§5.4 downgrade-proof).
-    A glob is ALSO malformed if it contains a LITERAL (non-wildcard)
-    `/`-delimited segment that ASCII-lowercases to exactly `.git` (round-4
-    CR, codex — `.git`-component semantic-empty fail-open; e.g. `.git/**`,
-    `src/.GIT/**`, `a/.git/b`): git's own pathname verifier forbids a `.git`
-    path component anywhere in a tree, case-insensitively, so such a glob can
-    likewise never match a real diff path. A WILDCARD segment that could
-    incidentally also match `.git` (`**`, `*`, `.*`) is NOT rejected — see
-    `_translate_glob_to_regex`'s docstring for the full two-class decision
-    boundary this validator is bounded to, and the tracked non-blocking
-    residual (Consiliency/agent-harness#279) for what it deliberately does
-    not attempt.
+    A literal (non-wildcard) `/`-delimited segment that ASCII-lowercases to
+    exactly `.git` (e.g. `.git/**`, `src/.GIT/**`, `a/.git/b`) is
+    DELIBERATELY NOT rejected: a round-4 CR briefly added such a rejection on
+    the premise that git's pathname verifier forbids a `.git` component
+    anywhere so it could never match a real diff path, but round-5
+    (self-correcting) reverted that after empirical verification showed the
+    premise false for this module's own threat model — `verify_path` governs
+    the index/worktree, not the raw commit-tree diffs Lane C actually
+    enumerates, and Lane B's hostile-tree threat model means a `.git/...`
+    changed path IS reachable via a hand-crafted tree (`git mktree`/`git
+    commit-tree` permit a `.git` entry; `fsck`'s `hasDotgit` is a warning,
+    not a rejection). `.git/**` is therefore a legitimate, valuable boundary
+    glob — it forces escalation on exactly that hostile-tree injection — not
+    a semantic-empty one. See `_translate_glob_to_regex`'s docstring for the
+    full decision boundary this validator is bounded to and the empirical
+    repro; Consiliency/agent-harness#279 (filed on the now-reverted premise)
+    is closed as superseded.
 
   * **Carry-forward/escalation decision rule (design §5.3/§5.4, the
     authoritative disposition table):**
@@ -358,23 +364,50 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
     the safe set `[A-Za-z0-9_./*?-]` — a malformed glob INVALIDATES (never
     silently "matches nothing").
 
-    DECISION BOUNDARY (Consiliency/agent-harness#191 Lane C, round-3 + round-4
-    CR): this validator's job is to reject any glob that CANNOT match a
-    normalized git repo-relative path, because such a glob is a
-    zero-effective-boundary downgrade (§5.4's "no zero-effective-boundary
-    manifest may permit carry-forward" invariant) rather than a genuinely
-    narrow one. That rejection is deliberately bounded to exactly TWO
-    enumerated classes, not an open-ended "validate everything a real git
-    checkout might reject":
+    DECISION BOUNDARY (Consiliency/agent-harness#191 Lane C, round-3 CR;
+    round-4 added and round-5 REVERTED a second class, see below): this
+    validator's job is to reject any glob that CANNOT match a normalized git
+    repo-relative path, because such a glob is a zero-effective-boundary
+    downgrade (§5.4's "no zero-effective-boundary manifest may permit
+    carry-forward" invariant) rather than a genuinely narrow one. That
+    rejection is deliberately bounded to exactly ONE enumerated class, not an
+    open-ended "validate everything a real git checkout might reject":
 
       (a) STRUCTURAL non-normalized forms — an empty segment (leading/
           trailing/doubled slash), or a `.`/`..` component — because
           `fab_canonical.enumerate_changed_paths`'s `-z` diff paths are
-          always already normalized and can never contain one (round-3);
-      (b) the git-SPECIAL forbidden component `.git` (case-insensitive,
-          literal segments only) — because git's own pathname verifier
-          forbids a `.git` component anywhere in a tree, so a literal one in
-          a glob can never match a real diff path either (round-4, this fix).
+          always already normalized and can never contain one (round-3).
+
+    A literal `.git` path component is deliberately NOT rejected (round-4
+    added such a rejection; round-5, self-correcting, reverted it after
+    empirical verification showed the premise was FALSE for Lane C's actual
+    threat model). Round-4 reasoned that git's pathname verifier
+    (`verify_path`) unconditionally forbids a `.git` component anywhere in a
+    tree, so a literal `.git` glob segment could never match a real diff
+    path. That is true of `verify_path`, but `verify_path` governs the
+    INDEX/WORKTREE (`git checkout`, `git add`, normal commits) — it is NOT
+    consulted by the raw plumbing that builds and diffs commit-tree objects
+    directly. `git mktree` happily accepts and creates a tree object with a
+    `.git` entry; `git commit-tree` happily commits it; `git fsck`'s
+    `hasDotgit` check for such an object is a WARNING, not an unconditional
+    rejection. Lane B's own threat model (this module's PRE-STATED TRUST
+    BOUNDARY, above, and `fab_canonical.py`'s hostile-git discipline)
+    explicitly includes HAND-CRAFTED trees — an attacker who controls repo
+    CONTENTS is not required to go through `verify_path` at all — and
+    `fab_canonical.enumerate_changed_paths` is exactly a raw commit-tree
+    `git diff --raw` enumeration, not an index/worktree operation. Verified
+    directly: a crafted head commit (tree built via `git mktree` with a
+    `.git` subtree entry, committed via `git commit-tree`) against a
+    realistic base produces `git diff --no-renames -z --raw <base>
+    <crafted-head>` output containing a `.git/config` changed path (rc==0).
+    So `.git/config` IS a reachable changed path via a hostile tree, which
+    makes `.git/**` a legitimate, VALUABLE boundary glob — matching that
+    injection is exactly the protection an operator declaring it wants — not
+    a semantic-empty one; rejecting it removed real protection and turned any
+    manifest declaring it into "malformed" (escalate every delta), the
+    opposite of what a boundary declaration should do. See
+    `tests/test_fab_delta_c.py`'s crafted-tree escalation test for the
+    reproduction and the corresponding positive coverage.
 
     What this validator deliberately does NOT do: exhaustively reproduce
     every platform/filesystem-specific git-pathname restriction (Windows
@@ -389,9 +422,10 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
     platform's git is therefore a base-CONFIG lint concern (should be caught
     when the manifest itself is authored/reviewed), not a runtime injection
     vector an attacker can exploit by controlling repo CONTENTS at the delta
-    head. Full parity with git's platform-specific `verify_path` is tracked
-    as a non-blocking follow-up (Consiliency/agent-harness#279), not
-    re-litigated here every time a new exotic form is found."""
+    head. Consiliency/agent-harness#279 (which was filed to track exactly
+    this kind of exotic-form parity, on round-4's now-reverted premise) has
+    been closed as superseded — see that issue for the corrected
+    understanding."""
     if not isinstance(glob, str) or not glob:
         raise BoundaryManifestInvalid(f"malformed boundary glob (empty/non-string, fail-closed): {glob!r}")
     if glob.startswith("/"):
@@ -441,36 +475,23 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
                 f"normalized git path): {glob!r}"
             )
 
-    # agent-harness#191 CR (Lane C round-4 finding, codex, verified by direct
-    # execution — `.git`-component semantic-empty boundary fail-open): the
-    # round-3 check above closes STRUCTURAL non-normalized forms, but a glob
-    # can still be structurally normalized AND still match zero real git
-    # paths for a DIFFERENT reason — git's own pathname verifier
-    # unconditionally forbids a `.git` path COMPONENT anywhere in a tree,
-    # case-INSENSITIVELY (`fsck`/`unpack-trees` reject `.git`, `.GIT`,
-    # `.Git`, ... as a component, precisely to close the on-disk-`.git`-
-    # shadowing attack class), so a boundary glob with a literal `.git`
-    # component can never appear in git's own `-z` diff paths — reproduced
-    # directly against this module: `[surface]\nglobs = [".git/**"]` gave
-    # `evaluate_boundary_escalation(..., ("src/live.py",)).required == False`
-    # before this check existed, exactly the same zero-effective-boundary
-    # downgrade as the round-3 findings, just via a git-SPECIAL restriction
-    # rather than a path-normalization one. Reject only a LITERAL segment
-    # (no `*`/`?` wildcard character in it) whose ASCII-lowercased form is
-    # exactly `.git` — a wildcard segment that could INCIDENTALLY also match
-    # `.git` (`**`, `.*`, `.G?T`, ...) is deliberately left alone: its
-    # breadth is the fail-SAFE direction (matching MORE paths, including a
-    # `.git` one that git will never actually produce, never fewer), so only
-    # an explicit literal `.git` component — which can only ever match
-    # nothing — is the semantic-empty case this closes.
-    for _component in glob.split("/"):
-        if "*" in _component or "?" in _component:
-            continue  # wildcard segment: breadth is fail-safe, not the semantic-empty case
-        if _component.lower() == ".git":
-            raise BoundaryManifestInvalid(
-                "malformed boundary glob (literal '.git' path component, fail-closed: git forbids a "
-                f".git component anywhere, case-insensitively, so this can never match a real path): {glob!r}"
-            )
+    # agent-harness#191 CR (Lane C round-5 finding, codex, self-correcting —
+    # see the round-5 revert of round-4's `.git`-component rejection below):
+    # round-4 added a rejection here for a literal `.git` path component,
+    # reasoning that git's pathname verifier forbids `.git` as a component so
+    # such a glob could never match a real diff path. That premise was FALSE
+    # for Lane C's actual threat model and has been reverted (see this
+    # function's docstring, "DECISION BOUNDARY", for the corrected analysis):
+    # `verify_path` governs the index/worktree, not raw commit-tree diffs;
+    # `git mktree`/`git commit-tree` plumbing permits a `.git` tree entry;
+    # `fsck`'s `hasDotgit` check is a WARNING, not an unconditional rejection.
+    # Lane B's threat model explicitly includes hand-crafted trees, and
+    # `fab_canonical`'s changed-path enumeration is a raw commit-tree diff —
+    # so a hostile tree CAN produce a `.git/...` changed path, making
+    # `.git/**` a legitimate, valuable boundary glob (it forces escalation on
+    # exactly that injection), not a semantic-empty one. A literal `.git`
+    # path segment is therefore left to compile normally, same as any other
+    # literal segment.
 
     segments = glob.split("/")
     n = len(segments)

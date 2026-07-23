@@ -450,6 +450,46 @@ touched.
   match correctly), and an end-to-end repro closing the exact `.git/**`
   bypass over 4 case-variant shapes (asserting `MANIFEST_DISPOSITION_MALFORMED`
   + escalate-every-delta) (69 cases total in the module, up from 66).
+- **Round-5 CR (codex, self-correcting): round-4's `.git`-component rejection
+  REVERTED — its premise was false for this module's own threat model, verified
+  empirically.** Round-4 reasoned that git's pathname verifier (`verify_path`)
+  forbids a `.git` path component anywhere in a tree, so a literal `.git` glob
+  segment could never match a real diff path. `verify_path` governs the
+  INDEX/WORKTREE (`git checkout`, `git add`, ordinary commits) — it is not
+  consulted by the raw plumbing (`git mktree`/`git commit-tree`) that builds and
+  diffs commit-tree objects directly, and `fab_canonical.enumerate_changed_paths`
+  (Lane C's actual input) is exactly a raw commit-tree `git diff --raw`
+  enumeration. Lane B's own threat model explicitly includes HAND-CRAFTED trees.
+  Verified directly: a crafted head commit (tree built via `git mktree` with a
+  `.git` subtree entry, committed via `git commit-tree`, entirely bypassing
+  `verify_path`) against a realistic base produces `git diff --no-renames -z
+  --raw <base> <crafted-head>` output containing a `.git/config` changed path
+  (rc==0) — so `.git/config` IS reachable through Lane C's actual input via a
+  hostile tree. `.git/**` is therefore a legitimate, VALUABLE boundary glob
+  (matching that injection is exactly the protection an operator declaring it
+  wants), not a semantic-empty one — the round-4 rejection removed real
+  protection and turned any manifest declaring `.git/**` into "malformed"
+  (escalate every delta), the opposite of a working boundary. `_translate_
+  glob_to_regex` no longer rejects a literal `.git` path component; the round-3
+  STRUCTURAL rejections (empty segment, leading/trailing/doubled slash, bare
+  `.`/`..` component) are untouched — those forms remain git-tree-object-illegal
+  at parse time, not merely an fsck warning, and stay rejected. The module and
+  function docstrings are corrected to describe the single remaining enumerated
+  rejection class and the corrected `.git` analysis.
+  Consiliency/agent-harness#279 (filed on the now-reverted round-4 premise) is
+  closed as superseded.
+  **Tests**: the round-4 rejection tests are replaced with positive coverage —
+  `.git`-component globs now assert they COMPILE and MATCH rather than raise
+  (`GlobSemanticsTest.test_dot_git_component_compiles_and_matches`), a manifest
+  declaring one now asserts PRESENT (not malformed) disposition
+  (`BoundaryManifestLoadTest.test_dot_git_component_glob_manifest_is_present_not_malformed`),
+  and a new `HostileGitTreeDotGitTest` class builds a crafted `.git`-injection
+  commit via real `git mktree`/`git commit-tree` plumbing in a real temporary
+  repo, confirms `fab_canonical.enumerate_changed_paths` reports the resulting
+  `.git/config` changed path, and confirms a `.git/**` boundary manifest
+  escalates that delta end-to-end (`evaluate_boundary_escalation(...).required
+  == True`, `trigger == "git_injection"`). Round-3's structural-rejection tests
+  are unchanged and remain green.
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
