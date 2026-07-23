@@ -1,97 +1,130 @@
 # FAB integration milestone — activating the dormant gate into the live pipeline (agent-harness#191)
 
-**Status:** plan for operator approval. Higher bar than the A–D lanes: this changes how real PRs get
-reviewed and merged, so the gate is **operator approval of this plan + cross-vendor CR**, not CR alone.
-Recommended execution: a **fresh context** against this approved plan (not the tail of the build session).
+**Status:** plan v2 — **cross-vendor panel-reviewed** (codex+grok+gemini all initially DISAGREE'd v1; this
+version folds in every blocking finding). Higher bar than the A–D lanes: this changes how real PRs get
+reviewed, committed, and merged, so the gate is **operator approval of this plan + cross-vendor CR on the
+code**. Recommended execution: a **fresh context** against this plan.
 
 ## Context
 
-FAB lanes A–D are built. A/B/C are merged (provenance/schema/hash-chain, canonical-bytes/equivalence,
-delta-chain/carry-forward/escalation). Lane D (the gate module `fab_gate.py`) is complete, logic-correct,
-fail-closed-by-construction, and **dormant** — traced empirically: no live path writes FAB provenance
-(producer) or takes the delta-review shortcut (consumer), and `fab_gate` is imported only by its own
-closeout self-registration. Absence of provenance ⇒ every PR gets normal full review. This milestone
-**activates** FAB end-to-end.
+FAB lanes A–D are built + merged (dormant). Activation **piece 1** (a merge-time promotion re-assertion,
+byte-neutral behind `PHASE_LOOP_FAB`, merged #282) reads `run_id` from `completed_nodes[nid]["fab_run_id"]`,
+a key nothing populates yet. This milestone wires the **producer** (piece 2) and the **deliberate/opt-in
+consumer** (piece 3). Everything stays behind `PHASE_LOOP_FAB` (default off = byte-for-byte unchanged).
 
-## The three pieces, decomposed by blast radius (build in this order)
+The panel proved v1's core assumption false, so read the **honesty model** first — it reframes everything.
 
-### 1. Promotion re-assertion — bounded, load-bearing safety (do first)
-- **Where:** `train_runner._live_merge_pr` (:453) / the `run_governed_premerge_loop` merge path.
-- **What:** immediately before `gh pr merge`, for a FAB-gated PR, re-run Lane B `equivalent()` against the
-  LIVE PR using the bound tuple `(repo_slug, base_ref_identity, base_sha, head_sha, expected_head_digest)`
-  from the gate status; refuse merge (non-human `review_gate_block`) on ANY change (retarget / content drift
-  / merge-outside-head). `FabPromotionCheck`/`fab_promotion_check` already exist in `governed_premerge`
-  (default `None`); wire the production caller to construct + forward it for FAB PRs.
-- **Why first:** it's the §4.4 fail-closed backstop and the smallest, most-defined change; landing it first
-  means the safety net exists before the producer/consumer can take any shortcut.
+## The honesty model (the crux the panel corrected)
 
-### 2. Producer — write provenance + seat outcomes on a board pass (moderate, additive-ish)
-- **Where:** `governed_review.py` (the advisor-board review gate) — on a PASS, and the closeout path.
-- **What:** when the advisor board approves a PR, write the `ReviewProvenanceArtifact` (Lane A
-  `write_provenance`) + the per-seat `SeatOutcomeRecord`s (Lane D `append_seat_outcome`) to the trusted run
-  store, keyed by the trusted `run_id`; thread that trusted `run_id` + `repo_root` into the closeout so
-  `fab_gate_inputs` reaches the gate (which is fail-closed-by-construction once provenance exists).
-- **Note:** additive — it records what a full review already produced. No behavior change to *how* review
-  happens; it just makes the review auditable + carry-forward-eligible.
+FAB re-reviews **the unit the board actually reviewed**, and equivalence is checked on that same unit over
+`base_sha .. head`, where **FAB equivalence forces `base_sha == the live PR merge-base`**. The board reviews
+one phase-closeout's **staged diff** (`_governed_premerge_review`, after `git add`, before commit). Therefore
+provenance is honest **only** when the reviewed closeout diff covers the **entire** `merge-base .. PR-head`
+net content — otherwise `covers_patch_digest = patch_digest(merge_base, head)` includes bytes the seats never
+saw (v1's fatal "by construction" overclaim; all three panelists blocked on it).
 
-### 3. Consumer — the delta-review shortcut (unbounded, BEHAVIOR-CHANGING — needs the decision below)
-- **Where:** `governed_review` / `governed_premerge` when a previously-approved PR's head advances.
-- **What:** instead of re-reviewing the whole patch, review only the DELTA (Lane C carry-forward +
-  escalation) and, on a clean delta with equivalence proven (Lane B), carry the prior approval forward.
-  This is the actual value of FAB — but it changes how PRs get reviewed.
+**Enforced honesty gate (fail-closed, not "by construction"):** FAB provenance is written for a node's PR
+**only if ALL hold**, else NO provenance is written and the PR falls back to normal whole-patch review:
+1. **Single reviewed commit covers the PR (milestone scope):** the reviewed closeout commit's parent equals
+   the PR merge-base — i.e. `precommit HEAD == merge-base(origin/<base>, head)`. Multi-commit PRs (accumulated
+   phase closeouts, continuation commits, executor mid-branch commits) are **out of scope for this milestone**
+   — see "Deferred: multi-commit composition" — and MUST be detected and excluded (no provenance → full
+   review), never silently attached.
+2. **Post-hook tree/parent verification:** after the closeout commit is created (post any pre-commit hooks),
+   verify `commit^ == reviewed_base_sha` AND `commit^{tree} == reviewed_tree` (the tree the panel reviewed). A
+   hook that mutates the tree, or concurrent HEAD movement, invalidates the review → no provenance.
+3. **Non-empty:** an empty / no-op closeout produces no reviewable diff → no provenance, no head index entry.
+4. `candidate.head_sha = committed_head`; `base = BaseBinding(ref_identity, base_sha = merge_base)`;
+   `covers_patch_digest = candidate.patch_digest = fab_canonical.patch_digest(repo, merge_base, committed_head)`
+   — now honestly equal to what the seats reviewed **because 1–3 hold**.
 
-## Operator decision — RESOLVED (2026-07-23): DELIBERATE / OPT-IN
+## The three pieces (build in order; each cross-vendor CR'd)
 
-The pipeline does **not** take the delta-review shortcut automatically. The machinery is wired live
-(producer writes provenance on a board pass; gate + promotion re-assertion verify it), but **taking the
-delta-review shortcut is an explicit operator/flag action** — FAB is a capability you invoke, not a
-governed-review default. Consequences for piece 3 (consumer):
+### Piece 1 — promotion re-assertion (MERGED, #282)
+`train_runner._live_merge_pr` re-runs Lane B `equivalent()` vs the live PR before `gh pr merge`, behind
+`PHASE_LOOP_FAB`, fail-closed on drift/unresolvable/missing-or-unreadable provenance. run_id from
+`completed_nodes[nid]["fab_run_id"]`. **Gap to close in piece 2/3:** promotion currently rechecks only byte
+equivalence — it MUST also re-verify seat authenticity (§6.3) + no-unresolved-block-finding at merge, OR that
+re-verification must run in the dedicated hard gate that piece 2 wires (see below).
 
-- The delta-review path is gated behind an explicit opt-in signal (an operator flag / a per-run mode),
-  NOT auto-detected from "approved at X, head advanced to Y".
-- Default governed-review behavior is UNCHANGED (full review), so the standing blast radius on the live
-  merge path is limited to piece 1 (the promotion re-assertion, which runs for FAB-gated PRs only) and the
-  additive producer (piece 2).
-- Turning on auto-shortcut is a later, separate decision once the opt-in path is proven in the field.
+### Piece 2 — producer (honest recording + the HARD gate + byte-neutrality)
+1. **Authentic seats — capture at invocation, never synthesize (codex, anti-tautology):** `PanelLegResult` /
+   `LoopResult` do NOT carry `required`/`attempt_id`/`epoch`/`artifact_digest`/`evidence_digest`, so the
+   producer CANNOT build authentic `SeatOutcomeRecord`s from the review return value — synthesizing both the
+   `ProvenanceSeat`s and the `SeatOutcomeRecord`s makes the §6.3 cross-check tautological. Instead: the
+   governed panel invocation itself (`governed_premerge_for_run`/`invoke_panel`) must **persist the trusted
+   per-seat `SeatOutcomeRecord`s to the run store at review time** (real epoch/attempt/digests), and the
+   producer builds `ProvenanceSeat`s to MATCH those durable records. May require threading seat outcomes out
+   of the panel layer.
+2. **One atomic, flag-gated producer transaction** (codex): under `PHASE_LOOP_FAB`, at phase closeout —
+   capture the passing panel + its trusted seat outcomes at invocation → commit → run the honesty gate
+   (`precommit HEAD == merge-base`, post-hook `commit^`/tree verify, non-empty) → build the
+   `ReviewProvenanceArtifact` (delta_chain=(), exact-head; findings→`Finding` with `body_ref` content-digest;
+   `material_digests` = snapshot of the reviewed bundle bytes + `reviewed_material_digest`, §6.4, at REVIEW
+   time; `chain_digest=compute_c0`) → `write_provenance(repo, run_id, artifact)` → run a **dedicated HARD FAB
+   gate**. **Any step failing BLOCKS before publication.**
+3. **Dedicated hard gate OUTSIDE the warn-downgradable registry** (codex): FAB's decision must NOT go through
+   the generic closeout-validator registry (whose default `PHASE_LOOP_REVIEW=warn` downgrades every block and
+   whose exceptions are skipped) — a warn-downgraded FAB block would let unauthenticated provenance pass. Run
+   `compose_gate_status` in a dedicated path that hard-blocks on non-pass regardless of `PHASE_LOOP_REVIEW`.
+4. **Byte-neutral default (grok):** when `PHASE_LOOP_FAB` is off, NOTHING changes — no panel-seat persistence,
+   no post-commit producer, no `fab_gate_inputs`, no return-shape change in `_governed_premerge_review`, no
+   head index. Threading `fab_gate_inputs`/run_id alone (which activates the F3 fail-closed gate) is a
+   byte-neutrality violation — gate ALL of it. Stash-proof off-path test.
 
-## Verification bar
+### Piece 3 — consumer (deliberate/opt-in delta-review shortcut) + the durable bridge
+1. **Coordinator-owned FAB admission record (codex+grok — replaces v1's ephemeral head→run_id index):**
+   persist a durable record (train ledger / coordinator store, NOT ephemeral `completed_nodes`) containing:
+   repo+node identity, trusted `run_id`, explicit operator opt-in flag, reviewed head, delta-approved head,
+   and the **broker-admitted head**. Bind `fab_run_id` at **publish/admission time** (same place as
+   `admitted_head_sha`), not a late opportunistic head lookup.
+2. **Atomic re-admission on delta approval (codex):** an advanced PR head is rejected against the OLD
+   broker-admitted SHA *before* FAB's promotion check runs (`train_runner:748`). So a successful delta review
+   must trigger a NEW broker admission and an **atomic** update of the admitted head, and the consumer must
+   **write a NEW provenance record for the new head** (gemini — else piece 1 checks the old provenance,
+   mismatches, and blocks, defeating the shortcut).
+3. **Fail-closed everywhere (all 3):** missing / ambiguous (two runs sharing a head → fail-closed, not
+   last-write-wins) / stale / mismatched admission state → force whole-patch review or halt; a bridge miss →
+   whole-patch (test as acceptance, don't assume). The opt-in signal must be **trusted** (coordinator/
+   operator-set), never attacker/PR-settable.
+4. Consumer reviews only the DELTA (Lane C carry-forward + escalation) and carries the prior approval forward
+   only on clean+equivalent (Lane B) + authentic seats (§6.3); default governed-review behavior is UNCHANGED.
 
-- Each piece: cross-vendor CR (codex load-bearing) + green CI.
-- The promotion re-assertion (piece 1) must have an end-to-end test proving a live head/base change after a
-  gate pass is REFUSED at the real merge path.
-- The consumer (piece 3) must prove: a clean small delta carries forward WITHOUT whole-patch re-review
-  (acceptance crit 1) AND a contract-surface / non-equivalent / unauthenticated delta does NOT.
-- Operator approval of this plan precedes any merge; the dormant gate module (Lane D) merges first.
+## Enforced merge-queue prohibition (codex+gemini — NOT just documented)
+Activating the producer/consumer makes the merge-queue TOCTOU reachable: a GitHub merge queue creates the
+final commit AFTER `_live_merge_pr`'s piece-1 recheck, bypassing equivalence. Deferring to #265 is only safe
+with a **runtime prohibition**: when `PHASE_LOOP_FAB` is on AND the target repo/PR has a merge queue enabled,
+**REFUSE/halt** (non-human) rather than proceed. Add the check; remove it when #265 lands the queue-bound
+re-assertion.
 
-## Producer implementation findings (from grounding — for clean execution)
+## Deferred: multi-commit composition (follow-up, not this milestone)
+Honestly covering a multi-commit PR (`base..head` across several phase closeouts) needs either a Lane C-style
+chain of per-phase provenance covering every commit, or a "full `base..head` covered by the union of reviewed
+diffs" predicate. Out of scope here — this milestone supports only single-reviewed-commit PRs (honesty gate
+condition 1) and MUST fail-closed (full review) on everything else.
 
-**Operator decision: reviewed unit = the PHASE-CLOSEOUT DIFF.** Hook `runner._governed_premerge_review`
-(runs inside `_perform_phase_closeout_impl`, AFTER `git add`, BEFORE the commit; reviews
-`staged_index_diff(repo, closeout_dirty_paths)` = exactly what gets committed).
+## Test matrix (acceptance — write these)
+- Byte-neutrality: `PHASE_LOOP_FAB` off → the review/commit/merge path is byte-for-byte unchanged (stash-proof).
+- Honesty: pre-commit hook mutates the tree → no provenance (post-hook verify fails); multi-commit PR
+  (parent != merge-base) → no provenance, full review; empty/no-op closeout → no provenance; single-commit
+  clean closeout → provenance whose `covers_patch_digest == patch_digest(merge_base, head)`.
+- Authenticity NON-tautological: seat outcomes persisted at invocation; a fabricated ProvenanceSeat with no
+  matching durable SeatOutcomeRecord → gate BLOCKS.
+- Hard gate: a non-pass FAB status BLOCKS even under `PHASE_LOOP_REVIEW=warn`.
+- Bridge/admission: fab_run_id bound at admission; resume preserves it (durable, not ephemeral); ambiguous
+  head → fail-closed; miss → whole-patch; advanced head → re-admission + new provenance, else block.
+- Merge-queue: FAB on + queue enabled → refuse/halt.
+- Promotion re-assertion re-verifies seat authenticity + unresolved findings (not just bytes), or the hard
+  gate does, before merge.
 
-**Key intricacies (why this is commit-path surgery, not simple wiring):**
-1. **Timing — provenance is written POST-commit.** The review is pre-commit, so `candidate.head_sha` (the
-   committed sha) does not exist at review time. Write the `ReviewProvenanceArtifact` AFTER the closeout
-   commit is created (the code already reads `rev-parse HEAD` as `closeout_commit` around runner.py:8913).
-   `covers_patch_digest = candidate.patch_digest = fab_canonical.patch_digest(repo, base_sha,
-   committed_head)` — this equals the reviewed staged diff BY CONSTRUCTION (the commit == the staged
-   content), which is the honesty invariant the reviewed-unit choice buys.
-2. **Panel propagation.** `_governed_premerge_review` returns `None` on PASS (discarding `result.panel` /
-   `result.findings`). The producer needs the PASSING review's PanelResult (seats/verdicts/findings). So
-   `_governed_premerge_review` (or `_perform_phase_closeout_impl`) must be modified to CAPTURE + propagate
-   the pass-time panel to the post-commit producer.
-3. **Seat field-parity.** Build `ProvenanceSeat`s that field-for-field match the `SeatOutcomeRecord`s
-   persisted via `fab_gate.append_seat_outcome` / `seat_outcomes_path_for_run` (§6.3 cross-check joins on
-   seat_key/vendor_leg/epoch + required/status/artifact_digest/evidence_digest). Findings → `Finding` with
-   `body_ref` content-digest (never inline text). `delta_chain=()`, `chain_digest=compute_c0()`.
-4. **Closeout-gate activation.** Thread `run_id` + `repo_root` into `build_phase_loop_closeout(fab_gate_inputs
-   =...)` (runner.py:7361) so the Lane D closeout gate fires (clean full review → exact-head PASS).
-5. **run_id bridge to the train merge.** Persist a head_sha→run_id index (or make provenance findable by
-   `candidate.head_sha`) so the train P4 loop sets `completed_nodes[nid]["fab_run_id"]` for the node whose PR
-   head matches → piece-1's `_live_merge_pr` re-assertion engages.
-6. **Fail-closed + byte-neutral default** (`fab_promotion_enabled()` gate; stash-proof off-path test).
+---
+## v1 producer findings (retained for reference; superseded by the honesty model above)
 
-**Execution note:** this is core commit-path surgery. Recommend a fresh context (or a fresh subagent handed
-THIS section) — the pre-commit→post-commit propagation is the crux; get it wrong and either provenance
-misrepresents what was reviewed (honesty bug) or the closeout commit path regresses. Piece 1 (safety net) is
-already merged, so the pipeline is safe with FAB off regardless.
+The reviewed unit is the phase-closeout diff (hook `runner._governed_premerge_review`). The v1 claim that
+`covers_patch_digest == reviewed diff` "by construction" was WRONG (see honesty model). Timing: provenance is
+written POST-commit (the committed head doesn't exist at review time; the code already reads `rev-parse HEAD`
+as `closeout_commit` around runner.py:8913). `_governed_premerge_review` returns `None` on pass, discarding
+`result.panel` — that must be captured. Thread `run_id`+`repo_root` into `build_phase_loop_closeout`
+(runner.py:7361) — but NOTE codex's finding that `build_phase_loop_closeout` runs while reducing the executor
+terminal summary, BEFORE the governed closeout commit, so the gate wiring must be re-checked so it validates
+the FINAL committed artifact, not an early/nonexistent one.
