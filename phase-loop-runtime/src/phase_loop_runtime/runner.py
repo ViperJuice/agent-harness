@@ -9079,6 +9079,16 @@ def _perform_phase_closeout_impl(
             # per the derivation at the top of this function) so a blocked / failed / not-yet-
             # verified phase is never silently finalized as complete.
             commit = _git_output(repo, "rev-parse", "HEAD")
+            # FAB (Consiliency/agent-harness#191) piece 2 crash safety (CR
+            # round-2): a FAB hard-block or a post-commit producer crash on a
+            # PRIOR attempt leaves the commit in place; this resume path must NOT
+            # finalize an un-gated FAB commit. Byte-neutral when the flag is off
+            # (no re-gate, no FAB import reached).
+            if _fab_closeout_enabled():
+                fab_regate = _fab_noop_regate_block(repo, committed_head=commit, metadata=metadata)
+                if fab_regate is not None:
+                    status, blocker = fab_regate
+                    return status, _closeout_event()
             status = "complete"
             metadata["closeout"]["verification_status"] = "passed"
             metadata["closeout"].update(
@@ -9181,33 +9191,52 @@ def _perform_phase_closeout_impl(
                     # A DEDICATED hard-gate BLOCK ⇒ the phase is held (non-human
                     # review_gate_block) — never a warn-downgraded pass.
                     if fab_run_id is not None and status == "complete" and fab_reviewed_base_sha is not None:
-                        fab_outcome = _fab_closeout_producer(
-                            repo,
-                            fab_run_id=fab_run_id,
-                            reviewed_base_sha=fab_reviewed_base_sha,
-                            reviewed_tree=reviewed_tree,
-                            committed_head=commit,
-                            closeout_dirty_paths=closeout_dirty_paths,
-                        )
+                        from . import fab_producer as _fab_producer
+
+                        # Exception-safe (CR round-2 crash safety): a post-commit
+                        # producer crash must leave a FAIL-CLOSED state — no cleared
+                        # marker — so the resume/noop re-gate catches it. A raise
+                        # here IS a block, never a silent completion.
+                        try:
+                            fab_outcome = _fab_closeout_producer(
+                                repo,
+                                fab_run_id=fab_run_id,
+                                reviewed_base_sha=fab_reviewed_base_sha,
+                                reviewed_tree=reviewed_tree,
+                                committed_head=commit,
+                                closeout_dirty_paths=closeout_dirty_paths,
+                            )
+                            fab_crashed = False
+                        except Exception as exc:  # noqa: BLE001 - fail-closed
+                            fab_outcome, fab_crashed = None, True
+                            metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"producer_crashed:{exc}"}
+                        fab_blocked = fab_crashed or (fab_outcome is not None and fab_outcome.blocked)
                         if fab_outcome is not None and fab_outcome.wrote_provenance:
                             metadata["closeout"]["fab_run_id"] = fab_run_id
-                            if fab_outcome.blocked:
-                                status = "blocked"
-                                blocker = {
-                                    "human_required": False,
-                                    "blocker_class": "review_gate_block",
-                                    "blocker_summary": fab_outcome.block_reason
-                                    or "FAB producer hard gate did not pass",
-                                    "required_human_inputs": (),
+                        if fab_blocked:
+                            status = "blocked"
+                            block_reason = (
+                                fab_outcome.block_reason if fab_outcome is not None else None
+                            ) or "FAB producer hard gate did not pass / crashed"
+                            blocker = {
+                                "human_required": False,
+                                "blocker_class": "review_gate_block",
+                                "blocker_summary": block_reason,
+                                "required_human_inputs": (),
+                            }
+                            metadata["closeout"].update(
+                                {
+                                    "closeout_action": "review_gate_block",
+                                    "verification_status": "blocked",
+                                    "fab_gate": metadata["closeout"].get("fab_gate")
+                                    or {"blocked": True, "reason": block_reason},
                                 }
-                                metadata["closeout"].update(
-                                    {
-                                        "closeout_action": "review_gate_block",
-                                        "verification_status": "blocked",
-                                        "fab_gate": {"blocked": True, "reason": fab_outcome.block_reason},
-                                    }
-                                )
-                                return status, _closeout_event()
+                            )
+                            return status, _closeout_event()
+                        # PASS or honest DECLINE → write the durable "cleared"
+                        # marker as the STRICT LAST step, so a resume that hits
+                        # noop_already_committed trusts it and does not re-gate.
+                        _fab_producer.mark_closeout_cleared(repo, fab_run_id)
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
                     # as visible `soft` CloseoutExceptions (one per sensitivity class),
                     # never folded into a clean pass. BREAKGLASS: source/ci/lockfile UNSAFE
@@ -9665,6 +9694,98 @@ def _fab_closeout_producer(
         base_ref_name=base_ref_name,
         origin=origin,
     )
+
+
+def _fab_noop_regate(repo, *, run_id, committed_head):
+    """Re-run the dedicated FAB hard gate against an ALREADY-committed head at
+    resume/noop time, reconstructing the honesty-gate inputs from HEAD (single
+    reviewed commit) plus the durable capture at `run_id`. Returns the
+    ``fab_producer.ProducerOutcome``, or ``None`` when it cannot even reconstruct
+    (the caller treats ``None`` as fail-closed). Routes through
+    `_fab_closeout_producer` so the base-ref resolution + origin are identical to
+    the original attempt."""
+    parent = _git_output_or_empty(repo, "rev-parse", f"{committed_head}^")
+    tree = _git_output_or_empty(repo, "rev-parse", f"{committed_head}^{{tree}}")
+    if not parent or not tree:
+        return None
+    dirty = tuple(
+        p for p in _git_output_or_empty(
+            repo, "diff", f"{committed_head}^", committed_head, "--name-only"
+        ).splitlines()
+        if p.strip()
+    )
+    if not dirty:
+        return None
+    return _fab_closeout_producer(
+        repo,
+        fab_run_id=run_id,
+        reviewed_base_sha=parent,
+        reviewed_tree=tree,
+        committed_head=committed_head,
+        closeout_dirty_paths=dirty,
+    )
+
+
+def _fab_noop_regate_block(repo, *, committed_head, metadata):
+    """The crash-safety re-gate for the `noop_already_committed` resume path.
+    Returns ``(status, blocker)`` when the already-committed head must STAY
+    BLOCKED (never finalized), or ``None`` when it is safe to complete.
+
+    Decision table (only reached with ``PHASE_LOOP_FAB`` on):
+      * not FAB-scoped (no durable round record for HEAD's tree) → ``None``
+        (a plain non-FAB commit; FAB vouches only for what it captured).
+      * FAB-scoped AND a durable "cleared" marker exists → ``None``. The marker
+        was written on the ORIGINAL pass/decline as the strict last step, so
+        trusting it (instead of re-gating) is what prevents a legitimately-passed
+        commit from being FALSE-BLOCKED on an offline resume.
+      * FAB-scoped AND no marker (the original attempt BLOCKED or CRASHED) →
+        RE-GATE. ONLY an affirmative PASS (`wrote_provenance and not blocked`)
+        clears; a re-gate DECLINE or BLOCK BOTH fail closed. This asymmetry is
+        load-bearing: for a known-not-cleared commit, a decline means "cannot
+        establish FAB honesty right now", which is fail-closed territory, not
+        the non-FAB fallback (that fallback only applies to a CLEAN first
+        attempt, which would have written the marker). The trade-off is a
+        possible false-block on an offline resume — acceptable (FAB enforcement
+        requires the ability to gate); do NOT relax it to "decline ⇒ complete"."""
+    from . import fab_producer
+
+    tree = _git_output_or_empty(repo, "rev-parse", "HEAD^{tree}")
+    if not tree:
+        return None
+    run_id = f"fab-{tree}"
+    if not fab_producer.is_fab_scoped(repo, run_id):
+        return None  # not a FAB-captured commit
+    if fab_producer.is_closeout_cleared(repo, run_id):
+        return None  # already earned safe-to-finalize on the original attempt
+
+    try:
+        outcome = _fab_noop_regate(repo, run_id=run_id, committed_head=committed_head)
+    except Exception as exc:  # noqa: BLE001 - fail-closed
+        outcome = None
+        metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"noop_regate_crashed:{exc}"}
+
+    if outcome is not None and outcome.wrote_provenance and not outcome.blocked:
+        fab_producer.mark_closeout_cleared(repo, run_id)
+        metadata["closeout"]["fab_run_id"] = run_id
+        return None  # re-earned a genuine PASS → safe to finalize
+
+    reason = (
+        (outcome.block_reason or outcome.skipped_reason) if outcome is not None else None
+    ) or "FAB re-gate did not affirmatively pass on resume (fail-closed)"
+    metadata["closeout"].update(
+        {
+            "closeout_action": "review_gate_block",
+            "verification_status": "blocked",
+            "fab_gate": metadata["closeout"].get("fab_gate") or {"blocked": True, "reason": reason},
+        }
+    )
+    blocker = {
+        "human_required": False,
+        "blocker_class": "review_gate_block",
+        "blocker_summary": reason,
+        "required_human_inputs": (),
+    }
+    return "blocked", blocker
 
 
 def _governed_premerge_review(

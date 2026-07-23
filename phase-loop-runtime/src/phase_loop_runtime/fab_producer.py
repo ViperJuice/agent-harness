@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,6 +53,7 @@ from .fab_gate import (
     compose_gate_status,
     finalize_review_round,
     read_seat_outcomes,
+    review_round_path_for_run,
     write_expected_seats,
 )
 from .fab_provenance import (
@@ -93,6 +95,15 @@ _DIFF_ELISION_SENTINELS = (
 )
 
 
+# The durable "safe to finalize" marker (CR round-2 crash safety). Written as the
+# STRICT LAST step ONLY when the producer determined the closeout is safe to
+# complete — an affirmative FAB gate PASS or an honest non-FAB DECLINE. It is
+# NEVER written on a hard-gate BLOCK or on any exception between commit and gate
+# decision. So its ABSENCE on a FAB-scoped run means "attempt 1 blocked or
+# crashed" → the resume/noop path must re-gate and fail closed.
+CLEARED_FILENAME = "fab-closeout-cleared.json"
+
+
 def fab_run_id_for_reviewed_tree(reviewed_tree: str) -> str:
     """The deterministic, harness-computed run id a FAB candidate round is keyed
     by, derived from the REVIEWED (staged) tree sha — known pre-commit, when the
@@ -106,6 +117,33 @@ def fab_run_id_for_reviewed_tree(reviewed_tree: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def is_fab_scoped(repo: Path, run_id: str) -> bool:
+    """True iff this run was scoped to FAB — i.e. `capture_review_at_invocation`
+    ran and froze the expected-seat manifest (the durable round record exists).
+    The resume/noop path uses this to tell a FAB commit from a plain one."""
+    try:
+        return review_round_path_for_run(repo, run_id).exists()
+    except ProvenanceInvalid:
+        return False
+
+
+def mark_closeout_cleared(repo: Path, run_id: str) -> None:
+    """Write the durable "safe to finalize" marker (STRICT LAST step). Only call
+    on an affirmative FAB PASS or an honest DECLINE — never on a block/crash."""
+    path = provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"cleared": True, "at": _utc_now_iso()}, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def is_closeout_cleared(repo: Path, run_id: str) -> bool:
+    try:
+        return (provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME).exists()
+    except ProvenanceInvalid:
+        return False
 
 
 def _sha256_hex(data: bytes) -> str:
