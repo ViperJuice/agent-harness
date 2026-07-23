@@ -62,6 +62,7 @@ def _seat(
     finding_ids: tuple[str, ...] = (),
     artifact_digest: str = "1" * 64,
     evidence_digest: str = "2" * 64,
+    seat_instance_id: str | None = None,
 ) -> fp.ProvenanceSeat:
     return fp.ProvenanceSeat(
         seat_key=seat_key,
@@ -73,13 +74,18 @@ def _seat(
         evidence_digest=evidence_digest,
         verdict=verdict,
         finding_ids=finding_ids,
+        # FAB piece 2: a unique per-invocation instance id (seat_key is
+        # non-unique). Default derives from seat_key+epoch, which is unique
+        # within every fixture in this module (candidate epoch=1, delta epoch=2).
+        seat_instance_id=seat_instance_id if seat_instance_id is not None else f"{seat_key}@{epoch}",
     )
 
 
 def _durable_from_seat(seat: fp.ProvenanceSeat, *, attempt_id: str = "a1", completed_at: str = "2026-01-01T00:00:00Z") -> SeatOutcomeRecord:
     """Build the durable ``SeatOutcomeRecord`` that AUTHENTICATES `seat` (every
-    cross-checked field copied verbatim) — the "real review actually ran and
-    matches" fixture."""
+    cross-checked field copied verbatim, incl. the FAB piece-2 verdict /
+    finding_ids / seat_instance_id) — the "real review actually ran and matches"
+    fixture."""
     return SeatOutcomeRecord(
         seat_key=seat.seat_key,
         vendor_leg=seat.vendor_leg,
@@ -91,6 +97,9 @@ def _durable_from_seat(seat: fp.ProvenanceSeat, *, attempt_id: str = "a1", compl
         completed_at=completed_at,
         evidence_digest=seat.evidence_digest,
         reason=None,
+        verdict=seat.verdict,
+        finding_ids=seat.finding_ids,
+        seat_instance_id=seat.seat_instance_id,
     )
 
 
@@ -172,6 +181,55 @@ class GitRepoTestCase(unittest.TestCase):
         fp.write_provenance(self.repo, run_id, artifact)
         for seat in seats:
             fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(seat))
+        self.write_review_round(run_id, artifact)
+
+    def write_review_round(
+        self,
+        run_id: str,
+        artifact: fp.ReviewProvenanceArtifact,
+        *,
+        expected_seats: tuple[fp.ProvenanceSeat, ...] | None = None,
+        canonical_findings: tuple[fp.Finding, ...] | None = None,
+        finalize: bool = True,
+    ) -> None:
+        """Write the harness-only durable round record the piece-2 gate now
+        requires — the epoch-scoped EXPECTED-seat manifest (frozen from the
+        CANDIDATE round's seats), the harness-issued round identity (bound to
+        the reviewed head + reviewed material), and the canonical finding
+        records. Derived from `artifact` so every legitimate PASS fixture stays
+        green; individual tests override `expected_seats`/`canonical_findings`/
+        `finalize` to exercise a forge path."""
+        cand_seats = expected_seats if expected_seats is not None else artifact.seats
+        epoch = cand_seats[0].epoch if cand_seats else 1
+        fg.write_expected_seats(
+            self.repo,
+            run_id,
+            epoch=epoch,
+            expected_seats=tuple(
+                fg.ExpectedSeat(
+                    seat_instance_id=s.seat_instance_id,
+                    seat_key=s.seat_key,
+                    vendor_leg=s.vendor_leg,
+                    required=s.required,
+                )
+                for s in cand_seats
+            ),
+        )
+        if not finalize:
+            return
+        source_findings = canonical_findings if canonical_findings is not None else artifact.findings
+        fg.finalize_review_round(
+            self.repo,
+            run_id,
+            reviewed_head_sha=artifact.candidate.head_sha,
+            reviewed_material_digest=artifact.candidate.review_scope.reviewed_material_digest,
+            canonical_findings=tuple(
+                fg.CanonicalFinding(
+                    finding_id=f.id, severity=f.severity, status=f.status, body_digest=f.body_ref
+                )
+                for f in source_findings
+            ),
+        )
 
 
 # --------------------------------------------------------------------------- #

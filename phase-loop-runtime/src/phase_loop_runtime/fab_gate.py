@@ -196,7 +196,16 @@ from .fab_provenance import (
     ProvenanceSeat,
     ReviewProvenanceArtifact,
     ReviewScope,
+    _CONTENT_REF_RE,  # reused content-ref shape check, not reimplemented
+    _encode_and_digest,  # reused canonical digest, not reimplemented
+    _load_json_fail_closed,  # reused fail-closed JSON load, not reimplemented
+    _reject_unknown_keys,  # reused strict unknown-key rejection
+    _req,
+    _req_bool,
+    _req_int,
+    _req_str,
     _strict_object_pairs_hook,  # reused strict-parse discipline, not reimplemented
+    _tuple_str,
     aggregate_material_digest,  # noqa: F401 - re-exported for callers/tests
     provenance_dir_for_run,
     read_provenance,
@@ -383,6 +392,435 @@ def read_seat_outcomes(repo: Path, run_id: str) -> tuple[SeatOutcomeRecord, ...]
             raise ProvenanceInvalid(f"seat-outcome ledger line {line_no} is not a JSON object (fail-closed)")
         records.append(_seat_outcome_from_dict(parsed))
     return tuple(records)
+
+
+# --------------------------------------------------------------------------- #
+# Piece 2 (design v5 #1 / v6 #1,#2,#3) — the harness-only-written durable ROUND
+# record: the expected-seat manifest (completeness denominator, frozen BEFORE
+# invocation), the harness-authenticated canonical finding records (severity +
+# status + body_ref digest), and the harness-issued ROUND IDENTITY (bound to
+# the reviewed HEAD + reviewed material). This is the trust root the gate
+# verifies a client-supplied `ReviewProvenanceArtifact` AGAINST, field by field.
+# It lives as ONE JSON file siblings to `fab-provenance.json`, written
+# harness-only via the same `provenance_dir_for_run` run-store root.
+# --------------------------------------------------------------------------- #
+
+REVIEW_ROUND_FILENAME = "fab-review-round.json"
+SCHEMA_REVIEW_ROUND = "fab.review-round.v1"
+_MAX_REVIEW_ROUND_BYTES = 4 * 1024 * 1024
+
+
+class ReviewRoundInvalid(ProvenanceInvalid):
+    """The harness-written durable review-round record for a FAB-scoped run is
+    absent, oversized, malformed, fails its self-digest, is not finalized, or
+    its bound identity (epoch / reviewed HEAD / reviewed material) does not
+    match the client-supplied artifact — any of which fails the gate closed.
+    A subclass of `ProvenanceInvalid` (never `ProvenanceNotFound`) so a missing
+    round record for a run the caller scoped to FAB resolves to BLOCK inside
+    `compose_gate_status`, never a silent pass."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpectedSeat:
+    """One entry in the epoch-scoped EXPECTED-seat manifest (design v5 #1 / v6
+    #1): the concrete, resolved invocation the harness DISPATCHED, keyed by a
+    UNIQUE `seat_instance_id`. This — not the produced provenance-seat set — is
+    the completeness denominator: a required expected seat that timed out /
+    degraded / never recorded is still demanded by the gate."""
+
+    seat_instance_id: str
+    seat_key: str
+    vendor_leg: str
+    required: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seat_instance_id": self.seat_instance_id,
+            "seat_key": self.seat_key,
+            "vendor_leg": self.vendor_leg,
+            "required": self.required,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "ExpectedSeat":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
+        return cls(
+            seat_instance_id=_req_str(d, "seat_instance_id"),
+            seat_key=_req_str(d, "seat_key"),
+            vendor_leg=_req_str(d, "vendor_leg"),
+            required=_req_bool(d, "required"),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CanonicalFinding:
+    """A HARNESS-AUTHENTICATED canonical finding record (design v6 #2): the gate
+    reads a client-supplied `Finding`'s top-level `severity`/`status` (via
+    `_unresolved_block_findings`) and its `body_ref`; binding the id set alone
+    is insufficient (an attacker keeps the id but rewrites the record
+    non-blocking or omits it). Each canonical finding pins `severity` + `status`
+    + `body_digest` (the `body_ref` content-ref) at review time; the gate
+    requires an EXACT id→content match."""
+
+    finding_id: str
+    severity: str
+    status: str
+    body_digest: str
+
+    def __post_init__(self) -> None:
+        if not _CONTENT_REF_RE.match(self.body_digest):
+            raise ProvenanceInvalid(
+                f"CanonicalFinding.body_digest must be a 'sha256:<64 hex>' content-ref, got {self.body_digest!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "finding_id": self.finding_id,
+            "severity": self.severity,
+            "status": self.status,
+            "body_digest": self.body_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "CanonicalFinding":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
+        return cls(
+            finding_id=_req_str(d, "finding_id"),
+            severity=_req_str(d, "severity"),
+            status=_req_str(d, "status"),
+            body_digest=_req_str(d, "body_digest"),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FabReviewRound:
+    """The harness-only-written durable review-round record (design v5 #1 / v6
+    #1,#2,#3). Written in TWO phases, both harness-only:
+
+      1. BEFORE panel invocation (`write_expected_seats`) — the epoch + the
+         frozen EXPECTED-seat manifest. `reviewed_head_sha`/`reviewed_material_
+         digest` are unknown yet (the committed head does not exist at review
+         time) and `finalized` is `False`.
+      2. AFTER the closeout commit (`finalize_review_round`) — binds the
+         harness-issued round identity to the reviewed HEAD + reviewed material
+         and pins the canonical finding records; sets `finalized=True`. The
+         expected-seat manifest is NEVER mutated by finalize (a required seat
+         demanded pre-invocation can never be dropped post-hoc).
+
+    `round_digest` self-excludes itself (mirrors `artifact_digest`): any edit to
+    any other field after write is detected fail-closed on read."""
+
+    schema: str = SCHEMA_REVIEW_ROUND
+    epoch: int
+    expected_seats: tuple[ExpectedSeat, ...] = ()
+    reviewed_head_sha: str | None = None
+    reviewed_material_digest: str | None = None
+    canonical_findings: tuple[CanonicalFinding, ...] = ()
+    finalized: bool = False
+    round_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if self.schema != SCHEMA_REVIEW_ROUND:
+            raise ProvenanceInvalid(f"review-round schema must be {SCHEMA_REVIEW_ROUND!r}, got {self.schema!r}")
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "epoch": self.epoch,
+            "expected_seats": [s.to_dict() for s in self.expected_seats],
+            "reviewed_head_sha": self.reviewed_head_sha,
+            "reviewed_material_digest": self.reviewed_material_digest,
+            "canonical_findings": [c.to_dict() for c in self.canonical_findings],
+            "finalized": self.finalized,
+            "round_digest": self.round_digest,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return self._payload()
+
+    def with_digest(self) -> "FabReviewRound":
+        digest = _encode_and_digest(self._payload(), exclude="round_digest")
+        return dataclasses.replace(self, round_digest=digest)
+
+    def to_json(self) -> str:
+        return json.dumps(self.with_digest().to_dict(), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "FabReviewRound":
+        _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
+        schema = _req_str(d, "schema")
+        if schema != SCHEMA_REVIEW_ROUND:
+            raise ProvenanceInvalid(f"review-round schema must be {SCHEMA_REVIEW_ROUND!r}, got {schema!r}")
+        finalized = _req(d, "finalized")
+        if not isinstance(finalized, bool):
+            raise ProvenanceInvalid("review-round finalized must be a boolean")
+        instance = cls(
+            schema=schema,
+            epoch=_req_int(d, "epoch"),
+            expected_seats=tuple(ExpectedSeat.from_dict(s) for s in d.get("expected_seats", [])),
+            reviewed_head_sha=(_req_str(d, "reviewed_head_sha") if d.get("reviewed_head_sha") is not None else None),
+            reviewed_material_digest=(
+                _req_str(d, "reviewed_material_digest") if d.get("reviewed_material_digest") is not None else None
+            ),
+            canonical_findings=tuple(CanonicalFinding.from_dict(c) for c in d.get("canonical_findings", [])),
+            finalized=finalized,
+            round_digest=_req_str(d, "round_digest"),
+        )
+        recomputed = _encode_and_digest(instance._payload(), exclude="round_digest")
+        if recomputed != instance.round_digest:
+            raise ReviewRoundInvalid(
+                "review-round record digest mismatch (fail-closed): edited after write "
+                f"(recomputed={recomputed!r}, recorded={instance.round_digest!r})"
+            )
+        return instance
+
+
+def review_round_path_for_run(repo: Path, run_id: str) -> Path:
+    return provenance_dir_for_run(repo, run_id) / REVIEW_ROUND_FILENAME
+
+
+def write_expected_seats(repo: Path, run_id: str, *, epoch: int, expected_seats: Sequence[ExpectedSeat]) -> Path:
+    """Phase 1 (harness-only, BEFORE panel invocation): freeze the epoch-scoped
+    EXPECTED-seat manifest. Overwrites any prior record for this run — a run is
+    scoped afresh each review. `reviewed_head_sha`/`reviewed_material_digest`
+    are bound later by `finalize_review_round`."""
+    seat_ids = [s.seat_instance_id for s in expected_seats]
+    if len(set(seat_ids)) != len(seat_ids):
+        raise ProvenanceInvalid(
+            f"expected-seat manifest has duplicate seat_instance_id(s) (fail-closed): {sorted(seat_ids)!r}"
+        )
+    record = FabReviewRound(epoch=epoch, expected_seats=tuple(expected_seats), finalized=False).with_digest()
+    return _write_review_round(repo, run_id, record)
+
+
+def finalize_review_round(
+    repo: Path,
+    run_id: str,
+    *,
+    reviewed_head_sha: str,
+    reviewed_material_digest: str | None,
+    canonical_findings: Sequence[CanonicalFinding],
+) -> Path:
+    """Phase 2 (harness-only, AFTER the closeout commit): bind the harness-issued
+    round identity to the reviewed HEAD + reviewed material and pin the canonical
+    finding records. The frozen `expected_seats` manifest is preserved verbatim —
+    never re-derived from the produced set — so a required seat demanded before
+    invocation can never be dropped here (design v5 #1)."""
+    existing = read_review_round(repo, run_id)
+    finding_ids = [c.finding_id for c in canonical_findings]
+    if len(set(finding_ids)) != len(finding_ids):
+        raise ProvenanceInvalid(
+            f"canonical findings have duplicate finding_id(s) (fail-closed): {sorted(finding_ids)!r}"
+        )
+    record = dataclasses.replace(
+        existing,
+        reviewed_head_sha=reviewed_head_sha,
+        reviewed_material_digest=reviewed_material_digest,
+        canonical_findings=tuple(canonical_findings),
+        finalized=True,
+    ).with_digest()
+    return _write_review_round(repo, run_id, record)
+
+
+def _write_review_round(repo: Path, run_id: str, record: FabReviewRound) -> Path:
+    path = review_round_path_for_run(repo, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(record.to_json(), encoding="utf-8")
+    os.replace(tmp_path, path)
+    return path
+
+
+def read_review_round(repo: Path, run_id: str) -> FabReviewRound:
+    """The gate's ONLY read path for the durable round record — from the trusted
+    run store, keyed by `run_id`, never a client blob. Missing / oversized /
+    malformed / digest-mismatch all raise `ReviewRoundInvalid` (a
+    `ProvenanceInvalid`, NOT `ProvenanceNotFound`), so a FAB-scoped run whose
+    round record is absent BLOCKS inside `compose_gate_status` rather than
+    passing vacuously."""
+    path = review_round_path_for_run(repo, run_id)
+    try:
+        if path.stat().st_size > _MAX_REVIEW_ROUND_BYTES:
+            raise ReviewRoundInvalid(
+                f"review-round record for run_id={run_id!r} exceeds max size {_MAX_REVIEW_ROUND_BYTES} bytes"
+            )
+    except OSError:
+        pass
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReviewRoundInvalid(
+            f"no durable review-round record for run_id={run_id!r} (fail-closed): {exc}"
+        ) from exc
+    data = _load_json_fail_closed(text, max_bytes=_MAX_REVIEW_ROUND_BYTES)
+    return FabReviewRound.from_dict(data)
+
+
+def cross_check_round_authenticity(
+    artifact: ReviewProvenanceArtifact,
+    review_round: FabReviewRound,
+    durable_seat_outcomes: Sequence[SeatOutcomeRecord],
+) -> None:
+    """The piece-2 forge-resistance core (design v4 #2 + v5 #1,#2 + v6 #1,#2,#3).
+    Drive EVERYTHING from the DURABLE side — the harness-written `review_round`
+    (expected-seat manifest + round identity + canonical findings) and the
+    durable `SeatOutcomeRecord` ledger — and verify the client-supplied
+    `artifact` AGAINST it, fail-closed (`SeatAuthenticityInvalid`/
+    `ReviewRoundInvalid`) on the FIRST absence / mismatch / vacuity.
+
+    Steps:
+
+      * ROUND IDENTITY (v6 #3): the round must be `finalized`; its bound
+        `reviewed_head_sha` must equal `artifact.candidate.head_sha` and its
+        `reviewed_material_digest` must equal the artifact's claimed
+        `candidate.review_scope.reviewed_material_digest`. A round pointed at a
+        different head/material (replay), or never finalized (crash), BLOCKS.
+      * NO VACUOUS PASS (v6 #3 / design ambiguity #3): the expected-seat manifest
+        must be non-empty and contain at least one required seat instance.
+      * COMPLETENESS anchored on the EXPECTED set (v5 #1), keyed on
+        `seat_instance_id` (v6 #1): for every expected seat instance there must
+        be (a) a durable outcome at that instance id whose `required` matches
+        and — if required — whose `status` is a usable terminal, AND (b) a
+        provenance seat at that instance id. A required seat that timed out /
+        degraded / never recorded, or whose provenance seat was omitted, BLOCKS.
+      * VERDICT BINDING (v4 #2): each expected seat's provenance verdict must
+        equal its durable verdict (strict).
+      * FINDING BINDING (v5 #2): each expected seat's provenance `finding_ids`
+        must equal its durable `finding_ids` (as sets).
+      * FINDING-CONTENT BINDING (v6 #2): every finding id any expected durable
+        seat logged must appear in `artifact.findings` with a top-level
+        `severity`/`status`/`body_ref` that EXACTLY matches the harness's
+        canonical finding record — so dropping the `Finding` record or rewriting
+        it non-blocking/clean while keeping the id BLOCKS.
+      * Plus the metadata-level authenticity of EVERY provenance seat
+        (`cross_check_seat_authenticity`, reused): a fabricated provenance seat
+        with no durable record BLOCKS regardless of the manifest."""
+    if not review_round.finalized:
+        raise ReviewRoundInvalid(
+            "durable review-round record is not finalized (fail-closed): a crash between provenance "
+            "write and round finalization must never let an un-finalized round pass"
+        )
+    if review_round.reviewed_head_sha != artifact.candidate.head_sha:
+        raise ReviewRoundInvalid(
+            f"round identity bound to reviewed_head_sha={review_round.reviewed_head_sha!r} does not match "
+            f"artifact candidate head {artifact.candidate.head_sha!r} (fail-closed, v6 #3: replay / wrong head)"
+        )
+    if review_round.reviewed_material_digest != artifact.candidate.review_scope.reviewed_material_digest:
+        raise ReviewRoundInvalid(
+            "round identity's reviewed_material_digest does not match the artifact's claimed "
+            "candidate.review_scope.reviewed_material_digest (fail-closed, v6 #3)"
+        )
+
+    expected = review_round.expected_seats
+    if not expected:
+        raise SeatAuthenticityInvalid(
+            "durable expected-seat manifest is empty (fail-closed, no vacuous pass: a round that ran "
+            "must have at least one expected seat)"
+        )
+    if not any(s.required for s in expected):
+        raise SeatAuthenticityInvalid(
+            "durable expected-seat manifest has NO required seat (fail-closed, no vacuous pass — design "
+            "ambiguity #3, anchored on the EXPECTED set)"
+        )
+
+    # First run the metadata-level authenticity over EVERY provenance seat — a
+    # fabricated seat with no durable record BLOCKS here before completeness.
+    cross_check_seat_authenticity(artifact.seats, durable_seat_outcomes)
+
+    durable_by_instance: dict[str, SeatOutcomeRecord] = {}
+    for record in durable_seat_outcomes:
+        if record.seat_instance_id is None:
+            continue
+        prior = durable_by_instance.get(record.seat_instance_id)
+        if prior is not None and prior != record:
+            raise SeatAuthenticityInvalid(
+                f"durable ledger has conflicting records for seat_instance_id={record.seat_instance_id!r} "
+                "(fail-closed, never resolved by pick-one)"
+            )
+        durable_by_instance[record.seat_instance_id] = record
+
+    prov_by_instance: dict[str, ProvenanceSeat] = {}
+    for seat in artifact.seats:
+        if seat.seat_instance_id is None:
+            continue
+        if seat.seat_instance_id in prov_by_instance:
+            raise SeatAuthenticityInvalid(
+                f"artifact has duplicate provenance seats for seat_instance_id={seat.seat_instance_id!r} "
+                "(fail-closed)"
+            )
+        prov_by_instance[seat.seat_instance_id] = seat
+
+    canonical_by_id = {c.finding_id: c for c in review_round.canonical_findings}
+    findings_by_id: dict[str, Finding] = {}
+    for f in artifact.findings:
+        if f.id in findings_by_id:
+            raise SeatAuthenticityInvalid(f"artifact has duplicate Finding id {f.id!r} (fail-closed)")
+        findings_by_id[f.id] = f
+
+    required_finding_ids: set[str] = set()
+    for exp in expected:
+        durable = durable_by_instance.get(exp.seat_instance_id)
+        if durable is None:
+            raise SeatAuthenticityInvalid(
+                f"expected required-manifest seat_instance_id={exp.seat_instance_id!r} "
+                f"(seat_key={exp.seat_key!r}) has NO durable outcome (fail-closed, v5 #1: a required seat "
+                "that timed out / degraded / never recorded is still demanded)"
+            )
+        if durable.required != exp.required:
+            raise SeatAuthenticityInvalid(
+                f"expected seat {exp.seat_instance_id!r} required={exp.required!r} disagrees with durable "
+                f"record required={durable.required!r} (fail-closed)"
+            )
+        if exp.required and not _is_usable_terminal_status(durable.status):
+            raise SeatAuthenticityInvalid(
+                f"required expected seat {exp.seat_instance_id!r} durable status {durable.status!r} is not a "
+                f"usable terminal (fail-closed, v5 #1; usable = {sorted(USABLE_TERMINAL_SEAT_STATUSES)!r})"
+            )
+        prov = prov_by_instance.get(exp.seat_instance_id)
+        if prov is None:
+            raise SeatAuthenticityInvalid(
+                f"expected seat_instance_id={exp.seat_instance_id!r} has a durable outcome but NO matching "
+                "provenance seat (fail-closed, v5 #1: an omitted required/expected seat cannot be invisible)"
+            )
+        if prov.verdict != durable.verdict:
+            raise SeatAuthenticityInvalid(
+                f"expected seat {exp.seat_instance_id!r} provenance verdict={prov.verdict!r} disagrees with "
+                f"durable verdict={durable.verdict!r} (fail-closed, v4 #2: verdict binding)"
+            )
+        if set(prov.finding_ids) != set(durable.finding_ids):
+            raise SeatAuthenticityInvalid(
+                f"expected seat {exp.seat_instance_id!r} provenance finding_ids {sorted(prov.finding_ids)!r} "
+                f"disagree with durable finding_ids {sorted(durable.finding_ids)!r} (fail-closed, v5 #2)"
+            )
+        required_finding_ids.update(durable.finding_ids)
+
+    # FINDING-CONTENT BINDING (v6 #2): every finding id a durable expected seat
+    # logged must be present in the artifact AND match the harness's canonical
+    # record EXACTLY on the fields the gate later reads (severity/status) plus
+    # the body_ref content digest.
+    for fid in sorted(required_finding_ids):
+        canonical = canonical_by_id.get(fid)
+        if canonical is None:
+            raise SeatAuthenticityInvalid(
+                f"finding id {fid!r} was logged by a durable seat but has NO harness-authenticated canonical "
+                "record (fail-closed, v6 #2)"
+            )
+        finding = findings_by_id.get(fid)
+        if finding is None:
+            raise SeatAuthenticityInvalid(
+                f"finding id {fid!r} is bound to a durable seat + canonical record but the artifact OMITS the "
+                "Finding record (fail-closed, v6 #2: dropping the record to hide a blocking finding)"
+            )
+        if (
+            finding.severity != canonical.severity
+            or finding.status != canonical.status
+            or finding.body_ref != canonical.body_digest
+        ):
+            raise SeatAuthenticityInvalid(
+                f"finding id {fid!r} content (severity={finding.severity!r} status={finding.status!r}) does "
+                f"not match the harness canonical record (severity={canonical.severity!r} "
+                f"status={canonical.status!r}) (fail-closed, v6 #2: rewriting a finding non-blocking/clean)"
+            )
 
 
 def cross_check_seat_authenticity(
@@ -784,6 +1222,7 @@ def compose_gate_status(
     origin: str = "origin",
     waiver: str | None = None,
     seat_outcomes: Sequence[SeatOutcomeRecord] | None = None,
+    review_round: FabReviewRound | None = None,
     equivalent_fn: Callable[..., EquivalenceResult] = equivalent,
 ) -> GateStatus:
     """design §8: compose `fab.gate-status.v2` from the TRUSTED run-store's
@@ -831,7 +1270,13 @@ def compose_gate_status(
         verify_chain(artifact)
         resolution = resolve_chain_resolution(artifact)
         durable_seats = seat_outcomes if seat_outcomes is not None else read_seat_outcomes(repo, run_id)
-        cross_check_seat_authenticity(artifact.seats, durable_seats)
+        # The trust anchors are read from the run store keyed by `run_id`
+        # (never the artifact): a FAB-scoped run with no durable round record
+        # BLOCKS (ReviewRoundInvalid, a ProvenanceInvalid — caught below). The
+        # `review_round`/`seat_outcomes` params are a test seam ONLY; every
+        # PRODUCTION caller passes `None` so the gate reads from disk.
+        round_record = review_round if review_round is not None else read_review_round(repo, run_id)
+        cross_check_round_authenticity(artifact, round_record, durable_seats)
         _require_delta_round_seat_binding(artifact.delta_chain, durable_seats)
         reverify_all_material(repo, run_id, artifact)
     except ProvenanceInvalid as exc:
