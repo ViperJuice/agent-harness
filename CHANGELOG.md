@@ -6,6 +6,50 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FAB Lane A — delta-review provenance schema + hash chain + trust root (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_provenance` module: Lane A of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md`). Freezes the security
+trust-root interface Lanes B/C/D build on (IF-0-FAB-A-1); does not implement the
+canonical `patch_digest` equivalence math, `git` calls, delta-chain carry-forward/
+escalation decisions, or gate wiring — those are B/C/D.
+
+- **Frozen schemas + JSON (de)serializers**: `ReviewProvenanceArtifact`
+  (`fab.review-provenance.v2`), `DeltaReviewRecord` (`fab.delta-review`),
+  `GateStatus` (`fab.gate-status.v2`) — frozen dataclasses with deterministic
+  `to_json()`/`from_json()` (sorted keys, tight separators), round-trippable.
+  Metadata-only: `Finding.body_ref` must be a content-ref digest
+  (`sha256:<64 hex>`), never inline review text; the seat sub-record
+  (`ProvenanceSeat`) uses `panel_invoker.SeatOutcomeRecord`'s own field names
+  (`seat_key`, `vendor_leg`, `required`, `status`, `epoch`, `artifact_digest`,
+  `evidence_digest`) so Lane D's seat cross-check can compare records directly.
+- **`artifact_digest`**: the single self-excluded field (like #243's
+  `log_sha256`) — reuses `verification_evidence._canonical_artifact_digest`'s
+  canonicalization (imported, not reimplemented); recomputed and verified on
+  every `from_json` load, so a field-edited artifact fails closed at load time.
+- **Fail-closed load**: oversized (>8 MiB) / malformed-JSON / `json.dumps`-
+  failure / any lone-UTF-16-surrogate value all raise a typed `ProvenanceInvalid`
+  — never a silent pass.
+- **Hash chain** (`compute_round_chain_digest`, `verify_chain`): the design §5.1
+  chain-digest formula (`C0 = H(policy‖review_scope‖material_digests‖findings‖
+  base_binding‖∅)`, `Ci = H(policy_i‖...‖C_{i-1})`) realized as SHA-256 over a
+  canonical JSON envelope keyed by field name. `verify_chain` recomputes every
+  round's digest and checks end-to-end contiguity (`parent_digest` +
+  `parent_chain_digest`); a spliced, reordered, or fabricated round fails
+  closed with a typed `ChainVerificationError`.
+- **Trust root**: `write_provenance`/`read_provenance` persist to and read from
+  the durable run store (`.phase-loop/runs/<run_id>/fab-provenance.json`,
+  alongside `verification.json`/`SeatOutcomeRecord`) — harness-only-written,
+  run-id-keyed. `read_provenance` has no parameter through which a caller can
+  substitute a client-supplied blob as authoritative; `reject_client_supplied_
+  provenance` makes the refusal directly testable.
+- **Immutable material** (`snapshot_material`/`reverify_material`): snapshots
+  `context_refs` bytes into the run store at review time (streamed SHA-256 in
+  1 MiB chunks, mirroring the #114 `context_refs` hashing pattern in
+  `panel_invoker.py`) and re-verifies both the snapshot copy and the live
+  reference at gate time, so a post-review edit of the underlying file is
+  detected rather than silently tolerated.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
