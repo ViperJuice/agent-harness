@@ -102,6 +102,15 @@ new shapes, not the pre-CR ones:
   plain `git ls-files -- <path>`, where a clean `rc == 0` with empty output is the only signal
   treated as definitively untracked/safe.
 
+#### Round-3 CR fix: malformed rc0 `rev-parse` output (codex)
+
+- **`_is_git_tracked` treated any non-`"true"` rc0 output as a definitive negative**: a clean
+  `git rev-parse --is-inside-work-tree` (rc 0) whose stdout was empty, malformed, or unexpected
+  returned `False` (= not-a-repo = the tracked guard does not apply = the path passes as safely
+  untracked). Now ONLY the exact well-formed `"false"` takes the definitive-negative branch; any
+  other rc0 output fails CLOSED (`True` = tracked/unsafe). Trust-root fail-closed completeness — no
+  rc0 output branch can smuggle a client-supplied provenance blob past the guard.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the

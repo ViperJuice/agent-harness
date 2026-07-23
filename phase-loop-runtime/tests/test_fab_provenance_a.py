@@ -626,6 +626,28 @@ class TrustRootTest(unittest.TestCase):
         with mock.patch("subprocess.run", side_effect=fake_run):
             self.assertTrue(fp._is_git_tracked(repo, repo / "x"))
 
+    def test_git_probe_rev_parse_rc0_malformed_output_fails_closed(self):
+        """Round-3 CR (codex, agent-harness#191): a clean rc==0 `rev-parse` whose
+        stdout is NOT the exact well-formed "true"/"false" (empty, malformed, or
+        unexpected) is NOT a definitive not-inside-work-tree answer and must fail
+        CLOSED (-> True), never be read as "safely untracked". Only exact "false"
+        takes the definitive-negative branch."""
+        repo = Path("/nonexistent/does-not-matter")
+
+        for bogus in ("", "  ", "maybe", "TRUE", "false\nextra"):
+            def fake_run(cmd, _bogus=bogus, **kwargs):
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = _bogus
+                result.stderr = ""
+                return result
+
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                self.assertTrue(
+                    fp._is_git_tracked(repo, repo / "x"),
+                    msg=f"rc0 rev-parse stdout={bogus!r} must fail closed (True)",
+                )
+
     def test_git_probe_ls_files_nonzero_fatal_fails_closed(self):
         """`git ls-files` returning a nonzero rc (incl. fatal rc 128) after a
         successful `rev-parse` is an ambiguous git failure, NOT a definitive

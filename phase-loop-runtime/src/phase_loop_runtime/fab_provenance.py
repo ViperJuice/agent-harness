@@ -1481,10 +1481,18 @@ def _is_git_tracked(repo: Path, path: Path) -> bool:
         # occurring INSIDE a real working tree (corruption, permissions,
         # locked refs, ...). Fail CLOSED — never treat as "not a repo".
         return True
-    if probe.stdout.strip() != "true":
-        # A clean, definitive "false" (e.g. run from inside a bare `.git`
-        # dir) — the guard genuinely does not apply here.
-        return False
+    stdout = probe.stdout.strip()
+    if stdout != "true":
+        # Only git's EXACT, well-formed negative ("false", e.g. run from inside a
+        # bare `.git` dir) is a definitive not-inside-work-tree answer where the
+        # guard genuinely does not apply. Any OTHER rc==0 output — empty,
+        # malformed, or unexpected — is NOT a definitive negative and must fail
+        # CLOSED (treat as tracked/unsafe), never be read as "safely untracked"
+        # (agent-harness#191 CR round 3: malformed-but-rc0 rev-parse output must
+        # not smuggle a client blob past the trust root).
+        if stdout == "false":
+            return False
+        return True
     try:
         rel = path.resolve().relative_to(repo.resolve())
     except ValueError:
