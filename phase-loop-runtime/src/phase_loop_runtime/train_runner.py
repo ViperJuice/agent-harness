@@ -450,6 +450,18 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
 _TRAIN_REVIEW_NODE_ID: str = "_train_review_"
 
 
+def _repo_slug_owner_repo(repo_args: Sequence[str]) -> Optional[str]:
+    """Extract the ``<owner>/<repo>`` tail from ``_gh_repo_binding``'s
+    ``["--repo", "<host>/<owner>/<repo>"]`` so a `gh api` path can be bound to
+    the SAME broker-validated identity every sibling `gh pr` call uses. Returns
+    ``None`` when no explicit `--repo` was resolvable (identity unbound)."""
+    if len(repo_args) >= 2 and repo_args[0] == "--repo" and repo_args[1]:
+        parts = [p for p in repo_args[1].split("/") if p]
+        if len(parts) >= 2:
+            return "/".join(parts[-2:])
+    return None
+
+
 def _fab_merge_queue_prohibition(
     workspace: Path,
     base_ref: str,
@@ -471,16 +483,39 @@ def _fab_merge_queue_prohibition(
     flag is on, refuse rather than risk enqueuing under a queue we could not
     rule out. A definitive "no queue" (or the flag being off) proceeds. Reuses
     the base ref already read by the combined pre-merge ``gh pr view`` (no extra
-    PR read) and makes ONE ``gh api`` branch-rules call."""
+    PR read) and makes ONE `gh api` branch-rules call, bound to the
+    broker-validated repo identity (see `_repo_slug_owner_repo`).
+
+    KNOWN LIMITATION (disclosed for the cross-vendor CR, not a silent gap): this
+    detects a merge queue configured via a repository RULESET (the
+    `rules/branches` endpoint's `merge_queue` rule type). A merge queue enabled
+    via CLASSIC branch protection is NOT reported there and would read as a clean
+    rule list → a fail-OPEN. Robust classic-protection detection is deferred to
+    Consiliency/agent-harness#265, which replaces this whole prohibition with
+    queue-bound re-assertion; it is not worth a fragile, over-blocking classic
+    probe here. Ruleset-based queues (the modern default) ARE caught."""
     from .governed_premerge import fab_promotion_enabled
 
     if not fab_promotion_enabled():
         return None
     if not base_ref:
         return "fab-merge-queue-unresolvable: PR has no readable base ref (fail-closed)"
+    # Bind the `gh api` probe to the BROKER-VALIDATED repo identity — `gh api`
+    # takes no `--repo`, so (unlike every sibling `gh pr` call that carries
+    # `repo_args`) it would otherwise resolve `{owner}/{repo}` from ambient
+    # context and could misresolve in a detached/worktree checkout to a
+    # DIFFERENT repo's rules (a fail-open). Substitute the resolved owner/repo
+    # into the path explicitly; if the identity cannot be resolved while the
+    # flag is on, refuse rather than probe an unbound repo (fail-closed).
+    owner_repo = _repo_slug_owner_repo(repo_args)
+    if owner_repo is None:
+        return (
+            "fab-merge-queue-unresolvable: could not bind the merge-queue probe to the broker-validated "
+            "repo identity while PHASE_LOOP_FAB is on (fail-closed — refusing to probe an unbound repo)"
+        )
     # Query the base branch's rules for an enabled merge queue.
     rules = subprocess.run(
-        ["gh", "api", f"repos/{{owner}}/{{repo}}/rules/branches/{base_ref}"],
+        ["gh", "api", f"repos/{owner_repo}/rules/branches/{base_ref}"],
         cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
     )
     if rules.returncode != 0:

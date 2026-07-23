@@ -559,6 +559,23 @@ class TestLiveMergePrFabPromotion:
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], "gh pr merge must never be invoked when a merge queue is enabled under FAB"
 
+    def test_merge_queue_probe_unbound_identity_fails_closed(self, monkeypatch, tmp_path: Path):
+        """If the repo identity cannot be bound (`repo_args` has no `--repo`)
+        while the flag is on, the probe refuses rather than query an unbound
+        repo's rules (fail-closed)."""
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        reason = tr._fab_merge_queue_prohibition(tmp_path, "main", [], None)
+        assert reason is not None and "unbound repo" in reason
+
+    def test_repo_slug_owner_repo_extraction(self):
+        from phase_loop_runtime import train_runner as tr
+
+        assert tr._repo_slug_owner_repo(["--repo", "github.com/testorg/testrepo"]) == "testorg/testrepo"
+        assert tr._repo_slug_owner_repo(["--repo", "testorg/testrepo"]) == "testorg/testrepo"
+        assert tr._repo_slug_owner_repo([]) is None
+
     def test_flag_off_merge_queue_not_probed(self, tmp_path: Path, monkeypatch):
         """Byte-neutral: with the flag OFF, the merge-queue prohibition issues
         NO `gh api` probe and the merge proceeds even under a would-be queue."""
