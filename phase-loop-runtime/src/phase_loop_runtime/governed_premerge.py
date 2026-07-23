@@ -22,9 +22,13 @@ here adds ``human_required`` and the autonomous path is a literal no-op.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Sequence
 
 from .closeout_validators import ReviewFinding
+from .fab_canonical import EquivalenceBinding
+from .fab_canonical import equivalent as fab_equivalent
+from .fab_provenance import EQUIVALENCE_EQUIVALENT, EquivalenceResult
 from .governed_review import GateResult, governed_planning_gate
 from .panel_invoker import invoke_panel
 
@@ -99,6 +103,63 @@ def next_escalation(
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class FabPromotionCheck:
+    """FAB (Consiliency/agent-harness#191) Lane D, design §4.4 — the
+    promotion-time re-assertion binding. Carries the bound tuple
+    `(binding.repo_slug, binding.base_ref_name, binding.base_sha,
+    binding.expected_head_digest)` FAB's gate recorded (re-derive via
+    `fab_gate.resolve_equivalence_binding(artifact)` against the SAME trusted
+    provenance the gate read — `GateStatus` itself does not carry enough to
+    re-derive this, see `fab_gate`'s module docstring resolved-ambiguity #1)
+    plus the LIVE PR values to re-run `fab_canonical.equivalent()` against
+    immediately before merge. `live_base_ref_name`/`live_head_sha` MUST be
+    resolved by the caller from the LIVE PR/host state AT MERGE TIME (never a
+    cached value from when the gate originally passed) — this is exactly the
+    "conflict resolved outside the head after a pass" backstop design §4.2's
+    residual closure describes; it holds even if GitHub's "require branches
+    up to date" branch-protection setting is absent or misconfigured."""
+
+    binding: EquivalenceBinding
+    repo_dir: str | Path
+    live_base_ref_name: str
+    live_head_sha: str
+    origin: str = "origin"
+
+
+def _fab_promotion_override(
+    check: FabPromotionCheck | None,
+    equivalent_fn: Callable[..., EquivalenceResult],
+) -> LoopResult | None:
+    """design §4.4: re-run `equivalent()` against the LIVE PR immediately
+    before merge. Returns a blocking, non-human `LoopResult` iff `check` is
+    supplied and equivalence no longer holds; returns `None` (no override)
+    when there is nothing to check or it still holds — the caller's own
+    `mergeable=True` result is left untouched in that case."""
+    if check is None:
+        return None
+    result = equivalent_fn(
+        check.binding,
+        check.repo_dir,
+        live_base_ref_name=check.live_base_ref_name,
+        live_head_sha=check.live_head_sha,
+        origin=check.origin,
+    )
+    if result.result == EQUIVALENCE_EQUIVALENT:
+        return None
+    return LoopResult(
+        mergeable=False,
+        ran=True,
+        rounds=0,
+        terminal_blocker=_non_human_blocker(
+            "review_gate_block",
+            "FAB promotion-time re-assertion failed immediately before merge (design §4.4): "
+            f"{result.reason} — refusing to merge (non-human, agent-recoverable)",
+        ),
+        reason="fab_promotion_reassertion_failed",
+    )
+
+
 @dataclass(frozen=True)
 class LoopResult:
     mergeable: bool
@@ -123,16 +184,35 @@ def run_governed_premerge_loop(
     repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
     max_concurrency: int | None = None,
+    fab_promotion_check: FabPromotionCheck | None = None,
+    fab_equivalent_fn: Callable[..., EquivalenceResult] = fab_equivalent,
 ) -> LoopResult:
-    """Bounded governed pre-merge review loop.
+    """Bounded governed pre-merge review loop — ALSO the FAB (Consiliency/
+    agent-harness#191) design §4.4 promotion-time re-assertion host: this
+    function is "the pre-merge gate" that design §4.4 names, so it is the
+    natural place to re-run FAB's §4 `equivalent()` check against the LIVE PR
+    IMMEDIATELY before merge, independent of ``run_mode``.
 
     Autonomous mode is a no-op (mergeable, no panel). Governed mode reviews up to
     ``max_rounds`` times, applying ``apply_fix`` between rounds while ``block``
     findings remain. Terminals are always non-human. ``author_vendors`` (the set
     of vendors that authored the phase) takes precedence over ``author_executor``
     for reviewer≠author exclusion when provided.
+
+    ``fab_promotion_check`` (default ``None`` — byte-for-byte unchanged
+    behavior for every existing caller) is checked as the LAST step before
+    EITHER of this function's two ``mergeable=True`` outcomes (the autonomous
+    no-op and a converged governed round): when supplied, a non-EQUIVALENT
+    live re-check overrides an otherwise-mergeable result into a non-human
+    ``review_gate_block`` — the runtime fail-closed backstop for "conflict
+    resolved outside the head after a pass" (design §4.2/§4.4), independent
+    of whether GitHub's "require branches up to date" branch-protection
+    setting is configured.
     """
     if run_mode != "governed":
+        override = _fab_promotion_override(fab_promotion_check, fab_equivalent_fn)
+        if override is not None:
+            return override
         return LoopResult(mergeable=True, ran=False, reason="autonomous")
 
     # Reasons that mean "the gate could not run a real review" (no disjoint
@@ -186,6 +266,12 @@ def run_governed_premerge_loop(
             )
 
         if gate.promoted:  # zero block findings; any nits already in `collected`
+            override = _fab_promotion_override(fab_promotion_check, fab_equivalent_fn)
+            if override is not None:
+                return LoopResult(
+                    mergeable=False, ran=True, rounds=rnd, findings=tuple(collected),
+                    terminal_blocker=override.terminal_blocker, reason=override.reason,
+                )
             return LoopResult(
                 mergeable=True, ran=True, rounds=rnd, findings=tuple(collected),
             )

@@ -676,6 +676,87 @@ touched.
   default-glob-set, and non-`..` round-7 dot/empty-component coverage stays
   green unchanged (102 tests, 80 subtests, all passing).
 
+### FAB Lane D — gate-status output + agent-review-gate wiring + authenticity cross-check + promotion re-assertion (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_gate` module: the FINAL lane of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md` §8/§6.3/§6.4/§4.4).
+This is where FAB actually DECIDES — composes `fab.gate-status.v2`, wires the
+single `status ∈ {pass, review_gate_block}` into the existing closeout-validator
+registry and the `governed_premerge` pre-merge gate, and adds the two authenticity
+checks (§6.3 durable `SeatOutcomeRecord` cross-check, §6.4 immutable-material
+re-verify) that make the gate's PASS trustworthy, not merely self-consistent.
+Additive only: reuses Lane A/B/C's frozen primitives (`verify_chain`,
+`reverify_material`/`aggregate_material_digest`, `EquivalenceBinding`/
+`equivalent`, `enforce_review_scope_for_escalation`) and the pre-existing
+`closeout_validators.verdict_binds_to`/`register_closeout_validator` pattern —
+none of those modules were modified beyond the minimal additive wiring below.
+
+- **`compose_gate_status`** composes `GateStatus` from the run-store's
+  `ReviewProvenanceArtifact` (`read_provenance`, keyed by `run_id` — never a
+  client/PR-supplied blob) plus a LIVE-recomputed `EquivalenceResult`
+  (`fab_canonical.equivalent`). `reviewed_sha` is ALWAYS
+  `artifact.candidate.head_sha` — the real reviewed SHA — and is NEVER set to
+  the live/final PR head (design §8, T16); `equivalence_verified` is a
+  SEPARATE, independently-recomputed proof. `status == pass` iff the delta
+  chain resolves to a governing binding whose live equivalence is
+  `EQUIVALENT`, every provenance seat authenticates against its durable
+  `SeatOutcomeRecord`, every round's material re-verifies, at least one seat
+  is `required` (a provenance artifact with zero required seats can no longer
+  vacuously pass), every required seat has a non-`DISAGREE` verdict, and no
+  `block`-severity finding remains unresolved — otherwise `review_gate_block`.
+  Mirrors `equivalent()`'s "never raise for an in-scope fail-closed condition"
+  posture, except `ProvenanceNotFound` propagates deliberately so a caller can
+  distinguish "not applicable" from "should block".
+- **`verdict_binds_to_equivalent(finding, gate_status)`** (§8 finding 5):
+  `verdict_binds_to(finding, gate_status.reviewed_sha)` (#88, reused verbatim)
+  AND `gate_status.equivalence_verified.result == EQUIVALENT` — two
+  independent facts ANDed, never one SHA masquerading as the other.
+- **§6.3 authenticity cross-check** (`cross_check_seat_authenticity`,
+  `read_seat_outcomes`/`append_seat_outcome`): every provenance seat is
+  cross-checked against the durable `SeatOutcomeRecord` for the same
+  `(seat_key, vendor_leg, epoch)` — a provenance seat with no matching durable
+  record, a disagreeing `required`/`status`/`artifact_digest`/
+  `evidence_digest`, or a required seat whose durable status is not a usable
+  terminal (`OK`) all INVALIDATE (T13). Defines the previously-missing durable
+  ledger location (a JSONL file sibling to the provenance artifact under the
+  same trusted `provenance_dir_for_run` root), reusing
+  `panel_invoker.serialize_seat_outcome` for encoding.
+- **§6.4 material re-verify** (`reverify_all_material`): re-hashes the
+  candidate round's AND every delta round's own snapshotted material against
+  its `review_scope.reviewed_material_digest` (reuses `reverify_material`); a
+  post-review edit of the underlying file is detected and INVALIDATES (T14).
+- **Closeout wiring** (`fab_gate_validator`, `@register_closeout_validator`):
+  follows the exact `verification_evidence_validator` pattern — `block`
+  severity, `blocker_class="review_gate_block"` (non-human,
+  `apply_review_findings` never sets `human_required`), force-downgraded to
+  `warn` under the default `PHASE_LOOP_REVIEW=warn`, blocking only when opted
+  in. Inert when the new `CloseoutContext.fab_gate_inputs` field (threaded
+  through `build_phase_loop_closeout`) is absent or the run recorded no FAB
+  provenance. `run_id` MUST be resolved by the caller from TRUSTED
+  harness/review-run output, never from `terminal`/`automation`
+  (agent/PR-influenced self-report).
+- **§4.4 promotion-time re-assertion** (`governed_premerge.
+  run_governed_premerge_loop`, new `fab_promotion_check`/`fab_equivalent_fn`
+  parameters, default `None` — byte-for-byte unchanged for every existing
+  caller): re-runs `equivalent()` against the LIVE PR immediately before
+  EITHER of the loop's two `mergeable=True` outcomes and overrides to a
+  non-human `review_gate_block` on any change — the runtime fail-closed
+  backstop for "conflict resolved outside the head after a pass" (I4b), which
+  holds even when GitHub's "require branches up to date" branch-protection
+  setting is absent or misconfigured.
+- **Tests** (`tests/test_fab_gate_d.py`, 20 cases, unmarked): all six #191
+  acceptance criteria end-to-end against real temporary git repositories —
+  disjoint clean delta passes without whole-patch re-review; an unrelated byte
+  invalidates; rebase invalidates at the gate AND the promotion re-assertion
+  separately refuses a merge-outside-head change; a boundary-surface delta
+  forces whole-patch escalation (delta-only scope rejected, whole-patch scope
+  corroborated by seats passes); a fabricated seat with no durable record and
+  a mutated material snapshot both invalidate; the exact-head degenerate case
+  (empty `delta_chain`) still passes — plus `verdict_binds_to_equivalent`'s
+  two-independent-facts contract, the closeout validator's warn-default/
+  opt-in-block/inert dispositions, and the promotion re-assertion's
+  pass-through-when-still-equivalent and byte-neutral-when-unset cases.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the

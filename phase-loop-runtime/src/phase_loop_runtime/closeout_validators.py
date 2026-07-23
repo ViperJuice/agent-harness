@@ -105,6 +105,19 @@ class CloseoutContext:
     # posture that does not depend on repo IO rather than fail-open on an
     # unvalidated assertion.
     repo_root: str | None = None
+    # FAB (Consiliency/agent-harness#191) Lane D: trusted-caller-supplied gate
+    # inputs for the FAB delta-review gate (design §8/§9), consumed by
+    # `fab_gate.fab_gate_validator`. Expected keys when present: `run_id`
+    # (MUST be resolved by the CALLER from TRUSTED harness/review-run output —
+    # NEVER from `terminal`/`automation`, which are agent/PR-influenced
+    # self-report fields), `live_base_ref_name`, `live_head_sha`, and
+    # optionally `origin`/`waiver`. None (the default) => the FAB gate stays
+    # inert — this repo/run isn't using FAB delta review, or the caller
+    # hasn't wired trusted run-state through yet. Kept as a plain untyped
+    # mapping here (not a typed import from `fab_gate`) so this module never
+    # needs to import `fab_gate` — `fab_gate` already imports several names
+    # FROM this module, and a reverse import would be a cycle.
+    fab_gate_inputs: Mapping[str, Any] | None = None
 
 
 # A validator receives the context and returns zero or more findings.
@@ -313,6 +326,10 @@ def load_builtin_closeout_validators() -> None:
         pass
     try:
         from . import visual_avatar_evidence_validator  # noqa: F401  (FAV, issue #91)
+    except Exception:
+        pass
+    try:
+        from . import fab_gate  # noqa: F401  (FAB, Consiliency/agent-harness#191 Lane D)
     except Exception:
         pass
     return None

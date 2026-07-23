@@ -102,6 +102,7 @@ def build_phase_loop_closeout(
     docs_freshness: Mapping[str, Any] | None = None,
     consiliency_gates: Mapping[str, Any] | None = None,
     repo_root: str | Path | None = None,
+    fab_gate_inputs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
@@ -177,6 +178,7 @@ def build_phase_loop_closeout(
             run_mode=run_mode,
             docs_freshness=docs_freshness,
             repo_root=str(repo_root) if repo_root is not None else None,
+            fab_gate_inputs=fab_gate_inputs,
         )
     )
     if review_findings:
