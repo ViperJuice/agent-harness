@@ -80,9 +80,12 @@ class ProducerTestCase(unittest.TestCase):
         self._run("add", "a.py")
         return self._rev("HEAD"), self._run("write-tree").stdout.strip()
 
-    def _capture(self, run_id: str, bundle: str = "bundle text", panel=None) -> None:
+    def _capture(self, run_id: str, bundle: str = "bundle text", panel=None, dirty=("a.py",)) -> None:
+        from phase_loop_runtime.governed_bundle import staged_index_diff
+
         prod.capture_review_at_invocation(
-            self.repo, run_id, _panel(*(panel or _DEFAULT_PANEL)), epoch=1, reviewed_bundle_text=bundle
+            self.repo, run_id, _panel(*(panel or _DEFAULT_PANEL)), epoch=1, reviewed_bundle_text=bundle,
+            reviewed_diff_text=staged_index_diff(self.repo, list(dirty)), closeout_dirty_paths=dirty,
         )
 
     def _commit_and_finalize(self, run_id, reviewed_base, reviewed_tree, *, dirty=("a.py",), bundle="bundle text"):
@@ -188,11 +191,42 @@ class ProducerTestCase(unittest.TestCase):
         base = self._rev("HEAD")
         tree = self._run("write-tree").stdout.strip()
         run_id = "run-binary"
-        self._capture(run_id)
+        self._capture(run_id, dirty=("blob.bin",))
         head, outcome = self._commit_and_finalize(run_id, base, tree, dirty=("blob.bin",))
         self.assertFalse(outcome.wrote_provenance)
         self.assertIsNotNone(outcome.skipped_reason)
         self.assertTrue(outcome.skipped_reason.startswith("incomplete_review_representation"), outcome.skipped_reason)
+
+    # -- blocker 4: bind to the bytes the panel actually saw ----------------
+
+    def test_sentinel_reviewed_diff_writes_no_provenance(self):
+        """If `staged_index_diff` fed the panel a sentinel (a transient render
+        failure), capture records the reviewed diff as INCOMPLETE → no provenance,
+        even though the committed range re-renders fine (a fresh re-run must never
+        'fix up' what the seats never saw)."""
+        base, tree = self._base_and_stage()
+        run_id = "run-sentinel"
+        prod.capture_review_at_invocation(
+            self.repo, run_id, _panel(*_DEFAULT_PANEL), epoch=1, reviewed_bundle_text="bundle",
+            reviewed_diff_text="(staged diff unavailable)", closeout_dirty_paths=("a.py",),
+        )
+        head, outcome = self._commit_and_finalize(run_id, base, tree)
+        self.assertFalse(outcome.wrote_provenance)
+        self.assertTrue(outcome.skipped_reason.startswith("incomplete_review_representation"), outcome.skipped_reason)
+
+    def test_reviewed_not_equal_committed_writes_no_provenance(self):
+        """If the diff the panel reviewed differs from the committed range (its
+        digest won't match), FAB refuses — the seats reviewed different bytes."""
+        base, tree = self._base_and_stage()
+        run_id = "run-mismatch"
+        prod.capture_review_at_invocation(
+            self.repo, run_id, _panel(*_DEFAULT_PANEL), epoch=1, reviewed_bundle_text="bundle",
+            reviewed_diff_text="diff --git a/a.py b/a.py\n@@ totally different bytes @@\n+not what was committed",
+            closeout_dirty_paths=("a.py",),
+        )
+        head, outcome = self._commit_and_finalize(run_id, base, tree)
+        self.assertFalse(outcome.wrote_provenance)
+        self.assertIn("does not match what the panel reviewed", outcome.skipped_reason or "")
 
     # -- hard gate blocks even under PHASE_LOOP_REVIEW=warn -----------------
 

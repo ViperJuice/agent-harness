@@ -9639,13 +9639,16 @@ def _fab_resolve_base_ref_name(repo) -> str | None:
 
 
 def _fab_closeout_producer(
-    repo, *, fab_run_id, reviewed_base_sha, reviewed_tree, committed_head, closeout_dirty_paths, fab_epoch=1
+    repo, *, fab_run_id, reviewed_base_sha, reviewed_tree, committed_head, closeout_dirty_paths,
+    fab_epoch=1, origin="origin",
 ):
     """Run the FAB piece-2 post-commit producer transaction (honesty gate →
     build → write provenance → dedicated hard gate). Returns the
     ``fab_producer.ProducerOutcome``, or ``None`` when the base ref cannot be
     resolved (declines to write provenance — never blocks on that alone). Only
-    reached when ``PHASE_LOOP_FAB`` is on (caller-gated)."""
+    reached when ``PHASE_LOOP_FAB`` is on (caller-gated). ``origin`` is the git
+    remote the honesty gate fetches from (production ``"origin"``; a test may
+    point it at a local bare remote)."""
     from . import fab_producer
 
     base_ref_name = _fab_resolve_base_ref_name(repo)
@@ -9660,8 +9663,7 @@ def _fab_closeout_producer(
         committed_head_sha=committed_head,
         closeout_dirty_paths=closeout_dirty_paths,
         base_ref_name=base_ref_name,
-        origin="origin",
-        reviewed_bundle_text="",  # unused post-capture; the run-store bundle snapshot is authoritative
+        origin=origin,
     )
 
 
@@ -9716,7 +9718,8 @@ def _governed_premerge_review(
             from .fab_producer import capture_review_at_invocation
 
             capture_review_at_invocation(
-                repo, fab_run_id, result.panel, epoch=fab_epoch, reviewed_bundle_text=bundle
+                repo, fab_run_id, result.panel, epoch=fab_epoch, reviewed_bundle_text=bundle,
+                reviewed_diff_text=diff_text, closeout_dirty_paths=closeout_dirty_paths,
             )
         return None
     blocker = dict(result.terminal_blocker or {})

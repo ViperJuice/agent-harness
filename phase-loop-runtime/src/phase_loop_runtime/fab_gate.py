@@ -848,25 +848,49 @@ def cross_check_seat_authenticity(
 
     Never raises on an EXTRA durable record with no corresponding provenance
     seat (a seat that ran but whose outcome the review round chose not to
-    fold into provenance is not itself a forgery)."""
-    index: dict[tuple[str, str, int], SeatOutcomeRecord] = {}
+    fold into provenance is not itself a forgery).
+
+    JOIN KEY (agent-harness#191 CR round 1, blocker 3): keyed on the UNIQUE
+    `seat_instance_id` whenever ANY record in the call carries one — `seat_key`
+    is explicitly non-unique (positional), so two legitimate same-`seat_key`
+    instances would COLLIDE on the old `(seat_key, vendor_leg, epoch)` key and
+    raise a spurious conflicting-record error (a crash / permanent block for any
+    run dispatching duplicate seats). No mixed-key matching: if the call uses
+    instance-id keying, EVERY provenance seat AND every durable record consulted
+    must carry an instance id, else fail closed (a seat that dropped its id
+    cannot silently match on the weaker composite key). The legacy composite key
+    is retained ONLY for a call in which NOTHING carries an instance id."""
+    use_instance = any(s.seat_instance_id is not None for s in provenance_seats) or any(
+        r.seat_instance_id is not None for r in durable_seat_outcomes
+    )
+
+    def _key(rec) -> tuple:
+        if use_instance:
+            if rec.seat_instance_id is None:
+                raise SeatAuthenticityInvalid(
+                    f"seat {rec.seat_key!r} is missing seat_instance_id while the round uses instance-id "
+                    "keying (fail-closed, no mixed-key matching)"
+                )
+            return ("iid", rec.seat_instance_id)
+        return ("composite", rec.seat_key, rec.vendor_leg, rec.epoch)
+
+    index: dict[tuple, SeatOutcomeRecord] = {}
     for record in durable_seat_outcomes:
-        key = (record.seat_key, record.vendor_leg, record.epoch)
+        key = _key(record)
         if key in index and index[key] != record:
             raise SeatAuthenticityInvalid(
-                f"durable seat-outcome ledger has conflicting records for "
-                f"seat_key={key[0]!r} vendor_leg={key[1]!r} epoch={key[2]!r} (fail-closed)"
+                f"durable seat-outcome ledger has conflicting records for {key!r} (fail-closed)"
             )
         index[key] = record
 
     for seat in provenance_seats:
-        key = (seat.seat_key, seat.vendor_leg, seat.epoch)
-        durable = index.get(key)
+        durable = index.get(_key(seat))
         if durable is None:
             raise SeatAuthenticityInvalid(
                 f"provenance seat seat_key={seat.seat_key!r} vendor_leg={seat.vendor_leg!r} "
-                f"epoch={seat.epoch!r} has NO matching durable SeatOutcomeRecord (fail-closed, T13: "
-                "a hand-written provenance seat cannot vouch for a seat that never ran)"
+                f"epoch={seat.epoch!r} seat_instance_id={seat.seat_instance_id!r} has NO matching durable "
+                "SeatOutcomeRecord (fail-closed, T13: a hand-written provenance seat cannot vouch for a "
+                "seat that never ran)"
             )
         if seat.required != durable.required:
             raise SeatAuthenticityInvalid(
@@ -1265,6 +1289,36 @@ def compose_gate_status(
     reason embedded in the raised/caught exception text otherwise."""
     artifact = read_provenance(repo, run_id)  # ProvenanceNotFound propagates deliberately.
     reviewed_sha = artifact.candidate.head_sha
+
+    # DELTA CHAINS ARE DEFERRED TO PIECE 3 (agent-harness#191 CR round 1, blocker
+    # 5). Piece 2's producer only ever writes `delta_chain=()`, so ANY nonempty
+    # delta chain reaching the gate is out of scope and BLOCKS unconditionally.
+    # The delta-round authenticity that piece 3 needs is not yet complete:
+    # `cross_check_seat_authenticity` does not bind a delta seat's verdict /
+    # finding_ids (a forged delta seat could flip durable DISAGREE→AGREE or invent
+    # finding ids), and `write_expected_seats` / the round record OVERWRITES per
+    # epoch rather than appending, so an earlier delta round loses its canonical
+    # finding anchors. TODO(agent-harness#191 piece 3): add delta-seat verdict +
+    # finding-content binding and an APPEND-ONLY (merge, never overwrite) per-epoch
+    # round record, then lift this block. Until then, fail closed here — the one
+    # choke point covering the producer, the merge-time re-gate, and the closeout
+    # validator alike.
+    if artifact.delta_chain:
+        return _blocked_gate_status(
+            reviewed_sha=reviewed_sha,
+            prior_review_digest=artifact.candidate.patch_digest,
+            chain_digest=artifact.chain_digest,
+            deltas=_gate_delta_entries(artifact),
+            final_pr_head_sha=live_head_sha,
+            equivalence_verified=EquivalenceVerified(
+                result="INVALIDATED",
+                candidate_head_sha=artifact.candidate.head_sha,
+                reason="delta_chain_deferred_to_piece3: FAB piece 2 supports only single "
+                "candidate-round (delta_chain=()) artifacts; a nonempty delta chain is out of scope "
+                "and fails closed until piece 3 lands delta-seat authentication",
+            ),
+            waiver=waiver,
+        )
 
     try:
         verify_chain(artifact)

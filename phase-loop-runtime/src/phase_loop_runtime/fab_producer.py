@@ -35,6 +35,7 @@ NOT built here.
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -76,14 +77,31 @@ from .panel_invoker import PanelResult, SeatOutcomeRecord, terminal_verdict
 # ephemeral in-memory bundle) so `reverify_material`'s live-drift re-hash has a
 # durable ref to check.
 REVIEWED_BUNDLE_FILENAME = "fab-reviewed-bundle.md"
+# The completeness verdict + digest of the EXACT diff text the panel saw
+# (blocker-4 binding: the reviewed bytes, not a fresh re-run), persisted at
+# invocation and compared against the committed range at finalize.
+REVIEWED_DIFF_FILENAME = "fab-reviewed-diff.json"
+
+# The staged-index-diff sentinels `governed_bundle.staged_index_diff` substitutes
+# when it could NOT faithfully render the change (nonzero rc / decode failure /
+# timeout / empty / no paths). If the panel was shown any of these, it did NOT
+# see the changed bytes → FAIL CLOSED. Kept in sync with `staged_index_diff`.
+_DIFF_ELISION_SENTINELS = (
+    "(staged diff unavailable)",
+    "(empty staged diff)",
+    "(no staged paths)",
+)
 
 
-def fab_run_id_for_head(head_sha: str) -> str:
+def fab_run_id_for_reviewed_tree(reviewed_tree: str) -> str:
     """The deterministic, harness-computed run id a FAB candidate round is keyed
-    by — derived purely from the reviewed HEAD sha, so the merge-time re-gate can
-    recompute it from the (unchanged, admitted) PR head without a separate
-    lookup. NOT derived from any PR/agent-controlled field."""
-    return f"fab-{head_sha}"
+    by, derived from the REVIEWED (staged) tree sha — known pre-commit, when the
+    seats are captured and the expected manifest is frozen (the committed head
+    does not exist yet). NOT derived from any PR/agent-controlled field. Piece 3
+    binds this at admission time in a durable coordinator record; piece 2 uses it
+    only within a single self-contained closeout, so a merge-side recompute from
+    the head is intentionally NOT part of the contract."""
+    return f"fab-{reviewed_tree}"
 
 
 def _utc_now_iso() -> str:
@@ -102,10 +120,49 @@ def _seat_instance_id(run_id: str, epoch: int, seat_key: str, index: int) -> str
     return f"{run_id}:{epoch}:{seat_key}:{index}"
 
 
-@dataclass(frozen=True, kw_only=True)
-class _CapturedSeat:
-    durable: SeatOutcomeRecord
-    provenance: ProvenanceSeat
+def _diff_text_elision(text: str) -> str | None:
+    """Return a reason iff the (already-rendered) diff `text` the panel saw is an
+    elision — a `staged_index_diff` sentinel or a binary-elided marker — else
+    `None`. This is the text-level half of the completeness predicate; the
+    numstat probe is the independent structural half."""
+    for sentinel in _DIFF_ELISION_SENTINELS:
+        if sentinel in text:
+            return f"reviewed diff carries the elision sentinel {sentinel!r}"
+    if "Binary files" in text and "differ" in text:
+        return "reviewed diff renders a binary file only as 'Binary files ... differ'"
+    return None
+
+
+def _numstat_binary_elision(repo: Path, left: str | None, right: str | None, paths: Sequence[str]) -> str | None:
+    """Return a reason iff `git diff [left] [right] --numstat` (staged when
+    left/right are None) shows a binary / attribute-suppressed (`-\\t-`) path,
+    fails, has an unexpected shape, or is empty. Independent structural evidence
+    the seats saw every changed byte — never trusts the rendered diff alone."""
+    rev_args = [a for a in (left, right) if a is not None]
+    numstat = _git(repo, "diff", *rev_args, "--numstat", *(["--cached"] if not rev_args else []), "--", *paths)
+    if numstat.returncode != 0:
+        return f"git diff --numstat failed (fail-closed): {(numstat.stderr or '').strip()!r}"
+    saw = False
+    for line in numstat.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            return f"unexpected numstat line (fail-closed): {line!r}"
+        saw = True
+        if parts[0] == "-" or parts[1] == "-":
+            return f"changed path {'/'.join(parts[2:])!r} is binary/attribute-suppressed (numstat '-\\t-')"
+    if not saw:
+        return "reviewed diff enumerated zero changed paths (fail-closed, non-empty required)"
+    return None
+
+
+def _normalized_diff_digest(text: str) -> str:
+    """SHA-256 over the diff text with trailing whitespace stripped (matching
+    `staged_index_diff`'s own `.rstrip()`), so the reviewed (`git diff --cached`)
+    and committed (`git diff base head`) representations — byte-identical because
+    they compare the same tree pair — digest identically."""
+    return _sha256_hex(text.rstrip().encode("utf-8"))
 
 
 def capture_review_at_invocation(
@@ -115,23 +172,49 @@ def capture_review_at_invocation(
     *,
     epoch: int,
     reviewed_bundle_text: str,
+    reviewed_diff_text: str,
+    closeout_dirty_paths: Sequence[str],
 ) -> None:
     """Phase 1 (pre-commit, harness-only): snapshot the reviewed bundle bytes,
-    freeze the epoch-scoped EXPECTED-seat manifest (the RESOLVED invocation set —
-    `invoke_panel` emits exactly one terminal leg per dispatched seat, so a
-    required seat that timed out / degraded still appears here and is still
-    demanded by the gate), and persist a durable `SeatOutcomeRecord` per leg with
-    its REAL `terminal_verdict` + status + evidence digest.
+    persist the completeness + digest of the EXACT diff text the panel was shown
+    (blocker-4 binding), freeze the epoch-scoped EXPECTED-seat manifest (the
+    RESOLVED invocation set — `invoke_panel` emits exactly one terminal leg per
+    dispatched seat, so a required seat that timed out / degraded still appears
+    here and is still demanded by the gate), and persist a durable
+    `SeatOutcomeRecord` per leg with its REAL `terminal_verdict` + status +
+    evidence digest.
 
     The durable seat records are the trust anchor: the artifact `finalize_and_
     gate` builds later mirrors these (built FROM the durable ledger, read back
     from disk), and the gate re-reads them from the run store — so a forged
-    artifact whose seats do not match the durable ledger BLOCKS."""
+    artifact whose seats do not match the durable ledger BLOCKS.
+
+    `reviewed_diff_text` is the STAGED diff text the panel actually reviewed
+    (`governed_bundle.staged_index_diff` output — sentinel-substituted on any
+    render failure). We record whether it was complete + its digest; `finalize_
+    and_gate` fails closed unless the committed range re-renders to the SAME
+    digest and is itself complete — so a transient render failure that fed the
+    seats a sentinel can never be "fixed up" by a later successful re-run."""
     reviewed_bytes = reviewed_bundle_text.encode("utf-8")
     reviewed_artifact_digest = _sha256_hex(reviewed_bytes)
-    bundle_path = provenance_dir_for_run(repo, run_id) / REVIEWED_BUNDLE_FILENAME
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    bundle_path.write_bytes(reviewed_bytes)
+    run_dir = provenance_dir_for_run(repo, run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / REVIEWED_BUNDLE_FILENAME).write_bytes(reviewed_bytes)
+
+    # Record the reviewed diff's completeness + digest — from what the panel SAW
+    # (`reviewed_diff_text`), plus an independent numstat probe over the staged
+    # index. Any elision ⇒ complete=False ⇒ no provenance at finalize.
+    reason = _diff_text_elision(reviewed_diff_text) or _numstat_binary_elision(
+        repo, None, None, closeout_dirty_paths
+    )
+    reviewed_diff_record = {
+        "complete": reason is None,
+        "digest": None if reason is not None else _normalized_diff_digest(reviewed_diff_text),
+        "reason": reason,
+    }
+    (run_dir / REVIEWED_DIFF_FILENAME).write_text(
+        json.dumps(reviewed_diff_record, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
 
     expected: list[ExpectedSeat] = []
     for index, leg in enumerate(panel.legs):
@@ -187,53 +270,52 @@ class ProducerOutcome:
     skipped_reason: str | None = None
 
 
-def _complete_review_representation(
-    repo: Path, base_sha: str, head_sha: str, closeout_dirty_paths: Sequence[str]
+def _bind_reviewed_to_committed_representation(
+    repo: Path, run_id: str, base_sha: str, head_sha: str, closeout_dirty_paths: Sequence[str]
 ) -> str | None:
-    """Return `None` when EVERY changed path in the reviewed diff has a complete
-    review representation, or a fail-closed reason string otherwise (design v3 #1
-    / v4 "still to implement"). Reviewed == committed is already proven (the
-    post-hook tree check), so the committed range `base..head` IS the reviewed
-    diff; tree-equality alone does NOT prove the seats saw every changed BYTE, so
-    this is an INDEPENDENT predicate over the committed range:
+    """Return `None` when the reviewed diff (what the panel SAW, recorded at
+    capture) was complete AND the committed range `base..head` re-renders to the
+    SAME bytes and is itself complete — else a fail-closed reason (blocker-4
+    binding). Tree-equality alone does NOT prove the seats saw every changed
+    byte, and `staged_index_diff` can feed the seats a sentinel on a transient
+    render failure; a fresh re-run must never "fix that up". So this:
 
-      * a `git diff base head` that cannot be DECODED as text (invalid UTF-8)
-        fails closed — the panel bundle (`staged_index_diff`, text-mode) could
-        only have rendered such a path as a decode sentinel, never its bytes;
-      * a `Binary files ... differ` marker in the decoded diff is an elision;
-      * `git diff base head --numstat` — a binary or attribute-suppressed
-        (`-diff`) path shows `-\\t-` and is an elision the seats never saw;
-      * a `git diff`/numstat failure, an unexpected numstat shape, or zero
-        changed paths all fail closed."""
-    # The exact committed-range diff must itself decode as text — invalid UTF-8
-    # content is an elision the text-mode review bundle could not have shown.
+      1. reads the reviewed-diff record persisted at invocation — absent or
+         `complete=False` ⇒ the panel saw an elision ⇒ no provenance;
+      2. re-renders the COMMITTED range, decode-checks it, runs the numstat
+         elision probe, and requires it be complete;
+      3. requires the committed representation's digest to EQUAL the reviewed
+         digest — reviewed ≠ committed bytes ⇒ no provenance."""
+    record_path = provenance_dir_for_run(repo, run_id) / REVIEWED_DIFF_FILENAME
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"reviewed-diff record missing/unreadable (fail-closed): {exc}"
+    if not isinstance(record, dict) or not record.get("complete") or not record.get("digest"):
+        return f"the reviewed diff the panel saw was not complete (fail-closed): {record.get('reason') if isinstance(record, dict) else record!r}"
+    reviewed_digest = record["digest"]
+
+    # Re-render the committed range and require it decode as text.
     try:
         raw = subprocess.run(
             ["git", "-C", str(repo), "diff", base_sha, head_sha, "--", *closeout_dirty_paths],
             capture_output=True, timeout=30,
         )
-        decoded = raw.stdout.decode("utf-8", errors="strict")
+        if raw.returncode != 0:
+            return f"committed-range git diff failed (fail-closed): {(raw.stderr or b'').decode('utf-8', 'replace').strip()!r}"
+        committed_text = raw.stdout.decode("utf-8", errors="strict")
     except (subprocess.SubprocessError, UnicodeDecodeError) as exc:
         return f"committed-range diff not fully text-representable (fail-closed): {exc}"
-    if "Binary files" in decoded and "differ" in decoded:
-        return "reviewed diff renders a binary file only as 'Binary files ... differ'"
-    numstat = _git(repo, "diff", base_sha, head_sha, "--numstat", "--", *closeout_dirty_paths)
-    if numstat.returncode != 0:
-        return f"git diff --numstat failed (fail-closed): {(numstat.stderr or '').strip()!r}"
-    saw_path = False
-    for line in numstat.stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 3:
-            return f"unexpected numstat line (fail-closed): {line!r}"
-        added, deleted = parts[0], parts[1]
-        saw_path = True
-        if added == "-" or deleted == "-":
-            path = "\t".join(parts[2:])
-            return f"changed path {path!r} is binary/attribute-suppressed (numstat '-\\t-'): no complete review representation"
-    if not saw_path:
-        return "reviewed diff enumerated zero changed paths (fail-closed, non-empty required)"
+    gap = _diff_text_elision(committed_text) or _numstat_binary_elision(
+        repo, base_sha, head_sha, closeout_dirty_paths
+    )
+    if gap is not None:
+        return gap
+    if _normalized_diff_digest(committed_text) != reviewed_digest:
+        return (
+            "committed representation digest does not match what the panel reviewed (fail-closed): the "
+            "reviewed and committed diffs differ"
+        )
     return None
 
 
@@ -297,9 +379,10 @@ def finalize_and_gate(
     if merge_base != reviewed_base_sha:
         return ProducerOutcome(wrote_provenance=False, skipped_reason="multi_commit_pr_out_of_scope")
 
-    # Complete review representation over the reviewed (== committed) diff.
-    representation_gap = _complete_review_representation(
-        repo, merge_base, committed_head_sha, closeout_dirty_paths
+    # Complete review representation: bind what the panel SAW (recorded at
+    # invocation) to the committed range (same digest + itself complete).
+    representation_gap = _bind_reviewed_to_committed_representation(
+        repo, run_id, merge_base, committed_head_sha, closeout_dirty_paths
     )
     if representation_gap is not None:
         return ProducerOutcome(wrote_provenance=False, skipped_reason=f"incomplete_review_representation:{representation_gap}")

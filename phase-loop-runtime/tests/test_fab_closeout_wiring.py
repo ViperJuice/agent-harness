@@ -111,6 +111,78 @@ class CloseoutWiringTest(unittest.TestCase):
         )
         self.assertEqual(self._run_store_files(run_id), [])
 
+    def test_e2e_capture_through_real_governed_path_then_producer(self):
+        """Flag-ON e2e: exercise the REAL `_governed_premerge_review` (no mocked
+        LoopResult — the panel is injected only at the `invoke_panel` seam) so
+        the panel actually plumbs through to `capture_review_at_invocation`, then
+        commit + run the REAL `_fab_closeout_producer`. This is the integration
+        the whole CR round-1 failure came from lacking: it would have caught the
+        `finalize_and_gate(reviewed_bundle_text=...)` TypeError and the dead
+        capture."""
+        from phase_loop_runtime import panel_invoker as pi
+
+        # Standard FAB two-remote convention: `origin` is github-shaped (repo
+        # IDENTITY for patch_digest), `fetchsrc` is a real local bare repo the
+        # honesty gate fetches merge-base from. Set refs/remotes/origin/HEAD so
+        # _fab_resolve_base_ref_name yields "main".
+        base = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        origin = Path(self._tmp) / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        for args in (
+            ("remote", "add", "origin", "git@github.com:testorg/testrepo.git"),
+            ("remote", "add", "fetchsrc", str(origin)),
+            ("push", "-q", "fetchsrc", "HEAD:refs/heads/main"),
+            ("update-ref", "refs/remotes/origin/main", base),
+            ("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"),
+        ):
+            subprocess.run(["git", "-C", str(self.repo), *args], check=True)
+
+        # Inject at the REAL spawn boundary (the only real-exec seam invoke_panel
+        # uses) so the entire governed stack runs unmocked but no CLI is spawned.
+        real_spawn = pi._default_spawn_via_provider
+        pi._default_spawn_via_provider = lambda leg, artifact, **kw: ("OK", "Reviewed.\n\nAGREE")
+        self.addCleanup(lambda: setattr(pi, "_default_spawn_via_provider", real_spawn))
+        # Disjoint reviewer pool: author=claude, available legs=codex/gemini.
+        self._orig_legs = R.available_panel_legs
+        self._orig_authors = R._phase_author_vendors
+        R.available_panel_legs = lambda *a, **k: ("codex", "gemini")
+        R._phase_author_vendors = lambda *a, **k: ("claude",)
+        self.addCleanup(lambda: setattr(R, "available_panel_legs", self._orig_legs))
+        self.addCleanup(lambda: setattr(R, "_phase_author_vendors", self._orig_authors))
+
+        reviewed_tree = subprocess.run(
+            ["git", "-C", str(self.repo), "write-tree"], capture_output=True, text=True
+        ).stdout.strip()
+        reviewed_base = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        run_id = f"fab-{reviewed_tree}"
+
+        gov = R._governed_premerge_review(
+            self.repo, self.repo / "roadmap.md", "phase-1", None, "complete",
+            ("a.py",), {}, "governed", fab_run_id=run_id,
+        )
+        self.assertIsNone(gov, "governed review should pass (AGREE panel)")
+        # capture fired via the REAL path (not a mocked LoopResult.panel).
+        durable = fg.read_seat_outcomes(self.repo, run_id)
+        self.assertEqual(len(durable), 2)
+        self.assertEqual({d.verdict for d in durable}, {"AGREE"})
+
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", "c1"], check=True)
+        committed = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        outcome = R._fab_closeout_producer(
+            self.repo, fab_run_id=run_id, reviewed_base_sha=reviewed_base, reviewed_tree=reviewed_tree,
+            committed_head=committed, closeout_dirty_paths=("a.py",), origin="fetchsrc",
+        )
+        self.assertIsNotNone(outcome)
+        self.assertTrue(outcome.wrote_provenance, outcome.skipped_reason)
+        self.assertFalse(outcome.blocked, outcome.block_reason)
+        self.assertEqual(fp.read_provenance(self.repo, run_id).candidate.head_sha, committed)
+
     def test_resolve_base_ref_name_none_without_origin(self):
         """No origin/HEAD → base ref unresolved → producer declines (None)."""
         self.assertIsNone(R._fab_resolve_base_ref_name(self.repo))

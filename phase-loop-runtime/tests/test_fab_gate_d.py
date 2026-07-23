@@ -231,6 +231,25 @@ class GitRepoTestCase(unittest.TestCase):
             ),
         )
 
+    # -- delta-machinery seams (blocker 5: compose defers ALL delta chains to
+    #    piece 3, so the delta machinery is exercised at its OWN functions) -----
+
+    def delta_binding(self, run_id: str, artifact: fp.ReviewProvenanceArtifact) -> None:
+        """Run `_require_delta_round_seat_binding` directly against the durable
+        ledger — the function these delta-seat tests actually exercise (compose
+        now short-circuits on any nonempty delta_chain)."""
+        fg._require_delta_round_seat_binding(artifact.delta_chain, fg.read_seat_outcomes(self.repo, run_id))
+
+    def assert_compose_defers_delta(self, run_id: str, head: str):
+        """Assert `compose_gate_status` BLOCKS a nonempty delta_chain as deferred
+        to piece 3 (blocker 5 — the one production choke point)."""
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("delta_chain_deferred_to_piece3", gate.equivalence_verified.reason)
+        return gate
+
 
 # --------------------------------------------------------------------------- #
 # Piece 2 (design v4/v5/v6) — round-authenticity forge tests: every field the
@@ -378,6 +397,64 @@ class RoundAuthenticityForgeTest(GitRepoTestCase):
         # no write_review_round at all.
         self.assertIn("review-round record", self._reason("run-no-round", head))
 
+    def test_dual_same_seat_key_instances_pass(self):
+        """Blocker 3: two legitimate seats sharing a non-unique `seat_key` but
+        distinct `seat_instance_id` must NOT collide (the old composite key
+        (seat_key, vendor_leg, epoch) crashed with a spurious conflicting-record
+        error). Both AGREE → PASS."""
+        base, head = self._exact_head_setup()
+        s1 = _seat("codex:x:high", verdict="AGREE", seat_instance_id="i1")
+        s2 = _seat("codex:x:high", verdict="AGREE", seat_instance_id="i2")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(s1, s2))
+        self.persist("run-dual", artifact, (s1, s2))
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-dual", live_base_ref_name="main", live_head_sha=head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS)
+
+    def test_one_durable_cannot_satisfy_two_expected_instances(self):
+        """Blocker 3: with instance-id keying, ONE durable record cannot cover
+        two distinct expected seat instances (the composite-key collapse). The
+        second expected instance has no durable outcome → BLOCK."""
+        base, head = self._exact_head_setup()
+        s1 = _seat("codex:x:high", verdict="AGREE", seat_instance_id="i1")
+        s2 = _seat("codex:x:high", verdict="AGREE", seat_instance_id="i2")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(s1, s2))
+        fp.write_provenance(self.repo, "run-collapse", artifact)
+        # Only ONE durable record (instance i1); i2 never recorded.
+        fg.append_seat_outcome(self.repo, "run-collapse", _durable_from_seat(s1))
+        # Expected manifest demands BOTH instances.
+        self.write_review_round("run-collapse", artifact, expected_seats=(s1, s2))
+        reason = self._reason("run-collapse", head)
+        self.assertIn("i2", reason)
+        self.assertIn("NO matching durable", reason)
+
+    def test_nonempty_delta_chain_blocks_deferred_to_piece3(self):
+        """Blocker 5: piece 2 supports only single candidate-round artifacts; any
+        nonempty delta_chain reaching compose fails closed (deferred to piece 3),
+        the one choke point for producer + merge-regate + validator alike."""
+        base, head = self._exact_head_setup()
+        seat = _seat("codex:x:high", verdict="AGREE", finding_ids=())
+        candidate = self.candidate(base, head)
+        c0 = self.build_artifact(base_sha=base, candidate=candidate, seats=(seat,)).chain_digest
+        delta_seat = _seat("codex:x:high", epoch=2, verdict="AGREE", seat_instance_id="d1")
+        # Build the round record directly (compose blocks any nonempty delta_chain
+        # BEFORE verify_chain / escalation checks, so the round only needs to be a
+        # structurally-valid DeltaReviewRecord the artifact can hold).
+        delta = fp.DeltaReviewRecord.build(
+            policy=None, review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), material_digests=(),
+            parent_digest=candidate.patch_digest, parent_chain_digest=c0, delta_head_sha=head,
+            delta_changed_paths=(), delta_commits=(), resolved_finding_ids=(), carried_forward_finding_ids=(),
+            reopened_finding_ids=(), resulting_head_digest=self.digest(base, head),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN, escalation=fp.Escalation(required=False, trigger=None),
+            delta_round_seats=(delta_seat,),
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=(seat,), delta_chain=(delta,)
+        )
+        self.persist("run-delta-block", artifact, (seat, delta_seat))
+        self.assertIn("delta_chain_deferred_to_piece3", self._reason("run-delta-block", head))
+
 
 # --------------------------------------------------------------------------- #
 # Acceptance criterion 6 — exact-head degenerate case (empty delta_chain)
@@ -473,28 +550,25 @@ class DeltaChainGateTest(GitRepoTestCase):
         self.persist("run-acc1", artifact, candidate_seats + delta_seats)
         return base, candidate_head, delta_head
 
-    def test_acceptance_1_disjoint_clean_delta_passes_without_whole_patch_rereview(self):
+    def test_acceptance_1_disjoint_clean_delta_resolves_and_binds(self):
+        """The delta MACHINERY (carry-forward + resolution + seat binding)
+        resolves a disjoint clean delta correctly. Exercised at its own
+        functions — compose defers the whole delta chain to piece 3 (blocker 5)."""
         base, candidate_head, delta_head = self._acceptance_1_setup()
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-acc1", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_PASS)
-        self.assertEqual(gate.reviewed_sha, candidate_head)  # NEVER the delta/live head
-        self.assertEqual(gate.equivalence_verified.result, fp.EQUIVALENCE_EQUIVALENT)
-        self.assertEqual(sorted(gate.carried_forward_findings), ["f1", "f2"])
-        self.assertFalse(gate.escalation.required)
+        artifact = fp.read_provenance(self.repo, "run-acc1")
+        resolution = fg.resolve_chain_resolution(artifact)
+        self.assertEqual(sorted(resolution.carried_forward_findings), ["f1", "f2"])
+        self.assertFalse(resolution.escalation.required)
+        self.delta_binding("run-acc1", artifact)  # must not raise
+        self.assert_compose_defers_delta("run-acc1", delta_head)
 
     def test_acceptance_2_unrelated_byte_invalidates(self):
+        # Candidate-round equivalence drift is covered by RebaseAndPromotionTest;
+        # for a delta chain, compose defers to piece 3 before equivalence.
         base, candidate_head, delta_head = self._acceptance_1_setup()
         self.write("pkg/c.py", "small disjoint delta\nEXTRA UNRELATED BYTE\n")
         drifted_head = self.commit("c3 unrelated extra byte, not part of any reviewed delta")
-
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-acc1", live_base_ref_name="main", live_head_sha=drifted_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertEqual(gate.equivalence_verified.result, fp.EQUIVALENCE_INVALIDATED)
-        self.assertEqual(gate.equivalence_verified.reason, fc.REASON_CONTENT_DRIFT)
+        self.assert_compose_defers_delta("run-acc1", drifted_head)
 
 
 # --------------------------------------------------------------------------- #
@@ -547,11 +621,10 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-zero-seats", artifact, candidate_seats)
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-zero-seats", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertIn("delta_round_seats", gate.equivalence_verified.reason)
+        with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
+            self.delta_binding("run-zero-seats", artifact)
+        self.assertIn("delta_round_seats", str(cm.exception))
+        self.assert_compose_defers_delta("run-zero-seats", delta_head)
 
     def test_reviewed_clean_delta_with_uncorroborated_reopen_blocks(self):
         """A round's `delta_round_seats` are non-empty and authenticate fine,
@@ -606,10 +679,9 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-uncorroborated", artifact, candidate_seats + (uncorroborating_seat,))
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-uncorroborated", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        with self.assertRaises(fg.DeltaRoundSeatBindingInvalid):
+            self.delta_binding("run-uncorroborated", artifact)
+        self.assert_compose_defers_delta("run-uncorroborated", delta_head)
 
     # ----------------------------------------------------------------------- #
     # Follow-up CR (agent-harness#191, codex-reproduced): `_require_delta_
@@ -651,11 +723,10 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-disagree-seat", artifact, candidate_seats + (disagree_seat,))
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-disagree-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertIn("no AGREE/PARTIALLY AGREE verdict", gate.equivalence_verified.reason)
+        with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
+            self.delta_binding("run-disagree-seat", artifact)
+        self.assertIn("no AGREE/PARTIALLY AGREE verdict", str(cm.exception))
+        self.assert_compose_defers_delta("run-disagree-seat", delta_head)
 
     def test_reviewed_clean_delta_with_unverdicted_required_seat_blocks(self):
         """A required `delta_round_seat` that authenticates fine but never
@@ -684,11 +755,10 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-unverdicted-seat", artifact, candidate_seats + (unverdicted_seat,))
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-unverdicted-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertIn("no AGREE/PARTIALLY AGREE verdict", gate.equivalence_verified.reason)
+        with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
+            self.delta_binding("run-unverdicted-seat", artifact)
+        self.assertIn("no AGREE/PARTIALLY AGREE verdict", str(cm.exception))
+        self.assert_compose_defers_delta("run-unverdicted-seat", delta_head)
 
     def test_reviewed_clean_delta_with_only_optional_seats_blocks(self):
         """A round whose `delta_round_seats` are all non-required (even if
@@ -718,11 +788,10 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-optional-only", artifact, candidate_seats + (optional_seat,))
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-optional-only", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertIn("NONE are", gate.equivalence_verified.reason)
+        with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
+            self.delta_binding("run-optional-only", artifact)
+        self.assertIn("NONE are", str(cm.exception))
+        self.assert_compose_defers_delta("run-optional-only", delta_head)
 
     def test_reviewed_clean_delta_with_agreeing_required_seat_passes(self):
         """The legitimate case (kept green): a `reviewed-clean` delta whose
@@ -751,10 +820,10 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.persist("run-agree-seat", artifact, candidate_seats + (agree_seat,))
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-agree-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_PASS)
+        # The legitimate case: the delta-round binding ACCEPTS (does not raise);
+        # compose still defers the whole delta chain to piece 3 (blocker 5).
+        self.delta_binding("run-agree-seat", artifact)  # must not raise
+        self.assert_compose_defers_delta("run-agree-seat", delta_head)
 
 
 # --------------------------------------------------------------------------- #
@@ -928,13 +997,14 @@ class EscalationGateTest(GitRepoTestCase):
         )
         self.persist("run-acc4", artifact, all_seats)
 
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id="run-acc4", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
-        )
-        self.assertEqual(gate.status, fp.GATE_STATUS_PASS)
-        self.assertTrue(gate.escalation.required)
-        self.assertEqual(gate.escalation.trigger, "auth_security")
-        self.assertEqual(gate.re_reviewed_findings, ("f1",))
+        # The escalation machinery resolves + binds correctly; compose defers the
+        # whole delta chain to piece 3 (blocker 5).
+        resolution = fg.resolve_chain_resolution(artifact)
+        self.assertTrue(resolution.escalation.required)
+        self.assertEqual(resolution.escalation.trigger, "auth_security")
+        self.delta_binding("run-acc4", artifact)  # must not raise
+        self.assertEqual(sorted(resolution.re_reviewed_findings), ["f1"])
+        self.assert_compose_defers_delta("run-acc4", delta_head)
 
 
 # --------------------------------------------------------------------------- #

@@ -329,7 +329,7 @@ def run_governed_premerge_loop(
                 )
             return LoopResult(
                 mergeable=True, ran=True, rounds=rnd, findings=tuple(collected),
-                panel=getattr(gate, "panel", None),
+                panel=gate.panel,  # GateResult always carries the reviewed panel on a promoted return
             )
 
         # Unresolved block findings this round.
