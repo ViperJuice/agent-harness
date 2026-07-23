@@ -450,13 +450,113 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
 _TRAIN_REVIEW_NODE_ID: str = "_train_review_"
 
 
+def _fab_promotion_gate_before_merge(
+    workspace: Path,
+    run_id: Optional[str],
+    *,
+    live_base_ref_name: Optional[str],
+    live_head_sha: Optional[str],
+    fab_fetch_origin: str = "origin",
+) -> Optional[str]:
+    """FAB (Consiliency/agent-harness#191) design §4.4 promotion-time
+    re-assertion, invoked directly by ``_live_merge_pr`` immediately before
+    it issues ``gh pr merge`` — this is NOT reached through
+    ``run_governed_premerge_loop``'s own ``fab_promotion_check`` override
+    (that loop's two ``mergeable=True`` return points cover
+    ``_default_train_review``'s train-level bundle review, a DIFFERENT call;
+    see both functions' docstrings), so this is where a real single-PR merge
+    gets covered.
+
+    Byte-neutral / inert (returns ``None``, no git/gh call issued) unless
+    BOTH: the opt-in ``PHASE_LOOP_FAB`` control is on
+    (``governed_premerge.fab_promotion_enabled``), AND ``run_id`` is not
+    ``None`` — ``run_id`` MUST be sourced by the caller from its own trusted
+    runner/train-context bookkeeping (e.g. a future producer's
+    ``completed_nodes[node_id]["fab_run_id"]``), never from PR/branch
+    content. Also inert (``None``) when ``run_id`` is supplied but no FAB
+    provenance is recorded for it (``fab_provenance.ProvenanceNotFound``) —
+    mirrors ``run_governed_premerge_loop``'s own ``fab_promotion_check=None``
+    byte-neutral posture rather than ``fab_gate_validator``'s stricter
+    "trusted run_id present but no provenance ⇒ block" doctrine; the two
+    are independent, differently-scoped FAB defenses.
+
+    Once a ``run_id`` genuinely has recorded provenance, this fails CLOSED:
+    an unresolvable live PR base/head, or a live-recomputed
+    ``fab_canonical.equivalent()`` that is no longer ``EQUIVALENT``, both
+    return a non-``None`` refusal reason string (never raise) — the caller
+    is responsible for turning that into a hard refusal (``_live_merge_pr``
+    raises ``RuntimeError``, matching its existing base/head TOCTOU guards).
+
+    ``fab_fetch_origin`` (default ``"origin"`` — the production value,
+    byte-neutral) is the git remote NAME `fab_canonical.equivalent()`
+    fetches from for its live re-fetch; it is separate from repo-IDENTITY
+    resolution, which always reads the remote literally named ``origin``
+    regardless of this parameter (`credsep.resolve_git_origin_url`). Exposed
+    only so tests can point the fetch at a real local bare repo while
+    ``origin`` itself stays a github.com-shaped URL for identity resolution
+    — the SAME two-remote fixture pattern `test_fab_canonical_b.py`/
+    `test_fab_gate_d.py` already use, never a production behavior change."""
+    from .governed_premerge import (
+        FabPromotionCheck,
+        fab_promotion_enabled,
+        fab_promotion_refusal_reason,
+    )
+
+    if run_id is None or not fab_promotion_enabled():
+        return None
+
+    from . import fab_canonical, fab_gate
+    from .fab_provenance import ProvenanceNotFound
+
+    try:
+        artifact = fab_gate.read_provenance(workspace, run_id)
+    except ProvenanceNotFound:
+        # A run_id was supplied, but no provenance was ever recorded for it
+        # (e.g. piece 2's producer has not landed yet) — stay inert here,
+        # exactly like `fab_promotion_check=None` (design instruction #2).
+        return None
+
+    if live_base_ref_name is None or live_head_sha is None:
+        # Fail closed: a FAB-scoped node whose live PR identity this function
+        # cannot resolve must never merge silently.
+        return (
+            f"fab-promotion-reassertion-unresolvable: run_id={run_id!r} — the live "
+            "PR base/head could not be read before merge (fail-closed, design §4.4)"
+        )
+
+    binding = fab_gate.resolve_equivalence_binding(artifact)
+    check = FabPromotionCheck(
+        binding=binding,
+        repo_dir=workspace,
+        live_base_ref_name=live_base_ref_name,
+        live_head_sha=live_head_sha,
+        origin=fab_fetch_origin,
+    )
+    return fab_promotion_refusal_reason(check, fab_canonical.equivalent)
+
+
 def _live_merge_pr(
     workspace: Path,
     branch: str,
     base: str = _DEFAULT_BASE,
     head_sha: Optional[str] = None,
+    run_id: Optional[str] = None,
+    fab_fetch_origin: str = "origin",
 ) -> str:
     """Merge the PR for ``branch`` via the GitHub CLI; return the merge commit SHA.
+
+    ``run_id`` (FAB, Consiliency/agent-harness#191, activation milestone
+    piece 1; default ``None`` — byte-neutral): the TRUSTED FAB-scope marker
+    for this node, sourced ONLY from the caller's own trusted
+    runner/train-context bookkeeping (e.g. a future producer's
+    ``completed_nodes[node_id]["fab_run_id"]`` — never from PR/branch
+    content). When supplied AND ``PHASE_LOOP_FAB`` is on, see
+    ``_fab_promotion_gate_before_merge`` for the design §4.4 promotion-time
+    re-assertion this runs immediately before ``gh pr merge`` below — this is
+    the ONLY production call site that issues a real PR merge (see
+    ``_default_train_review``'s docstring for why the train-level bundle
+    review cannot itself carry a per-PR binding), so it is where every
+    FAB-scoped PR merge is actually covered, with no bypass.
 
     Idempotent: checks ``_live_pr_merged_sha`` (now base-checked — finding 3
     below) before issuing the merge command. Already-merged PRs return the
@@ -620,6 +720,19 @@ def _live_merge_pr(
             f"(agent-harness#250 N7 CR follow-up, defect 1); refusing to merge "
             f"unchecked content"
         )
+
+    # FAB (Consiliency/agent-harness#191) design §4.4 promotion-time
+    # re-assertion — activation milestone piece 1. Byte-neutral: no-op unless
+    # a caller supplied `run_id` (never true today — no production caller
+    # threads one; see this function's docstring). Placed immediately before
+    # `gh pr merge` so the re-check is as close to the real merge as
+    # possible, after the cheaper base/head guards above already passed.
+    fab_refusal = _fab_promotion_gate_before_merge(
+        workspace, run_id, live_base_ref_name=current_base, live_head_sha=current_head,
+        fab_fetch_origin=fab_fetch_origin,
+    )
+    if fab_refusal is not None:
+        raise RuntimeError(fab_refusal)
 
     # Finding 4: pin the merge to the broker-admitted head SHA, when supplied,
     # via GitHub's own atomic --match-head-commit check — closes the gap
@@ -978,6 +1091,18 @@ def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
     In ``autonomous`` mode ``run_governed_premerge_loop`` short-circuits to
     ``mergeable=True`` without spawning a panel — callers should gate on
     ``run_mode == "governed"`` before reaching here (P4 enforces this).
+
+    FAB (Consiliency/agent-harness#191) design §4.4 note (activation
+    milestone, piece 1): this call deliberately forwards
+    ``fab_promotion_check=None`` (the default — never set here). ``artifact``
+    here is `_build_train_review_bundle`'s multi-node, multi-repo BUNDLE
+    text, reviewed as one logical cross-repo change — there is no single
+    ``EquivalenceBinding`` (one repo_slug/base/head tuple) it could bind to.
+    The load-bearing per-PR re-assertion instead lives at
+    ``_live_merge_pr``, immediately before each node's own real
+    ``gh pr merge`` in the P4 loop below — that is the only call site that
+    actually merges a single PR, so it is the only place a per-PR FAB
+    binding can be checked.
 
     Stubbable seam: inject ``_train_review_fn`` into :func:`run_train`.
     """
@@ -1938,9 +2063,21 @@ def run_train(
             # check validated at publish time (the module-wide _DEFAULT_BASE; no
             # per-node base override exists yet) so the merge-time TOCTOU guard
             # in _live_merge_pr reconciles with what was actually admitted.
-            _merged_sha_m = merge_pr_fn(
-                _ws_m, _pr_branch_m, base=_DEFAULT_BASE, head_sha=_admitted_head_sha_m
-            )
+            _merge_kwargs_m = dict(base=_DEFAULT_BASE, head_sha=_admitted_head_sha_m)
+            # FAB (Consiliency/agent-harness#191) design §4.4, activation
+            # milestone piece 1: thread the node's TRUSTED FAB-scope run_id,
+            # when the caller's own trusted bookkeeping carries one, so
+            # `_live_merge_pr` can re-assert promotion-time equivalence
+            # immediately before merging. `completed_nodes[...]` never
+            # carries a `fab_run_id` today (no producer writes one yet — that
+            # is piece 2, out of scope here), so this is omitted for EVERY
+            # existing/production node — byte-neutral, and every pre-existing
+            # `_merge_pr_fn` test stub (fixed 4-arg signature) keeps working
+            # unchanged.
+            _fab_run_id_m = completed_nodes[_nid_m].get("fab_run_id")
+            if _fab_run_id_m is not None:
+                _merge_kwargs_m["run_id"] = _fab_run_id_m
+            _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
             append_record(
                 ledger_path,

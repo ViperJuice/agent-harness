@@ -192,6 +192,8 @@ from .governed_review import (
 )
 from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
+    FabPromotionCheck,
+    fab_equivalent,
     next_escalation,
     run_governed_premerge_loop,
 )
@@ -9603,6 +9605,10 @@ def _governed_premerge_review(
         apply_fix=None,  # review+block; the executor-driven re-dispatch is a documented thread
         available_legs=available_panel_legs(),
         repo_dir=repo,
+        # fab_promotion_check intentionally omitted (stays None): this gates a
+        # LOCAL commit, not a live PR — see governed_premerge_for_run's
+        # docstring. The real per-PR FAB re-assertion lives at
+        # train_runner._live_merge_pr.
     )
     if result.mergeable:
         return None
@@ -9639,6 +9645,8 @@ def governed_premerge_for_run(
     repo_dir=None,
     max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
     max_concurrency: int | None = None,
+    fab_promotion_check: FabPromotionCheck | None = None,
+    fab_equivalent_fn=fab_equivalent,
 ):
     """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
 
@@ -9649,6 +9657,21 @@ def governed_premerge_for_run(
     cross-phase dirty start-gate is live); callers invoke it at a pre-merge
     boundary. The full executor-driven `apply_fix` threading is the remaining
     integration; the loop/ladder behaviors are unit-tested in isolation.
+
+    ``fab_promotion_check`` (default ``None`` — byte-for-byte unchanged;
+    FAB Consiliency/agent-harness#191 activation milestone, piece 1) is
+    forwarded straight through to `run_governed_premerge_loop`, which
+    branches on ``is None`` regardless of any env var. This function's own
+    caller, `_governed_premerge_review`, always passes `None`: it gates a
+    LOCAL phase-closeout `git commit` (see `_perform_phase_closeout_impl`),
+    not a live GitHub PR — there is no live PR base/head to re-assert
+    against at that call site (`fab_gate`'s module docstring, resolved
+    ambiguity #5, documents this same scope split for the closeout
+    validator). The FAB promotion re-assertion for a REAL PR merge is fully
+    covered at `train_runner._live_merge_pr` instead (the only call site
+    that issues a real ``gh pr merge``). This parameter exists so the
+    capability is wired end-to-end and testable in isolation, not because
+    the production caller uses it today.
     """
     kwargs = dict(
         artifact=artifact,
@@ -9660,6 +9683,8 @@ def governed_premerge_for_run(
         repo_dir=repo_dir,
         max_rounds=max_rounds,
         max_concurrency=max_concurrency,
+        fab_promotion_check=fab_promotion_check,
+        fab_equivalent_fn=fab_equivalent_fn,
     )
     if invoke is not None:
         kwargs["invoke"] = invoke

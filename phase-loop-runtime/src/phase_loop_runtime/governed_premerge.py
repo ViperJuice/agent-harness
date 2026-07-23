@@ -21,9 +21,10 @@ here adds ``human_required`` and the autonomous path is a literal no-op.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .closeout_validators import ReviewFinding
 from .fab_canonical import EquivalenceBinding
@@ -36,6 +37,28 @@ from .panel_invoker import invoke_panel
 ESCALATION_FAIL_THRESHOLD = 2
 #: Default cap on governed pre-merge review→fix rounds (bounded; never infinite).
 DEFAULT_MAX_REVIEW_ROUNDS = 3
+
+#: FAB (Consiliency/agent-harness#191) design §4.4 promotion-time
+#: re-assertion — activation milestone piece 1. Opt-in env control mirroring
+#: `closeout_validators.REVIEW_MODE_ENV`'s posture: default OFF/absent means
+#: no PRODUCTION caller (`train_runner._live_merge_pr`,
+#: `runner.governed_premerge_for_run`) even ATTEMPTS to construct a
+#: `FabPromotionCheck` — the merge path stays byte-for-byte unchanged. This
+#: flag does NOT itself gate `run_governed_premerge_loop`/
+#: `_fab_promotion_override`, which already branch on
+#: ``fab_promotion_check is None`` regardless of any env var (so tests can
+#: exercise the override directly without setting this); it gates whether
+#: the PRODUCTION wiring is willing to even look for FAB provenance.
+FAB_PROMOTION_ENV = "PHASE_LOOP_FAB"
+
+
+def fab_promotion_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """True iff ``PHASE_LOOP_FAB`` is set to a truthy token (``1``/``true``/
+    ``yes``/``on``, case-insensitive). Unset — or any other value — is OFF,
+    the byte-neutral default."""
+    env = os.environ if env is None else env
+    value = str(env.get(FAB_PROMOTION_ENV) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 # implementer → planner is the only model_class escalation; planner is terminal.
 _NEXT_CLASS = {"implementer": "planner", "worker": "implementer"}
@@ -158,6 +181,32 @@ def _fab_promotion_override(
         ),
         reason="fab_promotion_reassertion_failed",
     )
+
+
+def fab_promotion_refusal_reason(
+    check: FabPromotionCheck | None,
+    equivalent_fn: Callable[..., EquivalenceResult] = fab_equivalent,
+) -> str | None:
+    """Public wrapper around `_fab_promotion_override` for a REAL merge
+    caller that is not reached through `run_governed_premerge_loop` itself —
+    activation milestone piece 1's other production choke point,
+    `train_runner._live_merge_pr`'s `gh pr merge` (the loop's own
+    ``fab_promotion_check`` covers only the loop's TWO ``mergeable=True``
+    return points, :213/:269; a caller whose real merge command lives
+    elsewhere must invoke this immediately before issuing it, per this
+    module's own §4.4 docstring). Reuses `_fab_promotion_override` rather
+    than re-implementing the equivalence re-check.
+
+    Returns ``None`` when the merge may proceed (``check`` is ``None``, or
+    the live re-assertion still finds `EQUIVALENT`); returns the non-human
+    blocker's ``blocker_summary`` text (never raises) when a supplied
+    check's live re-assertion fails — the caller decides how to surface that
+    (e.g. as a ``RuntimeError``) in its own idiom."""
+    override = _fab_promotion_override(check, equivalent_fn)
+    if override is None:
+        return None
+    blocker = override.terminal_blocker or {}
+    return blocker.get("blocker_summary") or override.reason or "fab_promotion_reassertion_failed"
 
 
 @dataclass(frozen=True)

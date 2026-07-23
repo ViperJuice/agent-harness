@@ -857,6 +857,51 @@ artifact-wide `seats` agreeing. codex reproduced the gap at HEAD `47e6493`.
   an all-optional-seats round BLOCKing; and the legitimate AGREE case staying
   green. All Lane A/B/C/D tests remain green.
 
+### FAB activation milestone, piece 1 — wire the promotion re-assertion into the real merge path (Consiliency/agent-harness#191)
+
+Lanes A-D shipped `FabPromotionCheck`/`_fab_promotion_override`/
+`run_governed_premerge_loop(fab_promotion_check=None, ...)` but nothing
+constructed a check from a real caller — the design §4.4 gate was dormant.
+This wires it in, opt-in and byte-neutral by default; still inert in
+practice today, since no producer writes FAB provenance yet (piece 2, not
+built here).
+
+- **`PHASE_LOOP_FAB` opt-in control** (`governed_premerge.fab_promotion_enabled`,
+  mirrors `closeout_validators.REVIEW_MODE_ENV`'s posture): unset/off means
+  every production caller stays byte-for-byte unchanged from `main`.
+- **`train_runner._live_merge_pr`** — the only production call site that
+  issues a real `gh pr merge` — now re-runs `fab_canonical.equivalent()`
+  against the live PR immediately before merging, when the caller supplies a
+  `run_id` (sourced only from trusted runner/train bookkeeping, never
+  PR/branch self-report) that has FAB provenance recorded. Reuses the
+  base/head values the function already reads in its combined `gh pr view`
+  precheck. A drifted or unresolvable live PR refuses the merge
+  (`RuntimeError`, non-human); no provenance for the `run_id`, or the flag
+  off, stays inert. `train_runner._default_train_review` deliberately stays
+  `fab_promotion_check=None` — it reviews a multi-node bundle, not a single
+  PR's binding, so it cannot carry one; the per-PR gate lives at
+  `_live_merge_pr` instead, and every real single-PR merge goes through it.
+- **`governed_premerge.fab_promotion_refusal_reason`**: a new public wrapper
+  around `_fab_promotion_override` for callers (like `_live_merge_pr`) whose
+  real merge command is not reached through `run_governed_premerge_loop`
+  itself.
+- **`runner.governed_premerge_for_run`** gains a passthrough
+  `fab_promotion_check`/`fab_equivalent_fn` (default `None`/`fab_equivalent`)
+  forwarded to `run_governed_premerge_loop`. Its only production caller
+  (`_governed_premerge_review`, a phase-closeout LOCAL `git commit` gate —
+  not a live PR) always passes `None`: there is no live PR base/head to
+  re-assert against at that call site.
+- **Tests** (`tests/test_fab_activation_promotion.py`, new, unmarked): flag-off
+  byte-neutrality (`fab_canonical.equivalent` never called; a strict 4-arg
+  `_merge_pr_fn` stub proves no `run_id` kwarg leaks through the P4 merge
+  loop); flag-on with no `run_id` / no provenance stays inert; unchanged
+  content merges; post-review content drift refuses (real git repos, no
+  mocked git for the equivalence recompute, matching the Lane B/D
+  convention); unresolvable live head fails closed; flag-off overrides a
+  drifted, provenance-bearing `run_id` back to inert. All pre-existing
+  `governed_premerge`/`fab_gate_d`/`train_runner`/`train_merge`/`runner`
+  tests remain green, unmodified.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
