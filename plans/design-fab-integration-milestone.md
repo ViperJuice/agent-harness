@@ -166,3 +166,80 @@ implementation nits. The plan is NOT "done" until these are designed:
 *architectural* gaps (#2 seat-verdict persistence, #4 the missing whole-patch review path) — signals that FAB
 activation is a foundational design effort, not a wiring job, and wants a focused design pass (its own spike)
 before implementation. Piece 1 (safety net) is merged and safe; nothing here is urgent.
+
+---
+## v4 — RESOLVED architectural design (design spike; resolves v2/v3 residuals #2, #3, #4)
+
+A focused spike investigated the two architectural gaps against `main`. Both resolve using MOSTLY EXISTING
+machinery; the harness already fail-closes an unreviewed advanced head.
+
+### Resolves #2 — non-forgeable seat authenticity (spike A)
+- `SeatOutcomeRecord` (panel_invoker.py:287) is confirmed harness-only-written to the run-store ledger
+  (`fab_gate.append_seat_outcome`, `O_CREAT|O_APPEND`, mode 0600, fsync, strict-parse) — but carries no
+  verdict/finding-ids and NOTHING persists it in a live path yet. **Design:** ADD `verdict: str|None` +
+  `finding_ids: tuple[str,...]` (additive, keyword-defaulted; whitelist the two keys in the strict
+  `_seat_outcome_from_dict` parser; verdict reuses `panel_invoker.terminal_verdict`'s vocabulary — no new
+  enum). Persist from the FAB-scoped panel-invocation wrapper (piece 2, new): after each `PanelLegResult`,
+  `verdict = terminal_verdict(leg.text)` → `append_seat_outcome(repo, run_id, SeatOutcomeRecord(..., verdict,
+  finding_ids))`. Keeps `panel_invoker` FAB-agnostic (it already takes an injectable sink).
+- **`cross_check_seat_authenticity` (fab_gate.py:378) — two new rules, both keyed off the DURABLE side:**
+  (1) VERDICT-BINDING: a provenance seat's `verdict` must equal its durable match's verdict (strict,
+  no-normalization). (2) COMPLETENESS DRIVEN FROM DURABLE: iterate the DURABLE records (not provenance) —
+  every `required=True` durable record with a usable-terminal status MUST have a matching provenance seat at
+  the same key with the same verdict, else BLOCK. This closes BOTH the verdict-flip and the omission holes by
+  construction (attacker doesn't control what's iterated).
+- **Epoch scoping (caveat to honor):** the cross-check runs over `artifact.seats` AND per delta round vs the
+  SAME full durable set, so completeness must be EPOCH-SCOPED — thread an explicit `epoch` param into each
+  call site (candidate round's epoch for the artifact call; that round's epoch per delta round). Add the
+  invariant "all seats in one round share one epoch" when implementing (`DeltaReviewRecord` has no epoch field
+  today). Additive; no live consumer breaks (only one positional test fixture to update).
+
+### Resolves #4 — the fallback is EXISTING machinery, no whole-patch subsystem (spike B)
+- **Current head-advance behavior (confirmed):** `_live_merge_pr` (train_runner.py:577-836) re-reads the live
+  PR head, compares to the broker-ADMITTED `head_sha` (`completed_nodes[nid]["admitted_head_sha"]`, set at
+  publish/Step-3), and on divergence `raise RuntimeError("pr-head-advanced")` → node ledgered blocked, train
+  `merge_halted`. `--match-head-commit` + post-merge re-validation close TOCTOU (the #250 N7 machinery,
+  UNCONDITIONAL, not FAB-gated). **So an advanced/unadmitted head is already unconditionally rejected — never
+  re-reviewed-away, never stale-merged.**
+- **No whole-`merge-base..head` review exists** (confirmed) — and is NOT needed: every phase-closeout commit
+  is ALWAYS reviewed by `_governed_premerge_review` regardless of FAB. The plan's honesty model already
+  reframes FAB to carry forward the PER-PHASE-CLOSEOUT approval (not a whole-patch one) — no further reframe.
+- **Wired fallback (zero-to-one small primitive):**
+  - Piece-2 fallback (multi-commit / honesty-gate-fail / empty closeout): producer writes NO provenance →
+    `fab_run_id` absent → promotion gate inert → merge proceeds via the pre-existing non-FAB path, which is
+    ALREADY the full per-commit review. **Zero new code.**
+  - Piece-3 fallback (bridge-miss / ambiguous / stale-admission, SINGLE new commit since admission): run the
+    EXISTING `governed_premerge_for_run`/`_governed_premerge_review` against `git diff old_admitted..new_head`
+    — a thin COMMITTED-RANGE variant of `staged_index_diff` (**the only new review primitive**), only when
+    exactly one commit separates old-admitted from new head → on approval, the SAME atomic re-admission
+    piece 3 already needs (new provenance + atomic `admitted_head_sha` update). Until re-admission, the
+    existing `pr-head-advanced` guard rejects the merge — no new rejection code.
+  - Multi-commit advance since admission → OUT of scope (deferred multi-commit composition) → same fail-closed
+    result (admission never advances → existing guard rejects → `merge_halted`).
+  - **Nothing merges unreviewed in any branch:** either the per-commit closeout review covered it, or a
+    single-commit fresh review + fresh admission covers it, or the #250 guard blocks it.
+
+### Resolves #3 — crash safety via merge-time full re-gate + admission-as-authority
+Admission currently happens at PUBLISH (pre-gate), so a crash between provenance-write and the closeout gate
+must not let a non-gate-passed head merge. **Design:** the piece-1 promotion re-assertion at
+`_live_merge_pr` must run the FULL hard `compose_gate_status` at merge (authenticity §6.3 + unresolved-block
+findings + equivalence — NOT just byte-equivalence, closing the gap piece 1 already flags). So a
+provenance-written-but-not-gate-passed (crash), tampered, or incomplete artifact is caught AT MERGE and the
+head is rejected (`review_gate_block`, flowing through the existing `merge_halted` path). The merge-time full
+gate is the authoritative decision; the closeout gate is advisory/early. This makes the producer transaction
+crash-safe without a separate marker: no gate-pass at merge ⇒ no merge.
+
+### Still to implement (v3 requirement #1 — not dissolved, must be built)
+COMPLETE REVIEW REPRESENTATION: `staged_index_diff` (governed_bundle.py:23) is text-mode `git diff` (ignores
+nonzero rc, sentinels on decode/timeout, "Binary files differ"). Tree-equality does NOT prove the seats SAW
+every changed byte. FAB must FAIL CLOSED (no provenance) unless every changed path in the reviewed diff has a
+complete review representation (no binary-elided / attribute-suppressed / sentinel content). This is a real
+implementation requirement (a completeness predicate on the reviewed diff), not dissolved by the spike.
+
+### Net design shape for execution
+Producer (piece 2) = the FAB-scoped panel wrapper (persist authentic seat outcomes w/ verdict+findings) +
+post-commit honesty gate (precommit-HEAD==merge-base, post-hook tree/parent verify, non-empty, complete
+review representation) + write provenance. Consumer (piece 3) = durable admission record + committed-range
+single-commit re-review + atomic re-admission + new provenance. Gate authority = the full `compose_gate_status`
+re-run at merge (piece 1 extended). Everything behind `PHASE_LOOP_FAB` (byte-neutral off). Merge-queue refused
+until #265. Multi-commit composition deferred.
