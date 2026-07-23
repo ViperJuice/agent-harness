@@ -72,6 +72,7 @@ from .fab_provenance import (
     write_provenance,
 )
 from .fab_delta import BOUNDARY_MANIFEST_PATH
+from .runtime_paths import phase_loop_runs_dir
 from .panel_invoker import PanelResult, SeatOutcomeRecord, terminal_verdict
 
 # The reviewed bundle bytes, snapshotted into the run store as the round's
@@ -121,29 +122,82 @@ def _utc_now_iso() -> str:
 
 def is_fab_scoped(repo: Path, run_id: str) -> bool:
     """True iff this run was scoped to FAB — i.e. `capture_review_at_invocation`
-    ran and froze the expected-seat manifest (the durable round record exists).
-    The resume/noop path uses this to tell a FAB commit from a plain one."""
+    ran and froze the expected-seat manifest (the durable round record exists)."""
     try:
         return review_round_path_for_run(repo, run_id).exists()
     except ProvenanceInvalid:
         return False
 
 
-def mark_closeout_cleared(repo: Path, run_id: str) -> None:
-    """Write the durable "safe to finalize" marker (STRICT LAST step). Only call
-    on an affirmative FAB PASS or an honest DECLINE — never on a block/crash."""
+def mark_closeout_cleared(repo: Path, run_id: str, commit_sha: str) -> None:
+    """Write the durable "safe to finalize" marker (STRICT LAST step), COMMIT-BOUND
+    (CR round 3 / blocker 1): the marker records the EXACT commit it vouches for,
+    so a DIFFERENT commit sharing the same reviewed tree (hence the same
+    `run_id = fab-<tree>`) can never inherit it. Only call on an affirmative FAB
+    PASS or an honest DECLINE for `commit_sha` — never on a block/crash."""
     path = provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"cleared": True, "at": _utc_now_iso()}, separators=(",", ":")), encoding="utf-8")
+    tmp.write_text(
+        json.dumps({"cleared": True, "commit": commit_sha, "at": _utc_now_iso()}, separators=(",", ":")),
+        encoding="utf-8",
+    )
     os.replace(tmp, path)
 
 
-def is_closeout_cleared(repo: Path, run_id: str) -> bool:
+def is_closeout_cleared(repo: Path, run_id: str, committed_head: str) -> bool:
+    """True iff a cleared marker for `run_id` exists AND was written for EXACTLY
+    `committed_head` (CR round 3 / blocker 1 — a same-tree replay must not reuse
+    another commit's clearance)."""
     try:
-        return (provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME).exists()
-    except ProvenanceInvalid:
+        path = provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ProvenanceInvalid):
         return False
+    return isinstance(data, dict) and data.get("cleared") is True and data.get("commit") == committed_head
+
+
+# --------------------------------------------------------------------------- #
+# CR round 3 / blocker 2 — a durable PENDING-CLOSEOUT record keyed to the PHASE,
+# recording the exact commit the phase produced (its FAB run_id). The resume/noop
+# path reads this to evaluate the phase's OWN committed head, immune to a moved /
+# reset / concurrently-advanced ambient HEAD (which could otherwise erase or
+# misattribute FAB scope). Written durably at the initial closeout, before the
+# FAB gate runs, so a block/crash still leaves it discoverable on retry.
+# --------------------------------------------------------------------------- #
+
+PENDING_DIRNAME = "fab-pending"
+
+
+def _pending_path(repo: Path, phase: str) -> Path:
+    safe = hashlib.sha256(phase.encode("utf-8")).hexdigest()[:32]
+    return phase_loop_runs_dir(Path(repo)) / PENDING_DIRNAME / f"{safe}.json"
+
+
+def write_pending_closeout(repo: Path, phase: str, *, committed_head: str, run_id: str) -> None:
+    path = _pending_path(repo, phase)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {"phase": phase, "committed_head": committed_head, "run_id": run_id, "at": _utc_now_iso()},
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def read_pending_closeout(repo: Path, phase: str) -> dict | None:
+    """Return the phase's recorded pending-closeout ``{committed_head, run_id}``,
+    or ``None`` when the phase never produced a FAB-scoped commit."""
+    try:
+        data = json.loads(_pending_path(repo, phase).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("committed_head") or not data.get("run_id"):
+        return None
+    return data
 
 
 def _sha256_hex(data: bytes) -> str:
