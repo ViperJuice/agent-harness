@@ -374,7 +374,21 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
 
     pattern = "^" + "".join(parts) + "$"
     try:
-        return re.compile(pattern)
+        # agent-harness#191 CR (Lane C finding 1, glob-newline fail-open): git
+        # permits NEWLINE characters in filenames, and the `-z` + `os.fsdecode`
+        # path preserves them verbatim. The `.`-based fragments this translator
+        # emits for `**` (`_GLOBSTAR_PREFIX_UNIT`/the trailing-globstar cases
+        # above) would, WITHOUT `re.DOTALL`, refuse to span an embedded `\n` —
+        # so a protected-surface delta whose only difference from a covered
+        # path is an embedded newline would silently escape escalation. `?`/`*`
+        # are unaffected (they already compile to `[^/]`/`[^/]*` character
+        # classes, which match `\n` by construction, negated-class semantics
+        # are never subject to DOTALL) — `re.DOTALL` only widens what `.`
+        # matches, so this cannot narrow any existing match, only widen `**`'s
+        # span to include newlines, the fail-safe direction for an escalation
+        # boundary (see this function's own docstring: biasing toward
+        # MATCHING MORE, never less).
+        return re.compile(pattern, re.DOTALL)
     except re.error as exc:  # pragma: no cover - the safe-charset guard above should preclude this
         raise BoundaryManifestInvalid(f"boundary glob failed to compile (fail-closed): {glob!r}: {exc}") from exc
 
@@ -406,7 +420,9 @@ def _parse_boundary_manifest_bytes(raw: bytes, *, path: str, source_rev: str) ->
     `BoundaryManifestInvalid` on: undecodable/malformed TOML, a non-table
     top level, a section that is not a table, a section missing `globs`, a
     section with keys OTHER than `globs`, a non-list-of-strings `globs`
-    value, or any glob that fails `_translate_glob_to_regex`."""
+    value, any glob that fails `_translate_glob_to_regex`, or a manifest
+    that parses cleanly but declares ZERO sections (empty/comment-only
+    content — finding 2, see the check below)."""
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -439,6 +455,27 @@ def _parse_boundary_manifest_bytes(raw: bytes, *, path: str, source_rev: str) ->
         compiled_globs = tuple(_translate_glob_to_regex(g) for g in globs)
         sections[section_name] = tuple(globs)
         compiled[section_name] = compiled_globs
+
+    if not sections:
+        # agent-harness#191 CR (Lane C finding 2, present-but-empty-manifest
+        # fail-open): a TOML document with zero top-level tables (an empty
+        # file, or one containing only comments) parses successfully to `{}`
+        # — the loop above never runs, so `sections`/`compiled` stay empty and
+        # this would otherwise be classified PRESENT + VALID with ZERO
+        # compiled boundary sections. `evaluate_boundary_escalation` iterates
+        # `load.manifest.compiled` and, finding nothing to match, returns
+        # `required=False` — "no boundaries" would then silently PERMIT
+        # carry-forward, contrary to the frozen disposition table (module
+        # docstring): an empty boundary set can NEVER mean "carry everything
+        # forward". Raising here routes a present-but-empty manifest through
+        # the SAME `BoundaryManifestInvalid` -> `MANIFEST_DISPOSITION_MALFORMED`
+        # path as a genuinely malformed one, so it gets the same fail-closed
+        # `escalate-EVERY-delta` disposition as MISSING/MALFORMED.
+        raise BoundaryManifestInvalid(
+            "boundary manifest is present but declares ZERO protected-surface sections "
+            "(empty file or comment-only content) — fail-closed: an empty boundary set can "
+            "never mean carry-forward-all, so this is treated as malformed (escalate every delta)"
+        )
 
     digest = hashlib.sha256(raw).hexdigest()
     return BoundaryManifest(sections=sections, compiled=compiled, digest=digest, source_rev=source_rev, path=path)
@@ -574,8 +611,14 @@ def carry_forward(
       * `suppress` is False (a boundary-escalated round is whole-patch —
         carry-forward is SUPPRESSED entirely and every clean finding is
         reopened, design §5.4);
-      * `f.path_scope` is non-empty (empty/absent `path_scope` NEVER
-        carries — fail-closed re-review, design §5.3);
+      * `f.path_scope` is non-empty AND contains NO empty/whitespace-only
+        entry (empty/absent `path_scope`, or a `path_scope` whose only
+        content is blank strings such as `("",)`/`("  ",)`, NEVER carries —
+        fail-closed re-review, design §5.3; a blank entry is checked on
+        CONTENT, not just sequence length, because `_covered_by_owned` below
+        silently skips a blank `owned` entry rather than matching it, which
+        would otherwise let such a `path_scope` look "disjoint" from
+        anything);
       * `f.path_scope` is DISJOINT from `delta_changed_paths`, decided by
         the broker's OWN `GitHubBrokerAdapter._covered_by_owned` prefix/dir
         test (credsep.py:190) — REUSED, not re-implemented (goal-id-inc2
@@ -599,7 +642,20 @@ def carry_forward(
             reopened.append(f.id)
             reasons[f.id] = CARRY_FORWARD_REASON_SUPPRESSED
             continue
-        if not f.path_scope:
+        # agent-harness#191 CR (Lane C finding 3, empty-string path_scope
+        # bypasses the empty-scope guard): the guard must fail closed on the
+        # CONTENT of `path_scope`'s entries, not just the sequence's length.
+        # `path_scope=("",)` (or `("  ",)`) is a non-empty SEQUENCE containing
+        # an empty/whitespace-only entry — it passes `Finding.__post_init__`
+        # and would pass a length-only `if not f.path_scope` check, but
+        # `GitHubBrokerAdapter._covered_by_owned` treats an empty `owned`
+        # entry (after its own `.rstrip("/")`) as falsy and SKIPS it
+        # (credsep.py:204-208: `if owned and (...)`), so it never matches any
+        # changed path — the finding would be classified DISJOINT and carried
+        # forward without ever actually scoping anything. Any blank entry
+        # therefore forces the same fail-closed re-review disposition as a
+        # wholly empty `path_scope`.
+        if not f.path_scope or any(not entry.strip() for entry in f.path_scope):
             reopened.append(f.id)
             reasons[f.id] = CARRY_FORWARD_REASON_EMPTY_SCOPE
             continue
@@ -832,16 +888,27 @@ def build_delta_round(
 
     cf = carry_forward(findings, delta_changed_paths, suppress=escalation.required)
 
-    # T4: only a RESOLVED claim requires seat corroboration here — reopened
-    # findings are, by definition, going BACK into review (there is nothing
-    # yet to corroborate); requiring their corroboration at construction time
-    # would wrongly demand seat verdicts before the reopened round has even
-    # been reviewed (see module resolved-ambiguity #3). A caller that also
-    # wants "every reopened finding got a seat verdict" enforced (design
-    # §5.3's fuller sentence) can call `require_seat_corroboration` on
-    # `cf.reopened_finding_ids` itself, separately, once that round's seats
-    # have actually run.
+    # T4/§5.3 (agent-harness#191 CR, Lane C finding 4 — "reopened findings not
+    # seat-corroborated" fail-open): design §5.3's full sentence is "the delta
+    # round's seats must return a verdict on exactly those [resolved_finding_
+    # ids] plus every re-opened finding." A RESOLVED claim always requires
+    # corroboration (unconditionally, any status). A REOPENED finding also
+    # requires corroboration, but ONLY when this round is being recorded
+    # `status=="reviewed-clean"`: module resolved-ambiguity #3 still holds for
+    # `escalated-whole-patch`/`pending`/`invalidated` rounds — those are, by
+    # definition, still going BACK into review (there is nothing yet to
+    # corroborate, and requiring it would wrongly demand seat verdicts before
+    # the reopened round has even run). But a NON-escalated delta that
+    # reopens a clean finding (its `path_scope` intersects the delta) can be
+    # recorded `status="reviewed-clean"` with ZERO delta-round seats and still
+    # pass `is_carry_forward_eligible` — the reopened finding would never
+    # actually be re-reviewed. Requiring corroboration here, at construction
+    # time, closes that: a `reviewed-clean` round with an uncorroborated
+    # reopened finding is REJECTED (`ResolvedClaimUnverified`), never silently
+    # accepted.
     require_seat_corroboration(tuple(resolved_finding_ids), delta_round_seats)
+    if status == DELTA_STATUS_REVIEWED_CLEAN:
+        require_seat_corroboration(cf.reopened_finding_ids, delta_round_seats)
 
     resulting_head_digest = patch_digest(repo, base_sha, delta_head_sha, repo_slug=repo_slug)
     enforce_review_scope_for_escalation(

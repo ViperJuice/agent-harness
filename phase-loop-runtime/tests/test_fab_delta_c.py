@@ -156,6 +156,16 @@ class GlobSemanticsTest(unittest.TestCase):
             with self.assertRaises(fd.BoundaryManifestInvalid):
                 fd._translate_glob_to_regex(bad)
 
+    def test_globstar_matches_across_embedded_newline(self):
+        """agent-harness#191 CR finding 1: git permits NEWLINE characters in
+        filenames and the `-z` + `os.fsdecode` path preserves them verbatim.
+        A boundary glob must still match a path whose only difference from a
+        covered path is an embedded `\\n` in a segment `**` needs to span —
+        otherwise a protected-surface delta escapes escalation entirely."""
+        self.assertTrue(self._match("**/auth/**", "src\n/auth/login.py"))
+        self.assertTrue(self._match("auth/**", "auth/login\n.py"))
+        self.assertTrue(self._match("**/*secret*", "a/b\nc/my\nsecret.txt"))
+
 
 # --------------------------------------------------------------------------- #
 # Boundary-manifest load — base-pinned read (T15), present/missing/malformed
@@ -199,6 +209,39 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         base = self.commit("c1 malformed glob")
         load = fd.load_boundary_manifest_at_base(self.repo, base)
         self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+
+    def test_empty_file_manifest_is_malformed_not_present(self):
+        """agent-harness#191 CR finding 2: a zero-byte
+        `.advisor-board/boundaries.toml` parses to `{}` (valid TOML, no
+        sections) and must NOT be classified PRESENT+valid — that would let
+        `evaluate_boundary_escalation` see zero compiled sections and return
+        `required=False`, silently permitting carry-forward with "no
+        boundaries" in force. It must resolve to MALFORMED (same fail-closed
+        disposition as missing/malformed) instead."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "")
+        base = self.commit("c1 empty manifest file")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+        self.assertIsNone(load.manifest)
+
+    def test_comment_only_manifest_is_malformed_not_present(self):
+        """Same as above but for a manifest containing only TOML comments —
+        also parses to `{}` with zero sections."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "# nothing to see here\n# just comments\n")
+        base = self.commit("c1 comment-only manifest")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+        self.assertIsNone(load.manifest)
+
+    def test_empty_manifest_forces_escalate_every_delta(self):
+        """End-to-end: an empty manifest must force whole-patch escalation on
+        every delta, exactly like a missing/malformed one."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "# comment-only, zero sections\n")
+        base = self.commit("c1 comment-only manifest")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        esc = fd.evaluate_boundary_escalation(load, ("totally/unrelated.py",))
+        self.assertTrue(esc.required)
+        self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
 
     def test_manifest_read_at_base_not_at_a_later_tip(self):
         """T15 core mechanism: reading at `base_sha` must NOT see a manifest
@@ -306,6 +349,36 @@ class CarryForwardTest(unittest.TestCase):
     def test_empty_path_scope_never_carries(self):
         findings = [_finding("f1", status="clean", path_scope=())]
         result = fd.carry_forward(findings, ("unrelated/other.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(result.reopened_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
+
+    def test_empty_string_path_scope_entry_never_carries(self):
+        """agent-harness#191 CR finding 3: `path_scope=("",)` is a NON-EMPTY
+        sequence containing an empty string. The old guard (`if not
+        f.path_scope`) only checked sequence length, so this passed it — and
+        the broker's `_covered_by_owned` SKIPS a blank `owned` entry
+        (credsep.py:204-208's `if owned and (...)`), so the finding was
+        classified DISJOINT and carried forward without ever actually
+        scoping anything. Must reopen with `empty_path_scope` instead."""
+        findings = [_finding("f1", status="clean", path_scope=("",))]
+        result = fd.carry_forward(findings, ("some/changed/path.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(result.reopened_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
+
+    def test_whitespace_only_path_scope_entry_never_carries(self):
+        findings = [_finding("f1", status="clean", path_scope=("  ",))]
+        result = fd.carry_forward(findings, ("some/changed/path.py",))
+        self.assertEqual(result.carried_forward_finding_ids, ())
+        self.assertEqual(result.reopened_finding_ids, ("f1",))
+        self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
+
+    def test_mixed_blank_and_real_path_scope_entry_never_carries(self):
+        """A path_scope containing ONE blank entry alongside a real one must
+        still fail closed -- the blank entry alone is disqualifying."""
+        findings = [_finding("f1", status="clean", path_scope=("pkg/a.py", ""))]
+        result = fd.carry_forward(findings, ("totally/unrelated.py",))
         self.assertEqual(result.carried_forward_finding_ids, ())
         self.assertEqual(result.reopened_finding_ids, ("f1",))
         self.assertEqual(result.reasons["f1"], fd.CARRY_FORWARD_REASON_EMPTY_SCOPE)
@@ -754,6 +827,104 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         self.assertTrue(round2.escalation.required)
         self.assertEqual(round2.escalation.trigger, "auth_security")
         self.assertNotEqual(round2.escalation.trigger, fd.ESCALATION_TRIGGER_MANIFEST_MODIFIED)
+
+
+# --------------------------------------------------------------------------- #
+# T4/§5.3 (finding 4) — a reviewed-clean delta with reopened findings must
+# have seat corroboration covering EVERY reopened finding, not just resolved
+# claims.
+# --------------------------------------------------------------------------- #
+
+
+class ReopenedFindingCorroborationTest(GitRepoTestCase):
+    def _base_and_intersecting_delta(self) -> tuple[str, str, fp.Finding]:
+        """A base with a manifest that does NOT match anything this delta
+        touches (so escalation stays False -- the counterexample must be a
+        NON-escalated delta) plus a clean finding `f1` whose `path_scope`
+        INTERSECTS the delta's changed paths, so `carry_forward` reopens it."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed content\n")
+        base = self.commit("c0 base")
+        f1 = _finding("f1", status="clean", path_scope=("pkg/a.py",))
+        self.write("pkg/a.py", "changed content, intersects f1's path_scope\n")
+        delta_head = self.commit("c1 touches pkg/a.py")
+        return base, delta_head, f1
+
+    def test_reviewed_clean_delta_with_uncorroborated_reopened_finding_rejected(self):
+        """agent-harness#191 CR finding 4: a NON-escalated delta whose
+        changed paths intersect a clean finding's `path_scope` reopens that
+        finding (`carry_forward`'s own INTERSECTS rule). Recording that round
+        `status="reviewed-clean"` with ZERO delta-round seats used to succeed
+        and `is_carry_forward_eligible` returned True -- the reopened finding
+        was never actually re-reviewed by anyone. It must now be rejected."""
+        base, delta_head, f1 = self._base_and_intersecting_delta()
+        with self.assertRaises(fd.ResolvedClaimUnverified):
+            fd.build_delta_round(
+                repo=self.repo,
+                base_sha=base,
+                repo_slug=self.REPO_SLUG,
+                parent_head_sha=base,
+                parent_patch_digest=self.digest(base, base),
+                parent_chain_digest="C0",
+                delta_head_sha=delta_head,
+                findings=(f1,),
+                resolved_finding_ids=(),
+                delta_round_seats=(),  # no seats at all
+                review_scope=_delta_review_scope(mode=fp.REVIEW_SCOPE_DELTA_ONLY, covers=None),
+                status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+            )
+
+    def test_reviewed_clean_delta_with_corroborated_reopened_finding_succeeds(self):
+        """The same shape, but the delta round's seats DID return a verdict
+        referencing the reopened finding id -- corroborated, so it succeeds
+        and the finding lands in `reopened_finding_ids`."""
+        base, delta_head, f1 = self._base_and_intersecting_delta()
+        seats = (_seat(finding_ids=("f1",), verdict="AGREE"),)
+        record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=self.digest(base, base),
+            parent_chain_digest="C0",
+            delta_head_sha=delta_head,
+            findings=(f1,),
+            resolved_finding_ids=(),
+            delta_round_seats=seats,
+            review_scope=_delta_review_scope(mode=fp.REVIEW_SCOPE_DELTA_ONLY, covers=None),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        self.assertEqual(record.reopened_finding_ids, ("f1",))
+        self.assertTrue(fd.is_carry_forward_eligible(record))
+
+    def test_escalated_whole_patch_round_does_not_require_reopened_corroboration(self):
+        """A boundary-escalated round suppresses carry-forward and reopens
+        EVERY clean finding (`suppress=True`) -- that round is, by design,
+        still going BACK into review, so it is NOT required to already carry
+        seat corroboration for those reopened findings at construction time
+        (module resolved-ambiguity #3). Only `status="reviewed-clean"` is
+        constrained by this fix."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed content\n")
+        base = self.commit("c0 base")
+        f1 = _finding("f1", status="clean", path_scope=("pkg/a.py",))
+        self.write("src/auth/login.py", "touches a protected surface\n")
+        delta_head = self.commit("c1 delta touching auth")
+        record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=self.digest(base, base),
+            parent_chain_digest="C0",
+            delta_head_sha=delta_head,
+            findings=(f1,),
+            resolved_finding_ids=(),
+            delta_round_seats=(),  # no seats -- fine, round is not reviewed-clean
+            review_scope=_delta_review_scope(mode=fp.REVIEW_SCOPE_WHOLE_PATCH, covers=self.digest(base, delta_head)),
+            status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH,
+        )
+        self.assertEqual(record.reopened_finding_ids, ("f1",))
 
 
 if __name__ == "__main__":

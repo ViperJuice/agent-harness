@@ -286,6 +286,65 @@ re-gate — those remain Lane D.
   manifest/malformed-glob dispositions, and delta-binding tamper detection
   (chain digest, parent links, changed paths, resulting digest).
 
+### FAB Lane C — cross-vendor CR fail-open fixes (Consiliency/agent-harness#191)
+
+A follow-up cross-vendor CR round on Lane C surfaced four fail-opens, every
+one attacker-reachable under the module's own stated threat model (attacker
+controls repo CONTENTS — paths, the boundary manifest, `Finding.path_scope`).
+`phase_loop_runtime.fab_delta` fixes all four; no Lane A/B module, the
+base-pinned manifest read, or the broker's `_covered_by_owned` matcher was
+touched.
+
+- **Glob translation now spans embedded newlines** (`_translate_glob_to_regex`):
+  git permits `\n` in filenames, and the `-z` + `os.fsdecode` diff path
+  preserves it. The `**`-derived `.`-based regex fragments were compiled
+  without `re.DOTALL`, so a boundary glob like `**/auth/**` failed to match a
+  path such as `src\n/auth/login.py` — a protected-surface delta with a
+  newline in the path escaped escalation entirely. Compiling with
+  `re.DOTALL` widens `**`'s span to include newlines (only ever *widening*
+  what matches, the fail-safe direction for an escalation boundary); `*`/`?`
+  were already newline-safe (`[^/]`-class negation is unaffected by DOTALL).
+- **A present-but-empty manifest now fails closed as malformed**
+  (`_parse_boundary_manifest_bytes`): an empty or comment-only
+  `.advisor-board/boundaries.toml` parses to `{}` — valid TOML, zero
+  sections — and was classified `PRESENT` with zero compiled boundary
+  sections, so `evaluate_boundary_escalation` found nothing to match and
+  returned `required=False`: "no boundaries" silently permitted
+  carry-forward, contrary to the escalate-EVERY-delta fail-closed rule. A
+  manifest with zero compiled sections now raises `BoundaryManifestInvalid`,
+  routing it through the same `MANIFEST_DISPOSITION_MALFORMED` path as a
+  genuinely malformed manifest.
+- **`carry_forward`'s empty-`path_scope` guard now checks entry content, not
+  just sequence length**: `path_scope=("",)` (or `("  ",)`) is a non-empty
+  SEQUENCE containing a blank entry — it passed the old `if not
+  f.path_scope` check, but the broker's own `_covered_by_owned`
+  (credsep.py:204-208) treats a blank `owned` entry as falsy and skips it,
+  so such a finding was classified DISJOINT and carried forward without ever
+  actually scoping anything. Any empty/whitespace-only entry now forces the
+  same fail-closed `empty_path_scope` re-review disposition as a wholly
+  empty `path_scope`.
+- **`build_delta_round` now requires seat corroboration for every reopened
+  finding on a `reviewed-clean` round, not just `resolved_finding_ids`**:
+  design §5.3's full rule is "the delta round's seats must return a verdict
+  on exactly those [resolved] plus every re-opened finding." A non-escalated
+  delta that reopens a clean finding (its `path_scope` intersects the
+  delta's changed paths) could previously be recorded `status=
+  "reviewed-clean"` with zero delta-round seats and still pass
+  `is_carry_forward_eligible` — the reopened finding was never actually
+  re-reviewed. `require_seat_corroboration` is now also called on
+  `cf.reopened_finding_ids` whenever `status == DELTA_STATUS_REVIEWED_CLEAN`
+  (raising `ResolvedClaimUnverified` on any gap); `escalated-whole-patch`/
+  `pending`/`invalidated` rounds are unaffected — those are, by definition,
+  still going back into review.
+- **Tests** (`tests/test_fab_delta_c.py`): 10 new cases — glob-newline
+  matching across `**`/trailing-globstar spans, empty-file and comment-only
+  manifest dispositions (unit + end-to-end escalate-every-delta), blank/
+  whitespace/mixed `path_scope` entries never carrying forward, and a new
+  `ReopenedFindingCorroborationTest` covering the reviewed-clean-with-
+  uncorroborated-reopened-finding rejection, the corroborated-succeeds case,
+  and confirming an escalated-whole-patch round is unaffected (56 cases
+  total in the module, up from 46).
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
