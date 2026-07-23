@@ -458,26 +458,51 @@ def _require_delta_round_seat_binding(
     delta_chain: Sequence[DeltaReviewRecord],
     durable_seat_outcomes: Sequence[SeatOutcomeRecord],
 ) -> None:
-    """agent-harness#191 CR, Lane D finding 1: for every round in
-    `delta_chain` whose `status` is resolved/pass-eligible
+    """agent-harness#191 CR, Lane D finding 1 (and the follow-up CR that
+    caught F1's authentication-without-verdict-folding gap): for every round
+    in `delta_chain` whose `status` is resolved/pass-eligible
     (`_RESOLVED_DELTA_STATUSES` — `reviewed-clean` OR `escalated-whole-patch`),
     require that round's OWN `delta_round_seats` (a) be non-empty, (b)
     authenticate against the durable `SeatOutcomeRecord` ledger (§6.3, reusing
     `cross_check_seat_authenticity` — the EXACT same cross-check the
-    artifact-wide seat list already gets), and (c) corroborate that round's
-    OWN `resolved_finding_ids` (always) and `reopened_finding_ids` (only when
-    `status == reviewed-clean` — mirrors `fab_delta.build_delta_round`'s own
-    asymmetric rule: an `escalated-whole-patch` round is, by definition, still
-    going BACK into whole-patch review, so its reopened ids have nothing yet
-    to corroborate). A round that is `pending`/`invalidated` is skipped here —
+    artifact-wide seat list already gets), (c) include AT LEAST ONE `required`
+    seat (mirrors `compose_gate_status`'s artifact-level `no_required_seats`
+    rule — design ambiguity #3, "no vacuous pass on an empty [required] seat
+    set" — applied per round, not just once for the whole artifact: a round
+    "blessed" only by optional seats corroborates nothing), (d) have EVERY
+    `required` delta-round seat carry a non-DISAGREE verdict (reuses
+    `_unresolved_required_seats` — the EXACT artifact-level "every required
+    seat has a non-DISAGREE verdict" rule, design §8, folded into THIS round's
+    own seats — closes the original follow-up bug: authenticating a round's
+    seats never used to mean their VERDICT was checked, so a reviewed-clean
+    round whose own required reviewer DISAGREED, or never verdicted at all,
+    could still reach PASS on the strength of the artifact-wide seats
+    agreeing), and (e) corroborate that round's OWN `resolved_finding_ids`
+    (always) and `reopened_finding_ids` (only when `status == reviewed-clean`
+    — mirrors `fab_delta.build_delta_round`'s own asymmetric rule: an
+    `escalated-whole-patch` round is, by definition, still going BACK into
+    whole-patch review, so its reopened ids have nothing yet to corroborate).
+    A round that is `pending`/`invalidated` is skipped here —
     `resolve_chain_resolution` already fails the WHOLE gate closed on that
     (finding 2), so this function only needs to guard resolved-looking rounds
-    from being trusted on an uncorroborated or fabricated seat claim.
+    from being trusted on an uncorroborated, unverdicted, or fabricated seat
+    claim.
+
+    Note (d) is DELIBERATELY separate from `require_seat_corroboration`
+    (reused unmodified in (e)): that function's contract is "was this finding
+    id reviewed by SOME seat at all" (design resolved-ambiguity #3 — it is not
+    full-board consensus, and accepting a DISAGREE verdict as "this id was
+    looked at" is correct for ITS narrower question); it is also vacuous when
+    a round resolves/reopens nothing (`finding_ids == ()`), which is fine for
+    that same narrower question but is NOT a safe stand-in for "did this
+    round's own required reviewer actually agree" — hence (d) is a SEPARATE,
+    unconditional (not gated on any finding id) required-seat-verdict check
+    that fires even when the round resolves/reopens zero findings.
 
     Raises `DeltaRoundSeatBindingInvalid` (fail-closed) on the FIRST round
-    that fails any of the three checks — a `reviewed-clean` delta with
-    `delta_round_seats=()` (the exact unsafe outcome this closes) can never
-    reach a PASS."""
+    that fails any of the five checks — a `reviewed-clean` delta with
+    `delta_round_seats=()`, or one whose only required seat DISAGREES (or
+    never verdicted), can never reach a PASS."""
     for index, record in enumerate(delta_chain):
         if record.status not in _RESOLVED_DELTA_STATUSES:
             continue
@@ -494,6 +519,21 @@ def _require_delta_round_seat_binding(
                 f"delta_chain[{index}] delta_round_seats failed the §6.3 durable authenticity "
                 f"cross-check (fail-closed): {exc}"
             ) from exc
+        if not any(seat.required for seat in record.delta_round_seats):
+            raise DeltaRoundSeatBindingInvalid(
+                f"delta_chain[{index}] (status={record.status!r}) has delta_round_seats but NONE are "
+                "required (fail-closed: mirrors the artifact-level no-vacuous-pass-on-an-empty-"
+                "required-seat-set rule — a round blessed only by optional seats is never affirmatively "
+                "reviewed)"
+            )
+        unresolved_round_seats = _unresolved_required_seats(record.delta_round_seats)
+        if unresolved_round_seats:
+            raise DeltaRoundSeatBindingInvalid(
+                f"delta_chain[{index}] (status={record.status!r}) has required delta_round_seats with "
+                f"no AGREE/PARTIALLY AGREE verdict (fail-closed): {unresolved_round_seats!r} — a "
+                "required seat's DISAGREE (or missing) verdict on ITS OWN round is never overridden by "
+                "the artifact-wide seats agreeing"
+            )
         try:
             require_seat_corroboration(record.resolved_finding_ids, record.delta_round_seats)
             if record.status == DELTA_STATUS_REVIEWED_CLEAN:
@@ -758,13 +798,17 @@ def compose_gate_status(
     chain resolves to a governing binding whose live-recomputed equivalence
     is `EQUIVALENT`; EVERY provenance seat is authenticated against its
     durable `SeatOutcomeRecord` (§6.3); EVERY resolved-status delta round's
-    OWN `delta_round_seats` are ALSO authenticated and corroborate that
-    round's `resolved_finding_ids`/`reopened_finding_ids` (F1 —
-    `_require_delta_round_seat_binding`; the artifact-wide seat list is not a
-    substitute for a round's own reviewers); every round's material
+    OWN `delta_round_seats` are ALSO authenticated, include at least one
+    `required` seat, have EVERY required seat carry a non-DISAGREE verdict,
+    and corroborate that round's `resolved_finding_ids`/`reopened_finding_ids`
+    (F1 + the follow-up CR's verdict-folding fix — `_require_delta_round_seat_
+    binding`; the artifact-wide seat list is not a substitute for a round's
+    own reviewers, and authenticating a round's seats is not a substitute for
+    checking what they actually VERDICTED); every round's material
     re-verifies against its claimed `reviewed_material_digest` (§6.4); at
-    least one seat is `required` (design ambiguity #3 — no vacuous pass on an
-    empty seat set); every required seat has a non-DISAGREE verdict; and no
+    least one artifact-level seat is `required` (design ambiguity #3 — no
+    vacuous pass on an empty seat set); every required artifact-level seat has
+    a non-DISAGREE verdict; and no
     `block`-severity finding remains unresolved ACROSS THE WHOLE CHAIN (F2 —
     `_unresolved_block_findings` folds every round's audit trail, not just
     the final one). Otherwise `GATE_STATUS_BLOCK`, surfaced with

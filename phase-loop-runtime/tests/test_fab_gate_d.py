@@ -406,6 +406,151 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
 
+    # ----------------------------------------------------------------------- #
+    # Follow-up CR (agent-harness#191, codex-reproduced): `_require_delta_
+    # round_seat_binding` authenticated a round's OWN `delta_round_seats`
+    # (non-empty, §6.3 durable cross-check, finding-id corroboration) but
+    # NEVER folded their VERDICT into the pass decision — so a reviewed-clean
+    # delta whose required own seat DISAGREES (or never verdicted at all)
+    # could still reach GATE_STATUS_PASS on the strength of the OLDER
+    # artifact-wide `seats` agreeing. These tests pin the fix.
+    # ----------------------------------------------------------------------- #
+
+    def test_reviewed_clean_delta_with_disagree_required_seat_blocks(self):
+        """The exact bug: an authenticated, corroborated (nothing to
+        corroborate — zero findings resolved/reopened) `reviewed-clean` delta
+        round whose sole required `delta_round_seat` verdicts DISAGREE, while
+        the OLDER artifact-wide `candidate_seats` all AGREE, must BLOCK — the
+        artifact-wide seats agreeing can never override this round's own
+        required reviewer disagreeing."""
+        base, candidate, candidate_seats, findings, c0 = self._base_and_candidate()
+        self.write("pkg/c.py", "small disjoint delta\n")
+        delta_head = self.commit("c2 small disjoint delta, required seat disagrees")
+        disagree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="DISAGREE", finding_ids=())
+        delta_record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            findings=findings,
+            resolved_finding_ids=(),
+            delta_round_seats=(disagree_seat,),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
+        )
+        self.persist("run-disagree-seat", artifact, candidate_seats + (disagree_seat,))
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-disagree-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("no AGREE/PARTIALLY AGREE verdict", gate.equivalence_verified.reason)
+
+    def test_reviewed_clean_delta_with_unverdicted_required_seat_blocks(self):
+        """A required `delta_round_seat` that authenticates fine but never
+        received a verdict at all (`verdict=None`) — vacuous corroboration,
+        not a real blessing — must also BLOCK."""
+        base, candidate, candidate_seats, findings, c0 = self._base_and_candidate()
+        self.write("pkg/c.py", "small disjoint delta\n")
+        delta_head = self.commit("c2 small disjoint delta, required seat never verdicted")
+        unverdicted_seat = _seat("codex:x:high", epoch=2, required=True, verdict=None, finding_ids=())
+        delta_record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            findings=findings,
+            resolved_finding_ids=(),
+            delta_round_seats=(unverdicted_seat,),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
+        )
+        self.persist("run-unverdicted-seat", artifact, candidate_seats + (unverdicted_seat,))
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-unverdicted-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("no AGREE/PARTIALLY AGREE verdict", gate.equivalence_verified.reason)
+
+    def test_reviewed_clean_delta_with_only_optional_seats_blocks(self):
+        """A round whose `delta_round_seats` are all non-required (even if
+        they AGREE) is never affirmatively blessed — mirrors the
+        artifact-level `no_required_seats` rule (design ambiguity #3), applied
+        per delta round."""
+        base, candidate, candidate_seats, findings, c0 = self._base_and_candidate()
+        self.write("pkg/c.py", "small disjoint delta\n")
+        delta_head = self.commit("c2 small disjoint delta, only optional seats")
+        optional_seat = _seat("codex:x:high", epoch=2, required=False, verdict="AGREE", finding_ids=())
+        delta_record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            findings=findings,
+            resolved_finding_ids=(),
+            delta_round_seats=(optional_seat,),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
+        )
+        self.persist("run-optional-only", artifact, candidate_seats + (optional_seat,))
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-optional-only", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("NONE are", gate.equivalence_verified.reason)
+
+    def test_reviewed_clean_delta_with_agreeing_required_seat_passes(self):
+        """The legitimate case (kept green): a `reviewed-clean` delta whose
+        required `delta_round_seats` AGREE, are authenticated, and corroborate
+        the round's (empty) findings — reaches GATE_STATUS_PASS."""
+        base, candidate, candidate_seats, findings, c0 = self._base_and_candidate()
+        self.write("pkg/c.py", "small disjoint delta\n")
+        delta_head = self.commit("c2 small disjoint delta, required seat agrees")
+        agree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="AGREE", finding_ids=())
+        delta_record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            findings=findings,
+            resolved_finding_ids=(),
+            delta_round_seats=(agree_seat,),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
+        )
+        self.persist("run-agree-seat", artifact, candidate_seats + (agree_seat,))
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-agree-seat", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS)
+
 
 # --------------------------------------------------------------------------- #
 # Acceptance criterion 3 — rebase/conflict invalidates at gate; the §4.4

@@ -823,6 +823,40 @@ wiring) is part of this fix — FAB remains dormant today, traced.
   and each of F3's three branches (no-run_id inert, missing-inputs block,
   no-provenance-for-a-claimed-run_id block).
 
+### FAB Lane D — fold delta-round seat VERDICTS into the pass gate (Consiliency/agent-harness#191, codex-reproduced)
+
+The F1 fix above authenticated a resolved delta round's OWN `delta_round_seats`
+(non-empty, §6.3 durable cross-check, finding-id corroboration) but never
+checked what those seats actually VERDICTED — so a `reviewed-clean` delta
+round whose required own seat returned `DISAGREE` (or no verdict at all)
+could still reach `GATE_STATUS_PASS` on the strength of the OLDER,
+artifact-wide `seats` agreeing. codex reproduced the gap at HEAD `47e6493`.
+
+- **`_require_delta_round_seat_binding` now folds each round's required-seat
+  verdicts into the same non-DISAGREE rule `compose_gate_status` already
+  applies at the artifact level** (design §8): for every resolved-status round,
+  it now additionally requires (a) at least one `delta_round_seats` entry be
+  `required` (mirrors the artifact-level `no_required_seats` rule — design
+  ambiguity #3 — applied per round, not just once for the whole artifact) and
+  (b) every `required` delta-round seat carry an `AGREE`/`PARTIALLY AGREE`
+  verdict, reusing `_unresolved_required_seats` (the exact artifact-level
+  check) against `record.delta_round_seats`. A `DISAGREE`, or unverdicted,
+  required delta-round seat now raises `DeltaRoundSeatBindingInvalid`
+  (fail-closed) regardless of what the artifact-wide seats say.
+- **`fab_delta.require_seat_corroboration` is deliberately left unchanged**:
+  its contract ("was this finding id reviewed by some seat at all", accepting
+  any non-null verdict including `DISAGREE`) is correct for its own narrower
+  question and is reused as-is for finding-id corroboration. The new
+  required-seat-verdict check above is a separate, unconditional check (it
+  fires even when a round resolves/reopens zero findings, closing the
+  "vacuous when nothing is resolved" gap) — it does not change
+  `require_seat_corroboration`'s existing semantics or callers.
+- **Tests** (`tests/test_fab_gate_d.py`, 35 cases total): new cases pin a
+  `reviewed-clean` delta with a required, authenticated `DISAGREE` delta-round
+  seat BLOCKing (the exact bug); a required seat with `verdict=None` BLOCKing;
+  an all-optional-seats round BLOCKing; and the legitimate AGREE case staying
+  green. All Lane A/B/C/D tests remain green.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
