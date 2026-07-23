@@ -15,7 +15,6 @@ import fcntl
 import logging
 import mimetypes
 import os
-import pty
 import re
 import select
 import shutil
@@ -1554,6 +1553,10 @@ def _run_claude_tui_session(
         return rc, text, log, tail
 
     try:
+        # pty is Unix-only (it imports termios); import lazily so the
+        # module — and the whole phase-loop CLI — stays importable on
+        # native Windows, where only this PTY-based leg is unavailable.
+        import pty
         master_fd, slave_fd = pty.openpty()
         # ah#196/#223 R1: pin a wide window so a long scratch-cwd path renders
         # un-wrapped (default ~80 cols would split the path token across lines).
