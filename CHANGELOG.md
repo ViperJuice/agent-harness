@@ -353,6 +353,29 @@ touched.
   reviewed-clean-with-uncorroborated-reopened-finding rejection, the
   corroborated-succeeds case, and confirming an escalated-whole-patch round
   is unaffected (58 cases total in the module, up from 46).
+- **Round-2 CR (gemini): declared-section-with-empty-globs finding does NOT
+  reproduce — regression coverage added, no production change.** A round-2
+  cross-vendor CR pass hypothesized a residual fail-open in the finding-2
+  fix above: a manifest declaring a section with an empty `globs` list
+  (`[auth]\n globs = []`) would parse to a non-empty `sections={"auth": ()}`,
+  so the `if not sections:` zero-sections check would never fire, and
+  `evaluate_boundary_escalation` would then iterate zero compiled patterns
+  and silently permit carry-forward with a declared-but-neutered protected
+  surface. Reproduction against this exact shape shows the finding does not
+  hold: `_parse_boundary_manifest_bytes`'s per-section shape check
+  (`not isinstance(globs, list) or not globs or not all(isinstance(g, str)
+  for g in globs)`) already rejects an empty `globs` list, on every section,
+  unconditionally — and has done so since the module's original commit,
+  predating both the finding-2 fix and this round-2 finding. `sections`/
+  `compiled` are never populated for such a manifest; it resolves to
+  `MANIFEST_DISPOSITION_MALFORMED` (same as missing/genuinely-malformed) and
+  forces escalate-every-delta, confirmed end-to-end. No source change was
+  made — five new regression tests pin the existing behavior (single empty
+  section, all-sections-empty, one downgraded section among otherwise-real
+  ones, the end-to-end escalate-all assertion, and a no-regression check
+  that a fully well-formed manifest is unaffected) so the `not globs` clause
+  cannot be silently loosened later (63 cases total in the module, up from
+  58).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 

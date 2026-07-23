@@ -210,6 +210,88 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         load = fd.load_boundary_manifest_at_base(self.repo, base)
         self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
 
+    def test_declared_section_with_empty_globs_is_malformed_not_present(self):
+        """Round-2 CR (gemini) hypothesized a residual fail-open: a manifest
+        declaring a section with an EMPTY `globs` list (`[auth]\\nglobs =
+        []`) parses to a NON-empty `sections={"auth": ()}`, so the finding-2
+        `if not sections:` zero-sections check (see
+        `test_comment_only_manifest_is_malformed_not_present` above) would
+        never fire, and `evaluate_boundary_escalation` would iterate zero
+        compiled patterns and return `required=False` — silently permitting
+        carry-forward with a declared-but-neutered protected surface.
+
+        THIS DOES NOT REPRODUCE: `_parse_boundary_manifest_bytes`'s
+        per-section shape check (`not isinstance(globs, list) or not globs or
+        not all(isinstance(g, str) for g in globs)`) already rejects an empty
+        `globs` list at parse time, on EVERY section, unconditionally — and
+        has done so since the Lane C module's original commit (`2280a01`),
+        which predates both the finding-2 fix and this round-2 finding. The
+        loop over `data.items()` raises `BoundaryManifestInvalid` the moment
+        it reaches the empty-globs section, so `sections`/`compiled` are
+        never populated and the manifest never reaches PRESENT disposition.
+        This test pins that existing fail-closed behavior as a regression
+        guard so nobody accidentally loosens the `not globs` clause later."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "[auth]\nglobs = []\n")
+        base = self.commit("c1 declared section, empty globs")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+        self.assertIsNone(load.manifest)
+
+    def test_all_sections_with_empty_globs_is_malformed_not_present(self):
+        """Same non-reproduction as above, but with multiple declared
+        sections that are ALL neutered to empty globs lists — still caught
+        by the same per-section check on whichever section the (insertion-
+        ordered) loop reaches first."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "[auth]\nglobs = []\n\n[deployment]\nglobs = []\n")
+        base = self.commit("c1 all sections empty globs")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+        self.assertIsNone(load.manifest)
+
+    def test_one_downgraded_section_among_real_ones_is_malformed_not_present(self):
+        """Partial-downgrade variant: most sections are genuinely populated,
+        but one (`auth`) has been emptied to `globs = []` to neutralize just
+        that protected surface while leaving the manifest otherwise
+        well-formed. The per-section check rejects the WHOLE manifest
+        (fail-closed at the manifest granularity — there is no partial-valid
+        manifest), so this downgrade is closed the same way as the
+        all-empty case, not silently accepted for the populated sections."""
+        self.write(
+            fd.BOUNDARY_MANIFEST_PATH,
+            '[deployment]\nglobs = ["**/deploy/**"]\n\n[auth]\nglobs = []\n',
+        )
+        base = self.commit("c1 one downgraded section among real ones")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+        self.assertIsNone(load.manifest)
+
+    def test_empty_globs_section_forces_escalate_every_delta(self):
+        """End-to-end companion to the three tests above: gemini's exact
+        example (`[auth]\\nglobs = []` as the manifest's only section) must
+        force whole-patch escalation on an otherwise-unrelated delta, exactly
+        like a missing/genuinely-malformed manifest — never
+        `required=False`."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, "[auth]\nglobs = []\n")
+        base = self.commit("c1 declared section, empty globs")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        esc = fd.evaluate_boundary_escalation(load, ("totally/unrelated.py",))
+        self.assertTrue(esc.required)
+        self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
+
+    def test_legitimate_manifest_with_real_globs_everywhere_still_works(self):
+        """No-regression check: a well-formed manifest where every declared
+        section has real, non-empty globs is unaffected by the above —
+        PRESENT disposition, and a disjoint (non-boundary) delta still does
+        NOT force escalation."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        base = self.commit("c1 legitimate manifest")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+        self.assertIsNotNone(load.manifest)
+        esc = fd.evaluate_boundary_escalation(load, ("src/unrelated/thing.py",))
+        self.assertFalse(esc.required)
+        self.assertIsNone(esc.trigger)
+
     def test_empty_file_manifest_is_malformed_not_present(self):
         """agent-harness#191 CR finding 2: a zero-byte
         `.advisor-board/boundaries.toml` parses to `{}` (valid TOML, no
