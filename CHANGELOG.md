@@ -111,6 +111,66 @@ new shapes, not the pre-CR ones:
   other rc0 output fails CLOSED (`True` = tracked/unsafe). Trust-root fail-closed completeness — no
   rc0 output branch can smuggle a client-supplied provenance blob past the guard.
 
+### FAB Lane B — canonical-bytes patch digest + equivalence + hostile-git hardening (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_canonical` module: Lane B of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md` §3/§4), built on
+Lane A's frozen `fab_provenance` schemas/exceptions/`EquivalenceResult`. Freezes
+the equivalence primitive (IF-0-FAB-B-1); does not build the delta-chain/carry-
+forward/escalation logic (§5 — Lane C) or gate wiring/merge-time promotion
+re-assertion (§8/§4.4 — Lane D).
+
+- **`patch_digest(repo, base_sha, head_sha, *, repo_slug=None, allow_gitlinks=False)`**
+  — the ONE binary canonical encoding (design §3.2-§3.5): SHA-256 over a header
+  (`b"fab.canonical-bytes.v2\0" + repo_slug + b"\0" + base_sha + b"\0"`) followed
+  by, for every changed path in RAW-PATH-BYTE sort order, a NUL-delimited record
+  `<status> \0 <new_mode> \0 <content_sha256> \0 <raw path bytes> \0`.
+  `content_sha256` is OUR OWN `hashlib.sha256` of the actual blob bytes fetched
+  via `git cat-file --batch` (streamed, 1 MiB chunks) — git's reported sha1
+  `<new_oid>` is used only as the object address, never as content identity
+  (T3). A DELETE forces `new_mode="000000"`, `content_sha256="-"` (a sentinel
+  that can never collide with a real 64-hex digest). Enumerates changed paths
+  via `--raw` extended from the #250 `--name-only` bytes/`os.fsdecode` policy
+  (`train_runner._prebuilt_owned_paths`, `credsep.GitHubBrokerAdapter.
+  _branch_diff_paths`) — same bytes-capture/no-`text=True`/NUL-split discipline,
+  reused not reimplemented.
+- **rc!=0 is ALWAYS invalid** (design §3.2 finding 6, corrects v1's `{0,1}`
+  fail-open): every git call in this module accepts ONLY `returncode == 0`;
+  any nonzero code raises `PatchDigestInvalid`, never treated as "no changes".
+  Every git invocation carries `--no-replace-objects` AND
+  `GIT_NO_REPLACE_OBJECTS=1` (hostile-git hardening, T17).
+- **Gitlinks (`160000`) default REJECT**: a changed path whose new mode is
+  `160000` raises `GitlinkRejected` (a `PatchDigestInvalid` subclass) — a
+  submodule commit OID rests on git's own sha1 and is never accepted as
+  content identity; `allow_gitlinks=True` is a documented stub that raises
+  rather than silently relaxing the policy.
+- **`equivalent(binding, repo, *, live_base_ref_name, live_head_sha, origin="origin")`**
+  (design §4): checks, in order, each fail-closed — (1) repo identity (reuses
+  `credsep.resolve_broker_repo_identity`, the #250 host-qualified slug
+  resolver); (2) base-ref identity + a FRESH `git fetch` + recomputed
+  `merge-base(FETCH_HEAD, live_head) == base_sha` (§4.3 — catches rebase/
+  retarget/conflict-resolution-committed-on-head/force-rewrite, I1/I2/I4);
+  (3) `patch_digest` recomputed live == the bound `expected_head_digest` (T12
+  — never reads a client-supplied digest). Returns Lane A's `EquivalenceResult`
+  with a stable-prefixed `reason` (`repo_mismatch`, `base_ref_retargeted`,
+  `git_error`, `gitlink_rejected`, `base_sha_mismatch`, `content_drift`).
+  I10 (topology churn, identical net content) and I11 (base-tip advance
+  `B -> B'`, PR unchanged) fall out of the same three checks with no special-
+  casing and correctly PASS (design §4.2/§4.5 — not fail-opens under delta
+  identity).
+- **`EquivalenceBinding`**: the narrow, already-resolved input `equivalent()`
+  needs (repo slug, base ref name, base sha, expected head digest) —
+  deliberately decoupled from the full Lane A artifact's delta-chain
+  resolution (Lane C's job). `EquivalenceBinding.from_provenance_artifact()`
+  is a degenerate-case convenience for an artifact with an empty
+  `delta_chain` (design §6.5's supported exact-head case); it fails closed
+  (raises) rather than guessing when a delta chain is present.
+- **Tests** (`tests/test_fab_canonical_b.py`, unmarked — runs under CI's
+  `-m "not dotfiles_integration"`): 38 cases against REAL temporary git repos
+  (no mocked git for the core digest/equivalence paths) covering acceptance
+  criteria 2/3, T3/T8/T11/T17, non-ASCII/CR path round-tripping, and I10/I11
+  pass-through.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
