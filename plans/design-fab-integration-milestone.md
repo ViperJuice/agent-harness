@@ -62,3 +62,36 @@ governed-review default. Consequences for piece 3 (consumer):
 - The consumer (piece 3) must prove: a clean small delta carries forward WITHOUT whole-patch re-review
   (acceptance crit 1) AND a contract-surface / non-equivalent / unauthenticated delta does NOT.
 - Operator approval of this plan precedes any merge; the dormant gate module (Lane D) merges first.
+
+## Producer implementation findings (from grounding — for clean execution)
+
+**Operator decision: reviewed unit = the PHASE-CLOSEOUT DIFF.** Hook `runner._governed_premerge_review`
+(runs inside `_perform_phase_closeout_impl`, AFTER `git add`, BEFORE the commit; reviews
+`staged_index_diff(repo, closeout_dirty_paths)` = exactly what gets committed).
+
+**Key intricacies (why this is commit-path surgery, not simple wiring):**
+1. **Timing — provenance is written POST-commit.** The review is pre-commit, so `candidate.head_sha` (the
+   committed sha) does not exist at review time. Write the `ReviewProvenanceArtifact` AFTER the closeout
+   commit is created (the code already reads `rev-parse HEAD` as `closeout_commit` around runner.py:8913).
+   `covers_patch_digest = candidate.patch_digest = fab_canonical.patch_digest(repo, base_sha,
+   committed_head)` — this equals the reviewed staged diff BY CONSTRUCTION (the commit == the staged
+   content), which is the honesty invariant the reviewed-unit choice buys.
+2. **Panel propagation.** `_governed_premerge_review` returns `None` on PASS (discarding `result.panel` /
+   `result.findings`). The producer needs the PASSING review's PanelResult (seats/verdicts/findings). So
+   `_governed_premerge_review` (or `_perform_phase_closeout_impl`) must be modified to CAPTURE + propagate
+   the pass-time panel to the post-commit producer.
+3. **Seat field-parity.** Build `ProvenanceSeat`s that field-for-field match the `SeatOutcomeRecord`s
+   persisted via `fab_gate.append_seat_outcome` / `seat_outcomes_path_for_run` (§6.3 cross-check joins on
+   seat_key/vendor_leg/epoch + required/status/artifact_digest/evidence_digest). Findings → `Finding` with
+   `body_ref` content-digest (never inline text). `delta_chain=()`, `chain_digest=compute_c0()`.
+4. **Closeout-gate activation.** Thread `run_id` + `repo_root` into `build_phase_loop_closeout(fab_gate_inputs
+   =...)` (runner.py:7361) so the Lane D closeout gate fires (clean full review → exact-head PASS).
+5. **run_id bridge to the train merge.** Persist a head_sha→run_id index (or make provenance findable by
+   `candidate.head_sha`) so the train P4 loop sets `completed_nodes[nid]["fab_run_id"]` for the node whose PR
+   head matches → piece-1's `_live_merge_pr` re-assertion engages.
+6. **Fail-closed + byte-neutral default** (`fab_promotion_enabled()` gate; stash-proof off-path test).
+
+**Execution note:** this is core commit-path surgery. Recommend a fresh context (or a fresh subagent handed
+THIS section) — the pre-commit→post-commit propagation is the crux; get it wrong and either provenance
+misrepresents what was reviewed (honesty bug) or the closeout commit path regresses. Piece 1 (safety net) is
+already merged, so the pipeline is safe with FAB off regardless.
