@@ -616,6 +616,65 @@ touched.
   (`BoundaryGlobEvasionRegressionTest.test_mangled_glob_side_mirrors_mangled_path_side_symmetry`).
   All round-6 path-evasion, crafted-tree, and `.git`-component coverage
   stays green unchanged.
+- **Round-8 (CONFIRMED, empirically reproduced): round-7's glob-side `..`
+  RESOLUTION was itself unsound against a variable-length `**`, producing a
+  silent UNDER-match/fail-open.** Round-7 made `_translate_glob_to_regex`
+  reuse `_normalize_path_for_matching` verbatim on the glob string,
+  resolving a glob's `..` component by popping the previous kept segment —
+  exactly as it does for a changed path. But a glob's previous segment can
+  be `**`, representing ZERO OR MORE path segments, a variable-length unit
+  with no fixed segment to pop; popping it anyway is unsound. Verified:
+  `_translate_glob_to_regex("**/../auth/**")` (round-7) normalized to
+  `auth/**` (popping the `**`), compiling to the ANCHORED
+  `^auth(?:/.*)?$`. The mangled changed path `x/y/../auth/login.py`
+  normalizes (path-side, unaffected) to `x/auth/login.py`, which that
+  anchored pattern does NOT match — `required` was `False` for a delta that
+  should have forced whole-patch escalation, silently under-protecting an
+  `[auth] globs = ["**/../auth/**"]` surface. Fix: `_translate_glob_to_regex`
+  now normalizes globs through a NEW, dedicated helper,
+  `_normalize_glob_components` — distinct from `_normalize_path_for_
+  matching` — which still drops `.`/empty components (unaffected by the
+  `**`-length ambiguity; `./**` -> `**`, `a//b` -> `a/b` unchanged from
+  round-7) but REJECTS (never resolves) any `..` component outright: a
+  boundary glob has no legitimate reason to contain "up a directory" at
+  all, so `..` in a glob is now a fail-closed CONFIGURATION ERROR
+  (`BoundaryManifestInvalid` -> `MANIFEST_DISPOSITION_MALFORMED`,
+  escalates every delta) rather than an attempted-but-unsound resolution.
+  This is a DELIBERATE ASYMMETRY between the two sides of a match, not a
+  rollback of round-7's intent: a changed PATH always resolves to one
+  concrete, fixed-length repo location (git's own real on-disk `..`-
+  collapse, unambiguous), so `_normalize_path_for_matching` still RESOLVES
+  `..` for paths, completely unchanged; a GLOB can contain a
+  variable-length `**`, so its `..` is REJECTED instead of resolved. Lane B
+  (`patch_digest`, `enumerate_changed_paths`), the carry-forward path-side
+  normalization, and Lane D are untouched — only the glob-translation
+  layer's `..` policy changed, from resolve to reject.
+  **Tests** (`tests/test_fab_delta_c.py`): the confirmed under-match is
+  reproduced directly at the matching layer
+  (`BoundaryGlobEvasionRegressionTest.
+  test_glob_dotdot_after_globstar_is_rejected_not_under_matched`) and
+  end-to-end at the manifest layer, confirming malformed disposition now
+  escalates the exact bug path plus an unrelated path unconditionally
+  (`BoundaryManifestLoadTest.
+  test_glob_dotdot_after_globstar_manifest_is_malformed_escalates_every_delta`);
+  a widened always-malformed set now covers `a/../b`, `x/../y`,
+  `**/../x`, `x/../**`, `../auth/**`, and `**/../auth/**` alongside the
+  pre-existing bare-`..`/repo-escaping cases
+  (`GlobSemanticsTest.test_any_dotdot_component_glob_is_always_malformed`,
+  `BoundaryManifestLoadTest.test_normalizes_to_empty_glob_manifest_now_malformed`);
+  the round-7 tests asserting `a/../b` NORMALIZES are corrected to assert it
+  is now REJECTED, while the still-valid leading-`/`-drops-empty-segment
+  coverage is kept
+  (`GlobSemanticsTest.test_leading_slash_globs_still_normalize_dotdot_globs_do_not`,
+  `BoundaryManifestLoadTest.test_leading_slash_glob_manifest_still_normalizes`);
+  a new symmetry test confirms the LEGIT case stays green — a mangled PATH
+  (`x/../auth/login.py`) still resolves `..` and escalates against a
+  perfectly normal, unmangled glob (`**/auth/**`)
+  (`BoundaryGlobEvasionRegressionTest.
+  test_mangled_path_dotdot_still_resolves_against_normal_glob_symmetry_preserved`).
+  All round-1/2/6/7 path-evasion, crafted-tree, `.git`-component, §5.4
+  default-glob-set, and non-`..` round-7 dot/empty-component coverage stays
+  green unchanged (102 tests, 80 subtests, all passing).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 

@@ -80,14 +80,13 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     §5.4's own example) matches only a repo-ROOT `Dockerfile*`, not
     `sub/Dockerfile`. A glob string that is empty, non-string, contains any
     character outside the safe set `[A-Za-z0-9_./*?-]`, or — after being
-    component-normalized the SAME way a changed path is (below) — resolves to
-    NO components at all, is MALFORMED and INVALIDATES the whole manifest
-    (fail-closed). A leading `/` or an interior `..` component is therefore
-    NOT automatically malformed by itself (round-7 correction, below): it is
-    normalized exactly like a changed path (`/abs/path` -> `abs/path`;
-    `a/../b` -> `b`) and only rejected if that normalization yields nothing
-    to protect (`.`, `./`, `//`, a bare `..`, or a `..`-only/repo-escaping
-    glob such as `x/../../y`).
+    component-normalized the glob-specific way (below; NOT the same way a
+    changed path is — see round-8) — resolves to NO components at all, is
+    MALFORMED and INVALIDATES the whole manifest (fail-closed). A leading
+    `/` component is dropped like any other empty component (round-7,
+    below), but an interior (or leading/trailing) `..` component is ALWAYS
+    malformed for a glob (round-8 correction, below) — unlike a changed
+    path's `..`, which resolves.
 
     **Round-6 (Consiliency/agent-harness#191) — MATCHING-layer path fix.**
     `git mktree`/`git commit-tree` accept `.`, `..`, and empty tree-entry
@@ -117,22 +116,45 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     TOTAL fail-open, because the normalized path side and the un-normalized
     glob side can never agree on what "the same location" means. A surface
     declared with only such a glob (`[auth] globs = ["./**"]`) escalated
-    NOTHING for any changed path. The fix is SYMMETRIC: `_translate_glob_to_
-    regex` now applies the exact same component-normalization
-    `_normalize_path_for_matching` applies to changed paths — to the glob's
-    own literal components — before compiling, so `./**` normalizes to `**`
-    (matches everything: broad, but fail-SAFE — the fail-safe direction for
-    an escalation boundary, same bias `_translate_glob_to_regex`'s globstar
-    handling already applies) rather than compiling to an inert
-    `^\.(?:/.*)?$`. A wildcard segment (`*`, `**`, `?`, or a mixed segment
-    like `*.proto`) and a literal `.git` component are NEVER dropped or
-    altered by this normalization — only an EXACT `.`/empty component is
-    dropped, and `..` pops the previous kept component. A glob that
-    normalizes to NOTHING declares a surface with NO effective boundary at
-    all and is now MALFORMED (fail-closed, escalates every delta) rather
-    than silently accepted as an always-inert no-op. Matching is now
-    symmetric on both sides — no inert-glob (glob-side) or mangled-path
-    (path-side) gap remains.
+    NOTHING for any changed path. Round-7's fix normalized the glob's own
+    literal components — drop `.`/empty, and (as first written) resolve
+    `..` by popping the previous kept component, so `./**` normalizes to
+    `**` (matches everything: broad, but fail-SAFE — the fail-safe direction
+    for an escalation boundary, same bias `_translate_glob_to_regex`'s
+    globstar handling already applies) rather than compiling to an inert
+    `^\.(?:/.*)?$`.
+
+    **Round-8 (Consiliency/agent-harness#191, codex round-8 CR) — the
+    glob-side `..` policy was ITSELF unsound, corrected.** Round-7 resolved
+    a glob's `..` component the SAME way it resolved a path's `..`
+    (popping the previous kept component) — but a glob's previous component
+    can be `**`, a VARIABLE-LENGTH unit (zero or more segments), and there
+    is no fixed segment there to pop: `**/../auth/**` round-7-normalized to
+    `auth/**`, compiling to the anchored `^auth(?:/.*)?$`, which does NOT
+    match `x/auth/login.py` (the normalized form of the mangled changed path
+    `x/y/../auth/login.py`) — an empirically confirmed UNDER-match, i.e. a
+    silent fail-open in the escalation gate: a delta that should have
+    required whole-patch review (`required=True`) was instead judged
+    `required=False`. The fix: `_translate_glob_to_regex` now normalizes
+    globs via a DEDICATED helper, `_normalize_glob_components` — NOT
+    `_normalize_path_for_matching` — which still drops `.`/empty components
+    (round-7, unaffected by the `**`-length ambiguity) but REJECTS any `..`
+    component outright (never resolves it): a boundary glob has no
+    legitimate reason to contain "up a directory" in the first place, so
+    `..` in a glob is now a CONFIGURATION ERROR (`BoundaryManifestInvalid`
+    -> `MANIFEST_DISPOSITION_MALFORMED` -> escalates every delta,
+    fail-closed) rather than an attempted-but-unsound resolution. This is a
+    DELIBERATE ASYMMETRY, not a regression of round-7's symmetric intent: a
+    CHANGED PATH always resolves to a concrete, fixed-length repo location
+    (git's own on-disk `..`-collapse, unambiguous), so
+    `_normalize_path_for_matching` still RESOLVES `..` for paths; a GLOB can
+    contain a variable-length `**`, so resolving its `..` is unsound and it
+    is instead REJECTED. A wildcard segment (`*`, `**`, `?`, or a mixed
+    segment like `*.proto`) and a literal `.git` component are still never
+    dropped or altered by glob normalization. A glob that normalizes to
+    NOTHING (every component `.`/empty) OR that contains any `..` component
+    declares a surface with NO effective, soundly-resolvable boundary and is
+    MALFORMED (fail-closed, escalates every delta).
 
     A literal (non-wildcard) `/`-delimited segment that ASCII-lowercases to
     exactly `.git` (e.g. `.git/**`, `src/.GIT/**`, `a/.git/b`) is
@@ -454,18 +476,28 @@ def _normalize_path_for_matching(path: str) -> str | None:
     (an abnormal changed path or `path_scope` entry forces reopening rather
     than carry-forward).
 
-    **Round-7 reuse (Consiliency/agent-harness#191).** `_translate_glob_to_
-    regex` also calls this SAME function on the GLOB string itself (not just
-    on changed paths / `path_scope` entries) — the symmetric fix for the
-    dual evasion: a glob's own `.`/`..`/empty components need the identical
-    collapse a changed path gets, or the two sides of the match can never
-    agree on what "the same location" means. A wildcard segment (`*`, `**`,
-    `?`, or a mixed segment like `*.proto`) is never `.`/empty/`..` as a
-    STRING, so it is always kept verbatim by this function unchanged — this
-    function requires no glob-specific branch to do double duty. `None` on
-    the glob side is treated as MALFORMED (`BoundaryManifestInvalid`) by
-    `_translate_glob_to_regex`, the glob-side analogue of the path-side
-    ABNORMAL fail-closed disposition above.
+    **Round-7/round-8 history — glob-side reuse REMOVED
+    (Consiliency/agent-harness#191).** Round-7 made `_translate_glob_to_
+    regex` call this SAME function on the GLOB string itself, reasoning that
+    a glob's own `.`/`..`/empty components needed the identical collapse a
+    changed path gets. Round-8 (codex CR) found that reuse UNSOUND for the
+    `..` case specifically: this function resolves `..` by popping the
+    "previous kept segment", which is valid for a PATH (always a concrete,
+    fixed-length, on-disk location — git's own real collapse semantics) but
+    NOT for a GLOB, whose previous segment can be `**` (a variable-length,
+    zero-or-more-segments unit with no fixed segment to pop). Confirmed
+    empirically: reusing this function normalized the glob
+    `**/../auth/**` to `auth/**` (popping the `**`), which under-matched a
+    real mangled path that should have escalated. `_translate_glob_to_regex`
+    now calls a DEDICATED glob-side helper, `_normalize_glob_components`
+    (below `_translate_glob_to_regex`'s definition), which still drops
+    `.`/empty components (unaffected by the `**`-length ambiguity — a no-op
+    regardless of context) but REJECTS (never resolves) any `..` component
+    — a boundary glob has no legitimate reason to contain "up a directory"
+    at all. This function (`_normalize_path_for_matching`) is therefore used
+    ONLY for changed paths and `path_scope` entries now, never for globs —
+    the `..` POLICY differs by design between the two sides even though the
+    `.`/empty-drop policy does not.
 
     Deliberately NOT used by Lane B (`fab_canonical.patch_digest`/
     `enumerate_changed_paths`): those keep raw, non-normalized bytes — this
@@ -481,6 +513,69 @@ def _normalize_path_for_matching(path: str) -> str | None:
                 return None  # would escape the repo root — abnormal, fail closed
             segments.pop()
             continue
+        segments.append(segment)
+    if not segments:
+        return None
+    return "/".join(segments)
+
+
+def _normalize_glob_components(glob: str) -> str | None:
+    """Round-8 (Consiliency/agent-harness#191, codex round-8 CR) glob-side
+    component normalization — deliberately DISTINCT from
+    `_normalize_path_for_matching` (which normalizes CHANGED PATHS). Round-7
+    made `_translate_glob_to_regex` reuse `_normalize_path_for_matching`
+    verbatim on the glob string itself, treating a glob `..` component
+    exactly like a path `..` component (pop the previous kept segment).
+    That was UNSOUND, confirmed by codex round-8: a glob's `**` segment
+    represents ZERO-OR-MORE path segments, a variable-length unit, so
+    "popping the previous kept segment" when that segment is a `**` is not
+    a valid resolution — there is no fixed segment there to pop. Empirically:
+    round-7's logic normalized `**/../auth/**` to `auth/**` (popping the
+    `**`), which compiled to the ANCHORED pattern `^auth(?:/.*)?$` — that
+    pattern does NOT match `x/auth/login.py`, the normalized form of the
+    mangled changed path `x/y/../auth/login.py`, even though the glob as
+    authored should protect `auth/**` everywhere. A boundary glob authored
+    with a `..` after a `**` therefore silently under-protected: a real
+    `required=True` escalation was silently downgraded to `required=False`
+    — a fail-open in the escalation gate itself.
+
+    The fix: a boundary glob may NEVER contain a `..` component, full stop.
+    There is no legitimate reason to author "go up a directory" in an
+    escalation-boundary declaration — a boundary glob names a set of
+    PROTECTED repo-relative locations to match against, not a relative
+    traversal to resolve — so `..` in a glob is a CONFIGURATION ERROR, not
+    something to normalize away. This function returns `None` (malformed)
+    the instant it sees a `..` component; the caller
+    (`_translate_glob_to_regex`) raises `BoundaryManifestInvalid`, which
+    propagates to `MANIFEST_DISPOSITION_MALFORMED` (whole-patch escalation
+    of every delta) — fail-closed, not an attempted-but-unsound resolution.
+
+    `.` and empty components are still dropped, unchanged from round-7:
+    dropping them is a no-op regardless of what precedes them (no `**`-
+    length ambiguity — `./**` -> `**`, `a//b` -> `a/b` are both still exact,
+    sound rewrites of what the glob matches). Wildcard segments (`*`, `**`,
+    `?`, and mixed segments like `*.proto`) and a literal `.git` component
+    are kept verbatim, exactly as `_normalize_path_for_matching` keeps them
+    for paths — this is the one piece of normalization logic still shared
+    in spirit (drop `.`/empty) between the two sides; the `..` POLICY is
+    deliberately asymmetric (paths RESOLVE `..`, per git's own real
+    on-disk collapse semantics; globs REJECT it, because a glob's `**` has
+    no fixed on-disk collapse to resolve against).
+
+    Returns `None` (malformed — caller raises `BoundaryManifestInvalid`) when:
+      * the glob contains ANY `..` component, at any position; or
+      * the fully-normalized result is empty (every component was `.`/empty,
+        e.g. `.`, `./`, `//`) — round-7's "no effective boundary" case,
+        unchanged."""
+    segments: list[str] = []
+    for segment in glob.split("/"):
+        if segment == "" or segment == ".":
+            continue
+        if segment == "..":
+            # Round-8: reject outright. A glob's `..` cannot be soundly
+            # resolved against a preceding `**` (variable-length, no fixed
+            # segment to pop) — never attempt it, fail closed instead.
+            return None
         segments.append(segment)
     if not segments:
         return None
@@ -508,24 +603,30 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
 
     Raises `BoundaryManifestInvalid` on an empty/non-string glob, any
     character outside the safe set `[A-Za-z0-9_./*?-]`, or a glob that —
-    after round-7's component normalization (below) — resolves to NO
-    effective boundary at all (every component was `.`/empty, or a `..`
-    popped past the glob's own root) — a malformed glob INVALIDATES (never
-    silently "matches nothing").
+    after glob-side component normalization (`_normalize_glob_components`,
+    below) — resolves to NO effective boundary at all (every component was
+    `.`/empty, OR the glob contains ANY `..` component, at any position,
+    which round-8 REJECTS rather than resolves) — a malformed glob
+    INVALIDATES (never silently "matches nothing").
 
     DECISION BOUNDARY (Consiliency/agent-harness#191 Lane C — round-3 added,
     and round-6 REMOVED, a per-segment `.`/`..`/empty-component REJECTION;
-    round-7 replaced that removal with component NORMALIZATION, the
-    symmetric partner of round-6's path-side fix, below; round-4 added and
-    round-5 REVERTED a `.git`-component rejection; see below). This
-    validator's job is SYNTACTIC-plus-NORMALIZING: reject a glob string that
-    cannot possibly be a well-formed boundary declaration (empty, outside
-    the safe charset, or normalizes to nothing) and otherwise NORMALIZE its
-    literal components (the same way a changed path is normalized) before
-    translating — it does not attempt to predict, at manifest-parse time,
-    which real changed paths a glob will or won't match; it only guarantees
-    that the glob and the paths it will later be compared against agree on
-    what "the same location" means.
+    round-7 replaced that removal with component NORMALIZATION (including
+    resolving `..`), the symmetric partner of round-6's path-side fix,
+    below; round-8 found round-7's `..`-RESOLUTION unsound and replaced it
+    with `..`-REJECTION specifically (the `.`/empty-drop stays
+    normalization, unchanged) — see the round-8 paragraph below; round-4
+    added and round-5 REVERTED a `.git`-component rejection; see below).
+    This validator's job is SYNTACTIC-plus-NORMALIZING: reject a glob string
+    that cannot possibly be a well-formed boundary declaration (empty,
+    outside the safe charset, contains a `..` component, or normalizes to
+    nothing) and otherwise NORMALIZE its literal `.`/empty components (via a
+    glob-specific helper, not the path helper) before translating — it does
+    not attempt to predict, at manifest-parse time, which real changed paths
+    a glob will or won't match; it only guarantees that the glob and the
+    paths it will later be compared against agree on what "the same
+    location" means, without ever attempting an unsound `..` resolution
+    against a variable-length `**`.
 
     Round-3 (REMOVED in round-6) rejected a glob containing a `.`/`..`/empty
     path COMPONENT (`./**`, `.`, `x/./y`, `a//b`, `x/`) on the premise that
@@ -558,21 +659,45 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
     component) can ever satisfy. That is not a "lint concern": a section
     declared with ONLY such a glob (`[auth] globs = ["./**"]`) escalated
     NOTHING, for any changed path — a silent, total fail-open, the exact
-    dual of the path-side evasion round-6 closed. Round-7's fix is
-    SYMMETRIC: THIS function now applies `_normalize_path_for_matching` to
-    the glob string itself — same drop-`.`/empty, pop-`..` rules, wildcard
-    segments and a literal `.git` component always kept verbatim — before
-    translating, so `./**` normalizes to `**` (matches everything: broad,
-    but fail-SAFE) instead of compiling to an inert no-op. A glob that
-    normalizes to NOTHING at all (`.`, `./`, `//`, a bare `..`, or a
-    `..`-only/repo-escaping glob) declares a surface with NO effective
-    boundary and is now MALFORMED (fail-closed) rather than silently
-    accepted. Removing round-3's blunt rejection (round-6) and replacing it
-    with normalization (round-7) also removes the maintenance treadmill
-    enumerating every "structurally can't match" glob shape by hand would
-    otherwise require: normalizing both sides, once, centrally, is the fix
-    that does not need a new CR every time a new unnormalized-path or
-    unnormalized-glob shape is found reachable.
+    dual of the path-side evasion round-6 closed. Round-7's fix normalized
+    the glob string — drop-`.`/empty, and (as first written) pop-`..` —
+    before translating, so `./**` normalizes to `**` (matches everything:
+    broad, but fail-SAFE) instead of compiling to an inert no-op.
+
+    **Round-8 (Consiliency/agent-harness#191, codex round-8 CR) — round-7's
+    `..`-POP was ITSELF unsound, corrected.** Round-7 popped the previous
+    kept glob component on `..`, exactly like the path-side helper — but a
+    glob's previous component can be `**`, a variable-length (zero-or-more-
+    segments) unit with no fixed segment to pop. Empirically confirmed: the
+    glob `**/../auth/**` round-7-normalized to `auth/**` (popping the `**`),
+    compiling to the ANCHORED `^auth(?:/.*)?$`, which does NOT match
+    `x/auth/login.py` — the normalized form of the mangled changed path
+    `x/y/../auth/login.py` — even though `**/../auth/**` visually reads as
+    "protect `auth/**` anywhere". That is an UNDER-match: a real
+    `required=True` escalation silently downgraded to `required=False`, a
+    fail-open in the escalation gate. Round-8's fix: glob normalization now
+    REJECTS any `..` component outright (via `_normalize_glob_components`,
+    a helper dedicated to globs) rather than resolving it — a boundary glob
+    has no legitimate reason to contain "up a directory" at all, so `..` in
+    a glob is a CONFIGURATION ERROR (malformed, fail-closed, escalates every
+    delta) rather than something to normalize away. The `.`/empty-drop half
+    of round-7's fix is UNCHANGED (no `**`-length ambiguity there — dropping
+    a `.`/empty component is sound regardless of context). This is a
+    deliberate ASYMMETRY between the two sides of a match, not a rollback of
+    round-7's intent: a changed PATH always resolves to one concrete,
+    fixed-length repo location (git's real on-disk `..`-collapse), so the
+    path-side helper still RESOLVES `..`; a GLOB can contain a
+    variable-length `**`, so its `..` is REJECTED instead. A glob that
+    normalizes to NOTHING at all (`.`, `./`, `//`) OR that contains any `..`
+    component (`a/../b`, `**/../x`, `x/../**`, `../auth/**`, a bare `..`)
+    declares a surface with NO effective, soundly-resolvable boundary and is
+    now MALFORMED (fail-closed) — never silently accepted, and never
+    resolved via an unsound pop. Removing round-3's blunt rejection
+    (round-6) and replacing it with normalization (round-7), then narrowing
+    that normalization's `..` handling from resolve to reject (round-8),
+    keeps both sides of the match agreeing on what "the same location"
+    means without ever compiling an unsound anchor from a variable-length
+    glob.
 
     A literal `.git` path component is likewise NOT rejected (round-4 added
     such a rejection; round-5, self-correcting, reverted it after empirical
@@ -623,22 +748,24 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
             f"malformed boundary glob (only [A-Za-z0-9_./*?-] accepted, fail-closed): {glob!r}"
         )
 
-    # Round-7 (Consiliency/agent-harness#191 — the SYMMETRIC partner of
-    # round-6): normalize the glob's own literal components with the exact
-    # SAME `_normalize_path_for_matching` logic applied to changed paths —
-    # drop `.`/empty components, resolve `..` by popping the previous kept
-    # component (wildcard segments, `**`/`*`/`?`, and a literal `.git` are
-    # never dropped or altered — only an EXACT `.`/empty component is
-    # dropped, and `..` pops). A glob whose components are ENTIRELY
-    # `.`/empty (`.`, `./`, `//`) or that pops a `..` past its own root
-    # (a bare `..`, or `x/../../y`) resolves to NO effective boundary at
-    # all and is MALFORMED (fail-closed) — see this function's own
-    # docstring, round-7 section, for the inert-glob fail-open this closes.
-    normalized = _normalize_path_for_matching(glob)
+    # Round-8 (Consiliency/agent-harness#191, codex round-8 CR): normalize
+    # the glob's own literal components via `_normalize_glob_components` —
+    # a DEDICATED glob-side helper, NOT `_normalize_path_for_matching`
+    # (which round-7 used here and which round-8 found unsound: resolving a
+    # glob `..` by popping the previous kept component is invalid when that
+    # component is a `**`, a variable-length unit with no fixed segment to
+    # pop). Drop `.`/empty components (round-7 behavior, unchanged) but
+    # REJECT (never resolve) any `..` component — see
+    # `_normalize_glob_components`'s docstring for the empirically-confirmed
+    # under-match this closes. A glob whose components are ENTIRELY
+    # `.`/empty (`.`, `./`, `//`) OR that contains any `..` component at all
+    # resolves to NO effective boundary and is MALFORMED (fail-closed).
+    normalized = _normalize_glob_components(glob)
     if normalized is None:
         raise BoundaryManifestInvalid(
             "malformed boundary glob (normalizes to no effective boundary — every component was "
-            f"'.'/empty, or a '..' popped past the glob's own root; fail-closed): {glob!r}"
+            f"'.'/empty, or the glob contains a '..' component (rejected, not resolved — unsound "
+            f"against a variable-length '**'); fail-closed): {glob!r}"
         )
 
     segments = normalized.split("/")
