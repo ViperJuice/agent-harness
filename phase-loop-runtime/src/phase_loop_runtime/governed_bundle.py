@@ -39,6 +39,30 @@ def staged_index_diff(repo: Path, paths: Sequence[str]) -> str:
     return out.stdout.rstrip() or "(empty staged diff)"
 
 
+def committed_range_diff(repo: Path, base_sha: str, head_sha: str) -> str:
+    """The EXACT committed-range diff ``git diff <base_sha> <head_sha>`` — the FAB
+    piece-3b consumer's delta-review unit (the committed ``old_admitted..new_head``
+    range a delta review actually looks at), the committed-range analog of
+    ``staged_index_diff``.
+
+    Mirrors ``staged_index_diff``'s sentinel-on-failure posture. The delta review
+    is over a COMMITTED range (the closeout already happened on the PR branch), not
+    a staged index, so there is nothing to ``git add``; the two SHAs pin exactly
+    what the seats are shown. The producer's delta honesty gate rejects an
+    incomplete render (binary-elided / attribute-suppressed / invalid-UTF-8
+    sentinel) exactly as the candidate round does — so a transient render failure
+    can never be laundered into provenance for bytes the seats never saw.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "diff", base_sha, head_sha],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return "(committed range diff unavailable)"
+    return out.stdout.rstrip() or "(empty committed range diff)"
+
+
 def _acceptance_criteria(plan_path: str | Path | None) -> str:
     if not plan_path:
         return "(no plan path)"
