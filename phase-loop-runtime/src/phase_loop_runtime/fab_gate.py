@@ -171,7 +171,7 @@ from .closeout_validators import (
     register_closeout_validator,
     verdict_binds_to,
 )
-from .fab_canonical import EquivalenceBinding, equivalent
+from .fab_canonical import EquivalenceBinding, equivalent, patch_digest
 from .fab_delta import (
     DeltaBindingInvalid,
     ResolvedClaimUnverified,
@@ -754,6 +754,30 @@ def read_review_round(repo: Path, run_id: str, epoch: int = FAB_CANDIDATE_EPOCH)
     return record
 
 
+def _durable_finalized_epochs(repo: Path, run_id: str) -> set[int]:
+    """Enumerate the epochs the harness durably FINALIZED a round record for in the
+    trusted run store (3b-gate CR round 2 — the durable transcript, anchoring
+    epoch-set completeness). A record that exists but is NOT finalized (a crash
+    mid-produce) is not counted — the client cannot authenticate it anyway. Reuses
+    `read_review_round` (validates size / digest / epoch-match) per epoch. Fail-
+    closed (`ReviewRoundInvalid`) on a malformed round-record filename."""
+    run_dir = provenance_dir_for_run(repo, run_id)
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    prefix, suffix = f"{base}.e", f".{ext}"
+    epochs: set[int] = set()
+    for path in run_dir.glob(f"{base}.e*.{ext}"):
+        name = path.name
+        try:
+            epoch = int(name[len(prefix) : -len(suffix)])
+        except ValueError as exc:
+            raise ReviewRoundInvalid(
+                f"malformed round-record filename in run store (fail-closed): {name!r} ({exc})"
+            ) from exc
+        if read_review_round(repo, run_id, epoch).finalized:
+            epochs.add(epoch)
+    return epochs
+
+
 def cross_check_round_authenticity(
     repo: Path,
     run_id: str,
@@ -815,6 +839,28 @@ def cross_check_round_authenticity(
             durable_seat_outcomes=durable_seat_outcomes,
             delta_record=record,  # bind this round's resolution fields to durable
         )
+
+    # EPOCH-SET COMPLETENESS (3b-gate CR round 2 / codex BLOCKER 2) — runs AFTER
+    # the per-round authentication so a missing/unfinalized round surfaces its own
+    # specific reason first; this catches the remaining case where every PRESENT
+    # round authenticates but a durable round was DROPPED from the client chain.
+    # The client chain must cover EVERY epoch the harness durably FINALIZED —
+    # symmetric with per-round expected-SEAT completeness. Otherwise a
+    # content-NEUTRAL delta round (empty-commit, or a net-content-neutral round
+    # that ESCALATED / carried a blocking finding) whose digest equals its
+    # predecessor's can be dropped and still pass equivalence (which compares net
+    # patch CONTENT, not transcript completeness). Anchored on the DURABLE
+    # finalized epoch set (the harness transcript), not the client's. Disk path
+    # only (a `round_reader` seam bypasses the store).
+    if round_reader is None:
+        durable_epochs = _durable_finalized_epochs(repo, run_id)
+        if set(epochs) != durable_epochs:
+            raise ReviewRoundInvalid(
+                f"client chain epochs {sorted(set(epochs))} do not equal the durable FINALIZED epoch set "
+                f"{sorted(durable_epochs)} (fail-closed, 3b-gate CR round 2: a durable round — even a "
+                "content-neutral one that escalated or carried a blocking finding — can never be silently "
+                "dropped from the client chain)"
+            )
 
 
 def _cross_check_one_round(
@@ -1384,16 +1430,39 @@ def _validate_chain_binds_to_git(repo: Path, artifact: ReviewProvenanceArtifact)
     (already-authenticated) `delta_head_sha` and re-check the parent chain/patch
     linkage — the T12 posture: NEVER trust a stored digest for a git-derivable
     field, even the durable one. Defense-in-depth beyond `_delta_resolution_
-    digest`'s durable binding. Fail-closed (`DeltaBindingInvalid`, a
-    `ProvenanceInvalid`) on the first mismatch; no-op for the candidate-only
-    (empty-chain) case. MUST run AFTER `cross_check_round_authenticity` so it
-    operates on authenticated records."""
-    if not artifact.delta_chain:
-        return
+    digest`'s durable binding. ALSO recomputes the CANDIDATE round's patch_digest
+    off its bound head (3b-gate CR round 2 — the candidate-path equivalence bypass).
+    Fail-closed (`DeltaBindingInvalid`, a `ProvenanceInvalid`) on the first
+    mismatch; runs for EVERY artifact (candidate or chain). MUST run AFTER
+    `cross_check_round_authenticity` so it operates on authenticated records."""
     ref_identity = artifact.base.ref_identity
     repo_slug, sep, _ref = ref_identity.partition("#")
     if not sep or not repo_slug:
         raise DeltaBindingInvalid(f"malformed base ref_identity (fail-closed): {ref_identity!r}")
+
+    # CANDIDATE (empty-chain / candidate path) — 3b-gate CR round 2 / codex
+    # BLOCKER 1: `EquivalenceBinding.from_provenance_artifact` sets the candidate's
+    # `expected_head_digest` straight from the CLIENT `candidate.patch_digest`,
+    # never recomputing it — the SAME equivalence-bypass class as the delta P0-1,
+    # left applied to delta rounds only (the candidate round has no
+    # resolution_digest by construction). `candidate.head_sha` IS bound (round
+    # identity: durable `reviewed_head_sha == candidate.head_sha`), so DERIVE the
+    # expected digest from that authenticated head via live git and require the
+    # client `candidate.patch_digest` to match — never trust a client field the
+    # gate can recompute (T12). Runs for EVERY artifact, chain or not.
+    live_candidate_digest = patch_digest(
+        repo, artifact.base.base_sha, artifact.candidate.head_sha, repo_slug=repo_slug
+    )
+    if artifact.candidate.patch_digest != live_candidate_digest:
+        raise DeltaBindingInvalid(
+            "candidate.patch_digest does not match a live recompute off the bound candidate head "
+            f"(fail-closed, 3b-gate CR round 2): client={artifact.candidate.patch_digest!r}, "
+            f"live={live_candidate_digest!r} — the candidate's equivalence head must be derived from the "
+            "authenticated head, never trusted from the client patch_digest"
+        )
+
+    if not artifact.delta_chain:
+        return
     parent_head_sha = artifact.candidate.head_sha
     parent_patch_digest = artifact.candidate.patch_digest
     parent_chain_digest = artifact.compute_c0()

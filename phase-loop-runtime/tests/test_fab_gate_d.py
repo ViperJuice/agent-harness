@@ -927,6 +927,71 @@ class DeltaChainForgeTest(GitRepoTestCase):
         self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
         self.assertNotEqual(gate.equivalence_verified.result, "EQUIVALENT")
 
+    def test_candidate_patch_digest_forge_blocks(self):
+        """3b-gate CR round 2 / codex BLOCKER 1 — the CANDIDATE-path equivalence
+        bypass (symmetric with the delta P0-1, previously left applied to delta
+        rounds only). Keep the reviewed head honestly bound, but forge
+        candidate.patch_digest to an UNREVIEWED head's digest so equivalence would
+        pass against that head. The gate recomputes the candidate digest off the
+        BOUND head via live git → mismatch → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        self.write("pkg/UNREVIEWED.py", "not reviewed\n")
+        unreviewed_head = self.commit("c1 UNREVIEWED head")
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        # Candidate is honestly reviewed at `base` (exact-head), but its
+        # patch_digest is forged to the UNREVIEWED head's digest.
+        honest = self.candidate(base, base)
+        forged = dataclasses.replace(honest, patch_digest=self.digest(base, unreviewed_head))
+        artifact = self.build_artifact(base_sha=base, candidate=forged, seats=candidate_seats)
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, artifact)  # reviewed_head_sha = base (the bound head)
+        gate = self._assert_blocks(unreviewed_head)
+        self.assertIn("candidate.patch_digest", gate.equivalence_verified.reason or "")
+
+    def test_content_neutral_dropped_round_blocks_via_epoch_completeness(self):
+        """3b-gate CR round 2 / codex BLOCKER 2 — a CONTENT-NEUTRAL delta round
+        (an EMPTY commit: net patch equals the candidate's, so equivalence with it
+        dropped still passes) that the harness durably recorded (here it ESCALATED)
+        must not be silently droppable. The client presents an empty chain;
+        equivalence is EQUIVALENT (same content), but durable epoch-set
+        completeness catches the dropped finalized epoch → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        candidate = self.candidate(base, base)
+        c0 = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats).chain_digest
+        # Content-neutral delta: an EMPTY commit (same tree as base) that ESCALATED.
+        empty_head = self.commit("c2 empty content-neutral delta")  # commit() uses --allow-empty
+        delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=(), seat_instance_id="codex:x:high@2"),)
+        delta_record = fd.build_delta_round(
+            epoch=2, repo=self.repo, base_sha=base, repo_slug=self.REPO_SLUG,
+            parent_head_sha=base, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
+            delta_head_sha=empty_head, findings=(), resolved_finding_ids=(), delta_round_seats=delta_seats,
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_WHOLE_PATCH, covers_patch_digest=self.digest(base, empty_head)),
+            status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH, manual_escalation_trigger="reviewer:codex:x:high",
+        )
+        self.assertTrue(delta_record.escalation.required)
+        # The CLIENT DROPS the delta round (empty chain), keeping only the candidate.
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        for s in delta_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, artifact)  # candidate round (epoch 1) finalized
+        self.persist_delta_round(self.RUN, delta_record, delta_seats)  # delta round (epoch 2) finalized
+        # Live head = the empty (content-neutral) delta head → equivalence WOULD be
+        # EQUIVALENT; only epoch-set completeness catches the dropped round.
+        gate = self._assert_blocks(empty_head)
+        self.assertIn("durable FINALIZED epoch set", gate.equivalence_verified.reason or "")
+
 
 # --------------------------------------------------------------------------- #
 # Finding 1 (agent-harness#191 CR, Lane D) — a `reviewed-clean` delta round
