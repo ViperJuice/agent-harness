@@ -9337,27 +9337,44 @@ def _perform_phase_closeout_impl(
                                     "access_attempts": (),
                                 }
         if closeout_mode == "push":
-            if fab_gated_sha is not None and fab_push_coords is not None:
-                # FAB advance: push ELIGIBILITY is judged FRESH now (the worktree
-                # is clean relative to the gated HEAD — index == candidate's tree),
-                # but the push COORDINATES are the ones PINNED at gate time, never
-                # re-derived from post-gate ambient topology (a concurrent HEAD
-                # switch could otherwise redirect the push). Source = the gated SHA.
-                eligibility = resolve_closeout_push_target(repo, collect_git_topology(repo))
-                remote, push_ref = fab_push_coords["remote"], fab_push_coords["push_ref"]
-                if eligibility.get("allowed"):
-                    _git(repo, "push", str(remote), f"{fab_gated_sha}:{push_ref}")
+            if fab_gated_sha is not None:
+                # FAB candidate advanced → the FAB push path, PERIOD (CR round 11 —
+                # codex+gemini). SELECTION depends SOLELY on whether a FAB
+                # candidate advanced; it NEVER falls through to the non-FAB
+                # ambient-HEAD push, which after a concurrent switch would publish
+                # an un-gated commit while the gated candidate stays unpublished.
+                if fab_push_coords is None:
+                    # No pinned push target (the gated branch had no upstream, or
+                    # the resolver returned no coordinates at gate time). FAIL
+                    # CLOSED: push NOTHING. The local gated advance stands — the
+                    # closeout completes with the commit local + unpushed, the
+                    # correct "no push target" outcome. Never push ambient HEAD.
                     metadata["closeout"].update(
-                        {"closeout_action": "push", "closeout_push_ref": f"{remote} {push_ref}"}
+                        {"closeout_action": "push_refused", "closeout_refusal_reason": "missing_push_target"}
                     )
                 else:
-                    metadata["closeout"].update(
-                        {
-                            "closeout_action": "push_refused",
-                            "closeout_push_ref": push_ref,
-                            "closeout_refusal_reason": eligibility.get("refusal_reason"),
-                        }
+                    remote, push_ref = fab_push_coords["remote"], fab_push_coords["push_ref"]
+                    # ELIGIBILITY is judged against the PINNED target ONLY (never
+                    # ambient topology): the pushed source is the immutable gated
+                    # object, so the only refusal is a non-fast-forward vs the
+                    # pinned remote ref. No `collect_git_topology()` of the
+                    # (possibly switched-to) ambient HEAD enters this path.
+                    eligibility = _fab_pinned_push_eligibility(
+                        repo, remote=str(remote), push_ref=str(push_ref), candidate_sha=fab_gated_sha
                     )
+                    if eligibility.get("allowed"):
+                        _git(repo, "push", str(remote), f"{fab_gated_sha}:{push_ref}")
+                        metadata["closeout"].update(
+                            {"closeout_action": "push", "closeout_push_ref": f"{remote} {push_ref}"}
+                        )
+                    else:
+                        metadata["closeout"].update(
+                            {
+                                "closeout_action": "push_refused",
+                                "closeout_push_ref": push_ref,
+                                "closeout_refusal_reason": eligibility.get("refusal_reason"),
+                            }
+                        )
             else:
                 # Non-FAB path — byte-for-byte unchanged: resolve fresh, push HEAD.
                 decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
@@ -9762,6 +9779,35 @@ def _fab_commit_tree(repo, *, tree: str, parent: str, message: str) -> str | Non
         return None
     sha = result.stdout.strip()
     return sha or None
+
+
+def _fab_pinned_push_eligibility(repo, *, remote: str, push_ref: str, candidate_sha: str) -> dict[str, object]:
+    """FAB push eligibility judged against the PINNED coordinates ONLY (CR round
+    11 — codex+gemini). No ambient HEAD/branch/upstream is consulted, so a
+    concurrent HEAD switch after the gate advance cannot false-allow or
+    false-refuse this push. Because the pushed source is the IMMUTABLE gated
+    object (`candidate_sha`), a `git status`-style "clean" check has no pinned
+    meaning here (it reports the worktree relative to *current* HEAD — pure
+    ambient topology). The only reason to refuse is a non-fast-forward against the
+    pinned remote branch: the remote-tracking ref holds commits the gated
+    candidate does not contain."""
+    branch = push_ref
+    if branch.startswith("refs/heads/"):
+        branch = branch[len("refs/heads/") :]
+    tracking = f"{remote}/{branch}"
+    tip = _git_output_or_empty(repo, "rev-parse", "--verify", "--quiet", tracking)
+    if not tip:
+        # No known remote-tracking ref for the pinned target → nothing to be
+        # behind (a first publish of this branch). A real non-fast-forward would
+        # still be rejected by the remote itself, never publishing ambient HEAD.
+        return {"allowed": True}
+    behind = _git_output_or_empty(repo, "rev-list", "--count", f"{candidate_sha}..{tracking}")
+    try:
+        if int(behind or "0") > 0:
+            return {"allowed": False, "refusal_reason": "behind_upstream"}
+    except ValueError:
+        return {"allowed": False, "refusal_reason": "behind_upstream_uncertain"}
+    return {"allowed": True}
 
 
 def _fab_advance_ref(repo, new_sha: str, *, ref: str, expected_old: str) -> bool:

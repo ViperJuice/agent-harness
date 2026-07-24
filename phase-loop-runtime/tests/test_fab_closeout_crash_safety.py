@@ -484,34 +484,9 @@ def test_fab_push_mode_actually_publishes(tmp_path, monkeypatch):
     assert remote_tip == gated, "the pushed remote ref is the exact gated candidate"
 
 
-def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypatch):
-    """CR round 9 / codex#4: in push mode, a concurrent HEAD switch after gating
-    must NOT re-derive the push remote/ref from ambient topology — the gated
-    candidate is pushed to the remote+ref captured at GATE time (the branch it was
-    gated on), never the switched-to branch."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, roadmap = _setup_repo(tmp_path)
-    _install_governed_panel(monkeypatch)
-
-    # The push target is derived from the CURRENT branch at call time, so a
-    # gate-time capture vs a post-switch re-resolve yield different push_refs.
-    def branch_dependent_target(repo_, topology):
-        cur = subprocess.run(
-            ["git", "-C", str(repo_), "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True
-        ).stdout.strip() or "DETACHED"
-        return {"allowed": True, "remote": "fetchsrc", "push_ref": f"refs/heads/{cur}-pushed"}
-
-    monkeypatch.setattr(R, "resolve_closeout_push_target", branch_dependent_target)
-
-    real_advance = R._fab_advance_ref
-
-    def advance_then_detach(repo_, new_sha, *, ref, expected_old):
-        ok = real_advance(repo_, new_sha, ref=ref, expected_old=expected_old)
-        subprocess.run(["git", "-C", str(repo_), "checkout", "-q", "--detach", expected_old], check=True)
-        return ok
-
-    monkeypatch.setattr(R, "_fab_advance_ref", advance_then_detach)
-
+def _spy_pushes(monkeypatch) -> list:
+    """Record every `_git(..., 'push', ...)` argv the closeout issues, while still
+    performing the real push."""
     pushes: list = []
     real_git = R._git
 
@@ -521,18 +496,111 @@ def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypa
         return real_git(repo_, *args, **kw)
 
     monkeypatch.setattr(R, "_git", spy_git)
+    return pushes
+
+
+def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypatch):
+    """CR round 11 (DE-MASKED, REAL resolver): in push mode, a concurrent HEAD
+    switch AFTER the gate advance must NOT redirect the push. The gated candidate
+    is pushed to the remote+ref PINNED at gate time (the branch it was gated on),
+    with eligibility judged against that pinned target only — never the ambient
+    (switched-to) topology, and never ambient HEAD as the source. Previously the
+    resolver was stubbed always-allowed, masking both defects."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    # Real upstream so the pinned coordinates come from the REAL resolver.
+    subprocess.run(["git", "-C", str(repo), "branch", "--set-upstream-to=fetchsrc/main"], check=True)
+    monkeypatch.setenv("PHASE_LOOP_TARGET_PUSH_REF", "refs/heads/main")
+    (repo / ".git" / "info" / "exclude").write_text(".phase-loop/\n")
+
+    # Concurrent switch: right after the ref advance, detach HEAD to the PARENT so
+    # ambient HEAD (and any ambient-topology read) no longer points at the gated
+    # candidate. A path that re-derived the push from ambient HEAD would publish
+    # the parent, not the gated candidate.
+    real_advance = R._fab_advance_ref
+
+    def advance_then_detach(repo_, new_sha, *, ref, expected_old):
+        ok = real_advance(repo_, new_sha, ref=ref, expected_old=expected_old)
+        subprocess.run(["git", "-C", str(repo_), "checkout", "-q", "--detach", expected_old], check=True)
+        return ok
+
+    monkeypatch.setattr(R, "_fab_advance_ref", advance_then_detach)
+    pushes = _spy_pushes(monkeypatch)
 
     branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    gated_before = _git(repo, "rev-parse", f"refs/heads/{branch}")  # pre-advance tip == parent
     _stage_change(repo)
     R._perform_phase_closeout(
         repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
         resolve_profile("execute"), action="execute", closeout_mode="push", run_mode="governed",
     )
+    # The gated candidate is the advanced pinned-branch tip (not the detached HEAD).
+    gated = _git(repo, "rev-parse", f"refs/heads/{branch}")
+    assert gated != gated_before, "the gated candidate advanced the pinned branch"
     assert pushes, "a push should have been attempted"
-    refspec = pushes[-1][-1]  # "<sha>:<push_ref>"
-    assert refspec.endswith(f"refs/heads/{branch}-pushed"), (
-        f"push must target the GATE-TIME branch ref, not the post-switch topology (got {refspec})"
+    remote, refspec = pushes[-1][1], pushes[-1][-1]  # ("push", <remote>, "<sha>:<push_ref>")
+    assert remote == "fetchsrc", f"push must target the PINNED remote (got {remote})"
+    src_sha, _, dst_ref = refspec.partition(":")
+    assert dst_ref == "refs/heads/main", f"push must target the PINNED ref (got {dst_ref})"
+    assert src_sha == gated, "push source is the gated candidate, NEVER ambient (detached) HEAD"
+    # And the remote ref actually advanced to the gated candidate.
+    remote_tip = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "fetchsrc", "refs/heads/main"], capture_output=True, text=True
+    ).stdout.split()[0]
+    assert remote_tip == gated
+
+
+def test_no_pinned_target_fails_closed_never_publishes_ambient_head(tmp_path, monkeypatch):
+    """CR round 11 (codex+gemini fail-open): a FAB candidate that advanced with NO
+    pinned push coordinates (the gated branch has no upstream / the resolver found
+    no target at gate time) must FAIL CLOSED — push NOTHING. Even a concurrent
+    switch to a branch that DOES have an upstream must not publish ambient HEAD;
+    the gated candidate stays local + unpublished, never lost. Previously the
+    selection fell through to the non-FAB ambient-HEAD push."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    # NO upstream and NO PHASE_LOOP_TARGET_PUSH_REF on the gated branch → the real
+    # resolver returns `missing_push_target`, so no coordinates are pinned.
+    (repo / ".git" / "info" / "exclude").write_text(".phase-loop/\n")
+
+    # A parallel branch WITH an upstream: the switched-to ambient topology would
+    # be push-eligible, so the pre-round-11 fall-through WOULD have published it.
+    subprocess.run(["git", "-C", str(repo), "branch", "haslane", "fetchsrc/main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "--set-upstream-to=fetchsrc/main", "haslane"], check=True)
+
+    real_advance = R._fab_advance_ref
+
+    def advance_then_switch(repo_, new_sha, *, ref, expected_old):
+        ok = real_advance(repo_, new_sha, ref=ref, expected_old=expected_old)
+        subprocess.run(["git", "-C", str(repo_), "checkout", "-q", "haslane"], check=True)
+        return ok
+
+    monkeypatch.setattr(R, "_fab_advance_ref", advance_then_switch)
+    pushes = _spy_pushes(monkeypatch)
+
+    branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    _stage_change(repo)
+    remote_tip_before = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "fetchsrc", "refs/heads/main"], capture_output=True, text=True
+    ).stdout.split()[0]
+
+    status, event = R._perform_phase_closeout(
+        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
+        resolve_profile("execute"), action="execute", closeout_mode="push", run_mode="governed",
     )
+    assert status == "complete", event.metadata.get("closeout", {})
+    assert not pushes, f"FAIL CLOSED: no push when there is no pinned target (got {pushes})"
+    assert event.metadata["closeout"].get("closeout_action") == "push_refused"
+    assert event.metadata["closeout"].get("closeout_refusal_reason") == "missing_push_target"
+    # The gated candidate is not lost — it advanced the branch it was gated on.
+    assert _git(repo, "rev-parse", f"refs/heads/{branch}") != _git(repo, "rev-parse", "fetchsrc/main")
+    # The remote was NOT advanced to any ambient HEAD.
+    remote_tip_after = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "fetchsrc", "refs/heads/main"], capture_output=True, text=True
+    ).stdout.split()[0]
+    assert remote_tip_after == remote_tip_before, "the remote ref must be untouched (no ambient-HEAD publish)"
 
 
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
