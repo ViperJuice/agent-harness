@@ -638,12 +638,20 @@ def _delta_resolution_digest(record: "DeltaReviewRecord") -> str:
     changed-paths / chain-topology / scope / policy diverges from what the harness
     recorded BLOCKS. Reuses `_encode_and_digest` (one canonicalization path).
 
-    The bound set below is EXHAUSTIVE over the gate-read fields. `delta_head_sha`
-    and `review_scope.reviewed_material_digest` are bound by round identity
-    (`_cross_check_one_round`) + material re-verify. `delta_round_seats` are bound
-    by seat authenticity. `material_digests` are bound by the aggregate
-    reviewed_material_digest. Everything else `verify_chain` /
-    `resolve_chain_resolution` / the finding-flow logic reads is here."""
+    The bound set below is EXHAUSTIVE over the gate-read fields (verified by a
+    mechanical enumeration of every `DeltaReviewRecord` attribute read in
+    `compose_gate_status` and its callees — `verify_chain`,
+    `resolve_chain_resolution`, `_require_delta_round_seat_binding`,
+    `_unresolved_block_findings`, `_gate_delta_entries`, `_validate_chain_binds_to_
+    git`). `delta_head_sha` and `review_scope.reviewed_material_digest` are bound by
+    round identity (`_cross_check_one_round`) + material re-verify;
+    `delta_round_seats` by seat authenticity + the P0-2 set-equality;
+    `material_digests` by the aggregate reviewed_material_digest; `epoch` by the
+    distinct-epoch + per-epoch-fetch keying. `delta_commits` is DELIBERATELY
+    unbound — the gate reads it NOWHERE for a decision (only `build_delta_round`
+    constructs it); it is purely informational, so leaving it out is a visible
+    decision here, not a silent hole. Everything else `verify_chain` /
+    `resolve_chain_resolution` / the finding-flow logic reads is in the dict."""
     return _encode_and_digest(
         {
             "status": record.status,

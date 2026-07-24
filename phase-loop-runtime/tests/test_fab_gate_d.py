@@ -648,6 +648,7 @@ class DeltaChainForgeTest(GitRepoTestCase):
         extra_findings: tuple[fp.Finding, ...] = (),
         forge_artifact_delta=None,
         extra_artifact_delta_seats: tuple[fp.ProvenanceSeat, ...] = (),
+        drop_delta_from_artifact: bool = False,
     ) -> str:
         """Build + persist an otherwise-passing disjoint-clean delta chain, with
         knobs to forge exactly one thing. Returns the delta head (the live head)."""
@@ -681,9 +682,12 @@ class DeltaChainForgeTest(GitRepoTestCase):
         artifact_delta = dataclasses.replace(
             artifact_delta, delta_round_seats=tuple(artifact_delta.delta_round_seats) + tuple(extra_artifact_delta_seats)
         )
+        # Tail-drop: the client presents an EMPTY chain (drops the delta round the
+        # harness recorded) while the durable delta record still exists.
+        artifact_chain = () if drop_delta_from_artifact else (artifact_delta,)
         artifact = self.build_artifact(
             base_sha=base, candidate=candidate, seats=candidate_seats,
-            findings=extra_findings, delta_chain=(artifact_delta,),
+            findings=extra_findings, delta_chain=artifact_chain,
         )
         fp.write_provenance(self.repo, self.RUN, artifact)
         for s in candidate_seats:
@@ -713,11 +717,16 @@ class DeltaChainForgeTest(GitRepoTestCase):
             )
         return delta_head
 
-    def _assert_blocks(self, delta_head: str):
+    def _assert_blocks(self, delta_head: str, *, reason_contains: str | None = None):
         gate = fg.compose_gate_status(
             repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK, f"expected BLOCK, got {gate.status}")
+        if reason_contains is not None:
+            # Pin the MECHANISM, not just "it blocked" — so a forge whose field is
+            # ALSO caught by chain_digest can't pass for the wrong reason if the
+            # resolution binding regresses.
+            self.assertIn(reason_contains, (gate.equivalence_verified.reason or ""))
         return gate
 
     def test_baseline_fixture_passes(self):
@@ -832,13 +841,16 @@ class DeltaChainForgeTest(GitRepoTestCase):
 
     def test_status_upgrade_forge_blocks(self):
         """gemini#2: upgrade the round `status` (reviewed-clean ↔ escalated) on the
-        client record while the durable resolution recorded the honest status."""
+        client record while the durable resolution recorded the honest status.
+        `status` is NOT in chain_digest, so ONLY the resolution binding catches
+        this — assert the mechanism, not just the block."""
         self._assert_blocks(
             self._fixture(
                 forge_artifact_delta=lambda r: dataclasses.replace(
                     r, status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH
                 )
-            )
+            ),
+            reason_contains="resolution_digest",
         )
 
     def test_finding_flow_move_forge_blocks(self):
@@ -876,13 +888,15 @@ class DeltaChainForgeTest(GitRepoTestCase):
     def test_escalation_suppression_forge_blocks(self):
         """Suppress the round `escalation` on the client record (present it as a
         narrower non-escalated round) — the durable resolution binds the honest
-        escalation decision."""
+        escalation decision. `escalation` is NOT in chain_digest, so ONLY the
+        resolution binding catches this — assert the mechanism."""
         self._assert_blocks(
             self._fixture(
                 forge_artifact_delta=lambda r: dataclasses.replace(
                     r, escalation=fp.Escalation(required=True, trigger="protected-path")
                 )
-            )
+            ),
+            reason_contains="resolution_digest",
         )
 
     def test_extra_provenance_seat_forge_blocks(self):
@@ -895,6 +909,23 @@ class DeltaChainForgeTest(GitRepoTestCase):
             seat_instance_id="gemini:y:high@2",
         )
         self._assert_blocks(self._fixture(extra_artifact_delta_seats=(extra,)))
+
+    def test_tail_dropped_delta_round_blocks_via_equivalence(self):
+        """Chain TRUNCATION (tail-drop): the harness recorded a delta round
+        advancing to `delta_head`, but the client presents an EMPTY chain
+        (candidate-only). The per-round binding CANNOT catch this — the dropped
+        round is not in the client chain to be checked, and the gate iterates only
+        the client's chain (it does NOT enumerate durable epochs, by design). The
+        EQUIVALENCE recompute catches it: the client chain resolves to the
+        candidate head, but the LIVE head is the real advanced head → INVALIDATED.
+        Safe ONLY because `live_head_sha` is not attacker-controlled (it is the
+        broker-admitted / live PR head, pinned by the consumer). Named boundary."""
+        delta_head = self._fixture(drop_delta_from_artifact=True)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertNotEqual(gate.equivalence_verified.result, "EQUIVALENT")
 
 
 # --------------------------------------------------------------------------- #
