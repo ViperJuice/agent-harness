@@ -250,13 +250,20 @@ class GitRepoTestCase(unittest.TestCase):
         canonical_findings: tuple[fp.Finding, ...] = (),
         finalize: bool = True,
         reviewed_head_sha: str | None = None,
+        resolution_source: fp.DeltaReviewRecord | None = None,
     ) -> None:
-        """Persist ONE delta round's harness-only durable record (piece 3b G1) so
-        `compose_gate_status` can authenticate it: its per-epoch EXPECTED-seat
+        """Persist ONE delta round's harness-only durable record (piece 3b G1/CR1)
+        so `compose_gate_status` can authenticate it: its per-epoch EXPECTED-seat
         manifest (frozen from `delta_seats`) + round identity (bound to the delta
-        round's OWN head + material) + canonical findings, all keyed by
-        `delta_record.epoch`. The delta seats themselves must already be in the
-        durable ledger (the fixtures append them alongside the candidate seats).
+        round's OWN head + material) + canonical findings + the harness
+        round-RESOLUTION digest, all keyed by `delta_record.epoch`.
+
+        `resolution_source` is the HARNESS's HONEST record whose resolution digest
+        is durably bound (defaults to `delta_record`). A round-resolution FORGE
+        test passes the honest record here while putting a MUTATED record in the
+        artifact — so the gate cross-checks the client's forged resolution fields
+        against the harness's honest digest and BLOCKS (never vacuously: the
+        durable side is NEVER echoed from the client artifact record).
         `reviewed_head_sha` defaults to the record's `delta_head_sha`; tests
         override it to forge a wrong-head round record."""
         fg.write_expected_seats(
@@ -285,6 +292,7 @@ class GitRepoTestCase(unittest.TestCase):
                 fg.CanonicalFinding(finding_id=f.id, severity=f.severity, status=f.status, body_digest=f.body_ref)
                 for f in canonical_findings
             ),
+            delta_record=resolution_source if resolution_source is not None else delta_record,
         )
 
 
@@ -638,6 +646,8 @@ class DeltaChainForgeTest(GitRepoTestCase):
         round_reviewed_head: str | None = None,
         canonical_findings: tuple[fp.Finding, ...] = (),
         extra_findings: tuple[fp.Finding, ...] = (),
+        forge_artifact_delta=None,
+        extra_artifact_delta_seats: tuple[fp.ProvenanceSeat, ...] = (),
     ) -> str:
         """Build + persist an otherwise-passing disjoint-clean delta chain, with
         knobs to forge exactly one thing. Returns the delta head (the live head)."""
@@ -663,9 +673,17 @@ class DeltaChainForgeTest(GitRepoTestCase):
             delta_head_sha=delta_head, findings=(), resolved_finding_ids=(), delta_round_seats=delta_seats,
             review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), status=fp.DELTA_STATUS_REVIEWED_CLEAN,
         )
+        # The ARTIFACT (client) delta record may be a FORGED transform of the
+        # honest record — while `persist_delta_round` below binds the HONEST
+        # record's resolution (resolution_source=delta_record). A round-resolution
+        # forge diverges the two → BLOCK, never vacuously.
+        artifact_delta = forge_artifact_delta(delta_record) if forge_artifact_delta is not None else delta_record
+        artifact_delta = dataclasses.replace(
+            artifact_delta, delta_round_seats=tuple(artifact_delta.delta_round_seats) + tuple(extra_artifact_delta_seats)
+        )
         artifact = self.build_artifact(
             base_sha=base, candidate=candidate, seats=candidate_seats,
-            findings=extra_findings, delta_chain=(delta_record,),
+            findings=extra_findings, delta_chain=(artifact_delta,),
         )
         fp.write_provenance(self.repo, self.RUN, artifact)
         for s in candidate_seats:
@@ -681,6 +699,12 @@ class DeltaChainForgeTest(GitRepoTestCase):
                 finding_ids=(durable_delta_finding_ids if durable_delta_finding_ids is not None else s.finding_ids),
             )
             fg.append_seat_outcome(self.repo, self.RUN, durable)
+        # Extra ARTIFACT seats get AUTHENTIC durable records too (so they pass
+        # metadata authenticity) but are NOT written into the expected manifest —
+        # isolating the P0-2 defense: an authentic-but-UNEXPECTED seat must be
+        # rejected by the seat-set-equality check, not slip through unbound.
+        for s in extra_artifact_delta_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
         if persist_round:
             self.persist_delta_round(
                 self.RUN, delta_record, delta_seats,
@@ -787,6 +811,90 @@ class DeltaChainForgeTest(GitRepoTestCase):
             reviewed_material_digest=candidate.review_scope.reviewed_material_digest, canonical_findings=(),
         )
         self._assert_blocks(base)
+
+    # -- 3b-gate CR round 1: ROUND-RESOLUTION forges. Each keeps an authenticated
+    #    delta round (durable resolution honest) but the CLIENT artifact record
+    #    diverges on ONE gate-read resolution field → BLOCK on the resolution
+    #    binding (`_delta_resolution_digest`), the fields the gate previously
+    #    trusted straight from the client. ------------------------------------- #
+
+    def test_resulting_head_digest_forge_blocks(self):
+        """P0-1 (all three): keep the authenticated `delta_head_sha` but set
+        `resulting_head_digest` to an UNREVIEWED head's digest — equivalence would
+        then pass against that head. The durable resolution binds the honest
+        digest → BLOCK. (resulting_head_digest is NOT in chain_digest, so ONLY the
+        resolution binding catches this — the isolated proof of the fix.)"""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(r, resulting_head_digest="f" * 64)
+            )
+        )
+
+    def test_status_upgrade_forge_blocks(self):
+        """gemini#2: upgrade the round `status` (reviewed-clean ↔ escalated) on the
+        client record while the durable resolution recorded the honest status."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH
+                )
+            )
+        )
+
+    def test_finding_flow_move_forge_blocks(self):
+        """gemini#2: move a finding id between the resolved/reopened/carried-forward
+        flows on the client record — the durable resolution binds the honest flow."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, resolved_finding_ids=("g1",), reopened_finding_ids=()
+                )
+            )
+        )
+
+    def test_parent_chain_digest_splice_forge_blocks(self):
+        """gemini#3: rewrite `parent_chain_digest` (the chain-topology anchor) to
+        splice/reorder the chain — the durable resolution binds the honest
+        parent linkage, so a forged contiguity BLOCKS."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(r, parent_chain_digest="a" * 64)
+            )
+        )
+
+    def test_delta_changed_paths_tamper_forge_blocks(self):
+        """Tamper `delta_changed_paths` (the escalation input) on the client
+        record — the durable resolution binds the honest live-diff path set."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, delta_changed_paths=("pkg/UNREVIEWED.py",)
+                )
+            )
+        )
+
+    def test_escalation_suppression_forge_blocks(self):
+        """Suppress the round `escalation` on the client record (present it as a
+        narrower non-escalated round) — the durable resolution binds the honest
+        escalation decision."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, escalation=fp.Escalation(required=True, trigger="protected-path")
+                )
+            )
+        )
+
+    def test_extra_provenance_seat_forge_blocks(self):
+        """P0-2 (codex): an EXTRA provenance seat outside the expected manifest,
+        reusing genuine durable metadata but with a flipped verdict, would go
+        unbound (the binding loop iterates only the expected set). The seat-set
+        must EQUAL the expected manifest → BLOCK."""
+        extra = _seat(
+            "gemini:y:high", vendor_leg="gemini", epoch=2, verdict="AGREE",
+            seat_instance_id="gemini:y:high@2",
+        )
+        self._assert_blocks(self._fixture(extra_artifact_delta_seats=(extra,)))
 
 
 # --------------------------------------------------------------------------- #
