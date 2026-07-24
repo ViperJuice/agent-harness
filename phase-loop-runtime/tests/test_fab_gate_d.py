@@ -458,6 +458,7 @@ class RoundAuthenticityForgeTest(GitRepoTestCase):
         # BEFORE verify_chain / escalation checks, so the round only needs to be a
         # structurally-valid DeltaReviewRecord the artifact can hold).
         delta = fp.DeltaReviewRecord.build(
+            epoch=2,
             policy=None, review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), material_digests=(),
             parent_digest=candidate.patch_digest, parent_chain_digest=c0, delta_head_sha=head,
             delta_changed_paths=(), delta_commits=(), resolved_finding_ids=(), carried_forward_finding_ids=(),
@@ -544,6 +545,7 @@ class DeltaChainGateTest(GitRepoTestCase):
         # round still needs at least one real seat that actually reviewed it.
         delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=()),)
         delta_record = fd.build_delta_round(
+            epoch=3,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -619,6 +621,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         self.write("pkg/c.py", "small disjoint delta\n")
         delta_head = self.commit("c2 small disjoint delta, zero delta-round seats")
         delta_record = fd.build_delta_round(
+            epoch=4,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -674,6 +677,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         self.assertEqual(cf.reopened_finding_ids, ("f1",))
         review_scope = fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY)
         raw_record = fp.DeltaReviewRecord.build(
+            epoch=5,
             policy={"path": fd.BOUNDARY_MANIFEST_PATH, "source_rev": base, "digest": "d" * 64},
             review_scope=review_scope,
             material_digests=(),
@@ -721,6 +725,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat disagrees")
         disagree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="DISAGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=6,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -753,6 +758,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat never verdicted")
         unverdicted_seat = _seat("codex:x:high", epoch=2, required=True, verdict=None, finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=7,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -786,6 +792,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, only optional seats")
         optional_seat = _seat("codex:x:high", epoch=2, required=False, verdict="AGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=8,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -818,6 +825,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat agrees")
         agree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="AGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=9,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -966,6 +974,7 @@ class EscalationGateTest(GitRepoTestCase):
 
         with self.assertRaises(fd.EscalationInvalid):
             fd.build_delta_round(
+                epoch=10,
                 repo=self.repo,
                 base_sha=base,
                 repo_slug=self.REPO_SLUG,
@@ -991,6 +1000,7 @@ class EscalationGateTest(GitRepoTestCase):
 
         delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=("f1",)),)
         delta_record = fd.build_delta_round(
+            epoch=11,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,

@@ -1333,6 +1333,7 @@ def validate_delta_binds_to_parent(
 
 def build_delta_round(
     *,
+    epoch: int,
     repo: Path,
     base_sha: str,
     repo_slug: str,
@@ -1417,6 +1418,7 @@ def build_delta_round(
     )
 
     return DeltaReviewRecord.build(
+        epoch=epoch,
         policy=manifest_load.ref.to_dict(),
         review_scope=review_scope,
         material_digests=material_digests,

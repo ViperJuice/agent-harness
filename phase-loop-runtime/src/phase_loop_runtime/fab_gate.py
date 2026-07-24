@@ -408,6 +408,16 @@ def read_seat_outcomes(repo: Path, run_id: str) -> tuple[SeatOutcomeRecord, ...]
 
 REVIEW_ROUND_FILENAME = "fab-review-round.json"
 SCHEMA_REVIEW_ROUND = "fab.review-round.v1"
+
+# FAB piece 3b (agent-harness#191) G1 — PER-EPOCH round records. Each review
+# round (the candidate round + every delta round) has its OWN durable round
+# record (expected-seat manifest + round identity + canonical findings) at a
+# per-epoch path, so a later delta round never clobbers an earlier round's
+# anchors (piece 2 wrote/OVERWROTE a single `fab-review-round.json`). The
+# candidate round is ALWAYS epoch 1 — a FIXED value, never derived from the
+# client-supplied `artifact.seats[*].epoch` (an attacker must not choose which
+# file is "the candidate's"); delta rounds use their `DeltaReviewRecord.epoch`.
+FAB_CANDIDATE_EPOCH = 1
 _MAX_REVIEW_ROUND_BYTES = 4 * 1024 * 1024
 
 
@@ -576,14 +586,19 @@ class FabReviewRound:
         return instance
 
 
-def review_round_path_for_run(repo: Path, run_id: str) -> Path:
-    return provenance_dir_for_run(repo, run_id) / REVIEW_ROUND_FILENAME
+def review_round_path_for_run(repo: Path, run_id: str, epoch: int = FAB_CANDIDATE_EPOCH) -> Path:
+    """The PER-EPOCH round-record path (piece 3b G1). One file per epoch
+    (`fab-review-round.e{epoch}.json`), so a later delta round never overwrites an
+    earlier round's manifest / canonical findings / round identity."""
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    return provenance_dir_for_run(repo, run_id) / f"{base}.e{int(epoch)}.{ext}"
 
 
 def write_expected_seats(repo: Path, run_id: str, *, epoch: int, expected_seats: Sequence[ExpectedSeat]) -> Path:
     """Phase 1 (harness-only, BEFORE panel invocation): freeze the epoch-scoped
-    EXPECTED-seat manifest. Overwrites any prior record for this run — a run is
-    scoped afresh each review. `reviewed_head_sha`/`reviewed_material_digest`
+    EXPECTED-seat manifest for THIS epoch's round record. Overwrites only THIS
+    epoch's file — a later delta round writes a different epoch's file and never
+    clobbers it (piece 3b G1). `reviewed_head_sha`/`reviewed_material_digest`
     are bound later by `finalize_review_round`."""
     seat_ids = [s.seat_instance_id for s in expected_seats]
     if len(set(seat_ids)) != len(seat_ids):
@@ -598,16 +613,18 @@ def finalize_review_round(
     repo: Path,
     run_id: str,
     *,
+    epoch: int = FAB_CANDIDATE_EPOCH,
     reviewed_head_sha: str,
     reviewed_material_digest: str | None,
     canonical_findings: Sequence[CanonicalFinding],
 ) -> Path:
     """Phase 2 (harness-only, AFTER the closeout commit): bind the harness-issued
     round identity to the reviewed HEAD + reviewed material and pin the canonical
-    finding records. The frozen `expected_seats` manifest is preserved verbatim —
-    never re-derived from the produced set — so a required seat demanded before
-    invocation can never be dropped here (design v5 #1)."""
-    existing = read_review_round(repo, run_id)
+    finding records for THIS epoch's round record. The frozen `expected_seats`
+    manifest is preserved verbatim — never re-derived from the produced set — so a
+    required seat demanded before invocation can never be dropped here (design
+    v5 #1)."""
+    existing = read_review_round(repo, run_id, epoch)
     finding_ids = [c.finding_id for c in canonical_findings]
     if len(set(finding_ids)) != len(finding_ids):
         raise ProvenanceInvalid(
@@ -624,21 +641,24 @@ def finalize_review_round(
 
 
 def _write_review_round(repo: Path, run_id: str, record: FabReviewRound) -> Path:
-    path = review_round_path_for_run(repo, run_id)
+    # The file is keyed by the record's OWN epoch (G1) — so writing one epoch's
+    # record can never overwrite another's.
+    path = review_round_path_for_run(repo, run_id, record.epoch)
     # Durable (fsync'd) write — the round record must be on stable storage BEFORE
     # the branch ref advances (CR round 7 / codex#4).
     atomic_write_text_durable(path, record.to_json())
     return path
 
 
-def read_review_round(repo: Path, run_id: str) -> FabReviewRound:
-    """The gate's ONLY read path for the durable round record — from the trusted
-    run store, keyed by `run_id`, never a client blob. Missing / oversized /
-    malformed / digest-mismatch all raise `ReviewRoundInvalid` (a
+def read_review_round(repo: Path, run_id: str, epoch: int = FAB_CANDIDATE_EPOCH) -> FabReviewRound:
+    """The gate's ONLY read path for a durable round record — from the trusted
+    run store, keyed by `run_id` + `epoch`, never a client blob. Missing /
+    oversized / malformed / digest-mismatch all raise `ReviewRoundInvalid` (a
     `ProvenanceInvalid`, NOT `ProvenanceNotFound`), so a FAB-scoped run whose
     round record is absent BLOCKS inside `compose_gate_status` rather than
-    passing vacuously."""
-    path = review_round_path_for_run(repo, run_id)
+    passing vacuously. A record whose stored `epoch` does not match the requested
+    epoch also BLOCKS (a delta round must never be served the candidate's file)."""
+    path = review_round_path_for_run(repo, run_id, epoch)
     try:
         if path.stat().st_size > _MAX_REVIEW_ROUND_BYTES:
             raise ReviewRoundInvalid(
@@ -653,7 +673,16 @@ def read_review_round(repo: Path, run_id: str) -> FabReviewRound:
             f"no durable review-round record for run_id={run_id!r} (fail-closed): {exc}"
         ) from exc
     data = _load_json_fail_closed(text, max_bytes=_MAX_REVIEW_ROUND_BYTES)
-    return FabReviewRound.from_dict(data)
+    record = FabReviewRound.from_dict(data)
+    # Defense-in-depth (G1): the file name encodes the epoch, but re-assert the
+    # stored epoch matches what was requested — a mismatched record (e.g. a
+    # candidate file symlinked/renamed under a delta epoch) BLOCKS.
+    if record.epoch != epoch:
+        raise ReviewRoundInvalid(
+            f"review-round record for run_id={run_id!r} has epoch={record.epoch!r} but epoch={epoch!r} "
+            "was requested (fail-closed, G1: a round must never be served another epoch's record)"
+        )
+    return record
 
 
 def cross_check_round_authenticity(

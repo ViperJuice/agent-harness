@@ -803,6 +803,16 @@ class DeltaReviewRecord:
     part of a `delta_chain`."""
 
     schema: str = SCHEMA_DELTA_REVIEW
+    # design v5 #3 (agent-harness#191) — EXPLICIT per-round epoch. Required (no
+    # default): the gate fetches THIS round's per-epoch durable round record
+    # (expected-seat manifest + canonical findings + round identity) by this
+    # value, so a delta round with no epoch (or a derived-from-empty-seats one)
+    # could otherwise evade completeness (0 expected, 0 provided → trivial pass).
+    # Bound tamper-evidently via the whole-artifact `artifact_digest` (it rides in
+    # `to_dict`); the gate additionally re-binds it against this round's own head
+    # (`reviewed_head_sha == delta_head_sha`), so a wrong epoch fetches a
+    # non-matching record → BLOCK, never a bypass.
+    epoch: int
     policy: Any = None
     review_scope: ReviewScope
     material_digests: tuple[MaterialDigest, ...] = ()
@@ -830,6 +840,7 @@ class DeltaReviewRecord:
     def build(
         cls,
         *,
+        epoch: int,
         policy: Any,
         review_scope: ReviewScope,
         material_digests: Sequence[MaterialDigest],
@@ -865,6 +876,7 @@ class DeltaReviewRecord:
             parent_chain_digest=parent_chain_digest,
         )
         return cls(
+            epoch=epoch,
             policy=policy,
             review_scope=review_scope,
             material_digests=material_tuple,
@@ -904,6 +916,7 @@ class DeltaReviewRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
+            "epoch": self.epoch,
             "policy": self.policy,
             "review_scope": self.review_scope.to_dict(),
             "material_digests": [m.to_dict() for m in self.material_digests],
@@ -927,6 +940,7 @@ class DeltaReviewRecord:
         _reject_unknown_keys(d, cls, context=f"{cls.__name__}.from_dict")
         return cls(
             schema=_req_str(d, "schema"),
+            epoch=_req_int(d, "epoch"),
             policy=d.get("policy"),
             review_scope=ReviewScope.from_dict(_req(d, "review_scope")),
             material_digests=tuple(MaterialDigest.from_dict(m) for m in d.get("material_digests", [])),

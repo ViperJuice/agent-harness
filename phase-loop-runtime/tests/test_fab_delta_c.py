@@ -1256,6 +1256,7 @@ class CarryForwardTest(unittest.TestCase):
 
     def test_is_carry_forward_eligible_only_at_reviewed_clean(self):
         base_kwargs = dict(
+            epoch=2,
             policy=None,
             review_scope=_delta_review_scope(),
             material_digests=(),
@@ -1354,6 +1355,7 @@ class DeltaBindingValidationTest(GitRepoTestCase):
         self.write("b.py", "unrelated new file\n")
         delta_head = self.commit("c1 delta")
         record = fd.build_delta_round(
+            epoch=2,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1470,6 +1472,7 @@ class DeltaBindingValidationTest(GitRepoTestCase):
         self.write("b.py", "unrelated new file\n")
         delta_head = self.commit("c1 delta")
         record = fp.DeltaReviewRecord.build(
+            epoch=3,
             policy=None,
             review_scope=_delta_review_scope(),
             material_digests=(),
@@ -1522,6 +1525,7 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         delta_head = self.commit("c1 small disjoint delta")
 
         record = fd.build_delta_round(
+            epoch=4,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1566,6 +1570,7 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         delta_head = self.commit("c1 delta touching auth")
 
         record = fd.build_delta_round(
+            epoch=5,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1594,6 +1599,7 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         delta_head = self.commit("c1 delta touching auth")
         with self.assertRaises(fd.EscalationInvalid):
             fd.build_delta_round(
+                epoch=6,
                 repo=self.repo,
                 base_sha=base,
                 repo_slug=self.REPO_SLUG,
@@ -1625,6 +1631,7 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         self.write(fd.BOUNDARY_MANIFEST_PATH, _WEAKENED_MANIFEST)
         d1_head = self.commit("c1 weaken the manifest")
         round1 = fd.build_delta_round(
+            epoch=7,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1648,6 +1655,7 @@ class AcceptanceCriteriaTest(GitRepoTestCase):
         d2_head = self.commit("c2 touches auth only, manifest untouched this round")
 
         round2 = fd.build_delta_round(
+            epoch=8,
             repo=self.repo,
             base_sha=base,  # constant across the whole chain, design §5.1
             repo_slug=self.REPO_SLUG,
@@ -1700,6 +1708,7 @@ class ReopenedFindingCorroborationTest(GitRepoTestCase):
         base, delta_head, f1 = self._base_and_intersecting_delta()
         with self.assertRaises(fd.ResolvedClaimUnverified):
             fd.build_delta_round(
+                epoch=9,
                 repo=self.repo,
                 base_sha=base,
                 repo_slug=self.REPO_SLUG,
@@ -1721,6 +1730,7 @@ class ReopenedFindingCorroborationTest(GitRepoTestCase):
         base, delta_head, f1 = self._base_and_intersecting_delta()
         seats = (_seat(finding_ids=("f1",), verdict="AGREE"),)
         record = fd.build_delta_round(
+            epoch=10,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1751,6 +1761,7 @@ class ReopenedFindingCorroborationTest(GitRepoTestCase):
         self.write("src/auth/login.py", "touches a protected surface\n")
         delta_head = self.commit("c1 delta touching auth")
         record = fd.build_delta_round(
+            epoch=11,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,

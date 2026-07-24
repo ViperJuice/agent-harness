@@ -800,6 +800,7 @@ class EquivalenceBindingFromArtifactTest(unittest.TestCase):
             escalation = fp.Escalation(required=False, trigger=None)
             delta_scope = fp.ReviewScope(mode="delta-only", reviewed_material_digest="d" * 64, covers_patch_digest=None)
             record = fp.DeltaReviewRecord.build(
+                epoch=2,
                 policy=boundary.to_dict(),
                 review_scope=delta_scope,
                 material_digests=(),

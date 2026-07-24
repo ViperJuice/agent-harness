@@ -91,7 +91,8 @@ class CloseoutWiringTest(unittest.TestCase):
         self.assertIsNone(result)
         files = self._run_store_files(run_id)
         self.assertIn(fg.SEAT_OUTCOMES_FILENAME, files)
-        self.assertIn(fg.REVIEW_ROUND_FILENAME, files)
+        # piece 3b G1: the round record is now PER-EPOCH (candidate = epoch 1).
+        self.assertIn(fg.review_round_path_for_run(self.repo, run_id, fg.FAB_CANDIDATE_EPOCH).name, files)
         durable = fg.read_seat_outcomes(self.repo, run_id)
         self.assertEqual(len(durable), 2)
         self.assertEqual({d.verdict for d in durable}, {"AGREE"})
