@@ -603,6 +603,36 @@ def test_no_pinned_target_fails_closed_never_publishes_ambient_head(tmp_path, mo
     assert remote_tip_after == remote_tip_before, "the remote ref must be untouched (no ambient-HEAD publish)"
 
 
+def test_pinned_push_eligibility_refuses_non_fast_forward(tmp_path):
+    """CR round 11 (grok nit): `_fab_pinned_push_eligibility` refuses when the
+    PINNED remote-tracking ref holds commits the gated candidate does not contain
+    (a non-fast-forward), and allows a fast-forward / first publish. The decision
+    is judged against the pinned coordinates only — never ambient HEAD."""
+    repo, _ = _setup_repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    # A commit AHEAD of `base`, published to the pinned remote-tracking ref.
+    ahead = _git(repo, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "remote moved")
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", ahead], check=True)
+
+    # Candidate == base is BEHIND origin/main by one commit → refuse (non-ff).
+    behind = R._fab_pinned_push_eligibility(
+        repo, remote="origin", push_ref="refs/heads/main", candidate_sha=base
+    )
+    assert behind == {"allowed": False, "refusal_reason": "behind_upstream"}
+
+    # Candidate == the advanced tip → nothing to be behind → allowed (fast-forward).
+    ff = R._fab_pinned_push_eligibility(
+        repo, remote="origin", push_ref="refs/heads/main", candidate_sha=ahead
+    )
+    assert ff == {"allowed": True}
+
+    # No known remote-tracking ref for the pinned target → first publish → allowed.
+    first = R._fab_pinned_push_eligibility(
+        repo, remote="origin", push_ref="refs/heads/does-not-exist", candidate_sha=base
+    )
+    assert first == {"allowed": True}
+
+
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
     """Byte-neutral: with PHASE_LOOP_FAB OFF, the closeout uses the normal
     `git commit` path and completes; a resume hits the unchanged noop path."""

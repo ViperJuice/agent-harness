@@ -8737,13 +8737,17 @@ def _perform_phase_closeout_impl(
     # the `closeout_mode == "push"` block can push it instead of ambient HEAD.
     fab_gated_sha = None
     # The immutable push COORDINATES (remote + destination ref) captured at GATE
-    # time for the FAB path (CR round 9/10 / codex#4), so a concurrent HEAD switch
-    # after gating can never re-derive the ref from ambient topology and push the
-    # gated candidate to the wrong branch. Only the COORDINATES are pinned here —
-    # the push ELIGIBILITY (clean / not-behind) is judged FRESH post-advance
-    # (pre-gate the worktree is still dirty, so the eligibility would always be
-    # False — the CR round-9 bug that made FAB push mode never publish). None on
-    # the non-FAB path.
+    # time for the FAB path (CR round 9/10/11 / codex#4), so a concurrent HEAD
+    # switch after gating can never re-derive the ref from ambient topology and
+    # push the gated candidate to the wrong branch. Only the COORDINATES are
+    # pinned here; the push ELIGIBILITY is judged post-advance and is BEHIND-ONLY
+    # (non-fast-forward vs the PINNED remote-tracking ref — see
+    # `_fab_pinned_push_eligibility`). There is deliberately NO "clean" check: a
+    # `git status`-style clean test is inherently ambient (it reports the worktree
+    # relative to *current* HEAD), so a concurrent switch would poison it, and it
+    # is meaningless for the IMMUTABLE gated object we push. None on the non-FAB
+    # path (fail-closed: a FAB candidate that advanced with no pinned coordinates
+    # publishes NOTHING rather than falling through to the ambient-HEAD push).
     fab_push_coords = None
 
     def _closeout_event() -> LoopEvent:
