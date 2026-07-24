@@ -744,11 +744,20 @@ def _resolve_admission_fab_run_id(
             f"provenance could not be read (fail-closed, agent-harness#191 piece 3a): {exc}"
         )
 
-    if artifact.candidate.head_sha != admitted_head_sha:
+    # Compare the admitted head against the artifact's RESOLVED FINAL head, not
+    # the candidate head verbatim (piece 3b): a re-admitted DELTA artifact still
+    # has `candidate.head_sha == old_admitted` (the candidate round covers
+    # base..old_admitted), while the newly-admitted head is the final delta
+    # round's head. 3a's `candidate.head` check was the no-chain special case; a
+    # delta chain's admitted head is `delta_chain[-1].delta_head_sha`. Reusing the
+    # candidate-only check would false-BLOCK every successful re-admission. Still
+    # fail-closed on mismatch (a torn / ambiguous re-admission).
+    final_head = artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
+    if final_head != admitted_head_sha:
         return None, (
-            f"fab-admission-head-mismatch: run_id={plumbed_run_id!r} — provenance candidate head "
-            f"{artifact.candidate.head_sha!r} != broker-admitted head {admitted_head_sha!r} "
-            "(fail-closed, agent-harness#191 piece 3a: torn / ambiguous admission)"
+            f"fab-admission-head-mismatch: run_id={plumbed_run_id!r} — provenance resolved-final head "
+            f"{final_head!r} != broker-admitted head {admitted_head_sha!r} "
+            "(fail-closed, agent-harness#191 piece 3a/3b: torn / ambiguous admission)"
         )
     return plumbed_run_id, None
 
