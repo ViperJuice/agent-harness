@@ -10,11 +10,11 @@ Cross-platform (macOS / Linux). Replace `claude` with `codex`, `gemini`, or `ope
 
 ```sh
 # clone-then-run (you can read the script first):
-git clone https://github.com/ViperJuice/agent-harness
+git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness all   # all four harnesses (or claude|codex|gemini|opencode)
 
 # …or the one-liner:
-curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
+curl -fsSL https://raw.githubusercontent.com/Consiliency/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
 ```
 
 Pin a specific release for the whole team with `--ref v0.1.5`.
@@ -64,4 +64,4 @@ integration exists but is entirely optional; you don't need it.
 - **Already have a `phase-loop` on PATH?** Check which one wins with
   `command -v phase-loop` and `phase-loop --version`.
 
-Repo + issues: <https://github.com/ViperJuice/agent-harness> · Apache-2.0.
+Repo + issues: <https://github.com/Consiliency/agent-harness> · Apache-2.0.

@@ -2022,7 +2022,7 @@ green.
   (escalate → one `block` finding; proceed_degraded → one `warn` finding; ratified → none).
 
 - **`review_gate_block` now persists the ACTUAL panel finding body
-  (`ViperJuice/agent-harness#80`).** A governed pre-merge block previously persisted only
+  (`Consiliency/agent-harness#80`).** A governed pre-merge block previously persisted only
   the generic `panel_block` reason ("panel leg gemini raised a blocking concern"), and the
   panel scratch dir was torn down after the leg completed — so the concrete review a
   non-human repair needs was unrecoverable. `ReviewFinding` gains an optional `body` field;
@@ -2031,7 +2031,7 @@ green.
   durable state/handoff/ledger artifacts. Byte-neutral for every existing caller (the field
   defaults to `None`). Closes #80.
 
-- **SHA-bound agent-review-gate (`ViperJuice/agent-harness#88`).** Findings and board facts
+- **SHA-bound agent-review-gate (`Consiliency/agent-harness#88`).** Findings and board facts
   carry the reviewed head SHA (`ReviewFinding.reviewed_sha`, `BoardFacts.reviewed_sha`);
   `governed_planning_gate(reviewed_sha=…)` threads it through, and
   `closeout_validators.verdict_binds_to(finding, head_sha)` binds a verdict to the EXACT
@@ -2066,7 +2066,7 @@ green.
   dir that never contains the repo).
 
 - **Known deferred gap (out of scope, intentionally left as-is) — filed as
-  ViperJuice/agent-harness#177:** the codex product-loop `review` leg is launched
+  Consiliency/agent-harness#177:** the codex product-loop `review` leg is launched
   with `--sandbox danger-full-access` (write-capable). Codex *honors* `--sandbox
   read-only`, so this is trivially closable later by threading the `review` action
   into `build_codex_command`; it is left untouched here per phase scope (the phase
@@ -2140,7 +2140,7 @@ green.
   durable trail) and `to_blocker()` (the non-human hold, or `None` when granted).
 
 - **Release-dispatch concurrency no longer self-blocks a wrapped executor
-  (`ViperJuice/agent-harness#146`).** `DispatchLock` previously refused a nested
+  (`Consiliency/agent-harness#146`).** `DispatchLock` previously refused a nested
   release-dispatch run with `concurrent_dispatch` because the outer run necessarily
   already held the per-roadmap lock. The lock now recognises its OWN run on contention
   via a caller-identity exclusion in `dispatch_lock.py`: injection-free by default (the
@@ -2154,7 +2154,7 @@ green.
   (runner-side injection) is a later refinement deferred to RUNCORE2. Closes #146.
 
 - **Typed, metadata-only operator approval for release-dispatch launches
-  (`ViperJuice/agent-harness#145`).** New `release_guard.OperatorApproval` +
+  (`Consiliency/agent-harness#145`).** New `release_guard.OperatorApproval` +
   `operator_approval_from(payload)` parser: a typed record of the approved target labels
   plus provenance (timestamp, source, watch-window owner, roadmap/phase/run identity),
   with a fail-closed `covers(targets)` predicate (every mutated target must be explicitly
@@ -2274,7 +2274,7 @@ green.
   tailnet exposure; SSH workarounds, Funnel, second app-servers, and arbitrary
   proxy methods remain forbidden.
 
-- **Fix task-message persistence compatibility (`ViperJuice/agent-harness#165`).**
+- **Fix task-message persistence compatibility (`Consiliency/agent-harness#165`).**
   Resolve governed approval sources by Codex app-server's persisted
   `userMessage.clientId`, not its separately assigned item `id`, and require a
   distinct `<source-client-id>-approval` user message for the exact JSON body.
@@ -2293,8 +2293,8 @@ CLEANSHIP — a single-writer backlog closeout of confirmed phase-loop **runner*
 bugs plus **roadmap-discovery** hygiene, landed on top of the post-`0.6.2`
 EXECDISPATCH (default-executor AUTOSEL) and adoptability platform work below.
 Behavioral changes in the executor-governance AUTO gate
-(`ViperJuice/agent-harness#153`) and advisor-board availability
-(`ViperJuice/agent-harness#151`) motivate the minor bump.
+(`Consiliency/agent-harness#153`) and advisor-board availability
+(`Consiliency/agent-harness#151`) motivate the minor bump.
 
 ### Added
 
@@ -2328,7 +2328,7 @@ Behavioral changes in the executor-governance AUTO gate
 ### Fixed
 
 - **Governed dry-run no longer performs closeout side effects
-  (`ViperJuice/agent-harness#78`).** A `phase-loop run … --dry-run
+  (`Consiliency/agent-harness#78`).** A `phase-loop run … --dry-run
   --closeout-mode commit` against a phase already in `awaiting_phase_closeout`
   entered `_perform_phase_closeout` — launching the governed premerge panel and
   staging the worktree — instead of remaining side-effect-free. The two
@@ -2340,7 +2340,7 @@ Behavioral changes in the executor-governance AUTO gate
   closeout body stays side-effect-free by construction.
 
 - **`--closeout-allow-unowned` breaks through a sticky closeout scope violation on
-  rerun (`ViperJuice/agent-harness#71`).** After a partial closeout committed the
+  rerun (`Consiliency/agent-harness#71`).** After a partial closeout committed the
   phase-owned subset and blocked human-required with
   `blocker_class=closeout_scope_violation` over a live unowned remainder, an
   operator rerun with a non-empty `--closeout-allow-unowned <reason>` recorded the
@@ -2364,7 +2364,7 @@ Behavioral changes in the executor-governance AUTO gate
   downgrading to a non-human `dirty_worktree_conflict`.
 
 - **A valid planned repair closeout clears the stale blocker instead of looping
-  repair (`ViperJuice/agent-harness#59`).** When a bounded repair child reshaped
+  repair (`Consiliency/agent-harness#59`).** When a bounded repair child reshaped
   the plan and emitted a valid closeout (`terminal_status=planned`,
   `verification_status=not_run`, `dirty_paths=[]`, no blocker, `human_required=null`)
   leaving the tree clean, the parent runner kept the stale non-human blocked state
@@ -2376,7 +2376,7 @@ Behavioral changes in the executor-governance AUTO gate
   truncated/partial child payload cannot clear a blocker.
 
 - **Claude `subagent`/`agent_team` authoring actions auto-degrade to solo instead
-  of an opaque TEAMGOV block (`ViperJuice/agent-harness#153`).** A claude run in
+  of an opaque TEAMGOV block (`Consiliency/agent-harness#153`).** A claude run in
   `subagent` or `agent_team` mode whose sub-step is an authoring action
   (`plan`/`roadmap`/`maintain-skills` — the modes' `disallowed_actions`) previously
   terminated with a bare policy sentence even though team semantics are meaningless
@@ -2393,7 +2393,7 @@ Behavioral changes in the executor-governance AUTO gate
   block now carries actionable remediation in the runner terminal.
 
 - **`phase-loop status` no longer dirties `plans/manifest.json`
-  (`ViperJuice/agent-harness#62`).** A `phase-loop status` (or `handoff`) that
+  (`Consiliency/agent-harness#62`).** A `phase-loop status` (or `handoff`) that
   reconciled the plan manifest could append a synthetic auto-import row or flip a
   missing-file entry to `orphaned`, silently mutating a tracked file on a pure read
   path. `reconcile()` now takes a keyword-only `read_only` flag (default `False`,
@@ -2407,7 +2407,7 @@ Behavioral changes in the executor-governance AUTO gate
   new dedup logic was required.
 
 - **Advisor board no longer seats an unauthenticated vendor
-  (`ViperJuice/agent-harness#151`, IF-0-REVIEWGOV-1).** `compose_review_board` now
+  (`Consiliency/agent-harness#151`, IF-0-REVIEWGOV-1).** `compose_review_board` now
   composes on `is_available ∧ auth_ok`: a PATH-present-but-unauthenticated vendor
   (e.g. a `grok` binary on PATH with no logged-in session) is treated as **down** —
   dropped and backfilled onto an authenticated vendor with a distinct lens, exactly
@@ -2439,7 +2439,7 @@ Behavioral changes in the executor-governance AUTO gate
   stale entries are marked to no longer resolve a completed roadmap on a bare run.
 
 - **Regression guard: read/write status parity on an orphaned-entry + renamed-plan
-  repo (`ViperJuice/agent-harness#162`).** The `#162` follow-up (grok CR of READONLY
+  repo (`Consiliency/agent-harness#162`).** The `#162` follow-up (grok CR of READONLY
   `#62`) hypothesized that a read-only `phase-loop status`/`handoff` over a manifest
   entry whose plan file was renamed would diverge from a write-intent `reconcile()`.
   Verified at primary source that this does NOT reproduce on this base (the
@@ -2461,7 +2461,7 @@ Behavioral changes in the executor-governance AUTO gate
   matters only if that invariant changes.
 
 - **`claude-plan-detailed` is usable outside Plan Mode and defaults to
-  `.consiliency/plans/` (`ViperJuice/agent-harness#87`).** Non-Plan-Mode invocation
+  `.consiliency/plans/` (`Consiliency/agent-harness#87`).** Non-Plan-Mode invocation
   is now a first-class path: the skill writes the plan artifact + handoff without
   calling `ExitPlanMode` or gating on a plan-approval flow. When Plan Mode is active
   it still calls `ExitPlanMode`. Detailed plans now default to
@@ -2481,7 +2481,7 @@ Behavioral changes in the executor-governance AUTO gate
 ### Security
 
 - **grok `execute` runs with a `--disallowed-tools` deny-list that removes privileged
-  non-coding built-ins (`ViperJuice/agent-harness#154`).** The grok `execute` leg now
+  non-coding built-ins (`Consiliency/agent-harness#154`).** The grok `execute` leg now
   subtracts the scheduler (`scheduler_create`/`scheduler_delete`/`scheduler_list`/
   `monitor`) and image/video (`image_gen`/`image_edit`/`image_to_video`/
   `reference_to_video`) built-in families while keeping grok's coding tools
@@ -2495,7 +2495,7 @@ Behavioral changes in the executor-governance AUTO gate
 
 ### Known open / deferred
 
-- **`ViperJuice/agent-harness#154` (residual) — grok `spawn_subagent` cannot be
+- **`Consiliency/agent-harness#154` (residual) — grok `spawn_subagent` cannot be
   disabled from the CLI.** NEITHER `--disallowed-tools spawn_subagent` NOR the
   dedicated `--no-subagents` flag stops a headless grok leg from spawning (both
   verified BEHAVIORALLY — a forced spawn still succeeds with a live `subagent_id`).
@@ -2504,12 +2504,12 @@ Behavioral changes in the executor-governance AUTO gate
   it, so the gap is documented, not silently over-claimed. #154 stays open on this
   residual.
 
-- **`ViperJuice/agent-harness#164` — advisor-board manifest fragility (open).** The
+- **`Consiliency/agent-harness#164` — advisor-board manifest fragility (open).** The
   advisor-board manifest ingestion remains fragile to malformed/partial manifests;
   tracked separately from the READONLY `#62` read-only fix and the `#162` parity
   guard above. Not addressed in this release.
 
-- **`ViperJuice/agent-harness#84` — explicit-`--phase` serial selection
+- **`Consiliency/agent-harness#84` — explicit-`--phase` serial selection
   (investigation).** The reported serial-path symptom (`--phase ROOM` repairs a
   blocked `SEAL` instead of dispatching the explicit ready phase) does **not**
   reproduce on current `main`: the serial selector already honors an explicit
@@ -2520,14 +2520,14 @@ Behavioral changes in the executor-governance AUTO gate
   reproducible case.
 
 - **REVIEWGOV W3/W4 deferred to the next roadmap (non-goals).** The review-policy
-  layer — `ViperJuice/agent-harness#88` (SHA-bound review gate),
-  `ViperJuice/agent-harness#145`/`#146` (release-dispatch approval + concurrency),
+  layer — `Consiliency/agent-harness#88` (SHA-bound review gate),
+  `Consiliency/agent-harness#145`/`#146` (release-dispatch approval + concurrency),
   and `governed-pipeline#74` (governed merge-policy consumer) — is out of scope for
   CLEANSHIP and recorded here as an explicit non-goal.
 
 ### Platform work landed since 0.6.2 (EXECDISPATCH + adoptability)
 
-- **Authenticated cross-host task-message proof resolver (`ViperJuice/agent-harness#155`).**
+- **Authenticated cross-host task-message proof resolver (`Consiliency/agent-harness#155`).**
   Added neutral `task-message-probe` and `task-message-resolve` commands backed by
   the Codex app-server's authenticated WebSocket `thread/read` protocol. The
   resolver accepts only an exact, pre-identified two-message envelope (source
@@ -2745,7 +2745,7 @@ IF-0-AHADOPT-1 + IF-0-AHADOPT-2).
 - **Multi-repo issue/PR reference convention.** Adds a root `AGENTS.md`
   (imported by a root `CLAUDE.md`) documenting that issue/PR numbers must be
   qualified with their repo (`agent-harness#130` or
-  `ViperJuice/agent-harness#130`), never a bare `#130`, since the fleet is
+  `Consiliency/agent-harness#130`), never a bare `#130`, since the fleet is
   multi-repo. The same convention is folded into the shipped phase-loop execute
   skills (`*-execute-phase` and `*-execute-detailed` across all four harnesses)
   at their report/handoff/PR-body points, and the neutral bundle

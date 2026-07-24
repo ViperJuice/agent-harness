@@ -206,7 +206,7 @@ def test_installed_sha_must_match_exact_vcs_provenance(monkeypatch) -> None:
         def read_text(self, name: str) -> str:
             assert name == "direct_url.json"
             return json.dumps({
-                "url": "https://github.com/ViperJuice/agent-harness.git",
+                "url": "https://github.com/Consiliency/agent-harness.git",
                 "subdirectory": "phase-loop-runtime",
                 "vcs_info": {"vcs": "git", "requested_revision": SHA, "commit_id": SHA},
             })

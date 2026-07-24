@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-agent-harness.sh — off-tailnet collaborator installer for the PUBLIC
-# agent-harness (https://github.com/ViperJuice/agent-harness).
+# agent-harness (https://github.com/Consiliency/agent-harness).
 #
 # Needs NO dotfiles clone, NO 1Password, NO Homebrew, NO tailnet. Cross-OS
 # (macOS / Linux). Installs:
@@ -12,7 +12,7 @@
 #   ./install-agent-harness.sh [--harness claude|codex|gemini|opencode|all] [--ref vX.Y.Z]
 #   (--harness all installs the skills for EVERY harness; the runtime is shared.)
 # Env overrides:
-#   AGENT_HARNESS_REPO   (default https://github.com/ViperJuice/agent-harness)
+#   AGENT_HARNESS_REPO   (default https://github.com/Consiliency/agent-harness)
 #   AGENT_HARNESS_REF    (default: auto-resolved from the checked-in RELEASE_PIN;
 #                         set to override — no hardcoded stale ref)
 #   AGENT_HARNESS_HARNESS (default claude; use "all" for every harness)
@@ -20,7 +20,7 @@
 #   AGENT_HARNESS_SKILL_DEST (override the harness skill root)
 set -euo pipefail
 
-REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
+REPO="${AGENT_HARNESS_REPO:-https://github.com/Consiliency/agent-harness}"
 
 # Resolve the release ref WITHOUT a hardcoded pin. Order:
 #   1. AGENT_HARNESS_REF override (explicit wins);

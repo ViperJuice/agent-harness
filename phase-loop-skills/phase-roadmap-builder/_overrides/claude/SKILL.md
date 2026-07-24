@@ -236,7 +236,7 @@ If neither the `phase-loop` console script nor the `phase_loop_runtime` package
 is importable (an incomplete install), do not hand off a roadmap checked only by
 eye: install the runtime from the public agent-harness
 (`scripts/install-agent-harness.sh`, or `uv tool install
-"git+https://github.com/ViperJuice/agent-harness@v0.1.6#subdirectory=phase-loop-runtime"`)
+"git+https://github.com/Consiliency/agent-harness@v0.1.6#subdirectory=phase-loop-runtime"`)
 or report a blocker. The validator itself is always available once the runtime is
 installed — there is no "validator script missing" blocker.
 

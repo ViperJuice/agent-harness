@@ -50,11 +50,11 @@ harness's skill root** (`~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills
 no tailnet / 1Password / Homebrew / dotfiles clone:
 
 ```sh
-git clone https://github.com/ViperJuice/agent-harness
+git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness all   # claude + codex + gemini + opencode (or pick one)
 
 # …or the one-liner:
-curl -fsSL https://raw.githubusercontent.com/ViperJuice/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
+curl -fsSL https://raw.githubusercontent.com/Consiliency/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
 ```
 
 This installs the `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) **and** the

@@ -71,7 +71,7 @@ sudo /usr/bin/env -i -C / HOME=/root PATH=/usr/bin:/bin LANG=C.UTF-8 \
   test ! -e /opt/phase-loop-task-message-broker
   /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
   /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
-    "git+https://github.com/ViperJuice/agent-harness@$1#subdirectory=phase-loop-runtime"
+    "git+https://github.com/Consiliency/agent-harness@$1#subdirectory=phase-loop-runtime"
 ' sourcebroker-provision "${AGENT_HARNESS_SHA}"
 ```
 

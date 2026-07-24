@@ -3,7 +3,7 @@
 `http-surface.json` and `source-metadata.json` are copied **byte-for-byte** from
 omniagent-plus at:
 
-    repo:   ViperJuice/omniagent-plus
+    repo:   Consiliency/omniagent-plus
     commit: 744420d2e545a0c6dbdb4c58528e859e7a439a1a  (origin/main)
     path:   fixtures/omnigent/discovery/{http-surface.json,source-metadata.json}
 

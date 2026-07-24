@@ -27,10 +27,10 @@ runtime is published as [`phase-loop-runtime`](https://pypi.org/project/phase-lo
 ## What you get
 
 Everything is provided by `phase-loop-runtime`. See the
-[agent-harness README](https://github.com/ViperJuice/agent-harness#readme) for the
+[agent-harness README](https://github.com/Consiliency/agent-harness#readme) for the
 full quickstart, including the wheel-bundled skills path (`phase-loop run` with no
 dotfiles) and the interactive-harness skills path.
 
 ## License
 
-Apache-2.0 (see the [agent-harness repository](https://github.com/ViperJuice/agent-harness)).
+Apache-2.0 (see the [agent-harness repository](https://github.com/Consiliency/agent-harness)).
