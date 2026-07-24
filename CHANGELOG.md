@@ -6,6 +6,38 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FAB activation piece 3a — durable admission bridge (Consiliency/agent-harness#191)
+
+Binds the trusted FAB `fab_run_id` at ADMISSION time into the durable train
+ledger, which ACTIVATES piece 1's previously-inert merge-time re-assertion for
+FAB-produced nodes. Everything stays behind `PHASE_LOOP_FAB` (default off ⇒
+byte-for-byte unchanged; a stash-proof off-path test proves it).
+
+- **`LedgerRecord.fab_run_id`** (additive, keyword-defaulted; omitted from the
+  serialized record when `None`, so a non-FAB / flag-off ledger is byte-for-byte
+  identical to a pre-piece-3 ledger). The producer's `fab_run_id` — derived from
+  the reviewed tree pre-commit — is PLUMBED out of the node's closeout summary
+  (`reconcile._event_closeout_summary`), never recomputed from the admitted
+  head's tree (the `fab_run_id_for_reviewed_tree` contract excludes a merge/
+  admission-side head recompute) and never discovered by scanning the run store
+  for a head-matching provenance (that would be an ambiguous head→run_id lookup).
+- **Admission-time binding + fail-closed verification**
+  (`train_runner._resolve_admission_fab_run_id`): a plumbed run_id is bound only
+  when its provenance's `candidate.head_sha` equals the broker-admitted head; a
+  mismatch (torn / ambiguous), or a plumbed-but-missing/unreadable/tampered
+  artifact, BLOCKS the node. The binding is written in the SAME ledger append
+  that records the admitted head and is recovered from the ledger on resume (the
+  only source when no fresh run_loop snapshot exists) — so the merge-time re-gate
+  runs for a FAB-admitted node on both the fresh and resume paths.
+- **`run_train(fab_fetch_origin=...)`**: threads the FAB re-fetch remote to the
+  merge-time re-gate (production default `"origin"`, unchanged) only for a
+  FAB-admitted node (run_id present), so strict non-FAB merge stubs are
+  unaffected. Enables end-to-end testing of the real re-gate through `run_train`.
+- Scope: 3a is the admission bridge ONLY — no delta-review shortcut, no
+  delta-chain, no re-admission. An advanced PR head is still rejected by the
+  existing `pr-head-advanced` guard (no shortcut yet). The delta consumer +
+  delta-round authentication + atomic re-admission are piece 3b.
+
 ### FAB activation piece 2 — producer + forge-resistance trust root (Consiliency/agent-harness#191)
 
 Activates the dormant FAB gate's PRODUCER behind `PHASE_LOOP_FAB` (default off ⇒

@@ -596,3 +596,335 @@ class TestLiveMergePrFabPromotion:
                 repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc"
             )
         assert sha == "sha-realmerge"
+
+
+# =========================================================================== #
+# PIECE 3a — the durable admission bridge (Consiliency/agent-harness#191).
+#
+# Piece 3a binds the trusted `fab_run_id` at ADMISSION time (the same append
+# that records the admitted head) into the durable train ledger, which ACTIVATES
+# piece 1's previously-inert merge-time re-gate. Coverage:
+#   A1-A5  `_resolve_admission_fab_run_id` fail-closed matrix (unit).
+#   A6     fresh admission binds fab_run_id in the ledger AND threads it to the
+#          merge fn (the re-gate now runs for FAB-admitted nodes).
+#   A7     BYTE-NEUTRAL off: flag off ⇒ no fab_run_id bound even if a snapshot
+#          leaks one; the ledger record is unchanged and no run_id threads.
+#   A8     RESUME: the fab_run_id bound at first admission is recovered from the
+#          durable ledger (the only source on resume) and threaded to the merge.
+#   A9     admission head-mismatch ⇒ node BLOCKS (fail-closed), no merge.
+#   A10/11 end-to-end through run_train with the REAL `_live_merge_pr`: the
+#          re-gate fires for an admitted node — passes a legit gated head,
+#          fail-closes on tampered provenance.
+# =========================================================================== #
+
+from types import SimpleNamespace  # noqa: E402
+
+from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger  # noqa: E402
+from phase_loop_runtime.train_runner import _resolve_admission_fab_run_id  # noqa: E402
+
+from test_train_merge import _pr_is_open_true as _p3a_pr_open  # noqa: E402
+
+
+def _make_fab_repo_at(path: Path, tmp_path: Path) -> Path:
+    """A real git repo (with the origin=github-shaped / fetchsrc=real-bare two
+    remotes) at an EXPLICIT path, so a train node's workspace is a genuine FAB
+    repo (`_make_fab_repo` hardcodes `tmp_path/'work'`)."""
+    fetchsrc = tmp_path / f"{path.name}-fetchsrc.git"
+    _REAL_SUBPROCESS_RUN(["git", "init", "-q", "--bare", str(fetchsrc)], check=True)
+    path.mkdir(parents=True, exist_ok=True)
+    _REAL_SUBPROCESS_RUN(["git", "init", "-q", str(path)], check=True)
+    _git(path, "config", "user.email", "t@example.com")
+    _git(path, "config", "user.name", "Test")
+    _git(path, "remote", "add", "origin", "git@github.com:testorg/testrepo.git")
+    _git(path, "remote", "add", "fetchsrc", str(fetchsrc))
+    return path
+
+
+def _capturing_merge_stub(captured: dict):
+    """A merge fn that ACCEPTS the FAB `run_id` kwarg (unlike the strict 4-arg
+    `_make_merge_pr_stub`) and records it per workspace, so a test can assert
+    exactly which run_id the admission bridge threaded to the merge."""
+    def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+        captured[Path(workspace).name] = run_id
+        return f"sha-merged-{Path(workspace).name}"
+    return _merge_pr
+
+
+def _plumbing_snapshot(fab_run_id):
+    """A minimal run_loop snapshot carrying the producer's plumbed fab_run_id in
+    its closeout summary (no `phases` ⇒ the green-state guard is skipped)."""
+    return SimpleNamespace(
+        closeout_summary={"fab_run_id": fab_run_id},
+        phase_owned_dirty_paths=(),
+        dirty_paths=(),
+    )
+
+
+class TestPiece3aResolveAdmissionFabRunId:
+    """A1-A5 — the admission resolver's fail-closed matrix (unit)."""
+
+    def test_binds_on_head_match(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-a1")
+        assert _resolve_admission_fab_run_id(repo, head, "run-a1") == ("run-a1", None)
+
+    def test_head_mismatch_fails_closed(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, _head = _reviewed_pr(repo, "run-a2")
+        bound, reason = _resolve_admission_fab_run_id(repo, "sha-not-the-reviewed-head", "run-a2")
+        assert bound is None
+        assert reason is not None and "fab-admission-head-mismatch" in reason
+
+    def test_missing_provenance_fails_closed(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        bound, reason = _resolve_admission_fab_run_id(repo, "sha-whatever", "run-absent")
+        assert bound is None
+        assert reason is not None and "fab-admission-provenance-missing" in reason
+
+    def test_flag_off_is_inert(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-a4")
+        # A valid, matching run_id — but the flag is OFF, so nothing is bound.
+        assert _resolve_admission_fab_run_id(repo, head, "run-a4") == (None, None)
+
+    def test_no_plumbed_id_is_inert(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        assert _resolve_admission_fab_run_id(repo, "sha-x", None) == (None, None)
+
+
+def _p3a_two_fab_nodes(tmp_path: Path):
+    """Set up repo-a + repo-b as real FAB workspaces, each with a reviewed PR +
+    persisted provenance. Returns (roadmap, ws_map, run_ids, heads)."""
+    roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+    ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+    run_ids: dict = {}
+    heads: dict = {}
+    for node in roadmap.nodes:
+        ws = ws_map[node.node_id]
+        _make_fab_repo_at(ws, tmp_path)
+        rid = f"run-{ws.name}"
+        _base, head = _reviewed_pr(ws, rid)
+        run_ids[str(ws)] = rid
+        heads[str(ws)] = head
+    return roadmap, ws_map, run_ids, heads
+
+
+def _p3a_run_train(roadmap, ledger, ws_map, *, run_loop, publish, merge_fn):
+    return run_train(
+        roadmap,
+        ledger,
+        run_mode="governed",
+        resolve_workspace=lambda n: ws_map[n.node_id],
+        _run_loop=run_loop,
+        _publish=publish,
+        _set_upstream_ref_fn=lambda *a, **kw: [],
+        _preflight_fn=_preflight_pass,
+        _pr_is_open=_p3a_pr_open,
+        _live_pr_head_sha_fn=lambda ws, br: None,
+        _merge_phase_enabled=True,
+        _merge_pr_fn=merge_fn,
+        _reverify_fn=_reverify_pass,
+        _train_review_fn=_approval_review_fn,
+        _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+    )
+
+
+class TestPiece3aAdmissionBridgeIntegration:
+    def test_fresh_admission_binds_and_threads_run_id(self, tmp_path: Path, monkeypatch):
+        """A6: a fresh FAB build binds the plumbed fab_run_id in the pr_open
+        ledger record AND threads it to the merge fn — the re-gate now runs for
+        FAB-admitted nodes."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, run_ids, heads = _p3a_two_fab_nodes(tmp_path)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        publish = _make_publish_stub({
+            str(ws): {"status": "published", "branch": f"feat/{ws.name}",
+                      "head_sha": heads[str(ws)], "pr_url": f"https://gh/{ws.name}/1"}
+            for ws in ws_map.values()
+        })
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda ws, rm, **kw: (_plumbing_snapshot(run_ids[str(ws)]), []),
+            publish=publish,
+            merge_fn=_capturing_merge_stub(captured),
+        )
+
+        assert result["status"] == "merged", result
+        # Threaded to the merge fn for BOTH admitted nodes.
+        assert captured == {"repo-a": "run-repo-a", "repo-b": "run-repo-b"}
+        # Durably bound in the pr_open ADMISSION records (the later `merged`
+        # record legitimately drops it — the merge already ran; a resume would
+        # skip a merged node, so the binding is only load-bearing on pr_open).
+        pr_open = {
+            (r["node_id"], r["fab_run_id"])
+            for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()
+            for r in [json.loads(line)] if r["status"] == "pr_open"
+        }
+        assert ("repo-a/specs/plan-a.md", "run-repo-a") in pr_open
+        assert ("repo-b/specs/plan-b.md", "run-repo-b") in pr_open
+
+    def test_flag_off_admission_is_byte_neutral(self, tmp_path: Path, monkeypatch):
+        """A7: flag OFF ⇒ even a snapshot that leaks a fab_run_id binds NOTHING;
+        the ledger record carries no fab_run_id key and no run_id threads."""
+        _git_available()
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+        roadmap, ws_map, run_ids, heads = _p3a_two_fab_nodes(tmp_path)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        publish = _make_publish_stub({
+            str(ws): {"status": "published", "branch": f"feat/{ws.name}",
+                      "head_sha": heads[str(ws)], "pr_url": f"https://gh/{ws.name}/1"}
+            for ws in ws_map.values()
+        })
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda ws, rm, **kw: (_plumbing_snapshot(run_ids[str(ws)]), []),
+            publish=publish,
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merged", result
+        assert captured == {"repo-a": None, "repo-b": None}
+        state = read_ledger(ledger)
+        # The optional field is absent → byte-identical to a pre-piece-3 record.
+        assert state["repo-a/specs/plan-a.md"].fab_run_id is None
+        raw = ledger.read_text(encoding="utf-8")
+        assert "fab_run_id" not in raw
+
+    def test_resume_recovers_fab_run_id_from_ledger(self, tmp_path: Path, monkeypatch):
+        """A8: on RESUME there is no fresh snapshot — the fab_run_id bound at
+        first admission is recovered from the durable ledger and threaded to the
+        merge-time re-gate."""
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
+            head_sha="sha-a", pr_url="https://gh/a/1", merge_order=0, fab_run_id="run-repo-a"))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md", status="pr_open", branch="feat/repo-b",
+            head_sha="sha-b", pr_url="https://gh/b/1", merge_order=1, fab_run_id="run-repo-b"))
+
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda *a, **kw: (None, []),  # resume: run_loop is not invoked
+            publish=_make_publish_stub({}),
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merged", result
+        assert captured == {"repo-a": "run-repo-a", "repo-b": "run-repo-b"}
+
+    def test_admission_head_mismatch_blocks_node(self, tmp_path: Path, monkeypatch):
+        """A9: a plumbed run_id whose provenance candidate head != the admitted
+        head is a torn/ambiguous admission → the node BLOCKS, no merge runs."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, run_ids, heads = _p3a_two_fab_nodes(tmp_path)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # repo-a publishes a head that does NOT match its provenance candidate.
+        publish = _make_publish_stub({
+            str(ws): {"status": "published", "branch": f"feat/{ws.name}",
+                      "head_sha": ("sha-wrong-head" if ws.name == "repo-a" else heads[str(ws)]),
+                      "pr_url": f"https://gh/{ws.name}/1"}
+            for ws in ws_map.values()
+        })
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda ws, rm, **kw: (_plumbing_snapshot(run_ids[str(ws)]), []),
+            publish=publish,
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] != "merged"
+        assert "fab-admission-head-mismatch" in json.dumps(result, default=str)
+        assert captured == {}, "no node may merge once admission fails closed"
+
+
+class TestPiece3aRegateEndToEnd:
+    """A10/11 — the REAL `_live_merge_pr` re-gate fires for an admitted node."""
+
+    def _one_node_resume(self, tmp_path: Path, repo: Path, head: str, run_id: str):
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        # Only repo-a participates; make repo-b a merged no-op so the merge loop
+        # reaches repo-a's REAL _live_merge_pr with the ledger-bound run_id.
+        ws_map = {n.node_id: (repo if n.repo == "repo-a" else tmp_path / n.repo) for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1",
+            head_sha=head, pr_url="https://gh/a/1", merge_order=0, fab_run_id=run_id))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md", status="merged", branch="feat/repo-b",
+            head_sha="sha-b", pr_url="https://gh/b/1", upstream_merge_sha="sha-b-merged", merge_order=1))
+        return roadmap, ws_map, ledger
+
+    def test_regate_passes_legit_admitted_head(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-e2e")
+        roadmap, ws_map, ledger = self._one_node_resume(tmp_path, repo, head, "run-e2e")
+
+        fake = _make_gh_fake(base_ref="main", head=head)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            result = run_train(
+                roadmap, ledger, run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub({}),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_p3a_pr_open,
+                _live_pr_head_sha_fn=lambda ws, br: None,
+                _merge_phase_enabled=True,
+                # REAL _live_merge_pr (default merge fn) — the re-gate runs here.
+                _reverify_fn=_reverify_pass,
+                _train_review_fn=_approval_review_fn,
+                fab_fetch_origin="fetchsrc",
+            )
+        assert result["status"] == "merged", result
+
+    def test_regate_fail_closes_on_tampered_provenance(self, tmp_path: Path, monkeypatch):
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, reviewed_head = _reviewed_pr(repo, "run-e2e-drift")
+        # A later commit lands on the reviewed branch: the live head no longer
+        # matches what FAB reviewed. The admitted head in the ledger is the
+        # DRIFTED head (broker re-admitted it); only the re-gate catches it.
+        _write(repo, "a.py", "post-review drift\n")
+        drifted = _commit(repo, "c2 drift")
+        roadmap, ws_map, ledger = self._one_node_resume(tmp_path, repo, drifted, "run-e2e-drift")
+
+        fake = _make_gh_fake(base_ref="main", head=drifted)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            result = run_train(
+                roadmap, ledger, run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub({}),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_p3a_pr_open,
+                _live_pr_head_sha_fn=lambda ws, br: None,
+                _merge_phase_enabled=True,
+                _reverify_fn=_reverify_pass,
+                _train_review_fn=_approval_review_fn,
+                fab_fetch_origin="fetchsrc",
+            )
+        assert result["status"] != "merged", result
+        assert "fab-promotion-reassertion" in json.dumps(result, default=str)

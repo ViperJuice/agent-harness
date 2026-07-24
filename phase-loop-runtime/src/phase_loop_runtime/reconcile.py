@@ -1584,6 +1584,12 @@ def _event_closeout_summary(event: dict) -> dict[str, object]:
         # ah#90: surface recovery-evidence provenance at the status boundary so consumers can tell
         # a tracked-closeout recovery apart from a runner verification pass.
         "evidence_provenance": _optional_text(closeout.get("evidence_provenance")),
+        # FAB (Consiliency/agent-harness#191 piece 3a): surface the producer's
+        # fab_run_id so the train coordinator can PLUMB it (never recompute from the
+        # head) and bind it in the durable admission ledger. Absent on every non-FAB
+        # closeout (the producer sets it only on a FAB object-gate advance), so the
+        # None-filter below keeps a non-FAB summary byte-for-byte unchanged.
+        "fab_run_id": _optional_text(closeout.get("fab_run_id")),
     }
     return {key: value for key, value in summary.items() if value is not None}
 

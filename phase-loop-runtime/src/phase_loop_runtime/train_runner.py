@@ -684,6 +684,75 @@ def _fab_promotion_gate_before_merge(
     return None
 
 
+def _resolve_admission_fab_run_id(
+    workspace: Path,
+    admitted_head_sha: str,
+    plumbed_run_id: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """FAB (Consiliency/agent-harness#191 piece 3a) — resolve+verify the
+    ``fab_run_id`` to BIND to a node AT ADMISSION time. Returns
+    ``(fab_run_id_to_bind, block_reason)``.
+
+    Byte-neutral / inert (``(None, None)``) unless ``PHASE_LOOP_FAB`` is on AND
+    the node closeout PLUMBED a ``fab_run_id`` (the producer sets one only on a
+    FAB object-gate advance). ``plumbed_run_id`` is the run id the producer
+    derived from the REVIEWED (staged) tree pre-commit and surfaced through the
+    node's closeout summary — NEVER recomputed here from the admitted head's
+    tree (the ``fab_run_id_for_reviewed_tree`` contract explicitly excludes a
+    merge/admission-side head recompute) and NEVER discovered by scanning the
+    run store for a provenance matching the head (that would be the item-6
+    ambiguous head->run_id lookup). Binding the plumbed id kills that ambiguity
+    by construction.
+
+    Once a ``plumbed_run_id`` IS present it fails CLOSED, never silently
+    status-quo:
+
+      * provenance present AND ``candidate.head_sha == admitted_head_sha`` →
+        ``(run_id, None)`` — bind it; the merge-time re-gate now runs for this
+        node. (The head-match is what makes ANY plumb channel safe: a wrong id
+        can only fail closed, never bind the wrong head. At merge,
+        ``_live_merge_pr`` pins ``--match-head-commit`` to ``admitted_head_sha``,
+        so ``live_head == admitted_head == candidate.head`` transitively — the
+        bound run_id is provably for the head being merged. NOTE: piece 3b's
+        re-admission MOVES ``admitted_head``, so this equality must be
+        re-established there, not silently inherited.)
+      * provenance present but ``candidate.head_sha != admitted_head_sha`` →
+        ``(None, reason)`` — torn / ambiguous (two heads share the reviewed
+        tree, or the wrong provenance) → BLOCK.
+      * a plumbed (FAB-scoped) run_id whose provenance is missing / unreadable /
+        tampered → ``(None, reason)`` → BLOCK (a producer that signalled FAB
+        scope but left no readable artifact is broken, never "non-FAB")."""
+    from .governed_premerge import fab_promotion_enabled
+
+    if not fab_promotion_enabled() or not plumbed_run_id:
+        return None, None
+
+    from . import fab_gate
+    from .fab_provenance import ProvenanceNotFound
+
+    try:
+        artifact = fab_gate.read_provenance(workspace, plumbed_run_id)
+    except ProvenanceNotFound as exc:
+        return None, (
+            f"fab-admission-provenance-missing: run_id={plumbed_run_id!r} — the node closeout "
+            f"plumbed a FAB run_id but no provenance is readable in the workspace run store "
+            f"(fail-closed, agent-harness#191 piece 3a): {exc}"
+        )
+    except Exception as exc:  # noqa: BLE001 - fail-closed on any unreadable/tampered artifact
+        return None, (
+            f"fab-admission-provenance-unreadable: run_id={plumbed_run_id!r} — the plumbed FAB "
+            f"provenance could not be read (fail-closed, agent-harness#191 piece 3a): {exc}"
+        )
+
+    if artifact.candidate.head_sha != admitted_head_sha:
+        return None, (
+            f"fab-admission-head-mismatch: run_id={plumbed_run_id!r} — provenance candidate head "
+            f"{artifact.candidate.head_sha!r} != broker-admitted head {admitted_head_sha!r} "
+            "(fail-closed, agent-harness#191 piece 3a: torn / ambiguous admission)"
+        )
+    return plumbed_run_id, None
+
+
 def _live_merge_pr(
     workspace: Path,
     branch: str,
@@ -1403,6 +1472,13 @@ def run_train(
     _train_review_fn: Optional[Callable] = None,     # (artifact, run_mode) → LoopResult
     _pr_merged_sha_fn: Optional[Callable] = None,    # (workspace, branch, base, head_sha) → Optional[str]
     _post_merge_hook: Optional[Callable] = None,     # (workspace, node_id) → None; live prune-on-merge
+    # FAB (agent-harness#191) fetch remote for the merge-time re-gate's live
+    # equivalence recompute. Production value "origin" (byte-neutral); threaded
+    # to `_live_merge_pr` ONLY for a FAB-admitted node (run_id present), so a
+    # non-FAB merge stub never sees this kwarg. A test seam — points the fetch at
+    # a real local bare repo while `origin` stays github-shaped for identity
+    # resolution (the same two-remote pattern `_live_merge_pr` already exposes).
+    fab_fetch_origin: str = "origin",
 ) -> Dict:
     """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open [+ merge].
 
@@ -1663,6 +1739,13 @@ def run_train(
                 "admitted_head_sha": admitted_sha,
                 "pr_url": rec.pr_url,
             }
+            # FAB (agent-harness#191 piece 3a): on RESUME the fresh run_loop
+            # snapshot does not exist, so the fab_run_id bound at first admission
+            # is recovered HERE from the durable ledger record — the only source on
+            # the resume path — and fed to the P4 merge-time re-gate. None on every
+            # non-FAB node (the field is omitted from such records).
+            if rec.fab_run_id:
+                completed_nodes[nid]["fab_run_id"] = rec.fab_run_id
 
     # --- Step 4: Execute in topo order ------------------------------------
     # rebuilt_this_run tracks nodes where run_loop was actually invoked during
@@ -1740,6 +1823,12 @@ def run_train(
 
         # Mark as running (durable breadcrumb for diagnostics)
         append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
+
+        # FAB (agent-harness#191 piece 3a): the fab_run_id the node closeout
+        # PLUMBS (via its closeout summary) for this fresh build. None on the
+        # prebuilt path and whenever the producer wrote no provenance / the flag
+        # is off — resolved+verified at admission (never recomputed from head).
+        _node_fab_run_id: Optional[str] = None
 
         try:
             if getattr(node, "mode", "execute") == "prebuilt":
@@ -1837,6 +1926,14 @@ def run_train(
                 # Use getattr so we're forward-compatible with test fixtures that
                 # return lightweight SimpleNamespace objects lacking a phases field.
                 _node_snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
+                # FAB (agent-harness#191 piece 3a): PLUMB the producer's fab_run_id
+                # out of the run_loop snapshot's closeout summary (the deterministic
+                # id it derived from the reviewed tree pre-commit). Bound+verified at
+                # admission below; never recomputed from the admitted head.
+                _node_closeout_summary = getattr(_node_snapshot, "closeout_summary", None)
+                if isinstance(_node_closeout_summary, dict):
+                    _plumbed = _node_closeout_summary.get("fab_run_id")
+                    _node_fab_run_id = str(_plumbed) if _plumbed else None
                 _node_phases = getattr(_node_snapshot, "phases", None)
                 if _node_phases is not None:
                     # A node may publish a draft PR only when EVERY phase reached a
@@ -1953,6 +2050,28 @@ def run_train(
         head_sha = publish_result["head_sha"]
         pr_url = publish_result["pr_url"]
 
+        # FAB (agent-harness#191 piece 3a): bind the trusted fab_run_id at
+        # admission — the SAME append that records the admitted head — so the
+        # merge-time re-gate reads it from the durable ledger (survives resume),
+        # never a late head->run_id lookup. Verify the plumbed run_id's provenance
+        # matches the admitted head; a torn/ambiguous/broken FAB scope BLOCKS the
+        # node (fail-closed). Byte-neutral: `_resolve_admission_fab_run_id` returns
+        # `(None, None)` when the flag is off or the node produced no provenance,
+        # so a non-FAB node's ledger record is unchanged.
+        _fab_run_id_bind, _fab_block_reason = _resolve_admission_fab_run_id(
+            workspace, head_sha, _node_fab_run_id
+        )
+        if _fab_block_reason is not None:
+            append_record(
+                ledger_path,
+                LedgerRecord(node_id=nid, status="blocked", branch=branch),
+            )
+            return {
+                "status": "blocked",
+                "node_id": nid,
+                "detail": {"reason": _fab_block_reason},
+            }
+
         completed_nodes[nid] = {
             "branch": branch,
             "head_sha": head_sha,
@@ -1962,6 +2081,8 @@ def run_train(
             "admitted_head_sha": head_sha,
             "pr_url": pr_url,
         }
+        if _fab_run_id_bind is not None:
+            completed_nodes[nid]["fab_run_id"] = _fab_run_id_bind
         rebuilt_this_run.add(nid)
 
         append_record(
@@ -1974,6 +2095,7 @@ def run_train(
                 head_sha=head_sha,       # draft branch HEAD SHA
                 upstream_merge_sha=None,  # reserved for P4 (merge SHA only)
                 merge_order=i,
+                fab_run_id=_fab_run_id_bind,  # piece 3a: bound at admission (None on non-FAB)
             ),
         )
 
@@ -2253,15 +2375,20 @@ def run_train(
             # milestone piece 1: thread the node's TRUSTED FAB-scope run_id,
             # when the caller's own trusted bookkeeping carries one, so
             # `_live_merge_pr` can re-assert promotion-time equivalence
-            # immediately before merging. `completed_nodes[...]` never
-            # carries a `fab_run_id` today (no producer writes one yet — that
-            # is piece 2, out of scope here), so this is omitted for EVERY
-            # existing/production node — byte-neutral, and every pre-existing
-            # `_merge_pr_fn` test stub (fixed 4-arg signature) keeps working
-            # unchanged.
+            # immediately before merging. As of piece 3a, a FAB-produced node
+            # DOES carry a `fab_run_id` here — bound at admission and recovered
+            # from the durable ledger on resume. A non-FAB node (flag off / no
+            # provenance produced) still carries none, so this is omitted for it
+            # — byte-neutral, and every pre-existing `_merge_pr_fn` test stub
+            # (fixed 4-arg signature) keeps working unchanged.
             _fab_run_id_m = completed_nodes[_nid_m].get("fab_run_id")
             if _fab_run_id_m is not None:
                 _merge_kwargs_m["run_id"] = _fab_run_id_m
+                # Thread the FAB fetch remote alongside the run_id (same guard),
+                # so the merge-time re-gate's live equivalence recompute can be
+                # pointed at a test bare repo. A non-FAB node (no run_id) never
+                # gets this kwarg, so strict 4-arg merge stubs are unaffected.
+                _merge_kwargs_m["fab_fetch_origin"] = fab_fetch_origin
             _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
             append_record(

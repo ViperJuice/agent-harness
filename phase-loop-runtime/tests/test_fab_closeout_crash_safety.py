@@ -142,6 +142,36 @@ def test_pass_advances_ref_to_exact_gated_sha(tmp_path, monkeypatch):
     assert "pkg/mod.py" in _git(repo, "show", "--name-only", "--format=", "HEAD")
 
 
+def test_closeout_fab_run_id_surfaces_into_reconciled_snapshot(tmp_path, monkeypatch):
+    """PLUMB CHECK (agent-harness#191 piece 3a): the fab_run_id a FAB closeout
+    records on its event MUST surface into the snapshot `reconcile()` builds —
+    the EXACT snapshot `run_loop` returns to the train coordinator
+    (runner.py `run_loop` sets `snapshot = reconcile(repo, roadmap)` and copies
+    `closeout_summary` from it). If this seam is broken, the train's admission
+    bridge reads no fab_run_id, binds nothing, and the merge-time re-gate is dead
+    in production with the rest of the suite green. This is the one seam the
+    admission-bridge tests (which stub the snapshot / seed the ledger) cannot
+    see."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    _stage_change(repo)
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete", event.metadata.get("closeout", {})
+    run_id = f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"
+    assert event.metadata["closeout"].get("fab_run_id") == run_id
+
+    # Mirror run_loop's exact sequence: the closeout event is appended, then
+    # reconcile() derives the returned snapshot from the event log.
+    R.append_event(repo, event)
+    snapshot = R.reconcile(repo, roadmap)
+    assert (snapshot.closeout_summary or {}).get("fab_run_id") == run_id, (
+        "the closeout's fab_run_id must reach the reconciled snapshot the train reads "
+        f"(got closeout_summary={snapshot.closeout_summary!r})"
+    )
+
+
 def test_block_does_not_advance_ref(tmp_path, monkeypatch):
     """A FAB hard-gate BLOCK must NOT advance the ref — HEAD unchanged, phase
     blocked, and the candidate never becomes reachable."""

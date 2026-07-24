@@ -155,6 +155,14 @@ class LedgerRecord:
     head_sha: Optional[str] = None           # draft branch HEAD SHA (P3, pr_open records)
     upstream_merge_sha: Optional[str] = None  # merged-commit SHA (P4 only)
     merge_order: Optional[int] = None
+    # FAB (Consiliency/agent-harness#191 piece 3a): the trusted fab_run_id bound to
+    # this node AT ADMISSION time (the same append that records the admitted head),
+    # so the merge-time re-gate (`_fab_promotion_gate_before_merge`) reads it from a
+    # DURABLE coordinator record that survives resume — never a late head->run_id
+    # lookup. `None` on every non-FAB node (flag off, or the producer wrote no
+    # provenance); omitted from `to_dict` when `None` so flag-off ledgers stay
+    # BYTE-FOR-BYTE unchanged.
+    fab_run_id: Optional[str] = None
     ts: str = ""  # ISO-8601 UTC; auto-set on append if blank
 
     def __post_init__(self) -> None:
@@ -165,7 +173,14 @@ class LedgerRecord:
             )
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in asdict(self).items()}
+        # Omit the optional FAB field when unset so a non-FAB (flag-off) ledger is
+        # byte-for-byte identical to a pre-piece-3 ledger (the serialized JSON is
+        # `sort_keys=True`, so an absent key changes nothing).
+        return {
+            k: v
+            for k, v in asdict(self).items()
+            if not (k == "fab_run_id" and v is None)
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +216,7 @@ def append_record(path: Path, record: LedgerRecord) -> None:
             head_sha=record.head_sha,
             upstream_merge_sha=record.upstream_merge_sha,
             merge_order=record.merge_order,
+            fab_run_id=record.fab_run_id,
             ts=_utc_now(),
         )
     _assert_not_phase_loop(path)
@@ -279,6 +295,7 @@ def _dict_to_record(obj: dict) -> LedgerRecord:
         head_sha=obj.get("head_sha"),
         upstream_merge_sha=obj.get("upstream_merge_sha"),
         merge_order=obj.get("merge_order"),
+        fab_run_id=obj.get("fab_run_id"),
         ts=obj.get("ts", ""),
     )
 
