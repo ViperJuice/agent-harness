@@ -11,7 +11,7 @@ permissions:
 jobs:
   pytest:
     name: pytest (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -57,7 +57,7 @@ jobs:
 
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

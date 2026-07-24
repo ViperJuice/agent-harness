@@ -29,7 +29,7 @@ permissions:
 jobs:
   build:
     name: build + verify shim (dry-run)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +94,7 @@ jobs:
     needs: build
     # Credentialed publish ONLY on a maintainer-cut consiliency-harness-v* tag.
     if: startsWith(github.ref, 'refs/tags/consiliency-harness-v')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: pypi
     permissions:
       id-token: write
