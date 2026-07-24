@@ -327,5 +327,75 @@ def test_same_tree_replay_does_not_reuse_marker(tmp_path, monkeypatch):
     assert result is not None and result[0] == "blocked", "a same-tree replay must re-gate, not reuse another commit's marker"
 
 
+# --------------------------------------------------------------------------- #
+# CR round 4 — pending-record ABSENCE must fail closed via the pre-commit
+# backstop (the round-3 pending record introduced a regression: absence == safe).
+# --------------------------------------------------------------------------- #
+
+
+def _break_origin(repo: Path) -> None:
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "fetchsrc", "/nonexistent/origin.git"], check=True)
+
+
+def _regate_offline(monkeypatch) -> None:
+    """Route the noop re-gate through finalize with origin=fetchsrc (which is now
+    broken), so the honesty gate DECLINES — the re-gate cannot affirmatively pass."""
+    monkeypatch.setattr(R, "_fab_closeout_producer", lambda repo, **kw: (
+        prod.finalize_and_gate(repo, kw["fab_run_id"], epoch=1, reviewed_base_sha=kw["reviewed_base_sha"],
+                               reviewed_tree=kw["reviewed_tree"], committed_head_sha=kw["committed_head"],
+                               closeout_dirty_paths=kw["closeout_dirty_paths"], base_ref_name="main", origin="fetchsrc")
+    ))
+
+
+def test_orphaned_fab_commit_pending_absent_fails_closed(tmp_path, monkeypatch):
+    """CR round 4: the commit succeeds and the FAB capture/round record is on disk
+    under fab-<tree> (pre-commit), but the process died BEFORE write_pending_closeout
+    (pending file absent). The resume must NOT complete — the pre-commit backstop
+    re-derives FAB scope from the round record → re-gate → fail closed."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, committed = _capture_and_commit(repo)  # this also wrote the pending record...
+    prod._pending_path(repo, "CONTRACT").unlink()   # ...simulate the crash: pending never persisted
+    assert prod.read_pending_closeout(repo, "CONTRACT") is None
+    assert prod.is_fab_scoped(repo, run_id), "the pre-commit round record survives the crash"
+    _break_origin(repo)
+    _regate_offline(monkeypatch)
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
+    assert result is not None and result[0] == "blocked", (
+        "an orphaned FAB commit (pending absent) must fail closed via the pre-commit backstop, not complete"
+    )
+
+
+def test_corrupt_pending_file_fails_closed(tmp_path, monkeypatch):
+    """A truncated/corrupt pending file (read_pending_closeout → None) while the
+    FAB run dir + an uncleared commit exist → the backstop re-gates → block."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, committed = _capture_and_commit(repo)
+    prod._pending_path(repo, "CONTRACT").write_text("{ this is not valid json", encoding="utf-8")
+    assert prod.read_pending_closeout(repo, "CONTRACT") is None
+    _break_origin(repo)
+    _regate_offline(monkeypatch)
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
+    assert result is not None and result[0] == "blocked", "a corrupt pending file must fail closed, not complete"
+
+
+def test_unreachable_vouched_commit_blocks(tmp_path, monkeypatch):
+    """CR round 4 / codex#2: a stale pending record vouches for a commit that is no
+    longer reachable from HEAD (branch reset/off-branch). Even with a valid cleared
+    marker, the phase must NOT finalize against a gone commit → block."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, c1 = _capture_and_commit(repo)
+    prod.mark_closeout_cleared(repo, run_id, c1)  # C1 legitimately passed + cleared
+    assert prod.is_closeout_cleared(repo, run_id, c1)
+    # Reset HEAD to before C1 — the vouched commit is no longer on the branch.
+    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "HEAD~1"], check=True)
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
+    assert result is not None and result[0] == "blocked", (
+        "a cleared marker must not finalize a phase against a commit no longer reachable from HEAD"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])
