@@ -347,6 +347,67 @@ def test_control_detection(tmp_path, monkeypatch):
     assert R._fab_pre_commit_control_active(repo) is True, "malformed gpgsign → fail-closed decline"
 
 
+def test_valueless_gpgsign_declines(tmp_path, monkeypatch):
+    """CR round 8 / codex#6: a VALUELESS `[commit] gpgsign` key (valid git syntax
+    meaning TRUE — `git config --get` returns empty for it) must be read as
+    required signing → FAB declines. Raw-string parsing would fail open here."""
+    repo, _ = _setup_repo(tmp_path)
+    assert R._fab_pre_commit_control_active(repo) is False
+    # Append a valueless key directly to .git/config.
+    cfg = repo / ".git" / "config"
+    cfg.write_text(cfg.read_text() + "[commit]\n\tgpgsign\n")
+    assert _git(repo, "config", "--type=bool", "--get", "commit.gpgsign") == "true"  # git reads it as true
+    assert R._fab_pre_commit_control_active(repo) is True, "valueless gpgsign → required signing → decline"
+
+
+def test_durability_fsyncs_run_dir_and_parent(tmp_path, monkeypatch):
+    """CR round 8 / codex#5: the durability sweep must fsync not just the files but
+    the run directory AND its parent (else a crash can lose the run dir's own
+    directory entry while preserving the advanced ref)."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    _stage_change(repo)
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete"
+    run_id = event.metadata["closeout"]["fab_run_id"]
+    run_dir = fp.provenance_dir_for_run(repo, run_id)
+    fsynced: list = []
+    monkeypatch.setattr(fp, "_fsync_path", lambda path, flags: fsynced.append(str(path)))
+    fp.fsync_run_store_durable(repo, run_id)
+    assert str(run_dir) in fsynced, "the run directory itself must be fsynced"
+    assert str(run_dir.parent) in fsynced, "the run dir's PARENT (runs root) must be fsynced (codex#5)"
+    # Material snapshot files are covered by the file sweep.
+    assert any(fp.MATERIAL_SNAPSHOT_DIRNAME in p for p in fsynced), "material snapshot files fsynced"
+
+
+def test_concurrent_switch_records_gated_sha_not_ambient_head(tmp_path, monkeypatch):
+    """CR round 8 / codex#4: if HEAD is switched away from the gated branch during
+    the advance seam, the closeout must RECORD the GATED candidate SHA (the ref it
+    advanced), never ambient HEAD."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    base = _git(repo, "rev-parse", "HEAD")
+    branch_ref = "refs/heads/" + _git(repo, "symbolic-ref", "--short", "HEAD")
+    real_advance = R._fab_advance_ref
+
+    def advance_then_detach(repo_, new_sha, *, ref, expected_old):
+        ok = real_advance(repo_, new_sha, ref=ref, expected_old=expected_old)
+        # Simulate a concurrent branch switch mid-closeout: detach HEAD to base.
+        subprocess.run(["git", "-C", str(repo_), "checkout", "-q", "--detach", expected_old], check=True)
+        return ok
+
+    monkeypatch.setattr(R, "_fab_advance_ref", advance_then_detach)
+    _stage_change(repo)
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete"
+    recorded = event.metadata["closeout"]["closeout_commit"]
+    assert recorded != base, "must not record the ambient (detached) HEAD base"
+    assert recorded == _git(repo, "rev-parse", branch_ref), "recorded SHA is the gated candidate on the advanced branch"
+
+
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
     """Byte-neutral: with PHASE_LOOP_FAB OFF, the closeout uses the normal
     `git commit` path and completes; a resume hits the unchanged noop path."""

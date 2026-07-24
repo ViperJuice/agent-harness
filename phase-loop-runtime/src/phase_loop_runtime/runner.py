@@ -8732,6 +8732,10 @@ def _perform_phase_closeout_impl(
     }
     blocker = None
     status = terminal_status
+    # The gated candidate SHA when a FAB object-gate advance occurs (CR round 8);
+    # None on every non-FAB / noop / declined path. Defined at function scope so
+    # the `closeout_mode == "push"` block can push it instead of ambient HEAD.
+    fab_gated_sha = None
 
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so
@@ -9181,7 +9185,7 @@ def _perform_phase_closeout_impl(
                     # to skip (`_fab_pre_commit_control_active`); otherwise FAB
                     # DECLINES to the non-FAB `git commit` path below (team-lead
                     # decision — never silently skip a blocking check-hook).
-                    fab_kind, commit_result, fab_wrote_provenance = _fab_object_gate_commit(
+                    fab_kind, commit_result, fab_wrote_provenance, fab_gated_sha = _fab_object_gate_commit(
                         repo,
                         fab_run_id=fab_run_id,
                         reviewed_tree=reviewed_tree,
@@ -9218,7 +9222,11 @@ def _perform_phase_closeout_impl(
                         stderr=commit_result.stderr or commit_result.stdout,
                     )
                 else:
-                    commit = _git_output(repo, "rev-parse", "HEAD")
+                    # For a FAB object-gate advance, record the GATED candidate SHA
+                    # — never re-resolve ambient HEAD (a concurrent branch switch to
+                    # another branch at expected_old could otherwise make us record
+                    # the wrong, un-gated SHA — CR round 8 / codex#4).
+                    commit = fab_gated_sha or _git_output(repo, "rev-parse", "HEAD")
                     status = "planned" if terminal_status == "planned" else "complete"
                     metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
                     metadata["closeout"].update(
@@ -9229,8 +9237,8 @@ def _perform_phase_closeout_impl(
                     )
                     # FAB (Consiliency/agent-harness#191) piece 2: the object-gate
                     # above already ran the dedicated hard gate against this exact
-                    # commit BEFORE advancing the ref (so HEAD == the gated SHA) and
-                    # durably wrote provenance on a PASS. Just record it here.
+                    # commit BEFORE advancing the ref and durably wrote provenance on
+                    # a PASS. Just record it here.
                     if fab_wrote_provenance:
                         metadata["closeout"]["fab_run_id"] = fab_run_id
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
@@ -9310,7 +9318,11 @@ def _perform_phase_closeout_impl(
         if closeout_mode == "push":
             decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
             if decision.get("allowed"):
-                _git(repo, "push", str(decision["remote"]), f"HEAD:{decision['push_ref']}")
+                # Push the GATED candidate SHA on a FAB advance (never ambient
+                # HEAD, which a concurrent branch switch could change) so
+                # published == gated (CR round 8 / codex#4); non-FAB pushes HEAD.
+                push_source = fab_gated_sha or "HEAD"
+                _git(repo, "push", str(decision["remote"]), f"{push_source}:{decision['push_ref']}")
                 metadata["closeout"].update(
                     {
                         "closeout_action": "push",
@@ -9750,15 +9762,26 @@ def _fab_pre_commit_control_active(repo) -> bool:
 
     Fail-closed on uncertainty (return True): never assume "no hook / not signed"
     and silently skip a control we could not rule out (team-lead decision, CR
-    round 6/7). Covers the effective `core.hooksPath` (so husky's `.husky/` and
-    the framework `.git/hooks/*` shims are seen) and `commit.gpgsign` parsed as a
-    git boolean (an unknown/malformed value — which real `git commit` rejects —
-    fails closed)."""
-    # Required signing (git-boolean parse; unknown/malformed → decline).
-    signing = _git_output_or_empty(repo, "config", "--get", "commit.gpgsign").strip().lower()
-    if signing:  # a value is explicitly configured
-        if signing not in ("false", "0", "no", "off"):
-            return True  # true/1/yes/on OR any malformed value → fail-closed decline
+    round 6/7/8). Covers the effective `core.hooksPath` (so husky's `.husky/` and
+    the framework `.git/hooks/*` shims are seen) and `commit.gpgsign` parsed with
+    git's OWN canonical boolean parser (`--type=bool`) — so a VALUELESS
+    `[commit] gpgsign` key (valid git syntax meaning TRUE, which a raw `--get`
+    returns as empty) is correctly read as required signing, and a malformed
+    boolean value — which real `git commit` rejects — fails closed."""
+    # Required signing: git's canonical boolean parse. rc==0 → "true"/"false";
+    # rc==1 → key unset; any other rc → malformed value → fail-closed decline.
+    try:
+        sign = subprocess.run(
+            ["git", "-C", str(repo), "config", "--type=bool", "--get", "commit.gpgsign"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot probe signing → fail closed
+    if sign.returncode == 0:
+        if sign.stdout.strip().lower() == "true":
+            return True  # required signing (incl. a valueless [commit] gpgsign key)
+    elif sign.returncode != 1:
+        return True  # not "unset" (rc 1) → a malformed boolean value → fail closed
     hooks_path = _git_output_or_empty(repo, "rev-parse", "--git-path", "hooks").strip()
     if not hooks_path:
         return True  # cannot resolve the effective hooks dir → fail closed
@@ -9784,7 +9807,8 @@ def _fab_object_gate_commit(
     run the dedicated hard gate against THAT exact object, and advance the branch
     ref ONLY on a gate PASS — never on a hard-gate BLOCK, crash, or honest decline.
 
-    Returns ``(kind, commit_result, fab_wrote_provenance)`` where ``kind`` is:
+    Returns ``(kind, commit_result, fab_wrote_provenance, gated_sha)`` where
+    ``kind`` is:
       * ``"blocked"`` — hard-gate BLOCK / crash. Ref NOT advanced (candidate stays
         an unreferenced object); the caller reads ``metadata['closeout']
         ['_fab_blocker']`` and blocks.
@@ -9795,7 +9819,8 @@ def _fab_object_gate_commit(
         closeout (CR round 7 / codex#1).
       * ``"advanced"`` — the gate PASSED: provenance is durably written, the
         CONCRETE branch ref (resolved at gate time) is advanced to the exact gated
-        SHA. ``commit_result.returncode == 0``.
+        SHA (``gated_sha``). The caller MUST record/push ``gated_sha`` (not ambient
+        HEAD, which a concurrent branch switch could change — CR round 8 / codex#4).
       * ``"failed"`` — commit-tree / update-ref failure (``commit_result.returncode
         != 0``; the caller's normal commit-failure path).
 
@@ -9806,10 +9831,10 @@ def _fab_object_gate_commit(
     # the branch this closeout is on, not a symbolic HEAD re-resolved after gating.
     target_ref = _git_output_or_empty(repo, "symbolic-ref", "-q", "HEAD").strip()
     if not target_ref:
-        return "declined", None, False  # detached HEAD → fall back to `git commit`
+        return "declined", None, False, None  # detached HEAD → fall back to `git commit`
     candidate = _fab_commit_tree(repo, tree=reviewed_tree, parent=parent_sha, message=commit_message)
     if candidate is None:
-        return "failed", subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git commit-tree failed"), False
+        return "failed", subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git commit-tree failed"), False, None
     try:
         outcome = _fab_closeout_producer(
             repo,
@@ -9840,19 +9865,20 @@ def _fab_object_gate_commit(
             "blocker_summary": reason,
             "required_human_inputs": (),
         }
-        return "blocked", None, False  # ref NOT advanced
+        return "blocked", None, False, None  # ref NOT advanced
     if outcome is None or not outcome.wrote_provenance:
         # Honest DECLINE (no provenance): the commit-tree object must NOT publish
         # it. Fall back to the hook-running `git commit` path (CR round 7 #1).
-        return "declined", None, False
+        return "declined", None, False, None
     # PASS → provenance is durably written; advance the concrete ref atomically.
     if not _fab_advance_ref(repo, candidate, ref=target_ref, expected_old=parent_sha):
         return (
             "failed",
             subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git update-ref failed after FAB gate pass"),
             False,
+            None,
         )
-    return "advanced", subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""), True
+    return "advanced", subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""), True, candidate
 
 
 def _governed_premerge_review(

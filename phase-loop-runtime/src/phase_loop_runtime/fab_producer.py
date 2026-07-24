@@ -66,6 +66,7 @@ from .fab_provenance import (
     ReviewProvenanceArtifact,
     ReviewScope,
     aggregate_material_digest,
+    fsync_run_store_durable,
     provenance_dir_for_run,
     snapshot_material,
     write_provenance,
@@ -476,6 +477,11 @@ def finalize_and_gate(
         origin=origin,
     )
     if gate_status.status == GATE_STATUS_PASS:
+        # fsync the ENTIRE authenticating record set (provenance, round record,
+        # seat ledger, material snapshots) + the run dir + its parent, so it is on
+        # stable storage BEFORE the caller advances the branch ref (CR round 8 /
+        # codex#5). A crash must never preserve the ref while losing the records.
+        fsync_run_store_durable(repo, run_id)
         return ProducerOutcome(wrote_provenance=True, run_id=run_id, blocked=False)
     reason = gate_status.equivalence_verified.reason if gate_status.equivalence_verified else None
     return ProducerOutcome(
