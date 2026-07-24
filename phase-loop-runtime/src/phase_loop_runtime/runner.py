@@ -8736,6 +8736,11 @@ def _perform_phase_closeout_impl(
     # None on every non-FAB / noop / declined path. Defined at function scope so
     # the `closeout_mode == "push"` block can push it instead of ambient HEAD.
     fab_gated_sha = None
+    # The COMPLETE push coordinates (remote + destination ref) captured at GATE
+    # time for the FAB path (CR round 9 / codex#4), so a concurrent HEAD switch
+    # after gating can never re-derive the remote/ref from ambient topology and
+    # push the gated candidate to the wrong branch. None on the non-FAB path.
+    fab_push_decision = None
 
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so
@@ -9185,6 +9190,13 @@ def _perform_phase_closeout_impl(
                     # to skip (`_fab_pre_commit_control_active`); otherwise FAB
                     # DECLINES to the non-FAB `git commit` path below (team-lead
                     # decision — never silently skip a blocking check-hook).
+                    #
+                    # Capture the COMPLETE push coordinates NOW (pre-advance,
+                    # pre-any-concurrent-switch) for push mode, so the gated
+                    # candidate is later pushed to THIS remote+ref, never one
+                    # re-derived from post-gate ambient topology (CR round 9 #4).
+                    if closeout_mode == "push":
+                        fab_push_decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
                     fab_kind, commit_result, fab_wrote_provenance, fab_gated_sha = _fab_object_gate_commit(
                         repo,
                         fab_run_id=fab_run_id,
@@ -9316,11 +9328,18 @@ def _perform_phase_closeout_impl(
                                     "access_attempts": (),
                                 }
         if closeout_mode == "push":
-            decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
+            # On a FAB advance, use the COMPLETE push coordinates (remote +
+            # destination ref) captured at GATE time — never re-derive them from
+            # post-gate ambient topology (a concurrent HEAD switch could otherwise
+            # push the gated candidate to the switched-to branch's remote ref).
+            # The non-FAB path re-resolves fresh, byte-for-byte as before.
+            if fab_gated_sha is not None and fab_push_decision is not None:
+                decision = fab_push_decision
+            else:
+                decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
             if decision.get("allowed"):
                 # Push the GATED candidate SHA on a FAB advance (never ambient
-                # HEAD, which a concurrent branch switch could change) so
-                # published == gated (CR round 8 / codex#4); non-FAB pushes HEAD.
+                # HEAD) so published == gated (CR round 8/9); non-FAB pushes HEAD.
                 push_source = fab_gated_sha or "HEAD"
                 _git(repo, "push", str(decision["remote"]), f"{push_source}:{decision['push_ref']}")
                 metadata["closeout"].update(

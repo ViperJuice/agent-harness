@@ -1424,32 +1424,39 @@ def _fsync_path(path: Path, flags: int) -> None:
 
 def fsync_run_store_durable(repo: Path, run_id: str) -> None:
     """fsync the ENTIRE authenticating record set for `run_id` before the branch
-    ref advances (agent-harness#191 CR round 8 / codex#5): every FILE under the
-    run-store dir (provenance, round record, seat ledger, material snapshots —
-    the last are `shutil.copyfile`'d without their own fsync), every DIRECTORY
-    under it, the run dir ITSELF, AND its PARENT (the runs root) — because an
-    fsync of a file/subdir does NOT durably record its entry in the containing
-    directory without fsyncing that directory. So a host/kernel crash can never
-    preserve the advanced ref while losing any record needed to authenticate the
-    provenance. Best-effort per entry (an unstattable entry never aborts the
-    sweep), but the load-bearing chain (run dir + parent) is always attempted."""
+    ref advances (agent-harness#191 CR round 8/9): every FILE under the run-store
+    dir (provenance, round record, seat ledger, material snapshots — the last are
+    `shutil.copyfile`'d without their own fsync), every DIRECTORY under it, the run
+    dir ITSELF, AND its PARENT (the runs root) — because an fsync of a file/subdir
+    does NOT durably record its entry in the containing directory without fsyncing
+    that directory. So a host/kernel crash can never preserve the advanced ref
+    while losing any record needed to authenticate the provenance.
+
+    FAILS CLOSED, does not swallow (CR round 9 / codex#5): a missing run dir or
+    ANY fsync failure (EIO, permission, ...) RAISES `ProvenanceInvalid` — the
+    caller's producer-crash path then BLOCKS the closeout with NO ref advance. A
+    durability primitive that suppressed its own failures would report durability
+    it never established (the exact fail-open this closes)."""
     run_dir = provenance_dir_for_run(repo, run_id)
     if not run_dir.exists():
-        return
+        raise ProvenanceInvalid(
+            f"FAB run store {run_dir} is missing at the durability sync (fail-closed): cannot establish "
+            "provenance durability before the ref advances"
+        )
     dir_flags = getattr(os, "O_DIRECTORY", 0)
-    for entry in sorted(run_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        try:
+    try:
+        for entry in sorted(run_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
             if entry.is_file():
                 _fsync_path(entry, os.O_RDONLY)
             elif entry.is_dir():
                 _fsync_path(entry, dir_flags)
-        except OSError:
-            pass
-    for durable_dir in (run_dir, run_dir.parent):
-        try:
+        for durable_dir in (run_dir, run_dir.parent):
             _fsync_path(durable_dir, dir_flags)
-        except OSError:
-            pass
+    except OSError as exc:
+        raise ProvenanceInvalid(
+            f"FAB durability fsync failed for run store {run_dir} (fail-closed): {exc} — refusing to advance "
+            "the ref on non-durable provenance"
+        ) from exc
 
 
 def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact) -> Path:

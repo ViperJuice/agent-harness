@@ -408,6 +408,98 @@ def test_concurrent_switch_records_gated_sha_not_ambient_head(tmp_path, monkeypa
     assert recorded == _git(repo, "rev-parse", branch_ref), "recorded SHA is the gated candidate on the advanced branch"
 
 
+def test_durability_primitive_propagates_failures(tmp_path, monkeypatch):
+    """CR round 9 / codex#5: `fsync_run_store_durable` must PROPAGATE — a missing
+    run dir or any fsync OSError RAISES `ProvenanceInvalid`, never silently
+    returns (a durability primitive that swallows its own failures establishes
+    nothing)."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    _stage_change(repo)
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete"
+    run_id = event.metadata["closeout"]["fab_run_id"]
+    # Missing run dir → raise.
+    with pytest.raises(fp.ProvenanceInvalid):
+        fp.fsync_run_store_durable(repo, "fab-does-not-exist")
+    # Any fsync OSError → raise (not swallowed).
+    monkeypatch.setattr(fp, "_fsync_path", lambda path, flags: (_ for _ in ()).throw(OSError("EIO")))
+    with pytest.raises(fp.ProvenanceInvalid):
+        fp.fsync_run_store_durable(repo, run_id)
+
+
+def test_durability_failure_blocks_no_advance(tmp_path, monkeypatch):
+    """CR round 9 / codex#5 (the real gate): when the durability sync fails, the
+    closeout BLOCKS and the ref does NOT advance (the un-durable provenance is
+    never published)."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    # The gate PASSES + provenance is written; only making it DURABLE fails.
+    monkeypatch.setattr(prod, "fsync_run_store_durable", lambda repo, run_id: (_ for _ in ()).throw(
+        fp.ProvenanceInvalid("durability fsync failed")
+    ))
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "blocked", f"a durability failure must block, got {status}"
+    assert _git(repo, "rev-parse", "HEAD") == base, "the ref must NOT advance when durability can't be established"
+    assert event.metadata["closeout"].get("closeout_action") == "review_gate_block"
+
+
+def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypatch):
+    """CR round 9 / codex#4: in push mode, a concurrent HEAD switch after gating
+    must NOT re-derive the push remote/ref from ambient topology — the gated
+    candidate is pushed to the remote+ref captured at GATE time (the branch it was
+    gated on), never the switched-to branch."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+
+    # The push target is derived from the CURRENT branch at call time, so a
+    # gate-time capture vs a post-switch re-resolve yield different push_refs.
+    def branch_dependent_target(repo_, topology):
+        cur = subprocess.run(
+            ["git", "-C", str(repo_), "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True
+        ).stdout.strip() or "DETACHED"
+        return {"allowed": True, "remote": "fetchsrc", "push_ref": f"refs/heads/{cur}-pushed"}
+
+    monkeypatch.setattr(R, "resolve_closeout_push_target", branch_dependent_target)
+
+    real_advance = R._fab_advance_ref
+
+    def advance_then_detach(repo_, new_sha, *, ref, expected_old):
+        ok = real_advance(repo_, new_sha, ref=ref, expected_old=expected_old)
+        subprocess.run(["git", "-C", str(repo_), "checkout", "-q", "--detach", expected_old], check=True)
+        return ok
+
+    monkeypatch.setattr(R, "_fab_advance_ref", advance_then_detach)
+
+    pushes: list = []
+    real_git = R._git
+
+    def spy_git(repo_, *args, **kw):
+        if args[:1] == ("push",):
+            pushes.append(args)
+        return real_git(repo_, *args, **kw)
+
+    monkeypatch.setattr(R, "_git", spy_git)
+
+    branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    _stage_change(repo)
+    R._perform_phase_closeout(
+        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
+        resolve_profile("execute"), action="execute", closeout_mode="push", run_mode="governed",
+    )
+    assert pushes, "a push should have been attempted"
+    refspec = pushes[-1][-1]  # "<sha>:<push_ref>"
+    assert refspec.endswith(f"refs/heads/{branch}-pushed"), (
+        f"push must target the GATE-TIME branch ref, not the post-switch topology (got {refspec})"
+    )
+
+
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
     """Byte-neutral: with PHASE_LOOP_FAB OFF, the closeout uses the normal
     `git commit` path and completes; a resume hits the unchanged noop path."""
