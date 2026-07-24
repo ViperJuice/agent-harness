@@ -83,6 +83,7 @@ def _build_artifact(**overrides) -> fp.ReviewProvenanceArtifact:
 def _build_delta_chain(candidate: fp.CandidateRecord, boundary_manifest: fp.BoundaryManifestRef, c0: str):
     delta_scope = fp.ReviewScope(mode="delta-only")
     d1 = fp.DeltaReviewRecord.build(
+        epoch=2,
         policy=boundary_manifest.to_dict(),
         review_scope=delta_scope,
         material_digests=(),
@@ -99,6 +100,7 @@ def _build_delta_chain(candidate: fp.CandidateRecord, boundary_manifest: fp.Boun
         escalation=fp.Escalation(required=False),
     )
     d2 = fp.DeltaReviewRecord.build(
+        epoch=3,
         policy=boundary_manifest.to_dict(),
         review_scope=delta_scope,
         material_digests=(),
@@ -250,6 +252,7 @@ class HashChainTest(unittest.TestCase):
         art, d1, _d2 = self._build_chained_artifact()
         bm = _make_boundary_manifest()
         fabricated = fp.DeltaReviewRecord.build(
+            epoch=4,
             policy=bm.to_dict(),
             review_scope=fp.ReviewScope(mode="delta-only"),
             material_digests=(),
@@ -303,6 +306,7 @@ class HashChainTest(unittest.TestCase):
         )
         c0 = art0.compute_c0()
         unlinked = fp.DeltaReviewRecord.build(
+            epoch=5,
             policy=bm.to_dict(),
             review_scope=fp.ReviewScope(mode="delta-only"),
             material_digests=(),
@@ -337,6 +341,7 @@ class HashChainTest(unittest.TestCase):
         )
         c0 = art0.compute_c0()
         unlinked = fp.DeltaReviewRecord.build(
+            epoch=6,
             policy=bm.to_dict(),
             review_scope=fp.ReviewScope(mode="delta-only"),
             material_digests=(),
@@ -430,6 +435,7 @@ class FailClosedLoadTest(unittest.TestCase):
     def test_unknown_delta_status_invalidates(self):
         with self.assertRaises(fp.ProvenanceInvalid):
             fp.DeltaReviewRecord(
+                epoch=2,
                 review_scope=fp.ReviewScope(mode="delta-only"),
                 parent_digest=None,
                 parent_chain_digest=None,

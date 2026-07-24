@@ -171,11 +171,13 @@ from .closeout_validators import (
     register_closeout_validator,
     verdict_binds_to,
 )
-from .fab_canonical import EquivalenceBinding, equivalent
+from .fab_canonical import EquivalenceBinding, equivalent, patch_digest
 from .fab_delta import (
+    DeltaBindingInvalid,
     ResolvedClaimUnverified,
     enforce_review_scope_for_escalation,
     require_seat_corroboration,
+    validate_delta_binds_to_parent,
 )
 from .fab_provenance import (
     DELTA_STATUS_ESCALATED_WHOLE_PATCH,
@@ -408,6 +410,16 @@ def read_seat_outcomes(repo: Path, run_id: str) -> tuple[SeatOutcomeRecord, ...]
 
 REVIEW_ROUND_FILENAME = "fab-review-round.json"
 SCHEMA_REVIEW_ROUND = "fab.review-round.v1"
+
+# FAB piece 3b (agent-harness#191) G1 — PER-EPOCH round records. Each review
+# round (the candidate round + every delta round) has its OWN durable round
+# record (expected-seat manifest + round identity + canonical findings) at a
+# per-epoch path, so a later delta round never clobbers an earlier round's
+# anchors (piece 2 wrote/OVERWROTE a single `fab-review-round.json`). The
+# candidate round is ALWAYS epoch 1 — a FIXED value, never derived from the
+# client-supplied `artifact.seats[*].epoch` (an attacker must not choose which
+# file is "the candidate's"); delta rounds use their `DeltaReviewRecord.epoch`.
+FAB_CANDIDATE_EPOCH = 1
 _MAX_REVIEW_ROUND_BYTES = 4 * 1024 * 1024
 
 
@@ -517,6 +529,15 @@ class FabReviewRound:
     reviewed_head_sha: str | None = None
     reviewed_material_digest: str | None = None
     canonical_findings: tuple[CanonicalFinding, ...] = ()
+    # 3b-gate CR round 1: the harness-determined ROUND-RESOLUTION digest for a
+    # DELTA round — a digest over every field the gate reads off the client
+    # `DeltaReviewRecord` to make a decision (status / resulting_head_digest /
+    # escalation / finding-flow / delta_changed_paths / chain-topology), computed
+    # by the harness over its OWN honest record (`_delta_resolution_digest`). The
+    # gate recomputes it over the client record and requires equality, so those
+    # round-resolution fields are bound to the durable record exactly as the seats
+    # already are. `None` on the candidate round (no delta resolution).
+    resolution_digest: str | None = None
     finalized: bool = False
     round_digest: str = ""
 
@@ -532,6 +553,7 @@ class FabReviewRound:
             "reviewed_head_sha": self.reviewed_head_sha,
             "reviewed_material_digest": self.reviewed_material_digest,
             "canonical_findings": [c.to_dict() for c in self.canonical_findings],
+            "resolution_digest": self.resolution_digest,
             "finalized": self.finalized,
             "round_digest": self.round_digest,
         }
@@ -564,6 +586,7 @@ class FabReviewRound:
                 _req_str(d, "reviewed_material_digest") if d.get("reviewed_material_digest") is not None else None
             ),
             canonical_findings=tuple(CanonicalFinding.from_dict(c) for c in d.get("canonical_findings", [])),
+            resolution_digest=(_req_str(d, "resolution_digest") if d.get("resolution_digest") is not None else None),
             finalized=finalized,
             round_digest=_req_str(d, "round_digest"),
         )
@@ -576,14 +599,19 @@ class FabReviewRound:
         return instance
 
 
-def review_round_path_for_run(repo: Path, run_id: str) -> Path:
-    return provenance_dir_for_run(repo, run_id) / REVIEW_ROUND_FILENAME
+def review_round_path_for_run(repo: Path, run_id: str, epoch: int = FAB_CANDIDATE_EPOCH) -> Path:
+    """The PER-EPOCH round-record path (piece 3b G1). One file per epoch
+    (`fab-review-round.e{epoch}.json`), so a later delta round never overwrites an
+    earlier round's manifest / canonical findings / round identity."""
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    return provenance_dir_for_run(repo, run_id) / f"{base}.e{int(epoch)}.{ext}"
 
 
 def write_expected_seats(repo: Path, run_id: str, *, epoch: int, expected_seats: Sequence[ExpectedSeat]) -> Path:
     """Phase 1 (harness-only, BEFORE panel invocation): freeze the epoch-scoped
-    EXPECTED-seat manifest. Overwrites any prior record for this run — a run is
-    scoped afresh each review. `reviewed_head_sha`/`reviewed_material_digest`
+    EXPECTED-seat manifest for THIS epoch's round record. Overwrites only THIS
+    epoch's file — a later delta round writes a different epoch's file and never
+    clobbers it (piece 3b G1). `reviewed_head_sha`/`reviewed_material_digest`
     are bound later by `finalize_review_round`."""
     seat_ids = [s.seat_instance_id for s in expected_seats]
     if len(set(seat_ids)) != len(seat_ids):
@@ -594,20 +622,77 @@ def write_expected_seats(repo: Path, run_id: str, *, epoch: int, expected_seats:
     return _write_review_round(repo, run_id, record)
 
 
+def _delta_resolution_digest(record: "DeltaReviewRecord") -> str:
+    """3b-gate CR round 1 — the canonical digest over the harness-determined
+    ROUND-RESOLUTION fields of a DELTA round: EVERY field the gate reads off the
+    client `DeltaReviewRecord` to make a decision (`verify_chain` /
+    `resolve_chain_resolution` / the finding-flow logic), EXCEPT `delta_head_sha`
+    and `review_scope.reviewed_material_digest` (already bound by round identity).
+    The bound set is EXACTLY the dict below — adding a gate-read field to
+    `DeltaReviewRecord` must be a VISIBLE change here, never a silent hole.
+
+    The harness persists this over its OWN honest record (`finalize_review_round`
+    ← the consumer's `build_delta_round` output, computed off live git); the gate
+    recomputes it over the CLIENT record and requires equality — so a delta record
+    whose status / resulting_head_digest / escalation / finding-flow /
+    changed-paths / chain-topology / scope / policy diverges from what the harness
+    recorded BLOCKS. Reuses `_encode_and_digest` (one canonicalization path).
+
+    The bound set below is EXHAUSTIVE over the gate-read fields (verified by a
+    mechanical enumeration of every `DeltaReviewRecord` attribute read in
+    `compose_gate_status` and its callees — `verify_chain`,
+    `resolve_chain_resolution`, `_require_delta_round_seat_binding`,
+    `_unresolved_block_findings`, `_gate_delta_entries`, `_validate_chain_binds_to_
+    git`). `delta_head_sha` and `review_scope.reviewed_material_digest` are bound by
+    round identity (`_cross_check_one_round`) + material re-verify;
+    `delta_round_seats` by seat authenticity + the P0-2 set-equality;
+    `material_digests` by the aggregate reviewed_material_digest; `epoch` by the
+    distinct-epoch + per-epoch-fetch keying. `delta_commits` is DELIBERATELY
+    unbound — the gate reads it NOWHERE for a decision (only `build_delta_round`
+    constructs it); it is purely informational, so leaving it out is a visible
+    decision here, not a silent hole. Everything else `verify_chain` /
+    `resolve_chain_resolution` / the finding-flow logic reads is in the dict."""
+    return _encode_and_digest(
+        {
+            "status": record.status,
+            "resulting_head_digest": record.resulting_head_digest,
+            "delta_changed_paths": sorted(record.delta_changed_paths),
+            "escalation": record.escalation.to_dict(),
+            "resolved_finding_ids": sorted(record.resolved_finding_ids),
+            "reopened_finding_ids": sorted(record.reopened_finding_ids),
+            "carried_forward_finding_ids": sorted(record.carried_forward_finding_ids),
+            "chain_digest": record.chain_digest,
+            "parent_chain_digest": record.parent_chain_digest,
+            "parent_digest": record.parent_digest,
+            "review_scope": record.review_scope.to_dict(),
+            "policy": record.policy,
+        }
+    )
+
+
 def finalize_review_round(
     repo: Path,
     run_id: str,
     *,
+    epoch: int = FAB_CANDIDATE_EPOCH,
     reviewed_head_sha: str,
     reviewed_material_digest: str | None,
     canonical_findings: Sequence[CanonicalFinding],
+    delta_record: "DeltaReviewRecord | None" = None,
 ) -> Path:
     """Phase 2 (harness-only, AFTER the closeout commit): bind the harness-issued
     round identity to the reviewed HEAD + reviewed material and pin the canonical
-    finding records. The frozen `expected_seats` manifest is preserved verbatim —
-    never re-derived from the produced set — so a required seat demanded before
-    invocation can never be dropped here (design v5 #1)."""
-    existing = read_review_round(repo, run_id)
+    finding records for THIS epoch's round record. The frozen `expected_seats`
+    manifest is preserved verbatim — never re-derived from the produced set — so a
+    required seat demanded before invocation can never be dropped here (design
+    v5 #1).
+
+    For a DELTA round, pass the harness's honest `delta_record` (the
+    `build_delta_round` output, computed off live git) — its ROUND-RESOLUTION
+    digest (`_delta_resolution_digest`) is bound into the durable record so the
+    gate can cross-check the client artifact's delta record against it (3b-gate CR
+    round 1). `None` for the candidate round (no delta resolution)."""
+    existing = read_review_round(repo, run_id, epoch)
     finding_ids = [c.finding_id for c in canonical_findings]
     if len(set(finding_ids)) != len(finding_ids):
         raise ProvenanceInvalid(
@@ -618,27 +703,31 @@ def finalize_review_round(
         reviewed_head_sha=reviewed_head_sha,
         reviewed_material_digest=reviewed_material_digest,
         canonical_findings=tuple(canonical_findings),
+        resolution_digest=(_delta_resolution_digest(delta_record) if delta_record is not None else None),
         finalized=True,
     ).with_digest()
     return _write_review_round(repo, run_id, record)
 
 
 def _write_review_round(repo: Path, run_id: str, record: FabReviewRound) -> Path:
-    path = review_round_path_for_run(repo, run_id)
+    # The file is keyed by the record's OWN epoch (G1) — so writing one epoch's
+    # record can never overwrite another's.
+    path = review_round_path_for_run(repo, run_id, record.epoch)
     # Durable (fsync'd) write — the round record must be on stable storage BEFORE
     # the branch ref advances (CR round 7 / codex#4).
     atomic_write_text_durable(path, record.to_json())
     return path
 
 
-def read_review_round(repo: Path, run_id: str) -> FabReviewRound:
-    """The gate's ONLY read path for the durable round record — from the trusted
-    run store, keyed by `run_id`, never a client blob. Missing / oversized /
-    malformed / digest-mismatch all raise `ReviewRoundInvalid` (a
+def read_review_round(repo: Path, run_id: str, epoch: int = FAB_CANDIDATE_EPOCH) -> FabReviewRound:
+    """The gate's ONLY read path for a durable round record — from the trusted
+    run store, keyed by `run_id` + `epoch`, never a client blob. Missing /
+    oversized / malformed / digest-mismatch all raise `ReviewRoundInvalid` (a
     `ProvenanceInvalid`, NOT `ProvenanceNotFound`), so a FAB-scoped run whose
     round record is absent BLOCKS inside `compose_gate_status` rather than
-    passing vacuously."""
-    path = review_round_path_for_run(repo, run_id)
+    passing vacuously. A record whose stored `epoch` does not match the requested
+    epoch also BLOCKS (a delta round must never be served the candidate's file)."""
+    path = review_round_path_for_run(repo, run_id, epoch)
     try:
         if path.stat().st_size > _MAX_REVIEW_ROUND_BYTES:
             raise ReviewRoundInvalid(
@@ -653,63 +742,225 @@ def read_review_round(repo: Path, run_id: str) -> FabReviewRound:
             f"no durable review-round record for run_id={run_id!r} (fail-closed): {exc}"
         ) from exc
     data = _load_json_fail_closed(text, max_bytes=_MAX_REVIEW_ROUND_BYTES)
-    return FabReviewRound.from_dict(data)
+    record = FabReviewRound.from_dict(data)
+    # Defense-in-depth (G1): the file name encodes the epoch, but re-assert the
+    # stored epoch matches what was requested — a mismatched record (e.g. a
+    # candidate file symlinked/renamed under a delta epoch) BLOCKS.
+    if record.epoch != epoch:
+        raise ReviewRoundInvalid(
+            f"review-round record for run_id={run_id!r} has epoch={record.epoch!r} but epoch={epoch!r} "
+            "was requested (fail-closed, G1: a round must never be served another epoch's record)"
+        )
+    return record
+
+
+def _durable_finalized_epochs(repo: Path, run_id: str) -> set[int]:
+    """Enumerate the epochs the harness durably FINALIZED a round record for in the
+    trusted run store (3b-gate CR round 2 — the durable transcript, anchoring
+    epoch-set completeness). A record that exists but is NOT finalized (a crash
+    mid-produce) is not counted — the client cannot authenticate it anyway. Reuses
+    `read_review_round` (validates size / digest / epoch-match) per epoch. Fail-
+    closed (`ReviewRoundInvalid`) on a malformed round-record filename.
+
+    GATE<->CONSUMER CONTRACT (3b-gate CR round 2, named boundary): epoch-set
+    EQUALITY is sound ONLY if the run store for `run_id` holds EXACTLY the final
+    chain's finalized rounds — never a stale one from a superseded/failed attempt.
+    The piece-3b CONSUMER's recapture MUST truncate/scope stale round records per
+    attempt (as `capture_review_at_invocation` already truncates the seat ledger),
+    or a legitimate retry whose honest chain is a strict subset would false-BLOCK.
+    Equality (not subset-tolerance, which would reopen the content-neutral-drop
+    hole) is deliberate; the consumer owns keeping the store clean."""
+    run_dir = provenance_dir_for_run(repo, run_id)
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    prefix, suffix = f"{base}.e", f".{ext}"
+    epochs: set[int] = set()
+    for path in run_dir.glob(f"{base}.e*.{ext}"):
+        name = path.name
+        try:
+            epoch = int(name[len(prefix) : -len(suffix)])
+        except ValueError as exc:
+            raise ReviewRoundInvalid(
+                f"malformed round-record filename in run store (fail-closed): {name!r} ({exc})"
+            ) from exc
+        if read_review_round(repo, run_id, epoch).finalized:
+            epochs.add(epoch)
+    return epochs
 
 
 def cross_check_round_authenticity(
+    repo: Path,
+    run_id: str,
     artifact: ReviewProvenanceArtifact,
-    review_round: FabReviewRound,
     durable_seat_outcomes: Sequence[SeatOutcomeRecord],
+    *,
+    round_reader: Callable[[int], FabReviewRound] | None = None,
 ) -> None:
-    """The piece-2 forge-resistance core (design v4 #2 + v5 #1,#2 + v6 #1,#2,#3).
-    Drive EVERYTHING from the DURABLE side — the harness-written `review_round`
-    (expected-seat manifest + round identity + canonical findings) and the
-    durable `SeatOutcomeRecord` ledger — and verify the client-supplied
-    `artifact` AGAINST it, fail-closed (`SeatAuthenticityInvalid`/
+    """The forge-resistance core, generalized to EVERY round (piece 3b G2 — was
+    piece-2 candidate-only). Applies the SAME candidate-grade authentication
+    (`_cross_check_one_round`) to the CANDIDATE round AND each DELTA round, each
+    keyed by ITS OWN epoch's durable round record read from the trusted run store.
+    Closes the two holes `_require_delta_round_seat_binding` alone left: a delta
+    seat's `verdict` was never bound to its durable verdict (verdict-flip), and
+    its `finding_ids` were never set-bound to the durable ledger nor content-bound
+    to a per-epoch canonical record (dropped-finding).
+
+    `round_reader` is a TEST SEAM (production passes `None` → reads each round
+    record from disk by epoch). Fail-closed (`SeatAuthenticityInvalid`/
     `ReviewRoundInvalid`) on the FIRST absence / mismatch / vacuity.
 
-    Steps:
+    Two cross-round invariants enforced here:
+      * EPOCHS DISTINCT (v5 #3): the candidate epoch (FIXED = 1, never derived
+        from the client-supplied `artifact.seats[*].epoch`) plus every delta
+        round's `DeltaReviewRecord.epoch` must be pairwise distinct — a collision
+        would let two rounds share one durable record and evade per-round
+        completeness. Fail-closed on any collision.
+      * Each round's record is fetched by its epoch and validated against THAT
+        round's OWN head (candidate → `candidate.head_sha`; delta →
+        `delta_head_sha`), so the client-supplied epoch is only an index: a wrong
+        epoch fetches a record whose head won't match → BLOCK, never a bypass."""
+    reader = round_reader if round_reader is not None else (lambda epoch: read_review_round(repo, run_id, epoch))
 
+    epochs = [FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]
+    if len(set(epochs)) != len(epochs):
+        raise ReviewRoundInvalid(
+            f"review rounds do not have pairwise-distinct epochs (fail-closed, v5 #3): {epochs!r} — a "
+            "shared epoch would let two rounds collide on one durable record and evade completeness"
+        )
+
+    _cross_check_one_round(
+        reader(FAB_CANDIDATE_EPOCH),
+        expected_epoch=FAB_CANDIDATE_EPOCH,
+        reviewed_head_sha=artifact.candidate.head_sha,
+        reviewed_material_digest=artifact.candidate.review_scope.reviewed_material_digest,
+        round_seats=artifact.seats,
+        artifact_findings=artifact.findings,
+        durable_seat_outcomes=durable_seat_outcomes,
+        delta_record=None,  # candidate round — no delta resolution
+    )
+    for record in artifact.delta_chain:
+        _cross_check_one_round(
+            reader(record.epoch),
+            expected_epoch=record.epoch,
+            reviewed_head_sha=record.delta_head_sha,
+            reviewed_material_digest=record.review_scope.reviewed_material_digest,
+            round_seats=record.delta_round_seats,
+            artifact_findings=artifact.findings,
+            durable_seat_outcomes=durable_seat_outcomes,
+            delta_record=record,  # bind this round's resolution fields to durable
+        )
+
+    # EPOCH-SET COMPLETENESS (3b-gate CR round 2 / codex BLOCKER 2) — runs AFTER
+    # the per-round authentication so a missing/unfinalized round surfaces its own
+    # specific reason first; this catches the remaining case where every PRESENT
+    # round authenticates but a durable round was DROPPED from the client chain.
+    # The client chain must cover EVERY epoch the harness durably FINALIZED —
+    # symmetric with per-round expected-SEAT completeness. Otherwise a
+    # content-NEUTRAL delta round (empty-commit, or a net-content-neutral round
+    # that ESCALATED / carried a blocking finding) whose digest equals its
+    # predecessor's can be dropped and still pass equivalence (which compares net
+    # patch CONTENT, not transcript completeness). Anchored on the DURABLE
+    # finalized epoch set (the harness transcript), not the client's. Disk path
+    # only (a `round_reader` seam bypasses the store).
+    if round_reader is None:
+        durable_epochs = _durable_finalized_epochs(repo, run_id)
+        if set(epochs) != durable_epochs:
+            raise ReviewRoundInvalid(
+                f"client chain epochs {sorted(set(epochs))} do not equal the durable FINALIZED epoch set "
+                f"{sorted(durable_epochs)} (fail-closed, 3b-gate CR round 2: a durable round — even a "
+                "content-neutral one that escalated or carried a blocking finding — can never be silently "
+                "dropped from the client chain)"
+            )
+
+
+def _cross_check_one_round(
+    review_round: FabReviewRound,
+    *,
+    expected_epoch: int,
+    reviewed_head_sha: str,
+    reviewed_material_digest: str | None,
+    round_seats: Sequence[ProvenanceSeat],
+    artifact_findings: Sequence[Finding],
+    durable_seat_outcomes: Sequence[SeatOutcomeRecord],
+    delta_record: "DeltaReviewRecord | None" = None,
+) -> None:
+    """Candidate-grade authentication of ONE round (piece-2 core, parameterized
+    for piece 3b G2). Drive EVERYTHING from the DURABLE side — the harness-written
+    `review_round` (expected-seat manifest + round identity + canonical findings)
+    and the durable `SeatOutcomeRecord` ledger — and verify THIS round's
+    client-supplied `round_seats` (the candidate round's `artifact.seats`, or a
+    delta round's `delta_round_seats`) AGAINST it, fail-closed on the FIRST
+    absence / mismatch / vacuity.
+
+    Steps:
+      * EPOCH: the round record's stored epoch must equal `expected_epoch`
+        (defense-in-depth over the path-encoded epoch — a delta round must never
+        be served the candidate's record).
       * ROUND IDENTITY (v6 #3): the round must be `finalized`; its bound
-        `reviewed_head_sha` must equal `artifact.candidate.head_sha` and its
-        `reviewed_material_digest` must equal the artifact's claimed
-        `candidate.review_scope.reviewed_material_digest`. A round pointed at a
-        different head/material (replay), or never finalized (crash), BLOCKS.
-      * NO VACUOUS PASS (v6 #3 / design ambiguity #3): the expected-seat manifest
-        must be non-empty and contain at least one required seat instance.
+        `reviewed_head_sha` must equal THIS round's head (`reviewed_head_sha`
+        arg — candidate head, or the delta round's `delta_head_sha`) and its
+        `reviewed_material_digest` must equal THIS round's claimed material.
+      * NO VACUOUS PASS (v6 #3 / ambiguity #3): the expected-seat manifest must be
+        non-empty and contain at least one required seat instance.
       * COMPLETENESS anchored on the EXPECTED set (v5 #1), keyed on
-        `seat_instance_id` (v6 #1): for every expected seat instance there must
-        be (a) a durable outcome at that instance id whose `required` matches
-        and — if required — whose `status` is a usable terminal, AND (b) a
-        provenance seat at that instance id. A required seat that timed out /
-        degraded / never recorded, or whose provenance seat was omitted, BLOCKS.
+        `seat_instance_id` (v6 #1): every expected seat has (a) a durable outcome
+        at that instance id whose `required` matches and — if required — whose
+        `status` is a usable terminal, AND (b) a provenance seat at that id.
       * VERDICT BINDING (v4 #2): each expected seat's provenance verdict must
         equal its durable verdict (strict).
       * FINDING BINDING (v5 #2): each expected seat's provenance `finding_ids`
         must equal its durable `finding_ids` (as sets).
       * FINDING-CONTENT BINDING (v6 #2): every finding id any expected durable
-        seat logged must appear in `artifact.findings` with a top-level
-        `severity`/`status`/`body_ref` that EXACTLY matches the harness's
-        canonical finding record — so dropping the `Finding` record or rewriting
-        it non-blocking/clean while keeping the id BLOCKS.
-      * Plus the metadata-level authenticity of EVERY provenance seat
-        (`cross_check_seat_authenticity`, reused): a fabricated provenance seat
-        with no durable record BLOCKS regardless of the manifest."""
+        seat logged must appear in `artifact_findings` with `severity`/`status`/
+        `body_ref` EXACTLY matching THIS round's canonical finding record.
+      * Plus the metadata-level authenticity of EVERY seat in `round_seats`
+        (`cross_check_seat_authenticity`, reused)."""
+    if review_round.epoch != expected_epoch:
+        raise ReviewRoundInvalid(
+            f"round record epoch={review_round.epoch!r} does not match expected epoch={expected_epoch!r} "
+            "(fail-closed, G2: a round must be authenticated against its OWN epoch's record)"
+        )
     if not review_round.finalized:
         raise ReviewRoundInvalid(
             "durable review-round record is not finalized (fail-closed): a crash between provenance "
             "write and round finalization must never let an un-finalized round pass"
         )
-    if review_round.reviewed_head_sha != artifact.candidate.head_sha:
+    if review_round.reviewed_head_sha != reviewed_head_sha:
         raise ReviewRoundInvalid(
             f"round identity bound to reviewed_head_sha={review_round.reviewed_head_sha!r} does not match "
-            f"artifact candidate head {artifact.candidate.head_sha!r} (fail-closed, v6 #3: replay / wrong head)"
+            f"this round's head {reviewed_head_sha!r} (fail-closed, v6 #3: replay / wrong head)"
         )
-    if review_round.reviewed_material_digest != artifact.candidate.review_scope.reviewed_material_digest:
+    if review_round.reviewed_material_digest != reviewed_material_digest:
         raise ReviewRoundInvalid(
-            "round identity's reviewed_material_digest does not match the artifact's claimed "
-            "candidate.review_scope.reviewed_material_digest (fail-closed, v6 #3)"
+            "round identity's reviewed_material_digest does not match this round's claimed "
+            "review_scope.reviewed_material_digest (fail-closed, v6 #3)"
         )
+
+    # ROUND-RESOLUTION BINDING (3b-gate CR round 1): for a DELTA round, bind every
+    # gate-read round-resolution field (status / resulting_head_digest /
+    # escalation / finding-flow / delta_changed_paths / chain-topology) to the
+    # durable record via `_delta_resolution_digest`. The candidate round has NO
+    # delta resolution — its durable `resolution_digest` MUST be absent, and a
+    # delta round's MUST be present (a swapped-role record BLOCKS).
+    if delta_record is None:
+        if review_round.resolution_digest is not None:
+            raise ReviewRoundInvalid(
+                "candidate round record carries a delta resolution_digest (fail-closed): the candidate "
+                "round has no delta resolution"
+            )
+    else:
+        if review_round.resolution_digest is None:
+            raise ReviewRoundInvalid(
+                "delta round record has NO resolution_digest (fail-closed, 3b-gate CR round 1: the "
+                "harness-determined round-resolution fields were never durably bound)"
+            )
+        recomputed_resolution = _delta_resolution_digest(delta_record)
+        if recomputed_resolution != review_round.resolution_digest:
+            raise ReviewRoundInvalid(
+                "delta round's client resolution fields (status / resulting_head_digest / escalation / "
+                "finding-flow / delta_changed_paths / chain-topology) do not match the harness-recorded "
+                f"resolution_digest (fail-closed, 3b-gate CR round 1): recomputed={recomputed_resolution!r}, "
+                f"durable={review_round.resolution_digest!r}"
+            )
 
     expected = review_round.expected_seats
     if not expected:
@@ -723,9 +974,9 @@ def cross_check_round_authenticity(
             "ambiguity #3, anchored on the EXPECTED set)"
         )
 
-    # First run the metadata-level authenticity over EVERY provenance seat — a
+    # First run the metadata-level authenticity over EVERY seat in THIS round — a
     # fabricated seat with no durable record BLOCKS here before completeness.
-    cross_check_seat_authenticity(artifact.seats, durable_seat_outcomes)
+    cross_check_seat_authenticity(round_seats, durable_seat_outcomes)
 
     durable_by_instance: dict[str, SeatOutcomeRecord] = {}
     for record in durable_seat_outcomes:
@@ -740,19 +991,41 @@ def cross_check_round_authenticity(
         durable_by_instance[record.seat_instance_id] = record
 
     prov_by_instance: dict[str, ProvenanceSeat] = {}
-    for seat in artifact.seats:
+    for seat in round_seats:
         if seat.seat_instance_id is None:
-            continue
+            # P0-2 (3b-gate CR round 1 / codex): a seat with no instance id cannot
+            # be bound to the expected manifest — reject it rather than skip it, so
+            # no unbound seat can ride alongside the expected set.
+            raise SeatAuthenticityInvalid(
+                "round provenance seat has no seat_instance_id (fail-closed): every seat must be bound "
+                "to the expected manifest"
+            )
         if seat.seat_instance_id in prov_by_instance:
             raise SeatAuthenticityInvalid(
-                f"artifact has duplicate provenance seats for seat_instance_id={seat.seat_instance_id!r} "
+                f"round has duplicate provenance seats for seat_instance_id={seat.seat_instance_id!r} "
                 "(fail-closed)"
             )
         prov_by_instance[seat.seat_instance_id] = seat
 
+    # P0-2 (3b-gate CR round 1 / codex): the provenance seat-instance set must
+    # EQUAL the expected manifest — NOT merely be a superset. `_cross_check_one_
+    # round` binds verdict / finding_ids only while iterating the EXPECTED
+    # manifest, so an EXTRA provenance seat (outside the expected set) that reuses
+    # genuine durable metadata but flips DISAGREE→AGREE / drops findings would go
+    # unbound and be read as an authenticated verdict by later gate logic. Reject
+    # any seat not in the expected set (the producer emits exactly the manifest
+    # set — capture freezes `expected` from `panel.legs`, artifact seats mirror it).
+    expected_ids = {e.seat_instance_id for e in expected}
+    extra_ids = set(prov_by_instance) - expected_ids
+    if extra_ids:
+        raise SeatAuthenticityInvalid(
+            f"round has provenance seats OUTSIDE the expected manifest (fail-closed, P0-2): {sorted(extra_ids)!r} "
+            "— an extra seat's verdict/finding_ids would be unbound; the seat set must equal the expected set"
+        )
+
     canonical_by_id = {c.finding_id: c for c in review_round.canonical_findings}
     findings_by_id: dict[str, Finding] = {}
-    for f in artifact.findings:
+    for f in artifact_findings:
         if f.id in findings_by_id:
             raise SeatAuthenticityInvalid(f"artifact has duplicate Finding id {f.id!r} (fail-closed)")
         findings_by_id[f.id] = f
@@ -1159,6 +1432,74 @@ def resolve_chain_resolution(artifact: ReviewProvenanceArtifact) -> ChainResolut
     )
 
 
+def _validate_chain_binds_to_git(repo: Path, artifact: ReviewProvenanceArtifact) -> None:
+    """3b-gate CR round 1 — wire `fab_delta.validate_delta_binds_to_parent` into
+    the gate (it had NO production caller). For EACH delta round, recompute
+    `resulting_head_digest` + `delta_changed_paths` from LIVE git off the
+    (already-authenticated) `delta_head_sha` and re-check the parent chain/patch
+    linkage — the T12 posture: NEVER trust a stored digest for a git-derivable
+    field, even the durable one. Defense-in-depth beyond `_delta_resolution_
+    digest`'s durable binding. ALSO recomputes the CANDIDATE round's patch_digest
+    off its bound head (3b-gate CR round 2 — the candidate-path equivalence bypass).
+    Fail-closed (`DeltaBindingInvalid`, a `ProvenanceInvalid`) on the first
+    mismatch; runs for EVERY artifact (candidate or chain). MUST run AFTER
+    `cross_check_round_authenticity` so it operates on authenticated records."""
+    ref_identity = artifact.base.ref_identity
+    repo_slug, sep, _ref = ref_identity.partition("#")
+    if not sep or not repo_slug:
+        raise DeltaBindingInvalid(f"malformed base ref_identity (fail-closed): {ref_identity!r}")
+
+    # CANDIDATE (empty-chain / candidate path) — 3b-gate CR round 2 / codex
+    # BLOCKER 1: `EquivalenceBinding.from_provenance_artifact` sets the candidate's
+    # `expected_head_digest` straight from the CLIENT `candidate.patch_digest`,
+    # never recomputing it — the SAME equivalence-bypass class as the delta P0-1,
+    # left applied to delta rounds only (the candidate round has no
+    # resolution_digest by construction). `candidate.head_sha` IS bound (round
+    # identity: durable `reviewed_head_sha == candidate.head_sha`), so DERIVE the
+    # expected digest from that authenticated head via live git and require the
+    # client `candidate.patch_digest` to match — never trust a client field the
+    # gate can recompute (T12). Runs for EVERY artifact, chain or not.
+    live_candidate_digest = patch_digest(
+        repo, artifact.base.base_sha, artifact.candidate.head_sha, repo_slug=repo_slug
+    )
+    if artifact.candidate.patch_digest != live_candidate_digest:
+        raise DeltaBindingInvalid(
+            "candidate.patch_digest does not match a live recompute off the bound candidate head "
+            f"(fail-closed, 3b-gate CR round 2): client={artifact.candidate.patch_digest!r}, "
+            f"live={live_candidate_digest!r} — the candidate's equivalence head must be derived from the "
+            "authenticated head, never trusted from the client patch_digest"
+        )
+    # CANDIDATE read-surface enumeration (the recurring "did I apply it to the
+    # whole surface" check): the gate reads `candidate.head_sha` (bound by round
+    # identity), `candidate.review_scope.reviewed_material_digest` (bound by round
+    # identity + material re-verify), and `candidate.patch_digest` (bound just
+    # above). `candidate.review_scope.covers_patch_digest`/`.mode` are DELIBERATELY
+    # unbound on the candidate path: they are read NOWHERE for a gate decision
+    # (equivalence uses `candidate.patch_digest`, not `covers_patch_digest`) — only
+    # folded into `c0`, which for an empty chain is self-consistent (verify_chain
+    # checks `chain_digest == c0`), so forging them changes nothing decided. A
+    # future decision that reads them would be the same hole one field over.
+
+    if not artifact.delta_chain:
+        return
+    parent_head_sha = artifact.candidate.head_sha
+    parent_patch_digest = artifact.candidate.patch_digest
+    parent_chain_digest = artifact.compute_c0()
+    for record in artifact.delta_chain:
+        validate_delta_binds_to_parent(
+            record,
+            repo=repo,
+            base_sha=artifact.base.base_sha,
+            repo_slug=repo_slug,
+            parent_head_sha=parent_head_sha,
+            parent_patch_digest=parent_patch_digest,
+            parent_chain_digest=parent_chain_digest,
+        )
+        parent_head_sha = record.delta_head_sha
+        parent_patch_digest = record.resulting_head_digest
+        parent_chain_digest = record.chain_digest
+
+
 def resolve_equivalence_binding(artifact: ReviewProvenanceArtifact) -> EquivalenceBinding:
     """Convenience wrapper for callers (e.g. `governed_premerge`'s promotion
     re-assertion) that only need the binding, not the full
@@ -1259,7 +1600,7 @@ def compose_gate_status(
     origin: str = "origin",
     waiver: str | None = None,
     seat_outcomes: Sequence[SeatOutcomeRecord] | None = None,
-    review_round: FabReviewRound | None = None,
+    round_reader: Callable[[int], FabReviewRound] | None = None,
     equivalent_fn: Callable[..., EquivalenceResult] = equivalent,
 ) -> GateStatus:
     """design §8: compose `fab.gate-status.v2` from the TRUSTED run-store's
@@ -1303,49 +1644,43 @@ def compose_gate_status(
     artifact = read_provenance(repo, run_id)  # ProvenanceNotFound propagates deliberately.
     reviewed_sha = artifact.candidate.head_sha
 
-    # DELTA CHAINS ARE DEFERRED TO PIECE 3 (agent-harness#191 CR round 1, blocker
-    # 5). Piece 2's producer only ever writes `delta_chain=()`, so ANY nonempty
-    # delta chain reaching the gate is out of scope and BLOCKS unconditionally.
-    # The delta-round authenticity that piece 3 needs is not yet complete:
-    # `cross_check_seat_authenticity` does not bind a delta seat's verdict /
-    # finding_ids (a forged delta seat could flip durable DISAGREE→AGREE or invent
-    # finding ids), and `write_expected_seats` / the round record OVERWRITES per
-    # epoch rather than appending, so an earlier delta round loses its canonical
-    # finding anchors. TODO(agent-harness#191 piece 3): add delta-seat verdict +
-    # finding-content binding and an APPEND-ONLY (merge, never overwrite) per-epoch
-    # round record, then lift this block. Until then, fail closed here — the one
-    # choke point covering the producer, the merge-time re-gate, and the closeout
-    # validator alike.
-    if artifact.delta_chain:
-        return _blocked_gate_status(
-            reviewed_sha=reviewed_sha,
-            prior_review_digest=artifact.candidate.patch_digest,
-            chain_digest=artifact.chain_digest,
-            deltas=_gate_delta_entries(artifact),
-            final_pr_head_sha=live_head_sha,
-            equivalence_verified=EquivalenceVerified(
-                result="INVALIDATED",
-                candidate_head_sha=artifact.candidate.head_sha,
-                reason="delta_chain_deferred_to_piece3: FAB piece 2 supports only single "
-                "candidate-round (delta_chain=()) artifacts; a nonempty delta chain is out of scope "
-                "and fails closed until piece 3 lands delta-seat authentication",
-            ),
-            waiver=waiver,
-        )
-
+    # DELTA CHAINS ARE NOW EVALUATED (piece 3b G2 — the piece-2 "nonempty
+    # delta_chain BLOCKS" deferral is LIFTED). Forge-resistance transfers from
+    # "block every chain" to "authenticate every round": `cross_check_round_
+    # authenticity` now applies the candidate-grade check (verdict binding +
+    # finding_ids binding + per-epoch completeness + canonical finding-content
+    # binding) to the candidate round AND each delta round, keyed by each round's
+    # own epoch's durable record (G1). A nonempty chain therefore no longer fails
+    # closed by construction; it must AUTHENTICATE, round by round, or BLOCK.
     try:
-        verify_chain(artifact)
-        resolution = resolve_chain_resolution(artifact)
         durable_seats = seat_outcomes if seat_outcomes is not None else read_seat_outcomes(repo, run_id)
-        # The trust anchors are read from the run store keyed by `run_id`
-        # (never the artifact): a FAB-scoped run with no durable round record
-        # BLOCKS (ReviewRoundInvalid, a ProvenanceInvalid — caught below). The
-        # `review_round`/`seat_outcomes` params are a test seam ONLY; every
+        # INVARIANT (3b-gate CR round 1): NO gate decision may be computed from a
+        # client artifact field before that field is bound to its durable record.
+        # So AUTHENTICATE FIRST — bind every round field the gate reads (seats +
+        # the round-RESOLUTION fields: status / resulting_head_digest / escalation
+        # / finding-flow / chain-topology, via `_delta_resolution_digest`) to the
+        # per-epoch durable record — THEN run `verify_chain` /
+        # `resolve_chain_resolution`, which read those now-authenticated fields.
+        # (Previously resolution ran first, so the equivalence binding was built
+        # from UNAUTHENTICATED client `resulting_head_digest` / status / topology —
+        # the exact P0-1/gemini#2/#3 bypasses.) The trust anchors are read from the
+        # run store keyed by `run_id` + epoch (never the artifact); the
+        # `round_reader`/`seat_outcomes` params are a test seam ONLY — every
         # PRODUCTION caller passes `None` so the gate reads from disk.
-        round_record = review_round if review_round is not None else read_review_round(repo, run_id)
-        cross_check_round_authenticity(artifact, round_record, durable_seats)
+        cross_check_round_authenticity(repo, run_id, artifact, durable_seats, round_reader=round_reader)
         _require_delta_round_seat_binding(artifact.delta_chain, durable_seats)
         reverify_all_material(repo, run_id, artifact)
+        # Now every client field these read is proven == durable.
+        verify_chain(artifact)
+        # LIVE-GIT recompute (3b-gate CR round 1 — the T12 posture, never trust a
+        # stored digest for a git-derivable field): wire `validate_delta_binds_to_
+        # parent` into the production path so each delta round's
+        # `resulting_head_digest` + `delta_changed_paths` are recomputed from LIVE
+        # git off the AUTHENTICATED `delta_head_sha`, and the parent linkage is
+        # re-checked — defense-in-depth beyond the durable resolution binding. Runs
+        # AFTER cross-check so it operates on authenticated records.
+        _validate_chain_binds_to_git(repo, artifact)
+        resolution = resolve_chain_resolution(artifact)
     except ProvenanceInvalid as exc:
         return _blocked_gate_status(
             reviewed_sha=reviewed_sha,

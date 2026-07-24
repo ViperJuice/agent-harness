@@ -231,24 +231,69 @@ class GitRepoTestCase(unittest.TestCase):
             ),
         )
 
-    # -- delta-machinery seams (blocker 5: compose defers ALL delta chains to
-    #    piece 3, so the delta machinery is exercised at its OWN functions) -----
+    # -- delta-machinery seams -------------------------------------------------
 
     def delta_binding(self, run_id: str, artifact: fp.ReviewProvenanceArtifact) -> None:
         """Run `_require_delta_round_seat_binding` directly against the durable
-        ledger — the function these delta-seat tests actually exercise (compose
-        now short-circuits on any nonempty delta_chain)."""
+        ledger — the delta-specific §5.3 corroboration + non-DISAGREE-verdict
+        check these `DeltaRoundSeatBindingTest` cases exercise at the function
+        level (piece 3b: `compose_gate_status` now ALSO evaluates delta chains
+        end-to-end via `_cross_check_one_round`, tested by `DeltaChainGateTest`)."""
         fg._require_delta_round_seat_binding(artifact.delta_chain, fg.read_seat_outcomes(self.repo, run_id))
 
-    def assert_compose_defers_delta(self, run_id: str, head: str):
-        """Assert `compose_gate_status` BLOCKS a nonempty delta_chain as deferred
-        to piece 3 (blocker 5 — the one production choke point)."""
-        gate = fg.compose_gate_status(
-            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=head, origin="fetchsrc"
+    def persist_delta_round(
+        self,
+        run_id: str,
+        delta_record: fp.DeltaReviewRecord,
+        delta_seats: tuple[fp.ProvenanceSeat, ...],
+        *,
+        canonical_findings: tuple[fp.Finding, ...] = (),
+        finalize: bool = True,
+        reviewed_head_sha: str | None = None,
+        resolution_source: fp.DeltaReviewRecord | None = None,
+    ) -> None:
+        """Persist ONE delta round's harness-only durable record (piece 3b G1/CR1)
+        so `compose_gate_status` can authenticate it: its per-epoch EXPECTED-seat
+        manifest (frozen from `delta_seats`) + round identity (bound to the delta
+        round's OWN head + material) + canonical findings + the harness
+        round-RESOLUTION digest, all keyed by `delta_record.epoch`.
+
+        `resolution_source` is the HARNESS's HONEST record whose resolution digest
+        is durably bound (defaults to `delta_record`). A round-resolution FORGE
+        test passes the honest record here while putting a MUTATED record in the
+        artifact — so the gate cross-checks the client's forged resolution fields
+        against the harness's honest digest and BLOCKS (never vacuously: the
+        durable side is NEVER echoed from the client artifact record).
+        `reviewed_head_sha` defaults to the record's `delta_head_sha`; tests
+        override it to forge a wrong-head round record."""
+        fg.write_expected_seats(
+            self.repo,
+            run_id,
+            epoch=delta_record.epoch,
+            expected_seats=tuple(
+                fg.ExpectedSeat(
+                    seat_instance_id=s.seat_instance_id,
+                    seat_key=s.seat_key,
+                    vendor_leg=s.vendor_leg,
+                    required=s.required,
+                )
+                for s in delta_seats
+            ),
         )
-        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
-        self.assertIn("delta_chain_deferred_to_piece3", gate.equivalence_verified.reason)
-        return gate
+        if not finalize:
+            return
+        fg.finalize_review_round(
+            self.repo,
+            run_id,
+            epoch=delta_record.epoch,
+            reviewed_head_sha=reviewed_head_sha if reviewed_head_sha is not None else delta_record.delta_head_sha,
+            reviewed_material_digest=delta_record.review_scope.reviewed_material_digest,
+            canonical_findings=tuple(
+                fg.CanonicalFinding(finding_id=f.id, severity=f.severity, status=f.status, body_digest=f.body_ref)
+                for f in canonical_findings
+            ),
+            delta_record=resolution_source if resolution_source is not None else delta_record,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -445,33 +490,6 @@ class RoundAuthenticityForgeTest(GitRepoTestCase):
         reason = self._reason("run-relabel", head)
         self.assertIn("identity disagrees", reason)
 
-    def test_nonempty_delta_chain_blocks_deferred_to_piece3(self):
-        """Blocker 5: piece 2 supports only single candidate-round artifacts; any
-        nonempty delta_chain reaching compose fails closed (deferred to piece 3),
-        the one choke point for producer + merge-regate + validator alike."""
-        base, head = self._exact_head_setup()
-        seat = _seat("codex:x:high", verdict="AGREE", finding_ids=())
-        candidate = self.candidate(base, head)
-        c0 = self.build_artifact(base_sha=base, candidate=candidate, seats=(seat,)).chain_digest
-        delta_seat = _seat("codex:x:high", epoch=2, verdict="AGREE", seat_instance_id="d1")
-        # Build the round record directly (compose blocks any nonempty delta_chain
-        # BEFORE verify_chain / escalation checks, so the round only needs to be a
-        # structurally-valid DeltaReviewRecord the artifact can hold).
-        delta = fp.DeltaReviewRecord.build(
-            policy=None, review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), material_digests=(),
-            parent_digest=candidate.patch_digest, parent_chain_digest=c0, delta_head_sha=head,
-            delta_changed_paths=(), delta_commits=(), resolved_finding_ids=(), carried_forward_finding_ids=(),
-            reopened_finding_ids=(), resulting_head_digest=self.digest(base, head),
-            status=fp.DELTA_STATUS_REVIEWED_CLEAN, escalation=fp.Escalation(required=False, trigger=None),
-            delta_round_seats=(delta_seat,),
-        )
-        artifact = self.build_artifact(
-            base_sha=base, candidate=candidate, seats=(seat,), delta_chain=(delta,)
-        )
-        self.persist("run-delta-block", artifact, (seat, delta_seat))
-        self.assertIn("delta_chain_deferred_to_piece3", self._reason("run-delta-block", head))
-
-
 # --------------------------------------------------------------------------- #
 # Acceptance criterion 6 — exact-head degenerate case (empty delta_chain)
 # --------------------------------------------------------------------------- #
@@ -542,8 +560,11 @@ class DeltaChainGateTest(GitRepoTestCase):
         # here, where nothing is resolved/reopened (the delta is disjoint from
         # every finding's path_scope, so both carry forward untouched), the
         # round still needs at least one real seat that actually reviewed it.
+        # Candidate = epoch 1, this delta round = epoch 2 (its seats + its durable
+        # round record share the epoch — the per-round authentication anchors on it).
         delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=()),)
         delta_record = fd.build_delta_round(
+            epoch=2,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -564,27 +585,412 @@ class DeltaChainGateTest(GitRepoTestCase):
             base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
         )
         self.persist("run-acc1", artifact, candidate_seats + delta_seats)
+        # piece 3b G1: the delta round's OWN per-epoch durable record.
+        self.persist_delta_round("run-acc1", delta_record, delta_seats)
         return base, candidate_head, delta_head
 
     def test_acceptance_1_disjoint_clean_delta_resolves_and_binds(self):
-        """The delta MACHINERY (carry-forward + resolution + seat binding)
-        resolves a disjoint clean delta correctly. Exercised at its own
-        functions — compose defers the whole delta chain to piece 3 (blocker 5)."""
+        """piece 3b end-to-end: a well-formed disjoint clean delta chain
+        AUTHENTICATES through `compose_gate_status` (the block is lifted) and
+        reaches GATE_STATUS_PASS — the candidate round AND the delta round each
+        pass per-round authentication, and the live head is equivalent."""
         base, candidate_head, delta_head = self._acceptance_1_setup()
         artifact = fp.read_provenance(self.repo, "run-acc1")
         resolution = fg.resolve_chain_resolution(artifact)
         self.assertEqual(sorted(resolution.carried_forward_findings), ["f1", "f2"])
         self.assertFalse(resolution.escalation.required)
         self.delta_binding("run-acc1", artifact)  # must not raise
-        self.assert_compose_defers_delta("run-acc1", delta_head)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-acc1", live_base_ref_name="main",
+            live_head_sha=delta_head, origin="fetchsrc",
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
     def test_acceptance_2_unrelated_byte_invalidates(self):
-        # Candidate-round equivalence drift is covered by RebaseAndPromotionTest;
-        # for a delta chain, compose defers to piece 3 before equivalence.
+        """A live head that DRIFTED past the reviewed delta (an unrelated extra
+        byte) is no longer equivalent to the governing binding — compose BLOCKS
+        on the recomputed equivalence, now that the chain is actually evaluated."""
         base, candidate_head, delta_head = self._acceptance_1_setup()
         self.write("pkg/c.py", "small disjoint delta\nEXTRA UNRELATED BYTE\n")
         drifted_head = self.commit("c3 unrelated extra byte, not part of any reviewed delta")
-        self.assert_compose_defers_delta("run-acc1", drifted_head)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-acc1", live_base_ref_name="main",
+            live_head_sha=drifted_head, origin="fetchsrc",
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertNotEqual(gate.equivalence_verified.result, "EQUIVALENT")
+
+
+# --------------------------------------------------------------------------- #
+# piece 3b FORGE MATRIX — with the delta_chain block LIFTED, forge-resistance
+# transfers to per-round authentication. Each test mutates ONE field of an
+# otherwise-PASSING disjoint-clean delta chain (candidate epoch 1 + one delta
+# round epoch 2) and asserts `compose_gate_status` BLOCKS. The mutation diverges
+# the CLIENT artifact / round record from the harness-written DURABLE side (never
+# `_durable_from_seat` verbatim on the forged field — that would be vacuous).
+# --------------------------------------------------------------------------- #
+
+
+class DeltaChainForgeTest(GitRepoTestCase):
+    RUN = "run-forge"
+
+    def _fixture(
+        self,
+        *,
+        delta_epoch: int = 2,
+        durable_delta_verdict: str = "AGREE",
+        durable_delta_finding_ids: tuple[str, ...] | None = None,
+        artifact_delta_finding_ids: tuple[str, ...] = (),
+        persist_round: bool = True,
+        finalize_round: bool = True,
+        round_reviewed_head: str | None = None,
+        canonical_findings: tuple[fp.Finding, ...] = (),
+        extra_findings: tuple[fp.Finding, ...] = (),
+        forge_artifact_delta=None,
+        extra_artifact_delta_seats: tuple[fp.ProvenanceSeat, ...] = (),
+        drop_delta_from_artifact: bool = False,
+    ) -> str:
+        """Build + persist an otherwise-passing disjoint-clean delta chain, with
+        knobs to forge exactly one thing. Returns the delta head (the live head)."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        candidate = self.candidate(base, base)
+        c0 = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats).chain_digest
+
+        self.write("pkg/c.py", "disjoint delta\n")
+        delta_head = self.commit("c2 disjoint delta")
+        delta_seats = (
+            _seat(
+                "codex:x:high", epoch=delta_epoch, finding_ids=artifact_delta_finding_ids,
+                seat_instance_id=f"codex:x:high@{delta_epoch}",
+            ),
+        )
+        delta_record = fd.build_delta_round(
+            epoch=delta_epoch, repo=self.repo, base_sha=base, repo_slug=self.REPO_SLUG,
+            parent_head_sha=base, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
+            delta_head_sha=delta_head, findings=(), resolved_finding_ids=(), delta_round_seats=delta_seats,
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        # The ARTIFACT (client) delta record may be a FORGED transform of the
+        # honest record — while `persist_delta_round` below binds the HONEST
+        # record's resolution (resolution_source=delta_record). A round-resolution
+        # forge diverges the two → BLOCK, never vacuously.
+        artifact_delta = forge_artifact_delta(delta_record) if forge_artifact_delta is not None else delta_record
+        artifact_delta = dataclasses.replace(
+            artifact_delta, delta_round_seats=tuple(artifact_delta.delta_round_seats) + tuple(extra_artifact_delta_seats)
+        )
+        # Tail-drop: the client presents an EMPTY chain (drops the delta round the
+        # harness recorded) while the durable delta record still exists.
+        artifact_chain = () if drop_delta_from_artifact else (artifact_delta,)
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats,
+            findings=extra_findings, delta_chain=artifact_chain,
+        )
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, artifact)  # candidate round record (epoch 1)
+        # The DURABLE delta seat — verdict / finding_ids may DIVERGE from the
+        # artifact's claimed delta seat (the forge surface for verdict-flip /
+        # dropped-finding).
+        for s in delta_seats:
+            durable = dataclasses.replace(
+                _durable_from_seat(s),
+                verdict=durable_delta_verdict,
+                finding_ids=(durable_delta_finding_ids if durable_delta_finding_ids is not None else s.finding_ids),
+            )
+            fg.append_seat_outcome(self.repo, self.RUN, durable)
+        # Extra ARTIFACT seats get AUTHENTIC durable records too (so they pass
+        # metadata authenticity) but are NOT written into the expected manifest —
+        # isolating the P0-2 defense: an authentic-but-UNEXPECTED seat must be
+        # rejected by the seat-set-equality check, not slip through unbound.
+        for s in extra_artifact_delta_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        if persist_round:
+            self.persist_delta_round(
+                self.RUN, delta_record, delta_seats,
+                canonical_findings=canonical_findings, finalize=finalize_round,
+                reviewed_head_sha=round_reviewed_head,
+            )
+        return delta_head
+
+    def _assert_blocks(self, delta_head: str, *, reason_contains: str | None = None):
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK, f"expected BLOCK, got {gate.status}")
+        if reason_contains is not None:
+            # Pin the MECHANISM, not just "it blocked" — so a forge whose field is
+            # ALSO caught by chain_digest can't pass for the wrong reason if the
+            # resolution binding regresses.
+            self.assertIn(reason_contains, (gate.equivalence_verified.reason or ""))
+        return gate
+
+    def test_baseline_fixture_passes(self):
+        """Control: the un-forged fixture PASSES — so every BLOCK below is caused
+        by its single mutation, not a broken fixture (non-vacuity guard)."""
+        delta_head = self._fixture()
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+    def test_verdict_flip_blocks(self):
+        """The delta seat claims AGREE in the artifact, but the harness durably
+        recorded DISAGREE — verdict binding (G2, was the verdict-flip hole)."""
+        self._assert_blocks(self._fixture(durable_delta_verdict="DISAGREE"))
+
+    def test_dropped_finding_blocks(self):
+        """The durable delta seat logged finding 'g1', but the artifact seat
+        dropped it (finding_ids=()) — set-binding (G2, was the dropped-finding
+        hole)."""
+        self._assert_blocks(
+            self._fixture(
+                durable_delta_finding_ids=("g1",),
+                artifact_delta_finding_ids=(),
+                canonical_findings=(_finding("g1"),),
+                extra_findings=(_finding("g1"),),
+            )
+        )
+
+    def test_rewritten_canonical_content_blocks(self):
+        """The delta seat + durable both log 'g1', but the artifact's Finding
+        rewrites it non-blocking/clean, diverging from the harness canonical
+        record — finding-CONTENT binding (G2)."""
+        self._assert_blocks(
+            self._fixture(
+                durable_delta_finding_ids=("g1",),
+                artifact_delta_finding_ids=("g1",),
+                canonical_findings=(_finding("g1", severity="block", status="clean"),),
+                extra_findings=(_finding("g1", severity="advisory", status="resolved"),),
+            )
+        )
+
+    def test_duplicate_epoch_blocks(self):
+        """The delta round claims epoch 1 — colliding with the candidate round —
+        so two rounds would share one durable record. Distinct-epoch invariant."""
+        self._assert_blocks(self._fixture(delta_epoch=1))
+
+    def test_wrong_head_round_record_blocks(self):
+        """The delta round's durable record is bound to a DIFFERENT reviewed head
+        than the DeltaReviewRecord.delta_head_sha — round-identity head binding,
+        so a client-chosen epoch can only fetch a record whose head must match."""
+        self._assert_blocks(self._fixture(round_reviewed_head="0" * 40))
+
+    def test_missing_delta_round_record_blocks(self):
+        """No durable round record persisted for the delta epoch — a FAB-scoped
+        delta round with no harness record BLOCKS (never a vacuous pass)."""
+        self._assert_blocks(self._fixture(persist_round=False))
+
+    def test_unfinalized_delta_round_record_blocks(self):
+        """The delta round's record was frozen (expected manifest) but never
+        finalized (round identity unbound) — a crash mid-produce must not pass."""
+        self._assert_blocks(self._fixture(finalize_round=False))
+
+    def test_wrong_candidate_epoch_blocks(self):
+        """The candidate epoch is FIXED = 1 and NEVER derived from the
+        client-supplied `artifact.seats[*].epoch`: an artifact whose candidate
+        seats claim a non-1 epoch cannot shift which durable record the gate
+        reads. The gate reads the candidate round record at epoch 1; the epoch-2
+        artifact seats then have no matching durable record → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        # The client artifact CLAIMS candidate seats at epoch 2 (the forge).
+        forged_seat = _seat("codex:x:high", epoch=2, finding_ids=())
+        candidate = self.candidate(base, base)
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=(forged_seat,))
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        # But the HARNESS durably recorded the candidate at the FIXED epoch 1
+        # (what the real producer always writes) — a different instance id.
+        honest_seat = _seat("codex:x:high", epoch=1, finding_ids=())
+        fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(honest_seat))
+        fg.write_expected_seats(
+            self.repo, self.RUN, epoch=1,
+            expected_seats=(fg.ExpectedSeat(
+                seat_instance_id=honest_seat.seat_instance_id, seat_key=honest_seat.seat_key,
+                vendor_leg=honest_seat.vendor_leg, required=True),),
+        )
+        fg.finalize_review_round(
+            self.repo, self.RUN, epoch=1, reviewed_head_sha=base,
+            reviewed_material_digest=candidate.review_scope.reviewed_material_digest, canonical_findings=(),
+        )
+        self._assert_blocks(base)
+
+    # -- 3b-gate CR round 1: ROUND-RESOLUTION forges. Each keeps an authenticated
+    #    delta round (durable resolution honest) but the CLIENT artifact record
+    #    diverges on ONE gate-read resolution field → BLOCK on the resolution
+    #    binding (`_delta_resolution_digest`), the fields the gate previously
+    #    trusted straight from the client. ------------------------------------- #
+
+    def test_resulting_head_digest_forge_blocks(self):
+        """P0-1 (all three): keep the authenticated `delta_head_sha` but set
+        `resulting_head_digest` to an UNREVIEWED head's digest — equivalence would
+        then pass against that head. The durable resolution binds the honest
+        digest → BLOCK. (resulting_head_digest is NOT in chain_digest, so ONLY the
+        resolution binding catches this — the isolated proof of the fix.)"""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(r, resulting_head_digest="f" * 64)
+            )
+        )
+
+    def test_status_upgrade_forge_blocks(self):
+        """gemini#2: upgrade the round `status` (reviewed-clean ↔ escalated) on the
+        client record while the durable resolution recorded the honest status.
+        `status` is NOT in chain_digest, so ONLY the resolution binding catches
+        this — assert the mechanism, not just the block."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH
+                )
+            ),
+            reason_contains="resolution_digest",
+        )
+
+    def test_finding_flow_move_forge_blocks(self):
+        """gemini#2: move a finding id between the resolved/reopened/carried-forward
+        flows on the client record — the durable resolution binds the honest flow."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, resolved_finding_ids=("g1",), reopened_finding_ids=()
+                )
+            )
+        )
+
+    def test_parent_chain_digest_splice_forge_blocks(self):
+        """gemini#3: rewrite `parent_chain_digest` (the chain-topology anchor) to
+        splice/reorder the chain — the durable resolution binds the honest
+        parent linkage, so a forged contiguity BLOCKS."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(r, parent_chain_digest="a" * 64)
+            )
+        )
+
+    def test_delta_changed_paths_tamper_forge_blocks(self):
+        """Tamper `delta_changed_paths` (the escalation input) on the client
+        record — the durable resolution binds the honest live-diff path set."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, delta_changed_paths=("pkg/UNREVIEWED.py",)
+                )
+            )
+        )
+
+    def test_escalation_suppression_forge_blocks(self):
+        """Suppress the round `escalation` on the client record (present it as a
+        narrower non-escalated round) — the durable resolution binds the honest
+        escalation decision. `escalation` is NOT in chain_digest, so ONLY the
+        resolution binding catches this — assert the mechanism."""
+        self._assert_blocks(
+            self._fixture(
+                forge_artifact_delta=lambda r: dataclasses.replace(
+                    r, escalation=fp.Escalation(required=True, trigger="protected-path")
+                )
+            ),
+            reason_contains="resolution_digest",
+        )
+
+    def test_extra_provenance_seat_forge_blocks(self):
+        """P0-2 (codex): an EXTRA provenance seat outside the expected manifest,
+        reusing genuine durable metadata but with a flipped verdict, would go
+        unbound (the binding loop iterates only the expected set). The seat-set
+        must EQUAL the expected manifest → BLOCK."""
+        extra = _seat(
+            "gemini:y:high", vendor_leg="gemini", epoch=2, verdict="AGREE",
+            seat_instance_id="gemini:y:high@2",
+        )
+        self._assert_blocks(self._fixture(extra_artifact_delta_seats=(extra,)))
+
+    def test_tail_dropped_delta_round_blocks_via_equivalence(self):
+        """Chain TRUNCATION (tail-drop): the harness recorded a delta round
+        advancing to `delta_head`, but the client presents an EMPTY chain
+        (candidate-only). The per-round binding CANNOT catch this — the dropped
+        round is not in the client chain to be checked, and the gate iterates only
+        the client's chain (it does NOT enumerate durable epochs, by design). The
+        EQUIVALENCE recompute catches it: the client chain resolves to the
+        candidate head, but the LIVE head is the real advanced head → INVALIDATED.
+        Safe ONLY because `live_head_sha` is not attacker-controlled (it is the
+        broker-admitted / live PR head, pinned by the consumer). Named boundary."""
+        delta_head = self._fixture(drop_delta_from_artifact=True)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertNotEqual(gate.equivalence_verified.result, "EQUIVALENT")
+
+    def test_candidate_patch_digest_forge_blocks(self):
+        """3b-gate CR round 2 / codex BLOCKER 1 — the CANDIDATE-path equivalence
+        bypass (symmetric with the delta P0-1, previously left applied to delta
+        rounds only). Keep the reviewed head honestly bound, but forge
+        candidate.patch_digest to an UNREVIEWED head's digest so equivalence would
+        pass against that head. The gate recomputes the candidate digest off the
+        BOUND head via live git → mismatch → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        self.write("pkg/UNREVIEWED.py", "not reviewed\n")
+        unreviewed_head = self.commit("c1 UNREVIEWED head")
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        # Candidate is honestly reviewed at `base` (exact-head), but its
+        # patch_digest is forged to the UNREVIEWED head's digest.
+        honest = self.candidate(base, base)
+        forged = dataclasses.replace(honest, patch_digest=self.digest(base, unreviewed_head))
+        artifact = self.build_artifact(base_sha=base, candidate=forged, seats=candidate_seats)
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, artifact)  # reviewed_head_sha = base (the bound head)
+        gate = self._assert_blocks(unreviewed_head)
+        self.assertIn("candidate.patch_digest", gate.equivalence_verified.reason or "")
+
+    def test_content_neutral_dropped_round_blocks_via_epoch_completeness(self):
+        """3b-gate CR round 2 / codex BLOCKER 2 — a CONTENT-NEUTRAL delta round
+        (an EMPTY commit: net patch equals the candidate's, so equivalence with it
+        dropped still passes) that the harness durably recorded (here it ESCALATED)
+        must not be silently droppable. The client presents an empty chain;
+        equivalence is EQUIVALENT (same content), but durable epoch-set
+        completeness catches the dropped finalized epoch → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        candidate = self.candidate(base, base)
+        c0 = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats).chain_digest
+        # Content-neutral delta: an EMPTY commit (same tree as base) that ESCALATED.
+        empty_head = self.commit("c2 empty content-neutral delta")  # commit() uses --allow-empty
+        delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=(), seat_instance_id="codex:x:high@2"),)
+        delta_record = fd.build_delta_round(
+            epoch=2, repo=self.repo, base_sha=base, repo_slug=self.REPO_SLUG,
+            parent_head_sha=base, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
+            delta_head_sha=empty_head, findings=(), resolved_finding_ids=(), delta_round_seats=delta_seats,
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_WHOLE_PATCH, covers_patch_digest=self.digest(base, empty_head)),
+            status=fp.DELTA_STATUS_ESCALATED_WHOLE_PATCH, manual_escalation_trigger="reviewer:codex:x:high",
+        )
+        self.assertTrue(delta_record.escalation.required)
+        # The CLIENT DROPS the delta round (empty chain), keeping only the candidate.
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        for s in delta_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, artifact)  # candidate round (epoch 1) finalized
+        self.persist_delta_round(self.RUN, delta_record, delta_seats)  # delta round (epoch 2) finalized
+        # Live head = the empty (content-neutral) delta head → equivalence WOULD be
+        # EQUIVALENT; only epoch-set completeness catches the dropped round.
+        gate = self._assert_blocks(empty_head)
+        self.assertIn("durable FINALIZED epoch set", gate.equivalence_verified.reason or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +1025,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         self.write("pkg/c.py", "small disjoint delta\n")
         delta_head = self.commit("c2 small disjoint delta, zero delta-round seats")
         delta_record = fd.build_delta_round(
+            epoch=4,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -640,7 +1047,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
             self.delta_binding("run-zero-seats", artifact)
         self.assertIn("delta_round_seats", str(cm.exception))
-        self.assert_compose_defers_delta("run-zero-seats", delta_head)
 
     def test_reviewed_clean_delta_with_uncorroborated_reopen_blocks(self):
         """A round's `delta_round_seats` are non-empty and authenticate fine,
@@ -674,6 +1080,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         self.assertEqual(cf.reopened_finding_ids, ("f1",))
         review_scope = fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY)
         raw_record = fp.DeltaReviewRecord.build(
+            epoch=5,
             policy={"path": fd.BOUNDARY_MANIFEST_PATH, "source_rev": base, "digest": "d" * 64},
             review_scope=review_scope,
             material_digests=(),
@@ -697,7 +1104,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
 
         with self.assertRaises(fg.DeltaRoundSeatBindingInvalid):
             self.delta_binding("run-uncorroborated", artifact)
-        self.assert_compose_defers_delta("run-uncorroborated", delta_head)
 
     # ----------------------------------------------------------------------- #
     # Follow-up CR (agent-harness#191, codex-reproduced): `_require_delta_
@@ -721,6 +1127,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat disagrees")
         disagree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="DISAGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=6,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -742,7 +1149,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
             self.delta_binding("run-disagree-seat", artifact)
         self.assertIn("no AGREE/PARTIALLY AGREE verdict", str(cm.exception))
-        self.assert_compose_defers_delta("run-disagree-seat", delta_head)
 
     def test_reviewed_clean_delta_with_unverdicted_required_seat_blocks(self):
         """A required `delta_round_seat` that authenticates fine but never
@@ -753,6 +1159,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat never verdicted")
         unverdicted_seat = _seat("codex:x:high", epoch=2, required=True, verdict=None, finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=7,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -774,7 +1181,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
             self.delta_binding("run-unverdicted-seat", artifact)
         self.assertIn("no AGREE/PARTIALLY AGREE verdict", str(cm.exception))
-        self.assert_compose_defers_delta("run-unverdicted-seat", delta_head)
 
     def test_reviewed_clean_delta_with_only_optional_seats_blocks(self):
         """A round whose `delta_round_seats` are all non-required (even if
@@ -786,6 +1192,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, only optional seats")
         optional_seat = _seat("codex:x:high", epoch=2, required=False, verdict="AGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=8,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -807,7 +1214,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         with self.assertRaises(fg.DeltaRoundSeatBindingInvalid) as cm:
             self.delta_binding("run-optional-only", artifact)
         self.assertIn("NONE are", str(cm.exception))
-        self.assert_compose_defers_delta("run-optional-only", delta_head)
 
     def test_reviewed_clean_delta_with_agreeing_required_seat_passes(self):
         """The legitimate case (kept green): a `reviewed-clean` delta whose
@@ -818,6 +1224,7 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         delta_head = self.commit("c2 small disjoint delta, required seat agrees")
         agree_seat = _seat("codex:x:high", epoch=2, required=True, verdict="AGREE", finding_ids=())
         delta_record = fd.build_delta_round(
+            epoch=9,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -839,7 +1246,6 @@ class DeltaRoundSeatBindingTest(GitRepoTestCase):
         # The legitimate case: the delta-round binding ACCEPTS (does not raise);
         # compose still defers the whole delta chain to piece 3 (blocker 5).
         self.delta_binding("run-agree-seat", artifact)  # must not raise
-        self.assert_compose_defers_delta("run-agree-seat", delta_head)
 
 
 # --------------------------------------------------------------------------- #
@@ -966,6 +1372,7 @@ class EscalationGateTest(GitRepoTestCase):
 
         with self.assertRaises(fd.EscalationInvalid):
             fd.build_delta_round(
+                epoch=10,
                 repo=self.repo,
                 base_sha=base,
                 repo_slug=self.REPO_SLUG,
@@ -991,6 +1398,7 @@ class EscalationGateTest(GitRepoTestCase):
 
         delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=("f1",)),)
         delta_record = fd.build_delta_round(
+            epoch=11,
             repo=self.repo,
             base_sha=base,
             repo_slug=self.REPO_SLUG,
@@ -1020,7 +1428,6 @@ class EscalationGateTest(GitRepoTestCase):
         self.assertEqual(resolution.escalation.trigger, "auth_security")
         self.delta_binding("run-acc4", artifact)  # must not raise
         self.assertEqual(sorted(resolution.re_reviewed_findings), ["f1"])
-        self.assert_compose_defers_delta("run-acc4", delta_head)
 
 
 # --------------------------------------------------------------------------- #
