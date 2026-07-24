@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI — Migrate GitHub Actions workflows to Blacksmith runners (Consiliency/agent-harness#284)
+
+Switched `runs-on:` from GitHub-hosted `ubuntu-latest` to Blacksmith's
+`blacksmith-4vcpu-ubuntu-2404` runners across the release/CI workflows
+(`docs-audit`, `publish-consiliency-harness`, `publish-pypi`,
+`release-consistency`, `scrub`, `skills-parity`, `test`). No job logic, step,
+trigger, or permission changed — this is a runner-label-only migration to
+faster hardware with a colocated Actions cache. Recorded here because
+`.github/workflows/**` is a release-class surface under the docs-freshness
+audit and every such change must carry a matching CHANGELOG entry.
+
 ### FAB Lane A — delta-review provenance schema + hash chain + trust root (Consiliency/agent-harness#191)
 
 New `phase_loop_runtime.fab_provenance` module: Lane A of #191's advisor-board
