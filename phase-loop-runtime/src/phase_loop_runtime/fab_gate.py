@@ -207,6 +207,7 @@ from .fab_provenance import (
     _strict_object_pairs_hook,  # reused strict-parse discipline, not reimplemented
     _tuple_str,
     aggregate_material_digest,  # noqa: F401 - re-exported for callers/tests
+    atomic_write_text_durable,
     provenance_dir_for_run,
     read_provenance,
     reverify_material,
@@ -624,10 +625,9 @@ def finalize_review_round(
 
 def _write_review_round(repo: Path, run_id: str, record: FabReviewRound) -> Path:
     path = review_round_path_for_run(repo, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(record.to_json(), encoding="utf-8")
-    os.replace(tmp_path, path)
+    # Durable (fsync'd) write — the round record must be on stable storage BEFORE
+    # the branch ref advances (CR round 7 / codex#4).
+    atomic_write_text_durable(path, record.to_json())
     return path
 
 
@@ -891,6 +891,19 @@ def cross_check_seat_authenticity(
                 f"epoch={seat.epoch!r} seat_instance_id={seat.seat_instance_id!r} has NO matching durable "
                 "SeatOutcomeRecord (fail-closed, T13: a hand-written provenance seat cannot vouch for a "
                 "seat that never ran)"
+            )
+        # agent-harness#191 CR round 7 / codex#6: when the join is on
+        # `seat_instance_id`, `seat_key`/`vendor_leg`/`epoch` are NOT in the join
+        # key, so they must be bound EXPLICITLY — otherwise a client artifact
+        # could keep a valid instance id but relabel the reviewer/vendor/epoch.
+        # (In the legacy composite-key path these three ARE the key, so this is a
+        # redundant-but-harmless re-check there.)
+        if seat.seat_key != durable.seat_key or seat.vendor_leg != durable.vendor_leg or seat.epoch != durable.epoch:
+            raise SeatAuthenticityInvalid(
+                f"seat instance {seat.seat_instance_id!r} identity disagrees with its durable record "
+                f"(seat_key/vendor_leg/epoch: provenance={(seat.seat_key, seat.vendor_leg, seat.epoch)!r} "
+                f"durable={(durable.seat_key, durable.vendor_leg, durable.epoch)!r}) — fail-closed, T13: an "
+                "instance id can never relabel the seat it vouches for"
             )
         if seat.required != durable.required:
             raise SeatAuthenticityInvalid(

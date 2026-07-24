@@ -1396,6 +1396,28 @@ def provenance_path_for_run(repo: Path, run_id: str) -> Path:
     return provenance_dir_for_run(repo, run_id) / PROVENANCE_FILENAME
 
 
+def atomic_write_text_durable(path: Path, text: str) -> None:
+    """Atomically write `text` to `path` and make it DURABLE before returning
+    (agent-harness#191 CR round 7 / codex#4): fsync the temp file's contents AND
+    the parent directory entry before/after the rename, so the FAB ordering
+    invariant "provenance + round records are on stable storage BEFORE the branch
+    ref advances" holds across a host/kernel crash — a crash must never preserve
+    the ref update while losing the authoritative gate record. Mirrors the
+    seat-outcome ledger's existing fsync posture (`fab_gate.append_seat_outcome`)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)  # atomic within the run store
+    dir_fd = os.open(str(path.parent), getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact) -> Path:
     """Intended-harness-only write path (design §6.1): persists `artifact` to the
     durable run store keyed by `run_id`. This is the ONLY function in this module
@@ -1409,11 +1431,9 @@ def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact
     caller-chosen destination — the write always targets the run-store path for
     `run_id`, never a PR-branch checkout or a client-supplied path."""
     path = provenance_path_for_run(repo, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = artifact.to_json()
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(text, encoding="utf-8")
-    os.replace(tmp_path, path)  # atomic within the run store
+    # Durable (fsync'd) write — provenance must be on stable storage BEFORE the
+    # branch ref advances (CR round 7 / codex#4).
+    atomic_write_text_durable(path, artifact.to_json())
     return path
 
 

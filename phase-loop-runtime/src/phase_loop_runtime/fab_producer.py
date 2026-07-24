@@ -52,6 +52,7 @@ from .fab_gate import (
     compose_gate_status,
     finalize_review_round,
     read_seat_outcomes,
+    seat_outcomes_path_for_run,
     write_expected_seats,
 )
 from .fab_provenance import (
@@ -200,6 +201,16 @@ def capture_review_at_invocation(
     run_dir = provenance_dir_for_run(repo, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / REVIEWED_BUNDLE_FILENAME).write_bytes(reviewed_bytes)
+
+    # IDEMPOTENT re-capture (CR round 7 / codex#2): the durable seat-outcome
+    # ledger is APPEND-only, and `run_id = fab-<reviewed_tree>` + deterministic
+    # instance ids mean a retry (e.g. after a failed ref-advance) would re-append
+    # records that differ only in `completed_at` — the gate's conflicting-record
+    # check would then permanently BLOCK the phase. Truncate the ledger for this
+    # run before re-capturing so a retry produces one clean set, not a conflict.
+    ledger = seat_outcomes_path_for_run(repo, run_id)
+    if ledger.exists():
+        ledger.unlink()
 
     # Record the reviewed diff's completeness + digest — from what the panel SAW
     # (`reviewed_diff_text`), plus an independent numstat probe over the staged

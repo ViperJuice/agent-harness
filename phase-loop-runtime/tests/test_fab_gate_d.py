@@ -429,6 +429,22 @@ class RoundAuthenticityForgeTest(GitRepoTestCase):
         self.assertIn("i2", reason)
         self.assertIn("NO matching durable", reason)
 
+    def test_relabeled_seat_identity_blocks(self):
+        """CR round 7 / codex#6: once the join is on `seat_instance_id`, the
+        artifact could keep a valid instance id but RELABEL the seat's vendor_leg
+        (or seat_key/epoch). The gate must bind those fields against the durable
+        record → BLOCK."""
+        base, head = self._exact_head_setup()
+        real = _seat("codex:x:high", vendor_leg="codex", verdict="AGREE", seat_instance_id="i1")
+        # The artifact's seat keeps instance id i1 but relabels the vendor.
+        forged = _seat("codex:x:high", vendor_leg="gemini", verdict="AGREE", seat_instance_id="i1")
+        artifact = self.build_artifact(base_sha=base, candidate=self.candidate(base, head), seats=(forged,))
+        fp.write_provenance(self.repo, "run-relabel", artifact)
+        fg.append_seat_outcome(self.repo, "run-relabel", _durable_from_seat(real))  # durable = the REAL vendor
+        self.write_review_round("run-relabel", artifact, expected_seats=(real,))
+        reason = self._reason("run-relabel", head)
+        self.assertIn("identity disagrees", reason)
+
     def test_nonempty_delta_chain_blocks_deferred_to_piece3(self):
         """Blocker 5: piece 2 supports only single candidate-round artifacts; any
         nonempty delta_chain reaching compose fails closed (deferred to piece 3),

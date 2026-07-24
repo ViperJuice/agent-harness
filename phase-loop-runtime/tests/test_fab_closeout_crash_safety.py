@@ -246,6 +246,56 @@ def test_flag_on_planned_closeout_does_not_object_gate(tmp_path, monkeypatch):
     assert _git(repo, "rev-parse", "HEAD") != base and "fab_run_id" not in event.metadata.get("closeout", {})
 
 
+def test_honesty_decline_falls_back_to_git_commit(tmp_path, monkeypatch):
+    """CR round 7 #1: an honest honesty-gate DECLINE (here: the merge-base is
+    unresolvable because the fetch remote is broken) must NOT publish the
+    commit-tree object — it falls back to the normal `git commit` path (which runs
+    hooks/signs) and produces NO FAB provenance for the closeout."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    # Break the honesty gate's merge-base fetch → the producer DECLINES.
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "fetchsrc", "/nonexistent/origin.git"], check=True)
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete", "a declined FAB closeout still commits via the non-FAB git commit path"
+    assert _git(repo, "rev-parse", "HEAD") != base, "the commit landed via git commit"
+    assert "fab_run_id" not in event.metadata.get("closeout", {}), "a declined closeout produces no FAB provenance"
+    run_id = f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"
+    with pytest.raises(fp.ProvenanceNotFound):
+        fp.read_provenance(repo, run_id)
+
+
+def test_retry_after_failed_advance_succeeds(tmp_path, monkeypatch):
+    """CR round 7 #2 (the missing half): a failed ref-advance must leave a CLEAN
+    state — a retry re-captures idempotently (no conflicting durable seat records)
+    and SUCCEEDS. Attempt 1 fails the advance; attempt 2 advances."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    calls = {"n": 0}
+    real_advance = R._fab_advance_ref
+
+    def flaky_advance(*a, **k):
+        calls["n"] += 1
+        return False if calls["n"] == 1 else real_advance(*a, **k)
+
+    monkeypatch.setattr(R, "_fab_advance_ref", flaky_advance)
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+
+    status1, _ = _closeout(repo, roadmap)
+    assert status1 != "complete", "attempt 1's failed advance must not complete"
+    assert _git(repo, "rev-parse", "HEAD") == base, "attempt 1 left HEAD unchanged"
+    # Attempt 2: re-capture must NOT conflict on the durable ledger → advances.
+    status2, event2 = _closeout(repo, roadmap)
+    assert status2 == "complete", f"the retry must succeed, not permanently block (got {status2})"
+    head = _git(repo, "rev-parse", "HEAD")
+    assert head != base and event2.metadata["closeout"].get("fab_run_id") == f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"
+
+
 def test_pre_commit_hook_declines_to_git_commit(tmp_path, monkeypatch):
     """FAB-on + a configured pre-commit hook → FAB DECLINES to the non-FAB
     `git commit` path (which RUNS the hook, incl. a blocking check-hook), and
@@ -281,8 +331,20 @@ def test_control_detection(tmp_path, monkeypatch):
     hook.chmod(0o755)  # executable → a real configured hook
     assert R._fab_pre_commit_control_active(repo) is True
     hook.unlink()
+    # commit-msg and prepare-commit-msg are ALSO commit-tree-bypassed controls.
+    for name in ("commit-msg", "prepare-commit-msg"):
+        h = repo / ".git" / "hooks" / name
+        h.write_text("#!/bin/sh\nexit 0\n")
+        h.chmod(0o755)
+        assert R._fab_pre_commit_control_active(repo) is True, f"{name} hook must decline"
+        h.unlink()
+    # Signing: explicit-false → allow; true → decline; MALFORMED → fail-closed.
+    subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "false"], check=True)
+    assert R._fab_pre_commit_control_active(repo) is False
     subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "true"], check=True)
     assert R._fab_pre_commit_control_active(repo) is True, "required signing → decline (commit-tree can't sign)"
+    subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "maybe"], check=True)
+    assert R._fab_pre_commit_control_active(repo) is True, "malformed gpgsign → fail-closed decline"
 
 
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
