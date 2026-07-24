@@ -15,9 +15,26 @@ in-repo staging were the divergence + worktree-dirtying defects).
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+# A RESOLVED git object name (short or full hex OID) — never a ref / branch name.
+# `committed_range_diff` validates both args against this before shelling out, so
+# a `-`/`--flag`-leading value can never be smuggled to `git diff` as an option
+# (argv flag-smuggling), and a ref like `--upload-pack=…` (which a branch name
+# could be) is rejected — the delta review must pin exactly two resolved SHAs.
+_RESOLVED_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def _require_resolved_sha(value: str, *, role: str) -> str:
+    if not isinstance(value, str) or not _RESOLVED_SHA_RE.fullmatch(value):
+        raise ValueError(
+            f"committed_range_diff {role} must be a RESOLVED git SHA (7-64 hex), not a ref/branch "
+            f"name or flag-leading value (fail-closed, argv flag-smuggling guard): {value!r}"
+        )
+    return value
 
 
 def staged_index_diff(repo: Path, paths: Sequence[str]) -> str:
@@ -52,10 +69,22 @@ def committed_range_diff(repo: Path, base_sha: str, head_sha: str) -> str:
     incomplete render (binary-elided / attribute-suppressed / invalid-UTF-8
     sentinel) exactly as the candidate round does — so a transient render failure
     can never be laundered into provenance for bytes the seats never saw.
+
+    ``base_sha``/``head_sha`` MUST be RESOLVED SHAs (validated fail-closed via
+    ``_require_resolved_sha`` BEFORE the subprocess): this is a trust-root
+    primitive — the delta review's honesty rests on "the diff covers exactly
+    ``old_admitted..new_head``", so a flag-leading value or a ref/branch name
+    (which could be ``--upload-pack=…``) that alters what git shows must never
+    reach ``git diff``. A non-SHA raises ``ValueError`` (never a sentinel — a
+    validation failure is a caller bug / attack, not a transient render failure).
     """
+    _require_resolved_sha(base_sha, role="base_sha")
+    _require_resolved_sha(head_sha, role="head_sha")
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo), "diff", base_sha, head_sha],
+            # `--` after the (pre-validated) revs terminates option parsing as a
+            # second layer over the regex validation, which is the primary defense.
+            ["git", "-C", str(repo), "diff", base_sha, head_sha, "--"],
             capture_output=True, text=True, timeout=30,
         )
     except Exception:
