@@ -1,10 +1,13 @@
-"""FAB (Consiliency/agent-harness#191) piece 2 — closeout CRASH-SAFETY across
-retries (CR round-2 blocker). A FAB hard-block (or a post-commit producer
-exception) leaves the commit in place; on a SUBSEQUENT closeout attempt the
-`noop_already_committed` branch must NOT finalize that un-gated commit as
-complete — it must RE-GATE the exact committed tree and only complete on an
-affirmative FAB pass, else stay blocked (the merge-time re-gate is inert in
-piece 2, so this is the only backstop).
+"""FAB (Consiliency/agent-harness#191) piece 2 — closeout crash-safety via
+OBJECT-GATING (CR round 6). Instead of `git commit` advancing HEAD and then
+gating, a FAB-on closeout creates the candidate commit as a git OBJECT
+(`git commit-tree`, no ref/index/worktree change), runs the dedicated hard gate
+against it, and advances the branch ref ONLY on a PASS/decline — never on a
+hard-gate BLOCK or crash. The ref advances IFF the gate passed, so a crash before
+the atomic `update-ref` leaves HEAD unchanged and the candidate an UNREFERENCED
+object; a retry re-reviews clean, no orphaned reachable commit. The whole
+post-commit crash-safety machinery (pending record / cleared marker / phase-scope
+anchor / noop re-gate) is gone.
 
 Deliberately UNMARKED so CI runs it. Uses REAL git repos + a real bare origin;
 the panel is injected only at the real spawn boundary.
@@ -17,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-from phase_loop_runtime import fab_gate as fg
 from phase_loop_runtime import fab_producer as prod
 from phase_loop_runtime import fab_provenance as fp
 from phase_loop_runtime import panel_invoker as pi
@@ -37,10 +39,9 @@ def _git(repo: Path, *args: str) -> str:
 def _setup_repo(tmp_path: Path):
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"
-    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("pkg/mod.py",))
+    write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("pkg/mod.py",))
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "add plan"], check=True)
-    # Two-remote convention: origin github-shaped (identity), fetchsrc bare (fetch).
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
     base = _git(repo, "rev-parse", "HEAD")
@@ -71,13 +72,13 @@ def _snapshot(repo: Path, roadmap: Path) -> StateSnapshot:
 
 
 def _install_governed_panel(monkeypatch):
-    """Real governed path, no CLI spawn, disjoint pool."""
+    """Real governed path, no CLI spawn, disjoint pool; point the FAB honesty
+    gate's fetch at the local bare remote."""
     monkeypatch.setattr(
         pi, "_default_spawn_via_provider", lambda leg, artifact, **kw: ("OK", "Reviewed.\n\nAGREE")
     )
     monkeypatch.setattr(R, "available_panel_legs", lambda *a, **k: ("codex", "gemini"))
     monkeypatch.setattr(R, "_phase_author_vendors", lambda *a, **k: ("claude",))
-    # The producer fetches from "origin" in production; point it at the bare remote.
     orig = R._fab_closeout_producer
 
     def patched(repo, **kw):
@@ -88,11 +89,10 @@ def _install_governed_panel(monkeypatch):
 
 
 def _force_fab_block(monkeypatch):
-    """Force the FAB hard gate to BLOCK (provenance still written) regardless of
-    equivalence — the deterministic stand-in for 'the gate did not pass'."""
+    """Force the dedicated hard gate to BLOCK (provenance still written) regardless
+    of equivalence — the deterministic stand-in for 'the gate did not pass'."""
     def blocked(*a, **kw):
-        run_id = kw["run_id"]
-        artifact = fp.read_provenance(kw["repo"], run_id)
+        artifact = fp.read_provenance(kw["repo"], kw["run_id"])
         return fp.GateStatus(
             reviewed_sha=artifact.candidate.head_sha,
             status=fp.GATE_STATUS_BLOCK,
@@ -102,97 +102,163 @@ def _force_fab_block(monkeypatch):
     monkeypatch.setattr(prod, "compose_gate_status", blocked)
 
 
-def test_blocked_fab_commit_is_not_noop_completed_on_retry(tmp_path, monkeypatch):
-    """Attempt 1 hard-blocks (FAB gate) but the commit is made; attempt 2 (resume,
-    nothing staged) must NOT finalize it as noop_already_committed — it must
-    re-gate and stay blocked."""
+def _closeout(repo, roadmap):
+    return R._perform_phase_closeout(
+        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
+        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
+    )
+
+
+def _stage_change(repo):
+    (repo / "pkg").mkdir(exist_ok=True)
+    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
+
+
+# --------------------------------------------------------------------------- #
+# Object-gating: the ref advances IFF the gate passed.
+# --------------------------------------------------------------------------- #
+
+
+def test_pass_advances_ref_to_exact_gated_sha(tmp_path, monkeypatch):
+    """A FAB-on closeout that PASSES advances the branch ref to the EXACT gated
+    candidate SHA, and provenance is keyed to that same SHA (gated == published)."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete", event.metadata.get("closeout", {})
+    head = _git(repo, "rev-parse", "HEAD")
+    assert head != base, "the ref advanced"
+    run_id = f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"
+    assert event.metadata["closeout"].get("fab_run_id") == run_id
+    artifact = fp.read_provenance(repo, run_id)
+    assert artifact.candidate.head_sha == head, "provenance is keyed to the exact published SHA"
+    # The owned path is committed (clean vs HEAD); the untracked `.phase-loop/`
+    # run store is expected and excluded from git in real runs.
+    assert _git(repo, "status", "--short", "--", "pkg/mod.py") == "", "owned path committed after the gated advance"
+    assert "pkg/mod.py" in _git(repo, "show", "--name-only", "--format=", "HEAD")
+
+
+def test_block_does_not_advance_ref(tmp_path, monkeypatch):
+    """A FAB hard-gate BLOCK must NOT advance the ref — HEAD unchanged, phase
+    blocked, and the candidate never becomes reachable."""
     monkeypatch.setenv("PHASE_LOOP_FAB", "1")
     repo, roadmap = _setup_repo(tmp_path)
     _install_governed_panel(monkeypatch)
     _force_fab_block(monkeypatch)
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
 
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
-    head_before = _git(repo, "rev-parse", "HEAD")
-
-    # Attempt 1: governed review passes, commit made, FAB hard gate BLOCKS.
-    status1, event1 = R._perform_phase_closeout(
-        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
-        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
-    )
-    assert status1 == "blocked", f"attempt 1 must block on the FAB hard gate, got {status1}"
-    committed = _git(repo, "rev-parse", "HEAD")
-    assert committed != head_before, "attempt 1 made the commit before blocking"
-    # The blocked commit's tree keys the FAB run; NO cleared marker was written.
-    tree = _git(repo, "rev-parse", "HEAD^{tree}")
-    run_id = f"fab-{tree}"
-    assert prod.is_fab_scoped(repo, run_id), "attempt 1 was FAB-scoped (capture ran)"
-    assert not prod.is_closeout_cleared(repo, run_id, committed), "a blocked closeout must NOT be cleared"
-    assert prod.read_phase_scope(repo, "CONTRACT")["committed_head"] == committed
-
-    # Attempt 2 (resume): the file is already committed → nothing staged → the
-    # noop_already_committed branch. It MUST re-gate and stay blocked, never
-    # finalize the un-gated commit as complete.
-    status2, event2 = R._perform_phase_closeout(
-        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
-        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
-    )
-    assert status2 != "complete", (
-        "RETRY FAIL-OPEN: a FAB-blocked commit was finalized as complete without re-gating "
-        f"(status={status2}, action={event2.metadata.get('closeout', {}).get('closeout_action')})"
-    )
-    assert _git(repo, "rev-parse", "HEAD") == committed, "no new commit on the blocked retry"
+    status, event = _closeout(repo, roadmap)
+    assert status == "blocked", f"a FAB hard-gate block must not complete, got {status}"
+    assert _git(repo, "rev-parse", "HEAD") == base, "the ref was NOT advanced on a block"
+    assert event.metadata["closeout"].get("closeout_action") == "review_gate_block"
 
 
-def test_crashed_producer_is_not_noop_completed_on_retry(tmp_path, monkeypatch):
-    """A post-commit producer EXCEPTION (crash between commit and gate-pass) must
-    also leave a fail-closed state: attempt 2 re-gates, and while the crash
-    condition persists it stays blocked (never noop-completes)."""
+def test_block_then_retry_never_completes_ungated(tmp_path, monkeypatch):
+    """After a block, HEAD is unchanged and the owned paths are NOT committed, so a
+    retry re-reviews from scratch (never noop_already_committed) — there is no
+    orphaned reachable commit to finalize un-gated. The whole class the prior 5
+    rounds chased is dissolved."""
     monkeypatch.setenv("PHASE_LOOP_FAB", "1")
     repo, roadmap = _setup_repo(tmp_path)
     _install_governed_panel(monkeypatch)
+    _force_fab_block(monkeypatch)
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
 
-    def boom(*a, **kw):
-        raise RuntimeError("simulated crash after commit, before gate-pass")
-
-    monkeypatch.setattr(prod, "compose_gate_status", boom)
-
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
-
-    status1, _ = R._perform_phase_closeout(
-        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
-        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
-    )
-    assert status1 == "blocked", f"a post-commit crash must fail closed, got {status1}"
-    committed = _git(repo, "rev-parse", "HEAD")
-    tree = _git(repo, "rev-parse", "HEAD^{tree}")
-    assert not prod.is_closeout_cleared(repo, f"fab-{tree}", committed)
-
-    status2, event2 = R._perform_phase_closeout(
-        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
-        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
-    )
-    assert status2 != "complete", "a crashed FAB commit must not noop-complete on retry"
-    assert _git(repo, "rev-parse", "HEAD") == committed
+    status1, _ = _closeout(repo, roadmap)
+    assert status1 == "blocked"
+    # Retry (the block condition persists): still blocked, still no commit, and it
+    # is NEVER a noop_already_committed completion.
+    status2, event2 = _closeout(repo, roadmap)
+    assert status2 != "complete", f"retry must not complete an un-gated commit, got {status2}"
+    assert event2.metadata["closeout"].get("closeout_action") != "noop_already_committed"
+    assert _git(repo, "rev-parse", "HEAD") == base, "no commit ever reached the branch"
 
 
-def test_flag_off_noop_retry_is_byte_neutral(tmp_path, monkeypatch):
-    """Byte-neutral: with PHASE_LOOP_FAB OFF, a resume that hits the noop branch
-    completes exactly as before — no re-gate, no FAB import reached."""
-    monkeypatch.delenv("PHASE_LOOP_FAB", raising=False)
+def test_crash_before_ref_advance_leaves_head_unchanged(tmp_path, monkeypatch):
+    """Gate PASSES but the atomic ref-advance fails (a stand-in for a crash between
+    the durable provenance write and update-ref): HEAD is unchanged, so the phase
+    re-runs clean — nothing un-gated is reachable."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    monkeypatch.setattr(R, "_fab_advance_ref", lambda *a, **k: False)  # simulate the crash window
+    _stage_change(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+
+    status, _ = _closeout(repo, roadmap)
+    assert status != "complete", "a failed ref-advance must not complete"
+    assert _git(repo, "rev-parse", "HEAD") == base, "HEAD unchanged — no orphaned reachable commit"
+
+
+def test_gated_head_noop_retry_completes(tmp_path, monkeypatch):
+    """A PASS advances HEAD to the gated SHA; a later re-dispatch finds the owned
+    paths already committed → noop_already_committed → complete, with NO re-gate
+    (the ref only advanced because it was gated)."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    _stage_change(repo)
+
+    status1, _ = _closeout(repo, roadmap)
+    assert status1 == "complete"
+    head = _git(repo, "rev-parse", "HEAD")
+    # Re-dispatch: nothing staged (already committed) → noop path → complete.
+    status2, event2 = _closeout(repo, roadmap)
+    assert status2 == "complete"
+    assert event2.metadata["closeout"].get("closeout_action") == "noop_already_committed"
+    assert _git(repo, "rev-parse", "HEAD") == head
+
+
+def test_flag_on_planned_closeout_does_not_object_gate(tmp_path, monkeypatch):
+    """A PLAN-DOC closeout (terminal_status="planned") never captures FAB seats and
+    must take the byte-identical non-FAB `git commit` path — the object-gate
+    (commit-tree/update-ref) must NOT run for it, even with the flag on."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
     repo, roadmap = _setup_repo(tmp_path)
 
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
-    # Attempt 1 (autonomous, flag off): plain commit.
+    def _must_not_run(*a, **k):
+        raise AssertionError("object-gate must not run for a planned closeout")
+
+    monkeypatch.setattr(R, "_fab_object_gate_commit", _must_not_run)
+    # Make the plan doc dirty — the owned path of a planned closeout.
+    plan_rel = "plans/phase-plan-v1-CONTRACT.md"
+    (repo / plan_rel).write_text((repo / plan_rel).read_text() + "\n<!-- planned edit -->\n")
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"CONTRACT": "awaiting_phase_closeout"}, current_phase="CONTRACT",
+        phase_owned_dirty=True, phase_owned_dirty_paths=(plan_rel,), dirty_paths=(plan_rel,),
+        closeout_terminal_status="planned", **snapshot_provenance(roadmap),
+    )
+    base = _git(repo, "rev-parse", "HEAD")
+    status, event = R._perform_phase_closeout(
+        repo, roadmap, "CONTRACT", snapshot,
+        resolve_profile("execute"), action="execute", closeout_mode="commit", run_mode="governed",
+    )
+    # No exception ⇒ the object-gate was not invoked. The plan commit landed via
+    # the normal path, and no FAB provenance was produced for it.
+    assert status == "planned", f"planned closeout should stay planned, got {status}"
+    assert _git(repo, "rev-parse", "HEAD") != base and "fab_run_id" not in event.metadata.get("closeout", {})
+
+
+def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
+    """Byte-neutral: with PHASE_LOOP_FAB OFF, the closeout uses the normal
+    `git commit` path and completes; a resume hits the unchanged noop path."""
+    monkeypatch.delenv("PHASE_LOOP_FAB", raising=False)
+    repo, roadmap = _setup_repo(tmp_path)
+    _stage_change(repo)
+
     status1, _ = R._perform_phase_closeout(
         repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
         resolve_profile("execute"), action="execute", closeout_mode="commit",
     )
     assert status1 == "complete"
     committed = _git(repo, "rev-parse", "HEAD")
-    # Attempt 2 (resume, nothing staged): noop_already_committed → complete.
     status2, event2 = R._perform_phase_closeout(
         repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
         resolve_profile("execute"), action="execute", closeout_mode="commit",
@@ -200,244 +266,6 @@ def test_flag_off_noop_retry_is_byte_neutral(tmp_path, monkeypatch):
     assert status2 == "complete"
     assert event2.metadata["closeout"]["closeout_action"] == "noop_already_committed"
     assert _git(repo, "rev-parse", "HEAD") == committed
-
-
-# --------------------------------------------------------------------------- #
-# Decision-table unit tests for the noop re-gate helper (the subtle cells).
-# --------------------------------------------------------------------------- #
-
-
-def _capture_and_commit(repo: Path, phase: str = "CONTRACT") -> tuple[str, str]:
-    """Capture a FAB review (real panel legs), write the PRE-commit phase-scope
-    anchor, commit a staged change, then bind committed_head — WITHOUT the cleared
-    marker: the state a blocked/crashed attempt-1 leaves. Returns (run_id, head)."""
-    from phase_loop_runtime.governed_bundle import staged_index_diff
-    from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
-
-    (repo / "pkg").mkdir(exist_ok=True)
-    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "-C", str(repo), "add", "pkg/mod.py"], check=True)
-    tree = _git(repo, "write-tree")
-    run_id = f"fab-{tree}"
-    panel = PanelResult(legs=(
-        PanelLegResult(leg="codex", status="OK", text="Reviewed.\n\nAGREE", seat_key="codex:x:high"),
-        PanelLegResult(leg="gemini", status="OK", text="Reviewed.\n\nAGREE", seat_key="gemini:y:high"),
-    ))
-    prod.capture_review_at_invocation(
-        repo, run_id, panel, epoch=1, reviewed_bundle_text="bundle",
-        reviewed_diff_text=staged_index_diff(repo, ["pkg/mod.py"]), closeout_dirty_paths=("pkg/mod.py",),
-    )
-    prod.write_phase_scope(repo, phase, run_id=run_id)  # pre-commit existence anchor
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c1"], check=True)
-    committed = _git(repo, "rev-parse", "HEAD")
-    prod.write_phase_scope(repo, phase, run_id=run_id, committed_head=committed)  # post-commit bind
-    return run_id, committed
-
-
-def test_noop_regate_not_fab_scoped_is_safe(tmp_path, monkeypatch):
-    """No pending record for the phase → the re-gate helper returns None (safe;
-    a plain non-FAB commit)."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "mod.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "-C", str(repo), "add", "pkg/mod.py"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "plain"], check=True)
-    assert R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}}) is None
-
-
-def test_noop_regate_cleared_marker_short_circuits(tmp_path, monkeypatch):
-    """Pending record + a commit-bound cleared marker → None WITHOUT re-gating
-    (trust the marker; do not false-block a legitimately-passed commit)."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, committed = _capture_and_commit(repo)
-    prod.mark_closeout_cleared(repo, run_id, committed)
-    monkeypatch.setattr(prod, "compose_gate_status", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("must not be called")))
-    assert R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}}) is None
-
-
-def test_noop_regate_decline_fails_closed(tmp_path, monkeypatch):
-    """THE SUBTLE CELL: pending record + NO marker + re-gate DECLINES (e.g. the
-    merge-base can't be resolved offline) → BLOCK, never complete."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, committed = _capture_and_commit(repo)
-    assert not prod.is_closeout_cleared(repo, run_id, committed)
-    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "fetchsrc", "/nonexistent/origin.git"], check=True)
-    monkeypatch.setattr(R, "_fab_closeout_producer", lambda repo, **kw: (
-        prod.finalize_and_gate(repo, kw["fab_run_id"], epoch=1, reviewed_base_sha=kw["reviewed_base_sha"],
-                               reviewed_tree=kw["reviewed_tree"], committed_head_sha=kw["committed_head"],
-                               closeout_dirty_paths=kw["closeout_dirty_paths"], base_ref_name="main", origin="fetchsrc")
-    ))
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", "a re-gate DECLINE on a known-not-cleared commit must fail closed"
-
-
-# --------------------------------------------------------------------------- #
-# CR round 3 — the two ADVANCEMENT bypasses (round-2 tests held HEAD constant).
-# --------------------------------------------------------------------------- #
-
-
-def test_concurrent_head_move_does_not_hide_blocked_fab_commit(tmp_path, monkeypatch):
-    """BLOCKER 2: attempt-1 blocks the phase's FAB commit C1; an UNRELATED commit
-    advances HEAD to a different tree. The resume noop must evaluate C1 (from the
-    phase's durable pending record), NOT ambient HEAD → stay blocked. Pre-fix, the
-    ambient-HEAD tree had no FAB scope → treated as non-FAB → completed (bypass)."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)  # pending → C1, NO marker (as if blocked)
-    # An unrelated commit advances HEAD to a DIFFERENT tree (never FAB-captured).
-    (repo / "unrelated.txt").write_text("noise\n")
-    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 unrelated advance"], check=True)
-    c2 = _git(repo, "rev-parse", "HEAD")
-    assert c2 != c1 and _git(repo, "rev-parse", "HEAD^{tree}") != _git(repo, "rev-parse", f"{c1}^{{tree}}")
-
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", (
-        "a moved ambient HEAD must not hide the phase's blocked FAB commit — re-gate C1 from the pending record"
-    )
-
-
-def test_same_tree_replay_does_not_reuse_marker(tmp_path, monkeypatch):
-    """BLOCKER 1: C1 earns a commit-bound marker; a DIFFERENT commit C2 with the
-    SAME tree (hence the same run_id=fab-<tree>) must NOT inherit C1's marker —
-    commit mismatch → re-gate C2. Pre-fix, existence-only marker check cleared C2."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)
-    prod.mark_closeout_cleared(repo, run_id, c1)  # C1 passed
-    # C2: an amended commit with the SAME tree but a different sha/parent metadata.
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--amend", "--no-edit", "--date=2020-01-01T00:00:00"], check=True)
-    c2 = _git(repo, "rev-parse", "HEAD")
-    assert c2 != c1
-    assert _git(repo, "rev-parse", f"{c2}^{{tree}}") == _git(repo, "rev-parse", f"{c1}^{{tree}}"), "same tree"
-    # The phase-scope anchor now points at C2 (a real re-closeout would rebind it).
-    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id, committed_head=c2)
-    # C2 must NOT be cleared by C1's marker.
-    assert not prod.is_closeout_cleared(repo, run_id, c2)
-    # Force the re-gate to decline (offline) so C2 stays blocked rather than trusting C1.
-    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "fetchsrc", "/nonexistent/origin.git"], check=True)
-    monkeypatch.setattr(R, "_fab_closeout_producer", lambda repo, **kw: (
-        prod.finalize_and_gate(repo, kw["fab_run_id"], epoch=1, reviewed_base_sha=kw["reviewed_base_sha"],
-                               reviewed_tree=kw["reviewed_tree"], committed_head_sha=kw["committed_head"],
-                               closeout_dirty_paths=kw["closeout_dirty_paths"], base_ref_name="main", origin="fetchsrc")
-    ))
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", "a same-tree replay must re-gate, not reuse another commit's marker"
-
-
-# --------------------------------------------------------------------------- #
-# CR round 4 — pending-record ABSENCE must fail closed via the pre-commit
-# backstop (the round-3 pending record introduced a regression: absence == safe).
-# --------------------------------------------------------------------------- #
-
-
-def _break_origin(repo: Path) -> None:
-    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "fetchsrc", "/nonexistent/origin.git"], check=True)
-
-
-def _regate_offline(monkeypatch) -> None:
-    """Route the noop re-gate through finalize with origin=fetchsrc (which is now
-    broken), so the honesty gate DECLINES — the re-gate cannot affirmatively pass."""
-    monkeypatch.setattr(R, "_fab_closeout_producer", lambda repo, **kw: (
-        prod.finalize_and_gate(repo, kw["fab_run_id"], epoch=1, reviewed_base_sha=kw["reviewed_base_sha"],
-                               reviewed_tree=kw["reviewed_tree"], committed_head_sha=kw["committed_head"],
-                               closeout_dirty_paths=kw["closeout_dirty_paths"], base_ref_name="main", origin="fetchsrc")
-    ))
-
-
-def test_committed_head_none_head_advanced_blocks(tmp_path, monkeypatch):
-    """Crash BETWEEN the pre-commit scope write and the post-commit committed_head
-    bind (scope anchor exists, committed_head=None), THEN HEAD advances to an
-    unrelated non-FAB commit. The phase is proven scoped by the pre-commit anchor
-    but its FAB commit is not the current HEAD → cannot locate clearance → BLOCK."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)
-    # Simulate the crash: rewrite the anchor with committed_head=None (never bound).
-    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id)
-    assert prod.read_phase_scope(repo, "CONTRACT")["committed_head"] is None
-    # HEAD advances to an unrelated non-FAB commit (different tree, no capture).
-    (repo / "unrelated.txt").write_text("noise\n")
-    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 unrelated"], check=True)
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", (
-        "a scoped phase with no bound commit whose FAB commit isn't HEAD must fail closed"
-    )
-
-
-def test_committed_head_none_head_matches_regates(tmp_path, monkeypatch):
-    """committed_head=None (crash before bind) but the current HEAD IS the FAB
-    commit (same reviewed tree) → recover HEAD and re-gate; offline decline → BLOCK."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)
-    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id)  # committed_head=None
-    _break_origin(repo)
-    _regate_offline(monkeypatch)
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", "recovered orphan must re-gate; offline decline → block"
-
-
-def test_intersection_committed_head_bound_but_head_advanced_to_non_fab(tmp_path, monkeypatch):
-    """THE CR ROUND-5 INTERSECTION (which every HEAD-derived backstop missed): the
-    phase-scope anchor binds committed_head=C1, but HEAD has advanced to an
-    unrelated non-FAB commit C2 (different tree, no capture). The completion
-    decision must derive from the phase anchor's C1 (NOT ambient HEAD's tree) →
-    C1 uncleared → re-gate → BLOCK, never complete C1 un-gated."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)  # anchor committed_head=C1, no marker
-    (repo / "unrelated.txt").write_text("noise\n")
-    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 unrelated advance"], check=True)
-    c2 = _git(repo, "rev-parse", "HEAD")
-    assert _git(repo, "rev-parse", "HEAD^{tree}") != _git(repo, "rev-parse", f"{c1}^{{tree}}")
-    assert not prod.is_fab_scoped(repo, f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"), "C2's tree is non-FAB"
-    _break_origin(repo)
-    _regate_offline(monkeypatch)
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", (
-        "pending-absent∧HEAD-advanced-to-non-FAB must BLOCK via the phase anchor, not complete an un-gated commit"
-    )
-
-
-def test_unreachable_vouched_commit_blocks(tmp_path, monkeypatch):
-    """CR round 4 / codex#2: the phase anchor vouches for a commit no longer
-    reachable from HEAD (branch reset/off-branch). Even with a valid cleared
-    marker, the phase must NOT finalize against a gone commit → block."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)
-    prod.mark_closeout_cleared(repo, run_id, c1)  # C1 legitimately passed + cleared
-    assert prod.is_closeout_cleared(repo, run_id, c1)
-    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "HEAD~1"], check=True)
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", (
-        "a cleared marker must not finalize a phase against a commit no longer reachable from HEAD"
-    )
-
-
-def test_coherence_cleared_phase_completes_despite_head_advance(tmp_path, monkeypatch):
-    """COHERENCE (CR round 5): a legitimately CLEARED phase must NOT get stuck
-    blocked at a later resume when HEAD has advanced — the commit-bound cleared
-    marker for its committed_head DOMINATES (cleared → complete), because the
-    vouched C1 is still reachable from the advanced HEAD."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, c1 = _capture_and_commit(repo)
-    prod.mark_closeout_cleared(repo, run_id, c1)  # C1 passed + cleared
-    # HEAD advances (a later phase), C1 still an ancestor.
-    (repo / "later.txt").write_text("later phase\n")
-    subprocess.run(["git", "-C", str(repo), "add", "later.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 later phase"], check=True)
-    meta = {"closeout": {}}
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata=meta)
-    assert result is None, "a cleared, still-reachable phase must complete, not be false-blocked on resume"
-    assert meta["closeout"]["closeout_commit"] == c1  # records the FAB-vouched commit, not ambient HEAD
 
 
 if __name__ == "__main__":  # pragma: no cover

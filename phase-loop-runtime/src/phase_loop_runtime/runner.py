@@ -9079,20 +9079,12 @@ def _perform_phase_closeout_impl(
             # per the derivation at the top of this function) so a blocked / failed / not-yet-
             # verified phase is never silently finalized as complete.
             commit = _git_output(repo, "rev-parse", "HEAD")
-            # FAB (Consiliency/agent-harness#191) piece 2 crash safety (CR
-            # round-2): a FAB hard-block or a post-commit producer crash on a
-            # PRIOR attempt leaves the commit in place; this resume path must NOT
-            # finalize an un-gated FAB commit. Byte-neutral when the flag is off
-            # (no re-gate, no FAB import reached).
-            if _fab_closeout_enabled():
-                fab_regate = _fab_noop_regate_block(repo, phase=phase, metadata=metadata)
-                if fab_regate is not None:
-                    status, blocker = fab_regate
-                    return status, _closeout_event()
-                # When FAB cleared/re-gated the phase's OWN committed_head, record
-                # THAT (the FAB-vouched commit) instead of ambient HEAD — a moved
-                # HEAD must not be recorded as this phase's deliverable.
-                commit = metadata["closeout"].get("closeout_commit") or commit
+            # FAB (Consiliency/agent-harness#191) piece 2: no resume re-gate is
+            # needed here. Object-gating (below) advances the branch ref IFF the
+            # FAB hard gate passed, so a FAB commit that reaches HEAD was already
+            # gated; a blocked/crashed attempt never advanced the ref (the
+            # candidate stayed an unreferenced object) and thus never reaches this
+            # noop path. This branch is unchanged from the non-FAB behavior.
             status = "complete"
             metadata["closeout"]["verification_status"] = "passed"
             metadata["closeout"].update(
@@ -9163,28 +9155,49 @@ def _perform_phase_closeout_impl(
                         stderr="staged index changed between governed review and commit",
                     )
                     return status, _closeout_event()
-                # CR round 5: write the PHASE-BOUND FAB scope anchor BEFORE the
-                # commit ref advances, when this closeout is FAB-scoped. Its mere
-                # existence (phase-keyed, pre-commit) makes the resume completion
-                # decision independent of BOTH ambient HEAD and any post-commit
-                # write window — the phase must earn a commit-bound clearance to
-                # complete, or fail closed. A failure here does not crash the
-                # closeout (absence == genuinely non-FAB is the only fall-through,
-                # and that is the co-resident-writer / breakglass boundary).
-                if fab_run_id is not None:
-                    from . import fab_producer as _fab_producer_scope
-
-                    try:
-                        _fab_producer_scope.write_phase_scope(repo, phase, run_id=fab_run_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                # Commit the STAGED index (pathspec-less), which the index-isolation
-                # above narrowed to exactly the reviewed closeout paths. A pathspec
-                # commit (`git commit -- <paths>`) would instead re-read the WORKING
-                # TREE for those paths and could land bytes different from the reviewed
-                # staged index (breaking "reviewed == committed"); committing the index
-                # preserves the governed panel's exact bytes.
-                commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+                fab_wrote_provenance = False
+                # `terminal_status != "planned"` (CR round 6 review): a plan-doc
+                # closeout never captures FAB seats and must take the byte-identical
+                # non-FAB `git commit` path — never route a planned commit through
+                # commit-tree/update-ref (which would skip hooks/signing).
+                if (
+                    fab_run_id is not None
+                    and fab_reviewed_base_sha is not None
+                    and terminal_status != "planned"
+                ):
+                    # FAB (Consiliency/agent-harness#191) piece 2 — OBJECT-GATING
+                    # (CR round 6): gate the candidate commit OBJECT before
+                    # advancing any ref. Create it with `commit-tree` (no ref/
+                    # index/worktree change, no hooks → reviewed==committed is
+                    # structural), run the dedicated hard gate against it, and
+                    # advance the branch ref ONLY on a gate PASS/decline — never on
+                    # a hard-gate BLOCK or crash. The ref advances IFF the gate
+                    # passed, so a crash before the atomic update-ref leaves HEAD
+                    # unchanged and the candidate an unreferenced object (retry
+                    # re-reviews clean; no orphaned reachable commit). This replaces
+                    # the whole post-commit crash-safety machinery.
+                    commit_result, fab_wrote_provenance = _fab_object_gate_commit(
+                        repo,
+                        fab_run_id=fab_run_id,
+                        reviewed_tree=reviewed_tree,
+                        parent_sha=fab_reviewed_base_sha,
+                        commit_message=commit_message,
+                        closeout_dirty_paths=closeout_dirty_paths,
+                        metadata=metadata,
+                    )
+                    if commit_result is None:
+                        # Hard-gate BLOCK or crash: the ref was NOT advanced.
+                        status = "blocked"
+                        blocker = metadata["closeout"].pop("_fab_blocker")
+                        _run_git_closeout(repo, "reset", "--quiet", "HEAD", "--", *closeout_dirty_paths)
+                        return status, _closeout_event()
+                else:
+                    # Non-FAB (byte-for-byte unchanged): commit the STAGED index
+                    # (pathspec-less), which the index-isolation above narrowed to
+                    # exactly the reviewed closeout paths. A pathspec commit
+                    # (`git commit -- <paths>`) would re-read the WORKING TREE and
+                    # could land bytes different from the reviewed staged index.
+                    commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
                         metadata,
@@ -9202,73 +9215,12 @@ def _perform_phase_closeout_impl(
                             "closeout_commit": commit,
                         }
                     )
-                    # FAB (Consiliency/agent-harness#191) piece 2: the post-commit
-                    # producer transaction. Only when the closeout was scoped to
-                    # FAB (flag on) AND the review actually ran/passed (a real
-                    # implementation commit, not a planned doc). Honesty-gate
-                    # miss ⇒ no provenance, proceed exactly as the non-FAB path.
-                    # A DEDICATED hard-gate BLOCK ⇒ the phase is held (non-human
-                    # review_gate_block) — never a warn-downgraded pass.
-                    if fab_run_id is not None and status == "complete" and fab_reviewed_base_sha is not None:
-                        from . import fab_producer as _fab_producer
-
-                        # CR round 3/5: bind the phase's produced commit into the
-                        # pre-commit scope anchor as EARLY as possible after the
-                        # commit (the anti-HEAD-move LOCATE convenience). A failure
-                        # here does NOT crash the closeout and does NOT fail open:
-                        # a `committed_head is None` anchor still proves the phase
-                        # is FAB-scoped, so the resume path fails closed.
-                        try:
-                            _fab_producer.write_phase_scope(
-                                repo, phase, run_id=fab_run_id, committed_head=commit
-                            )
-                        except Exception:  # noqa: BLE001 - scope existence already recorded pre-commit
-                            pass
-                        # Exception-safe (CR round-2 crash safety): a post-commit
-                        # producer crash must leave a FAIL-CLOSED state — no cleared
-                        # marker — so the resume/noop re-gate catches it. A raise
-                        # here IS a block, never a silent completion.
-                        try:
-                            fab_outcome = _fab_closeout_producer(
-                                repo,
-                                fab_run_id=fab_run_id,
-                                reviewed_base_sha=fab_reviewed_base_sha,
-                                reviewed_tree=reviewed_tree,
-                                committed_head=commit,
-                                closeout_dirty_paths=closeout_dirty_paths,
-                            )
-                            fab_crashed = False
-                        except Exception as exc:  # noqa: BLE001 - fail-closed
-                            fab_outcome, fab_crashed = None, True
-                            metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"producer_crashed:{exc}"}
-                        fab_blocked = fab_crashed or (fab_outcome is not None and fab_outcome.blocked)
-                        if fab_outcome is not None and fab_outcome.wrote_provenance:
-                            metadata["closeout"]["fab_run_id"] = fab_run_id
-                        if fab_blocked:
-                            status = "blocked"
-                            block_reason = (
-                                fab_outcome.block_reason if fab_outcome is not None else None
-                            ) or "FAB producer hard gate did not pass / crashed"
-                            blocker = {
-                                "human_required": False,
-                                "blocker_class": "review_gate_block",
-                                "blocker_summary": block_reason,
-                                "required_human_inputs": (),
-                            }
-                            metadata["closeout"].update(
-                                {
-                                    "closeout_action": "review_gate_block",
-                                    "verification_status": "blocked",
-                                    "fab_gate": metadata["closeout"].get("fab_gate")
-                                    or {"blocked": True, "reason": block_reason},
-                                }
-                            )
-                            return status, _closeout_event()
-                        # PASS or honest DECLINE → write the durable "cleared"
-                        # marker as the STRICT LAST step, COMMIT-BOUND to this
-                        # exact commit (CR round 3 / blocker 1), so a resume that
-                        # hits noop_already_committed trusts it only for `commit`.
-                        _fab_producer.mark_closeout_cleared(repo, fab_run_id, commit)
+                    # FAB (Consiliency/agent-harness#191) piece 2: the object-gate
+                    # above already ran the dedicated hard gate against this exact
+                    # commit BEFORE advancing the ref (so HEAD == the gated SHA) and
+                    # durably wrote provenance on a PASS. Just record it here.
+                    if fab_wrote_provenance:
+                        metadata["closeout"]["fab_run_id"] = fab_run_id
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
                     # as visible `soft` CloseoutExceptions (one per sensitivity class),
                     # never folded into a clean pass. BREAKGLASS: source/ci/lockfile UNSAFE
@@ -9728,153 +9680,108 @@ def _fab_closeout_producer(
     )
 
 
-def _fab_noop_regate(repo, *, run_id, committed_head):
-    """Re-run the dedicated FAB hard gate against an ALREADY-committed head at
-    resume/noop time, reconstructing the honesty-gate inputs from HEAD (single
-    reviewed commit) plus the durable capture at `run_id`. Returns the
-    ``fab_producer.ProducerOutcome``, or ``None`` when it cannot even reconstruct
-    (the caller treats ``None`` as fail-closed). Routes through
-    `_fab_closeout_producer` so the base-ref resolution + origin are identical to
-    the original attempt."""
-    parent = _git_output_or_empty(repo, "rev-parse", f"{committed_head}^")
-    tree = _git_output_or_empty(repo, "rev-parse", f"{committed_head}^{{tree}}")
-    if not parent or not tree:
-        return None
-    dirty = tuple(
-        p for p in _git_output_or_empty(
-            repo, "diff", f"{committed_head}^", committed_head, "--name-only"
-        ).splitlines()
-        if p.strip()
-    )
-    if not dirty:
-        return None
-    return _fab_closeout_producer(
-        repo,
-        fab_run_id=run_id,
-        reviewed_base_sha=parent,
-        reviewed_tree=tree,
-        committed_head=committed_head,
-        closeout_dirty_paths=dirty,
-    )
-
-
-def _fab_regate_blocked(metadata, reason):
-    """Build the non-human ``review_gate_block`` terminal for a failed noop
-    re-gate, recording the reason in `metadata`."""
-    metadata["closeout"].update(
-        {
-            "closeout_action": "review_gate_block",
-            "verification_status": "blocked",
-            "fab_gate": metadata["closeout"].get("fab_gate") or {"blocked": True, "reason": reason},
-        }
-    )
-    return "blocked", {
-        "human_required": False,
-        "blocker_class": "review_gate_block",
-        "blocker_summary": reason,
-        "required_human_inputs": (),
-    }
-
-
-def _fab_commit_reachable(repo, commit) -> bool:
-    """True iff `commit` is an ancestor of (or equal to) the current HEAD — i.e.
-    the vouched commit is still present on the branch. A reset / off-branch stale
-    record must never finalize a phase against a commit that is gone (CR round 4 /
-    codex#2). Any git failure (malformed sha, missing object) → not reachable
-    (fail-closed)."""
-    if not commit:
-        return False
-    probe = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, "HEAD"],
-        capture_output=True, text=True,
-    )
-    return probe.returncode == 0
-
-
-def _fab_noop_regate_block(repo, *, phase, metadata):
-    """The crash-safety re-gate for the `noop_already_committed` resume path.
-    Returns ``(status, blocker)`` when the phase's FAB commit must STAY BLOCKED
-    (never finalized), or ``None`` when it is safe to complete.
-
-    INVARIANT (CR round 5): the completion decision is answerable from PHASE-keyed
-    state ALONE — the pre-commit `fab-phase-scope/<phase>` anchor — independent of
-    BOTH ambient HEAD (round 3 axis) and the post-commit write window (round 4
-    axis). Completing a FAB-scoped phase REQUIRES an affirmative COMMIT-BOUND
-    clearance (a cleared marker, or a fresh re-gate PASS) for the exact commit it
-    produced. The anchor is written PRE-commit, so its existence survives a
-    post-commit crash; it is keyed by PHASE, so a moved/advanced HEAD cannot make
-    it miss.
-
-    Decision table (only reached with ``PHASE_LOOP_FAB`` on):
-      * no phase-scope anchor → ``None`` (a genuinely non-FAB phase; for the
-        crash-safety class the anchor is pre-commit + atomic, so its absence
-        means non-FAB — a deleted/corrupt run store is the disclosed breakglass
-        boundary, residual #2, explicitly out of scope).
-      * anchor with a bound `committed_head` → evaluate THAT commit (never ambient
-        HEAD): unreachable → BLOCK (codex#2); a commit-bound cleared marker →
-        ``None`` (trust it — coherence: cleared DOMINATES, no false-block on
-        resume); otherwise RE-GATE it, PASS-only clears.
-      * anchor with `committed_head is None` (crash between the pre-commit write
-        and the post-commit bind) → the phase is scoped but its commit was never
-        recorded. Recover ONLY if the current HEAD is that exact FAB commit (its
-        tree matches the anchor's `run_id=fab-<tree>`); otherwise BLOCK — a
-        scoped phase with no locatable cleared commit must never complete.
-
-    ONLY an affirmative PASS clears; a re-gate DECLINE or BLOCK BOTH fail closed
-    (a known-not-cleared commit's decline = "cannot establish FAB honesty now" =
-    fail-closed, not the non-FAB fallback). Do NOT relax it to "decline ⇒ complete"."""
-    from . import fab_producer
-
-    scope = fab_producer.read_phase_scope(repo, phase)
-    if scope is None:
-        return None  # genuinely non-FAB phase (no pre-commit scope anchor)
-    run_id = scope["run_id"]
-    committed_head = scope.get("committed_head")
-    if not committed_head:
-        # Scoped, but the commit was never bound (crash between the pre-commit
-        # scope write and the post-commit bind). Recover only if the current HEAD
-        # IS that FAB commit (same reviewed tree as the anchor's run_id); else
-        # fail closed — a scoped phase with no locatable clearance must not complete.
-        head = _git_output_or_empty(repo, "rev-parse", "HEAD")
-        head_tree = _git_output_or_empty(repo, "rev-parse", "HEAD^{tree}")
-        if head and head_tree and f"fab-{head_tree}" == run_id:
-            committed_head = head
-        else:
-            return _fab_regate_blocked(
-                metadata,
-                "FAB-scoped phase has no recorded commit and its FAB commit is not the current HEAD "
-                "(fail-closed — cannot establish clearance)",
-            )
-
-    # A vouched/uncleared commit that is no longer on the branch must never
-    # finalize the phase (reset / off-branch stale record — codex#2).
-    if not _fab_commit_reachable(repo, committed_head):
-        return _fab_regate_blocked(
-            metadata, f"FAB-scoped commit {committed_head!r} is not reachable from HEAD (fail-closed)"
-        )
-
-    if fab_producer.is_closeout_cleared(repo, run_id, committed_head):
-        # Already earned safe-to-finalize for THIS exact, still-reachable commit.
-        metadata["closeout"]["fab_run_id"] = run_id
-        metadata["closeout"]["closeout_commit"] = committed_head
-        return None
-
+def _fab_commit_tree(repo, *, tree: str, parent: str, message: str) -> str | None:
+    """Create the candidate commit as a git OBJECT (`git commit-tree`) WITHOUT
+    advancing any ref/index/worktree (CR round 6 object-gating). Returns the
+    candidate SHA, or ``None`` on failure. commit-tree does NOT run pre-commit
+    hooks — which is the point: no hook can mutate the tree after the seats
+    reviewed it, so reviewed == committed is STRUCTURAL for the FAB path (a
+    deliberate, documented behavior difference for FAB-on closeouts)."""
     try:
-        outcome = _fab_noop_regate(repo, run_id=run_id, committed_head=committed_head)
+        result = subprocess.run(
+            ["git", "-C", str(repo), "commit-tree", tree, "-p", parent],
+            input=message, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _fab_advance_ref(repo, new_sha: str, *, expected_old: str) -> bool:
+    """Atomically advance the current branch (or detached HEAD) to `new_sha` via
+    `git update-ref`, ONLY if it still points at `expected_old` (the pre-commit
+    HEAD). Called AFTER the gate passed and provenance is durably written, so the
+    ref advances IFF the gate passed — the crash surface collapses to this single
+    atomic ref-update. A crash before it leaves HEAD unchanged + the candidate an
+    unreferenced object, so a retry re-reviews from scratch (no orphaned reachable
+    commit). Returns False on any failure (concurrent advance / git error)."""
+    ref = _git_output_or_empty(repo, "symbolic-ref", "-q", "HEAD") or "HEAD"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "update-ref", ref, new_sha, expected_old],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _fab_object_gate_commit(
+    repo, *, fab_run_id, reviewed_tree, parent_sha, commit_message, closeout_dirty_paths, metadata
+):
+    """FAB object-gating (CR round 6). Create the candidate commit as an object,
+    run the dedicated hard gate against THAT exact object, and advance the branch
+    ref ONLY on a gate PASS/decline — never on a hard-gate BLOCK or crash.
+
+    Returns ``(commit_result, fab_wrote_provenance)``:
+      * ``commit_result is None`` → hard-gate BLOCK / crash. The ref was NOT
+        advanced (the candidate stays an unreferenced object); the caller reads
+        ``metadata['closeout']['_fab_blocker']`` and blocks.
+      * ``commit_result.returncode != 0`` → commit-tree / update-ref failure
+        (routes through the caller's normal commit-failure path).
+      * ``commit_result.returncode == 0`` → advanced to the EXACT gated SHA
+        (HEAD == candidate); ``fab_wrote_provenance`` is True iff the gate PASSED
+        (vs an honest non-FAB decline, which still lands the commit).
+
+    Crash-safety collapses to the single ordering invariant "durably write
+    provenance, THEN advance the ref": a crash before `_fab_advance_ref` leaves
+    HEAD unchanged, so nothing un-gated is ever reachable."""
+    candidate = _fab_commit_tree(repo, tree=reviewed_tree, parent=parent_sha, message=commit_message)
+    if candidate is None:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git commit-tree failed"), False
+    try:
+        outcome = _fab_closeout_producer(
+            repo,
+            fab_run_id=fab_run_id,
+            reviewed_base_sha=parent_sha,
+            reviewed_tree=reviewed_tree,
+            committed_head=candidate,
+            closeout_dirty_paths=closeout_dirty_paths,
+        )
+        crashed = False
     except Exception as exc:  # noqa: BLE001 - fail-closed
-        outcome = None
-        metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"noop_regate_crashed:{exc}"}
-
-    if outcome is not None and outcome.wrote_provenance and not outcome.blocked:
-        fab_producer.mark_closeout_cleared(repo, run_id, committed_head)
-        metadata["closeout"]["fab_run_id"] = run_id
-        metadata["closeout"]["closeout_commit"] = committed_head
-        return None  # re-earned a genuine PASS for this exact commit → safe
-
-    reason = (
-        (outcome.block_reason or outcome.skipped_reason) if outcome is not None else None
-    ) or "FAB re-gate did not affirmatively pass on resume (fail-closed)"
-    return _fab_regate_blocked(metadata, reason)
+        outcome, crashed = None, True
+        metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"producer_crashed:{exc}"}
+    if crashed or (outcome is not None and outcome.blocked):
+        reason = (
+            outcome.block_reason if outcome is not None else None
+        ) or "FAB hard gate did not pass / crashed"
+        metadata["closeout"].update(
+            {
+                "closeout_action": "review_gate_block",
+                "verification_status": "blocked",
+                "fab_gate": metadata["closeout"].get("fab_gate") or {"blocked": True, "reason": reason},
+            }
+        )
+        metadata["closeout"]["_fab_blocker"] = {
+            "human_required": False,
+            "blocker_class": "review_gate_block",
+            "blocker_summary": reason,
+            "required_human_inputs": (),
+        }
+        return None, False  # ref NOT advanced
+    # PASS or honest DECLINE → provenance (on PASS) is already durably written.
+    if not _fab_advance_ref(repo, candidate, expected_old=parent_sha):
+        return (
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git update-ref failed after FAB gate pass"),
+            False,
+        )
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""), bool(
+        outcome is not None and outcome.wrote_provenance
+    )
 
 
 def _governed_premerge_review(

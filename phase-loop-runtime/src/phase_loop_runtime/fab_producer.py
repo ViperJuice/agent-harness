@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,7 +52,6 @@ from .fab_gate import (
     compose_gate_status,
     finalize_review_round,
     read_seat_outcomes,
-    review_round_path_for_run,
     write_expected_seats,
 )
 from .fab_provenance import (
@@ -72,7 +70,6 @@ from .fab_provenance import (
     write_provenance,
 )
 from .fab_delta import BOUNDARY_MANIFEST_PATH
-from .runtime_paths import phase_loop_runs_dir
 from .panel_invoker import PanelResult, SeatOutcomeRecord, terminal_verdict
 
 # The reviewed bundle bytes, snapshotted into the run store as the round's
@@ -96,15 +93,6 @@ _DIFF_ELISION_SENTINELS = (
 )
 
 
-# The durable "safe to finalize" marker (CR round-2 crash safety). Written as the
-# STRICT LAST step ONLY when the producer determined the closeout is safe to
-# complete — an affirmative FAB gate PASS or an honest non-FAB DECLINE. It is
-# NEVER written on a hard-gate BLOCK or on any exception between commit and gate
-# decision. So its ABSENCE on a FAB-scoped run means "attempt 1 blocked or
-# crashed" → the resume/noop path must re-gate and fail closed.
-CLEARED_FILENAME = "fab-closeout-cleared.json"
-
-
 def fab_run_id_for_reviewed_tree(reviewed_tree: str) -> str:
     """The deterministic, harness-computed run id a FAB candidate round is keyed
     by, derived from the REVIEWED (staged) tree sha — known pre-commit, when the
@@ -118,98 +106,6 @@ def fab_run_id_for_reviewed_tree(reviewed_tree: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def is_fab_scoped(repo: Path, run_id: str) -> bool:
-    """True iff this run was scoped to FAB — i.e. `capture_review_at_invocation`
-    ran and froze the expected-seat manifest (the durable round record exists)."""
-    try:
-        return review_round_path_for_run(repo, run_id).exists()
-    except ProvenanceInvalid:
-        return False
-
-
-def mark_closeout_cleared(repo: Path, run_id: str, commit_sha: str) -> None:
-    """Write the durable "safe to finalize" marker (STRICT LAST step), COMMIT-BOUND
-    (CR round 3 / blocker 1): the marker records the EXACT commit it vouches for,
-    so a DIFFERENT commit sharing the same reviewed tree (hence the same
-    `run_id = fab-<tree>`) can never inherit it. Only call on an affirmative FAB
-    PASS or an honest DECLINE for `commit_sha` — never on a block/crash."""
-    path = provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps({"cleared": True, "commit": commit_sha, "at": _utc_now_iso()}, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
-
-
-def is_closeout_cleared(repo: Path, run_id: str, committed_head: str) -> bool:
-    """True iff a cleared marker for `run_id` exists AND was written for EXACTLY
-    `committed_head` (CR round 3 / blocker 1 — a same-tree replay must not reuse
-    another commit's clearance)."""
-    try:
-        path = provenance_dir_for_run(repo, run_id) / CLEARED_FILENAME
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, ProvenanceInvalid):
-        return False
-    return isinstance(data, dict) and data.get("cleared") is True and data.get("commit") == committed_head
-
-
-# --------------------------------------------------------------------------- #
-# CR round 5 — the PHASE-BOUND, PRE-COMMIT scope anchor. Keyed by the phase (nid)
-# — NOT by tree and NOT written post-commit — so the resume completion decision
-# is answerable from phase-keyed state ALONE, independent of BOTH ambient HEAD
-# (round 3 axis) and the post-commit write window (round 4 axis). Written at the
-# START of a FAB-scoped closeout, BEFORE the commit is created: its mere EXISTENCE
-# means this phase is FAB-scoped and MUST produce an affirmative commit-bound
-# clearance to complete. `committed_head` is bound as early as possible AFTER the
-# commit (the anti-HEAD-move locate convenience); a `committed_head is None`
-# record (crash between the pre-commit write and the post-commit bind) still
-# proves scope → fail closed on resume. Its ABSENCE means a genuinely non-FAB
-# phase (for the crash-safety class this record is pre-commit + atomic, so it
-# survives; a deleted/corrupted run store is the disclosed co-resident-writer /
-# breakglass boundary, residual #2 — explicitly out of scope).
-# --------------------------------------------------------------------------- #
-
-PHASE_SCOPE_DIRNAME = "fab-phase-scope"
-
-
-def _phase_scope_path(repo: Path, phase: str) -> Path:
-    safe = hashlib.sha256(phase.encode("utf-8")).hexdigest()[:32]
-    return phase_loop_runs_dir(Path(repo)) / PHASE_SCOPE_DIRNAME / f"{safe}.json"
-
-
-def write_phase_scope(repo: Path, phase: str, *, run_id: str, committed_head: str | None = None) -> None:
-    """Write/refresh the phase's pre-commit FAB scope anchor. Called PRE-commit
-    with ``committed_head=None`` (existence = must-clear-to-complete), then again
-    POST-commit with the bound ``committed_head`` (the locate convenience)."""
-    path = _phase_scope_path(repo, phase)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(
-            {"phase": phase, "run_id": run_id, "committed_head": committed_head, "at": _utc_now_iso()},
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
-
-
-def read_phase_scope(repo: Path, phase: str) -> dict | None:
-    """Return the phase's FAB scope anchor ``{run_id, committed_head|None}``, or
-    ``None`` when the phase is not FAB-scoped (no anchor). ``committed_head`` may
-    be ``None`` (scoped, but the commit was never bound — a crash-safety state
-    the resume path treats fail-closed)."""
-    try:
-        data = json.loads(_phase_scope_path(repo, phase).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not data.get("run_id"):
-        return None
-    return {"run_id": str(data["run_id"]), "committed_head": data.get("committed_head")}
 
 
 def _sha256_hex(data: bytes) -> str:
